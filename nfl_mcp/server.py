@@ -8,6 +8,7 @@ A FastMCP server that provides:
 """
 
 from fastmcp import FastMCP
+from starlette.responses import JSONResponse
 
 
 def create_app() -> FastMCP:
@@ -20,13 +21,13 @@ def create_app() -> FastMCP:
     
     # Health endpoint (non-MCP, directly exposed REST endpoint)
     @mcp.custom_route(path="/health", methods=["GET"])
-    async def health_check():
+    async def health_check(request):
         """Health check endpoint for monitoring server status."""
-        return {
+        return JSONResponse({
             "status": "healthy",
             "service": "NFL MCP Server",
             "version": "0.1.0"
-        }
+        })
     
     # MCP Tool: Multiply two integers
     @mcp.tool
