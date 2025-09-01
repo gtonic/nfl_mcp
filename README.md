@@ -1,6 +1,6 @@
 # NFL MCP Server
 
-A FastMCP server that provides health monitoring, arithmetic operations, web content extraction, and NFL news fetching through both REST and MCP protocols.
+A FastMCP server that provides health monitoring, arithmetic operations, web content extraction, NFL news fetching, and NFL teams information through both REST and MCP protocols.
 
 ## Features
 
@@ -8,6 +8,7 @@ A FastMCP server that provides health monitoring, arithmetic operations, web con
 - **Multiply Tool**: MCP tool that multiplies two integers and returns the result
 - **URL Crawling Tool**: MCP tool that crawls arbitrary URLs and extracts LLM-friendly text content
 - **NFL News Tool**: MCP tool that fetches the latest NFL news from ESPN API
+- **NFL Teams Tool**: MCP tool that fetches all NFL teams from ESPN API
 - **HTTP Transport**: Runs on HTTP transport protocol (default port 9000)
 - **Containerized**: Docker support for easy deployment
 - **Well Tested**: Comprehensive unit tests for all functionality
@@ -113,6 +114,40 @@ Each article in the `articles` list contains:
 - `story`: Full story content
 - `categories`: List of category descriptions
 - `links`: Associated links (web, mobile, etc.)
+
+### NFL Teams Tool (MCP)
+
+**Tool Name:** `get_teams`
+
+Fetches all NFL teams from ESPN API and returns structured team data.
+
+**Parameters:** None
+
+**Returns:** Dictionary with the following fields:
+- `teams`: List of teams with id and name
+- `total_teams`: Number of teams returned
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+**Example Usage with MCP Client:**
+```python
+from fastmcp import Client
+
+async with Client("http://localhost:9000/mcp/") as client:
+    result = await client.call_tool("get_teams", {})
+    
+    if result.data["success"]:
+        print(f"Found {result.data['total_teams']} teams")
+        for team in result.data["teams"]:
+            print(f"- {team['name']} (ID: {team['id']})")
+    else:
+        print(f"Error: {result.data['error']}")
+```
+
+**Team Structure:**
+Each team in the `teams` list contains:
+- `id`: Unique team identifier
+- `name`: Team name
 
 ### Crawl URL Tool (MCP)
 
