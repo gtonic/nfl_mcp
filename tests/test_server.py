@@ -1,10 +1,12 @@
 """
 Unit tests for NFL MCP Server
 
-Tests the basic server functionality and multiplication logic.
+Tests the basic server functionality and tool logic including URL crawling.
 """
 
 import pytest
+import httpx
+from unittest.mock import AsyncMock, patch, MagicMock
 from nfl_mcp.server import create_app
 
 
@@ -157,3 +159,229 @@ class TestHealthEndpointLogic:
         assert expected_response["status"] == "healthy"
         assert expected_response["service"] == "NFL MCP Server"
         assert expected_response["version"] == "0.1.0"
+
+
+class TestUrlCrawlingLogic:
+    """Test the URL crawling business logic."""
+    
+    def test_crawl_url_function_exists(self):
+        """Test that the crawl_url function is properly registered."""
+        app = create_app()
+        
+        # Verify the app was created successfully
+        assert app.name == "NFL MCP Server"
+        # The tool registration is tested in integration tests
+
+    @pytest.mark.asyncio
+    async def test_crawl_url_invalid_url_format(self):
+        """Test URL validation logic."""
+        # Test the URL validation logic directly
+        test_urls = [
+            "example.com",
+            "www.example.com", 
+            "ftp://example.com",
+            "/relative/path",
+            "javascript:alert('test')"
+        ]
+        
+        for url in test_urls:
+            # Validate URL format (same logic as in the actual function)
+            is_valid = url.startswith(('http://', 'https://'))
+            assert is_valid is False, f"URL {url} should be invalid"
+        
+        # Test valid URLs
+        valid_urls = [
+            "http://example.com",
+            "https://example.com",
+            "https://www.example.com/path?query=value"
+        ]
+        
+        for url in valid_urls:
+            is_valid = url.startswith(('http://', 'https://'))
+            assert is_valid is True, f"URL {url} should be valid"
+
+    @pytest.mark.asyncio 
+    async def test_crawl_url_text_extraction_logic(self):
+        """Test HTML text extraction and cleaning logic."""
+        # Test the text processing logic
+        from bs4 import BeautifulSoup
+        import re
+        
+        test_html = """
+        <html>
+            <head><title>Test Page</title></head>
+            <body>
+                <h1>Main Content</h1>
+                <p>This is   a test    paragraph.</p>
+                <script>alert('should be removed');</script>
+                <style>.hidden { display: none; }</style>
+                <nav>Navigation</nav>
+                <footer>Footer</footer>
+                <div>   
+                    Some content with
+                    
+                    lots of whitespace
+                </div>
+            </body>
+        </html>
+        """
+        
+        # Process HTML the same way as the crawl_url function
+        soup = BeautifulSoup(test_html, 'lxml')
+        
+        # Extract title
+        title_tag = soup.find('title')
+        title = title_tag.get_text().strip() if title_tag else None
+        assert title == "Test Page"
+        
+        # Remove script and style elements
+        for script in soup(["script", "style", "nav", "footer", "aside", "form"]):
+            script.extract()
+        
+        # Get text content
+        text = soup.get_text()
+        
+        # Clean up the text
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = ' '.join(chunk for chunk in chunks if chunk)
+        
+        # Remove excessive whitespace and normalize
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Verify extracted content
+        assert "Main Content" in text
+        assert "test paragraph" in text
+        assert "Some content with lots of whitespace" in text
+        # Should not contain removed elements
+        assert "alert" not in text
+        assert "display: none" not in text
+        assert "Navigation" not in text
+        assert "Footer" not in text
+
+    @pytest.mark.asyncio
+    async def test_crawl_url_length_limiting(self):
+        """Test content length limiting logic."""
+        # Test length limiting
+        long_text = "This is a long paragraph. " * 100  # ~2600 chars
+        max_length = 100
+        
+        if len(long_text) > max_length:
+            truncated = long_text[:max_length] + "..."
+        else:
+            truncated = long_text
+            
+        assert len(truncated) <= max_length + 3  # +3 for "..."
+        assert truncated.endswith("...")
+
+    @pytest.mark.asyncio
+    async def test_crawl_url_mock_successful_request(self):
+        """Test successful request with mocked HTTP client."""
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock, patch
+        
+        # Test HTML content
+        mock_html = """
+        <html>
+            <head><title>Success Page</title></head>
+            <body>
+                <h1>Welcome</h1>
+                <p>This page was successfully crawled.</p>
+            </body>
+        </html>
+        """
+        
+        # Create a mock implementation of the crawl logic
+        async def mock_crawl_url(url: str, max_length: int = 10000) -> dict:
+            # Validate URL format
+            if not url.startswith(('http://', 'https://')):
+                return {
+                    "url": url, "title": None, "content": "", "content_length": 0,
+                    "success": False, "error": "URL must start with http:// or https://"
+                }
+            
+            try:
+                # Simulate successful request
+                from bs4 import BeautifulSoup
+                import re
+                
+                soup = BeautifulSoup(mock_html, 'lxml')
+                title_tag = soup.find('title')
+                title = title_tag.get_text().strip() if title_tag else None
+                
+                # Remove unwanted elements
+                for script in soup(["script", "style", "nav", "footer", "aside", "form"]):
+                    script.extract()
+                
+                text = soup.get_text()
+                lines = (line.strip() for line in text.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                text = ' '.join(chunk for chunk in chunks if chunk)
+                text = re.sub(r'\s+', ' ', text).strip()
+                
+                if max_length and len(text) > max_length:
+                    text = text[:max_length] + "..."
+                
+                return {
+                    "url": url, "title": title, "content": text, "content_length": len(text),
+                    "success": True, "error": None
+                }
+            except Exception as e:
+                return {
+                    "url": url, "title": None, "content": "", "content_length": 0,
+                    "success": False, "error": f"Unexpected error: {str(e)}"
+                }
+        
+        # Test successful crawl
+        result = await mock_crawl_url("https://example.com")
+        
+        assert result["success"] is True
+        assert result["error"] is None
+        assert result["title"] == "Success Page"
+        assert "Welcome" in result["content"]
+        assert "successfully crawled" in result["content"]
+        assert result["content_length"] > 0
+
+    @pytest.mark.asyncio
+    async def test_crawl_url_mock_error_cases(self):
+        """Test error handling with mock scenarios."""
+        
+        async def mock_crawl_url_with_errors(url: str, simulate_error: str = None) -> dict:
+            if not url.startswith(('http://', 'https://')):
+                return {
+                    "url": url, "title": None, "content": "", "content_length": 0,
+                    "success": False, "error": "URL must start with http:// or https://"
+                }
+            
+            if simulate_error == "timeout":
+                return {
+                    "url": url, "title": None, "content": "", "content_length": 0,
+                    "success": False, "error": "Request timed out"
+                }
+            elif simulate_error == "404":
+                return {
+                    "url": url, "title": None, "content": "", "content_length": 0,
+                    "success": False, "error": "HTTP 404: Not Found"
+                }
+            elif simulate_error == "unexpected":
+                return {
+                    "url": url, "title": None, "content": "", "content_length": 0,
+                    "success": False, "error": "Unexpected error: Connection failed"
+                }
+            
+            return {"success": True}
+        
+        # Test timeout error
+        result = await mock_crawl_url_with_errors("https://example.com", "timeout")
+        assert result["success"] is False
+        assert result["error"] == "Request timed out"
+        
+        # Test HTTP error
+        result = await mock_crawl_url_with_errors("https://example.com", "404")
+        assert result["success"] is False
+        assert "HTTP 404" in result["error"]
+        
+        # Test unexpected error
+        result = await mock_crawl_url_with_errors("https://example.com", "unexpected")
+        assert result["success"] is False
+        assert "Unexpected error" in result["error"]

@@ -6,6 +6,7 @@ A FastMCP server that provides health monitoring and arithmetic operations throu
 
 - **Health Endpoint**: Non-MCP REST endpoint at `/health` for monitoring server status
 - **Multiply Tool**: MCP tool that multiplies two integers and returns the result
+- **URL Crawling Tool**: MCP tool that crawls arbitrary URLs and extracts LLM-friendly text content
 - **HTTP Transport**: Runs on HTTP transport protocol (default port 9000)
 - **Containerized**: Docker support for easy deployment
 - **Well Tested**: Comprehensive unit tests for all functionality
@@ -70,6 +71,50 @@ Returns server health status.
   "version": "0.1.0"
 }
 ```
+
+### Crawl URL Tool (MCP)
+
+**Tool Name:** `crawl_url`
+
+Crawls a URL and extracts its text content in a format understandable by LLMs.
+
+**Parameters:**
+- `url` (string): The URL to crawl (must include http:// or https://)
+- `max_length` (integer, optional): Maximum length of extracted text (default: 10000 characters)
+
+**Returns:** Dictionary with the following fields:
+- `url`: The crawled URL
+- `title`: Page title (if available)
+- `content`: Cleaned text content
+- `content_length`: Length of extracted content
+- `success`: Whether the crawl was successful
+- `error`: Error message (if any)
+
+**Example Usage with MCP Client:**
+```python
+from fastmcp import Client
+
+async with Client("http://localhost:9000/mcp/") as client:
+    result = await client.call_tool("crawl_url", {
+        "url": "https://example.com",
+        "max_length": 1000
+    })
+    
+    if result.data["success"]:
+        print(f"Title: {result.data['title']}")
+        print(f"Content: {result.data['content']}")
+    else:
+        print(f"Error: {result.data['error']}")
+```
+
+**Features:**
+- Automatically extracts and cleans text content from HTML
+- Removes scripts, styles, navigation, and footer elements
+- Normalizes whitespace and formats text for LLM consumption
+- Handles various error conditions (timeouts, HTTP errors, etc.)
+- Configurable content length limiting
+- Follows redirects automatically
+- Sets appropriate User-Agent header
 
 ### Multiply Tool (MCP)
 
