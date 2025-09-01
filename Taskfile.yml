@@ -1,0 +1,103 @@
+version: '3'
+
+vars:
+  IMAGE_NAME: nfl-mcp-server
+  IMAGE_TAG: latest
+  CONTAINER_NAME: nfl-mcp-server
+  PORT: 9000
+
+tasks:
+  install:
+    desc: Install project dependencies
+    cmds:
+      - pip install -r requirements.txt
+      - pip install -e ".[dev]"
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - pytest tests/ -v --cov=nfl_mcp --cov-report=term-missing
+
+  test-quick:
+    desc: Run tests without coverage
+    cmds:
+      - pytest tests/ -v
+
+  lint:
+    desc: Run code linting (if available)
+    cmds:
+      - python -m py_compile nfl_mcp/server.py
+      - python -m py_compile tests/test_server.py
+
+  run:
+    desc: Run the server locally
+    cmds:
+      - python -m nfl_mcp.server
+
+  run-dev:
+    desc: Run the server in development mode with auto-reload
+    cmds:
+      - python nfl_mcp/server.py
+
+  build:
+    desc: Build Docker image
+    cmds:
+      - docker build -t {{.IMAGE_NAME}}:{{.IMAGE_TAG}} .
+
+  run-docker:
+    desc: Run server in Docker container
+    deps: [build]
+    cmds:
+      - docker run --rm --name {{.CONTAINER_NAME}} -p {{.PORT}}:{{.PORT}} {{.IMAGE_NAME}}:{{.IMAGE_TAG}}
+
+  run-docker-detached:
+    desc: Run server in Docker container (detached)
+    deps: [build]
+    cmds:
+      - docker run -d --name {{.CONTAINER_NAME}} -p {{.PORT}}:{{.PORT}} {{.IMAGE_NAME}}:{{.IMAGE_TAG}}
+
+  stop-docker:
+    desc: Stop Docker container
+    cmds:
+      - docker stop {{.CONTAINER_NAME}} || true
+      - docker rm {{.CONTAINER_NAME}} || true
+
+  logs:
+    desc: Show Docker container logs
+    cmds:
+      - docker logs -f {{.CONTAINER_NAME}}
+
+  health-check:
+    desc: Check server health
+    cmds:
+      - curl -f http://localhost:{{.PORT}}/health
+
+  clean:
+    desc: Clean up Docker resources
+    cmds:
+      - docker stop {{.CONTAINER_NAME}} || true
+      - docker rm {{.CONTAINER_NAME}} || true
+      - docker rmi {{.IMAGE_NAME}}:{{.IMAGE_TAG}} || true
+
+  setup:
+    desc: Complete project setup
+    cmds:
+      - task: install
+      - task: test
+
+  ci:
+    desc: Run CI pipeline (test and build)
+    cmds:
+      - task: lint
+      - task: test
+      - task: build
+
+  all:
+    desc: Full pipeline - setup, test, build and run
+    cmds:
+      - task: setup
+      - task: build
+      - task: run-docker-detached
+      - sleep 5
+      - task: health-check
+      - task: stop-docker
