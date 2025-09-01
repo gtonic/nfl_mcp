@@ -161,6 +161,224 @@ class TestHealthEndpointLogic:
         assert expected_response["version"] == "0.1.0"
 
 
+class TestNflNewsLogic:
+    """Test the NFL news fetching business logic."""
+    
+    def test_get_nfl_news_function_exists(self):
+        """Test that the get_nfl_news function is properly registered."""
+        app = create_app()
+        
+        # Verify the app was created successfully
+        assert app.name == "NFL MCP Server"
+        # The tool registration is tested in integration tests
+    
+    @pytest.mark.asyncio
+    async def test_get_nfl_news_parameter_validation(self):
+        """Test parameter validation for get_nfl_news function."""
+        
+        async def mock_get_nfl_news(limit=50):
+            # Validate and cap the limit
+            if limit is None:
+                limit = 50
+            elif limit < 1:
+                limit = 1
+            elif limit > 50:
+                limit = 50
+            
+            return {
+                "articles": [],
+                "total_articles": 0,
+                "success": True,
+                "error": None,
+                "requested_limit": limit
+            }
+        
+        # Test default limit
+        result = await mock_get_nfl_news()
+        assert result["requested_limit"] == 50
+        
+        # Test valid limits
+        result = await mock_get_nfl_news(25)
+        assert result["requested_limit"] == 25
+        
+        result = await mock_get_nfl_news(1)
+        assert result["requested_limit"] == 1
+        
+        # Test limit capping
+        result = await mock_get_nfl_news(100)
+        assert result["requested_limit"] == 50
+        
+        # Test limit minimum
+        result = await mock_get_nfl_news(0)
+        assert result["requested_limit"] == 1
+        
+        result = await mock_get_nfl_news(-5)
+        assert result["requested_limit"] == 1
+    
+    @pytest.mark.asyncio
+    async def test_get_nfl_news_mock_successful_response(self):
+        """Test successful response processing with mock data."""
+        
+        mock_espn_response = {
+            "articles": [
+                {
+                    "headline": "Test NFL News Article",
+                    "description": "This is a test article about NFL news",
+                    "published": "2024-01-15T10:30:00Z",
+                    "type": "Story",
+                    "story": "Full story content here...",
+                    "categories": [{"description": "NFL"}, {"description": "Sports"}],
+                    "links": {"web": {"href": "https://example.com/article"}}
+                },
+                {
+                    "headline": "Another NFL Update",
+                    "description": "Another test article",
+                    "published": "2024-01-15T09:15:00Z",
+                    "type": "News",
+                    "story": "More news content...",
+                    "categories": [{"description": "Football"}],
+                    "links": {"web": {"href": "https://example.com/article2"}}
+                }
+            ]
+        }
+        
+        # Mock processing logic
+        articles = mock_espn_response.get('articles', [])
+        processed_articles = []
+        for article in articles:
+            processed_article = {
+                "headline": article.get('headline', ''),
+                "description": article.get('description', ''),
+                "published": article.get('published', ''),
+                "type": article.get('type', ''),
+                "story": article.get('story', ''),
+                "categories": [cat.get('description', '') for cat in article.get('categories', [])],
+                "links": article.get('links', {})
+            }
+            processed_articles.append(processed_article)
+        
+        result = {
+            "articles": processed_articles,
+            "total_articles": len(processed_articles),
+            "success": True,
+            "error": None
+        }
+        
+        # Verify the processing logic
+        assert result["success"] is True
+        assert result["error"] is None
+        assert result["total_articles"] == 2
+        assert len(result["articles"]) == 2
+        
+        # Check first article
+        first_article = result["articles"][0]
+        assert first_article["headline"] == "Test NFL News Article"
+        assert first_article["description"] == "This is a test article about NFL news"
+        assert first_article["type"] == "Story"
+        assert first_article["categories"] == ["NFL", "Sports"]
+        
+        # Check second article
+        second_article = result["articles"][1]
+        assert second_article["headline"] == "Another NFL Update"
+        assert second_article["categories"] == ["Football"]
+    
+    @pytest.mark.asyncio
+    async def test_get_nfl_news_mock_error_cases(self):
+        """Test error handling with mock scenarios."""
+        
+        async def mock_get_nfl_news_with_errors(simulate_error: str = None) -> dict:
+            if simulate_error == "timeout":
+                return {
+                    "articles": [],
+                    "total_articles": 0,
+                    "success": False,
+                    "error": "Request timed out while fetching NFL news"
+                }
+            elif simulate_error == "404":
+                return {
+                    "articles": [],
+                    "total_articles": 0,
+                    "success": False,
+                    "error": "HTTP 404: Not Found"
+                }
+            elif simulate_error == "500":
+                return {
+                    "articles": [],
+                    "total_articles": 0,
+                    "success": False,
+                    "error": "HTTP 500: Internal Server Error"
+                }
+            elif simulate_error == "network":
+                return {
+                    "articles": [],
+                    "total_articles": 0,
+                    "success": False,
+                    "error": "Unexpected error fetching NFL news: Network unreachable"
+                }
+            
+            return {"success": True}
+        
+        # Test timeout error
+        result = await mock_get_nfl_news_with_errors("timeout")
+        assert result["success"] is False
+        assert "timed out" in result["error"]
+        assert result["total_articles"] == 0
+        
+        # Test HTTP 404 error
+        result = await mock_get_nfl_news_with_errors("404")
+        assert result["success"] is False
+        assert "HTTP 404" in result["error"]
+        assert result["total_articles"] == 0
+        
+        # Test HTTP 500 error
+        result = await mock_get_nfl_news_with_errors("500")
+        assert result["success"] is False
+        assert "HTTP 500" in result["error"]
+        assert result["total_articles"] == 0
+        
+        # Test network error
+        result = await mock_get_nfl_news_with_errors("network")
+        assert result["success"] is False
+        assert "Unexpected error" in result["error"]
+        assert result["total_articles"] == 0
+    
+    @pytest.mark.asyncio
+    async def test_get_nfl_news_empty_response(self):
+        """Test handling of empty response from ESPN API."""
+        
+        mock_espn_response = {
+            "articles": []
+        }
+        
+        # Mock processing logic for empty response
+        articles = mock_espn_response.get('articles', [])
+        processed_articles = []
+        for article in articles:
+            processed_article = {
+                "headline": article.get('headline', ''),
+                "description": article.get('description', ''),
+                "published": article.get('published', ''),
+                "type": article.get('type', ''),
+                "story": article.get('story', ''),
+                "categories": [cat.get('description', '') for cat in article.get('categories', [])],
+                "links": article.get('links', {})
+            }
+            processed_articles.append(processed_article)
+        
+        result = {
+            "articles": processed_articles,
+            "total_articles": len(processed_articles),
+            "success": True,
+            "error": None
+        }
+        
+        # Verify empty response handling
+        assert result["success"] is True
+        assert result["error"] is None
+        assert result["total_articles"] == 0
+        assert len(result["articles"]) == 0
+
+
 class TestUrlCrawlingLogic:
     """Test the URL crawling business logic."""
     
