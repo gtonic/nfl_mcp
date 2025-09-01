@@ -1,12 +1,13 @@
 # NFL MCP Server
 
-A FastMCP server that provides health monitoring and arithmetic operations through both REST and MCP protocols.
+A FastMCP server that provides health monitoring, arithmetic operations, web content extraction, and NFL news fetching through both REST and MCP protocols.
 
 ## Features
 
 - **Health Endpoint**: Non-MCP REST endpoint at `/health` for monitoring server status
 - **Multiply Tool**: MCP tool that multiplies two integers and returns the result
 - **URL Crawling Tool**: MCP tool that crawls arbitrary URLs and extracts LLM-friendly text content
+- **NFL News Tool**: MCP tool that fetches the latest NFL news from ESPN API
 - **HTTP Transport**: Runs on HTTP transport protocol (default port 9000)
 - **Containerized**: Docker support for easy deployment
 - **Well Tested**: Comprehensive unit tests for all functionality
@@ -71,6 +72,47 @@ Returns server health status.
   "version": "0.1.0"
 }
 ```
+
+### NFL News Tool (MCP)
+
+**Tool Name:** `get_nfl_news`
+
+Fetches the latest NFL news from ESPN API and returns structured news data.
+
+**Parameters:**
+- `limit` (integer, optional): Maximum number of news articles to retrieve (default: 50, max: 50)
+
+**Returns:** Dictionary with the following fields:
+- `articles`: List of news articles with headlines, descriptions, published dates, etc.
+- `total_articles`: Number of articles returned
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+**Example Usage with MCP Client:**
+```python
+from fastmcp import Client
+
+async with Client("http://localhost:9000/mcp/") as client:
+    result = await client.call_tool("get_nfl_news", {"limit": 10})
+    
+    if result.data["success"]:
+        print(f"Found {result.data['total_articles']} articles")
+        for article in result.data["articles"]:
+            print(f"- {article['headline']}")
+            print(f"  Published: {article['published']}")
+    else:
+        print(f"Error: {result.data['error']}")
+```
+
+**Article Structure:**
+Each article in the `articles` list contains:
+- `headline`: Article headline
+- `description`: Brief description/summary
+- `published`: Publication date/time
+- `type`: Article type (Story, News, etc.)
+- `story`: Full story content
+- `categories`: List of category descriptions
+- `links`: Associated links (web, mobile, etc.)
 
 ### Crawl URL Tool (MCP)
 

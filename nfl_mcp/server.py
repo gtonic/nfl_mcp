@@ -6,6 +6,7 @@ A FastMCP server that provides:
 - Health endpoint (non-MCP REST endpoint)
 - Multiply tool (MCP tool for arithmetic operations)
 - URL crawling tool (MCP tool for web content extraction)
+- NFL news tool (MCP tool for fetching latest NFL news from ESPN)
 """
 
 import re
@@ -49,6 +50,97 @@ def create_app() -> FastMCP:
         """
         return x * y
     
+    # MCP Tool: Get NFL news from ESPN
+    @mcp.tool
+    async def get_nfl_news(limit: Optional[int] = 50) -> dict:
+        """
+        Get the latest NFL news from ESPN API.
+        
+        This tool fetches current NFL news articles from ESPN's API and returns
+        them in a structured format suitable for LLM processing.
+        
+        Args:
+            limit: Maximum number of news articles to retrieve (default: 50, max: 50)
+            
+        Returns:
+            A dictionary containing:
+            - articles: List of news articles with title, description, published date, etc.
+            - total_articles: Number of articles returned
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        # Validate and cap the limit
+        if limit is None:
+            limit = 50
+        elif limit < 1:
+            limit = 1
+        elif limit > 50:
+            limit = 50
+            
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (NFL News Fetcher)"
+            }
+            
+            # Build the ESPN API URL
+            url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?limit={limit}"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                # Fetch the news from ESPN API
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                data = response.json()
+                
+                # Extract articles from the response
+                articles = data.get('articles', [])
+                
+                # Process articles to extract key information
+                processed_articles = []
+                for article in articles:
+                    processed_article = {
+                        "headline": article.get('headline', ''),
+                        "description": article.get('description', ''),
+                        "published": article.get('published', ''),
+                        "type": article.get('type', ''),
+                        "story": article.get('story', ''),
+                        "categories": [cat.get('description', '') for cat in article.get('categories', [])],
+                        "links": article.get('links', {})
+                    }
+                    processed_articles.append(processed_article)
+                
+                return {
+                    "articles": processed_articles,
+                    "total_articles": len(processed_articles),
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "articles": [],
+                "total_articles": 0,
+                "success": False,
+                "error": "Request timed out while fetching NFL news"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "articles": [],
+                "total_articles": 0,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "articles": [],
+                "total_articles": 0,
+                "success": False,
+                "error": f"Unexpected error fetching NFL news: {str(e)}"
+            }
+
     # MCP Tool: Crawl URL and extract content
     @mcp.tool
     async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
