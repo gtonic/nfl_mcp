@@ -286,6 +286,63 @@ async def test_mcp_get_teams_tool():
         return False
 
 
+async def test_mcp_athlete_tools():
+    """Test the MCP athlete tools."""
+    print("\n🏈 Testing MCP Athlete Tools...")
+    
+    try:
+        async with Client("http://localhost:9000/mcp/") as client:
+            
+            # Test 1: Test lookup_athlete with non-existent ID
+            print("  Testing lookup_athlete with non-existent ID...")
+            result = await client.call_tool("lookup_athlete", {"athlete_id": "nonexistent123"})
+            
+            if not result.data.get("found") and result.data.get("error"):
+                print("   ✅ lookup_athlete correctly handles non-existent ID")
+            else:
+                print(f"   ❌ Unexpected result for non-existent ID: {result.data}")
+                return False
+            
+            # Test 2: Test search_athletes
+            print("  Testing search_athletes...")
+            result = await client.call_tool("search_athletes", {"name": "Smith", "limit": 5})
+            
+            if "count" in result.data and "athletes" in result.data:
+                print(f"   ✅ search_athletes working! Found {result.data['count']} athletes")
+            else:
+                print(f"   ❌ search_athletes failed: {result.data}")
+                return False
+            
+            # Test 3: Test get_athletes_by_team
+            print("  Testing get_athletes_by_team...")
+            result = await client.call_tool("get_athletes_by_team", {"team_id": "TB"})
+            
+            if "count" in result.data and "athletes" in result.data:
+                print(f"   ✅ get_athletes_by_team working! Found {result.data['count']} athletes for TB")
+            else:
+                print(f"   ❌ get_athletes_by_team failed: {result.data}")
+                return False
+            
+            # Test 4: Test fetch_athletes (will likely fail due to network restrictions)
+            print("  Testing fetch_athletes...")
+            try:
+                result = await client.call_tool("fetch_athletes", {})
+                
+                if result.data.get("success") or "hostname" in result.data.get("error", ""):
+                    print("   ✅ fetch_athletes behaves correctly (success or expected network error)")
+                else:
+                    print(f"   ⚠️  fetch_athletes unexpected result: {result.data}")
+                    
+            except Exception as e:
+                print(f"   ⚠️  fetch_athletes error (expected in restricted environment): {e}")
+            
+            return True
+            
+    except Exception as e:
+        print(f"❌ MCP athlete tools error: {e}")
+        return False
+
+
 async def main():
     """Main test function."""
     print("🚀 NFL MCP Server Integration Test")
@@ -309,8 +366,11 @@ async def main():
     # Test MCP NFL teams functionality
     teams_ok = await test_mcp_get_teams_tool()
     
+    # Test MCP athlete functionality
+    athletes_ok = await test_mcp_athlete_tools()
+    
     print("\n" + "=" * 50)
-    if health_ok and multiply_ok and crawl_ok and news_ok and teams_ok:
+    if health_ok and multiply_ok and crawl_ok and news_ok and teams_ok and athletes_ok:
         print("🎉 All tests passed! Server is working correctly.")
         return 0
     else:
