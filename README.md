@@ -1,6 +1,6 @@
 # NFL MCP Server
 
-A FastMCP server that provides health monitoring, arithmetic operations, web content extraction, NFL news fetching, and NFL teams information through both REST and MCP protocols.
+A FastMCP server that provides health monitoring, arithmetic operations, web content extraction, NFL news fetching, NFL teams information, and comprehensive fantasy league management through both REST and MCP protocols.
 
 ## Features
 
@@ -10,6 +10,9 @@ A FastMCP server that provides health monitoring, arithmetic operations, web con
 - **NFL News Tool**: MCP tool that fetches the latest NFL news from ESPN API
 - **NFL Teams Tool**: MCP tool that fetches all NFL teams from ESPN API
 - **Athlete Tools**: MCP tools for fetching, caching, and looking up NFL athletes from Sleeper API with SQLite persistence
+- **Sleeper API Tools**: Comprehensive MCP tools for fantasy league management including:
+  - League information, rosters, users, matchups, playoff brackets
+  - Transactions, traded picks, NFL state, trending players
 - **HTTP Transport**: Runs on HTTP transport protocol (default port 9000)
 - **Containerized**: Docker support for easy deployment
 - **Well Tested**: Comprehensive unit tests for all functionality
@@ -259,6 +262,118 @@ async with Client("http://localhost:9000/mcp/") as client:
 - Configurable content length limiting
 - Follows redirects automatically
 - Sets appropriate User-Agent header
+
+### Sleeper API Tools (MCP)
+
+**Tools:** `get_league`, `get_rosters`, `get_league_users`, `get_matchups`, `get_playoff_bracket`, `get_transactions`, `get_traded_picks`, `get_nfl_state`, `get_trending_players`
+
+These tools provide comprehensive fantasy league management by connecting to the Sleeper API.
+
+#### get_league
+
+Get detailed information about a specific fantasy league.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+
+**Returns:** Dictionary with league information, success status, and error (if any)
+
+#### get_rosters
+
+Get all rosters in a fantasy league.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+
+**Returns:** Dictionary with rosters list, count, success status, and error (if any)
+
+#### get_league_users
+
+Get all users/managers in a fantasy league.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+
+**Returns:** Dictionary with users list, count, success status, and error (if any)
+
+#### get_matchups
+
+Get matchups for a specific week in a fantasy league.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+- `week` (integer): Week number (1-22)
+
+**Returns:** Dictionary with matchups list, week, count, success status, and error (if any)
+
+#### get_playoff_bracket
+
+Get playoff bracket information for a fantasy league.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+
+**Returns:** Dictionary with bracket information, success status, and error (if any)
+
+#### get_transactions
+
+Get transactions for a fantasy league.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+- `round` (integer, optional): Round number (1-18, omit for all transactions)
+
+**Returns:** Dictionary with transactions list, round, count, success status, and error (if any)
+
+#### get_traded_picks
+
+Get traded draft picks for a fantasy league.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+
+**Returns:** Dictionary with traded picks list, count, success status, and error (if any)
+
+#### get_nfl_state
+
+Get current NFL state information.
+
+**Parameters:** None
+
+**Returns:** Dictionary with NFL state information, success status, and error (if any)
+
+#### get_trending_players
+
+Get trending players from fantasy leagues.
+
+**Parameters:**
+- `trend_type` (string, optional): "add" or "drop" (default: "add")
+- `lookback_hours` (integer, optional): Hours to look back (1-168, default: 24)
+- `limit` (integer, optional): Maximum results (1-100, default: 25)
+
+**Returns:** Dictionary with trending players list, parameters, count, success status, and error (if any)
+
+**Example Usage with MCP Client:**
+```python
+from fastmcp import Client
+
+async with Client("http://localhost:9000/mcp/") as client:
+    # Get NFL state
+    result = await client.call_tool("get_nfl_state", {})
+    print(f"Current NFL week: {result.data['nfl_state']['week']}")
+    
+    # Get trending players
+    result = await client.call_tool("get_trending_players", {
+        "trend_type": "add",
+        "limit": 10
+    })
+    print(f"Found {result.data['count']} trending players")
+    
+    # Get league information (requires valid league_id)
+    result = await client.call_tool("get_league", {"league_id": "your_league_id"})
+    if result.data["success"]:
+        print(f"League: {result.data['league']['name']}")
+```
 
 ### Multiply Tool (MCP)
 
