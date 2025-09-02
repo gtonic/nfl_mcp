@@ -768,3 +768,448 @@ class TestUrlCrawlingLogic:
         result = await mock_crawl_url_with_errors("https://example.com", "unexpected")
         assert result["success"] is False
         assert "Unexpected error" in result["error"]
+
+
+class TestSleeperApiLeagueLogic:
+    """Test the Sleeper API league-related business logic."""
+    
+    @pytest.mark.asyncio
+    async def test_get_league_mock_successful_response(self):
+        """Test successful get_league response."""
+        
+        async def mock_get_league(league_id: str) -> dict:
+            mock_league_data = {
+                "league_id": league_id,
+                "name": "Test League",
+                "season": "2024",
+                "status": "in_season",
+                "total_rosters": 12,
+                "roster_positions": ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "K", "DEF"]
+            }
+            
+            return {
+                "league": mock_league_data,
+                "success": True,
+                "error": None
+            }
+        
+        result = await mock_get_league("123456789")
+        assert result["success"] is True
+        assert result["league"]["league_id"] == "123456789"
+        assert result["league"]["name"] == "Test League"
+        assert result["error"] is None
+    
+    @pytest.mark.asyncio
+    async def test_get_league_mock_error_cases(self):
+        """Test error handling with mock scenarios."""
+        
+        async def mock_get_league_with_errors(league_id: str, simulate_error: str = None) -> dict:
+            if simulate_error == "timeout":
+                return {
+                    "league": None,
+                    "success": False,
+                    "error": "Request timed out while fetching league information"
+                }
+            elif simulate_error == "404":
+                return {
+                    "league": None,
+                    "success": False,
+                    "error": "HTTP 404: Not Found"
+                }
+            elif simulate_error == "unexpected":
+                return {
+                    "league": None,
+                    "success": False,
+                    "error": "Unexpected error fetching league: Connection failed"
+                }
+            
+            return {"success": True}
+        
+        # Test timeout error
+        result = await mock_get_league_with_errors("123456789", "timeout")
+        assert result["success"] is False
+        assert "timed out" in result["error"]
+        
+        # Test HTTP error
+        result = await mock_get_league_with_errors("123456789", "404")
+        assert result["success"] is False
+        assert "HTTP 404" in result["error"]
+        
+        # Test unexpected error
+        result = await mock_get_league_with_errors("123456789", "unexpected")
+        assert result["success"] is False
+        assert "Unexpected error" in result["error"]
+
+
+class TestSleeperApiRostersLogic:
+    """Test the Sleeper API rosters-related business logic."""
+    
+    @pytest.mark.asyncio
+    async def test_get_rosters_mock_successful_response(self):
+        """Test successful get_rosters response."""
+        
+        async def mock_get_rosters(league_id: str) -> dict:
+            mock_rosters_data = [
+                {
+                    "roster_id": 1,
+                    "owner_id": "user123",
+                    "players": ["4029", "5045", "6797"],
+                    "starters": ["4029", "5045"],
+                    "settings": {"wins": 8, "losses": 5}
+                },
+                {
+                    "roster_id": 2,
+                    "owner_id": "user456",
+                    "players": ["4034", "5046", "6798"],
+                    "starters": ["4034", "5046"],
+                    "settings": {"wins": 6, "losses": 7}
+                }
+            ]
+            
+            return {
+                "rosters": mock_rosters_data,
+                "count": len(mock_rosters_data),
+                "success": True,
+                "error": None
+            }
+        
+        result = await mock_get_rosters("123456789")
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert len(result["rosters"]) == 2
+        assert result["rosters"][0]["roster_id"] == 1
+        assert result["error"] is None
+    
+    @pytest.mark.asyncio
+    async def test_get_rosters_empty_response(self):
+        """Test get_rosters with empty roster list."""
+        
+        async def mock_get_rosters_empty(league_id: str) -> dict:
+            return {
+                "rosters": [],
+                "count": 0,
+                "success": True,
+                "error": None
+            }
+        
+        result = await mock_get_rosters_empty("123456789")
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["rosters"] == []
+
+
+class TestSleeperApiUsersLogic:
+    """Test the Sleeper API users-related business logic."""
+    
+    @pytest.mark.asyncio
+    async def test_get_league_users_mock_successful_response(self):
+        """Test successful get_league_users response."""
+        
+        async def mock_get_league_users(league_id: str) -> dict:
+            mock_users_data = [
+                {
+                    "user_id": "user123",
+                    "username": "testuser1",
+                    "display_name": "Test User 1",
+                    "avatar": "avatar123"
+                },
+                {
+                    "user_id": "user456",
+                    "username": "testuser2",
+                    "display_name": "Test User 2",
+                    "avatar": "avatar456"
+                }
+            ]
+            
+            return {
+                "users": mock_users_data,
+                "count": len(mock_users_data),
+                "success": True,
+                "error": None
+            }
+        
+        result = await mock_get_league_users("123456789")
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert len(result["users"]) == 2
+        assert result["users"][0]["username"] == "testuser1"
+        assert result["error"] is None
+
+
+class TestSleeperApiMatchupsLogic:
+    """Test the Sleeper API matchups-related business logic."""
+    
+    @pytest.mark.asyncio
+    async def test_get_matchups_week_validation(self):
+        """Test get_matchups week parameter validation."""
+        
+        async def mock_get_matchups(league_id: str, week: int) -> dict:
+            if week < 1 or week > 22:
+                return {
+                    "matchups": [],
+                    "week": week,
+                    "count": 0,
+                    "success": False,
+                    "error": "Week must be between 1 and 22"
+                }
+            
+            return {
+                "matchups": [],
+                "week": week,
+                "count": 0,
+                "success": True,
+                "error": None
+            }
+        
+        # Test valid week
+        result = await mock_get_matchups("123456789", 10)
+        assert result["success"] is True
+        assert result["week"] == 10
+        
+        # Test invalid low week
+        result = await mock_get_matchups("123456789", 0)
+        assert result["success"] is False
+        assert "Week must be between 1 and 22" in result["error"]
+        
+        # Test invalid high week
+        result = await mock_get_matchups("123456789", 25)
+        assert result["success"] is False
+        assert "Week must be between 1 and 22" in result["error"]
+    
+    @pytest.mark.asyncio
+    async def test_get_matchups_mock_successful_response(self):
+        """Test successful get_matchups response."""
+        
+        async def mock_get_matchups(league_id: str, week: int) -> dict:
+            mock_matchups_data = [
+                {
+                    "roster_id": 1,
+                    "matchup_id": 1,
+                    "points": 125.5,
+                    "players": ["4029", "5045"]
+                },
+                {
+                    "roster_id": 2,
+                    "matchup_id": 1,
+                    "points": 118.2,
+                    "players": ["4034", "5046"]
+                }
+            ]
+            
+            return {
+                "matchups": mock_matchups_data,
+                "week": week,
+                "count": len(mock_matchups_data),
+                "success": True,
+                "error": None
+            }
+        
+        result = await mock_get_matchups("123456789", 10)
+        assert result["success"] is True
+        assert result["week"] == 10
+        assert result["count"] == 2
+        assert result["matchups"][0]["matchup_id"] == 1
+
+
+class TestSleeperApiTransactionsLogic:
+    """Test the Sleeper API transactions-related business logic."""
+    
+    @pytest.mark.asyncio
+    async def test_get_transactions_round_validation(self):
+        """Test get_transactions round parameter validation."""
+        
+        async def mock_get_transactions(league_id: str, round: int = None) -> dict:
+            if round is not None and (round < 1 or round > 18):
+                return {
+                    "transactions": [],
+                    "round": round,
+                    "count": 0,
+                    "success": False,
+                    "error": "Round must be between 1 and 18"
+                }
+            
+            return {
+                "transactions": [],
+                "round": round,
+                "count": 0,
+                "success": True,
+                "error": None
+            }
+        
+        # Test valid round
+        result = await mock_get_transactions("123456789", 5)
+        assert result["success"] is True
+        assert result["round"] == 5
+        
+        # Test no round (should be valid)
+        result = await mock_get_transactions("123456789", None)
+        assert result["success"] is True
+        assert result["round"] is None
+        
+        # Test invalid low round
+        result = await mock_get_transactions("123456789", 0)
+        assert result["success"] is False
+        assert "Round must be between 1 and 18" in result["error"]
+        
+        # Test invalid high round
+        result = await mock_get_transactions("123456789", 20)
+        assert result["success"] is False
+        assert "Round must be between 1 and 18" in result["error"]
+
+
+class TestSleeperApiTrendingPlayersLogic:
+    """Test the Sleeper API trending players-related business logic."""
+    
+    @pytest.mark.asyncio
+    async def test_get_trending_players_parameter_validation(self):
+        """Test get_trending_players parameter validation."""
+        
+        async def mock_get_trending_players(trend_type: str = "add", lookback_hours: int = 24, limit: int = 25) -> dict:
+            if trend_type not in ["add", "drop"]:
+                return {
+                    "trending_players": [],
+                    "trend_type": trend_type,
+                    "lookback_hours": lookback_hours,
+                    "count": 0,
+                    "success": False,
+                    "error": "trend_type must be 'add' or 'drop'"
+                }
+            
+            if lookback_hours is not None and (lookback_hours < 1 or lookback_hours > 168):
+                return {
+                    "trending_players": [],
+                    "trend_type": trend_type,
+                    "lookback_hours": lookback_hours,
+                    "count": 0,
+                    "success": False,
+                    "error": "lookback_hours must be between 1 and 168"
+                }
+            
+            if limit is not None and (limit < 1 or limit > 100):
+                return {
+                    "trending_players": [],
+                    "trend_type": trend_type,
+                    "lookback_hours": lookback_hours,
+                    "count": 0,
+                    "success": False,
+                    "error": "limit must be between 1 and 100"
+                }
+            
+            return {
+                "trending_players": [],
+                "trend_type": trend_type,
+                "lookback_hours": lookback_hours,
+                "count": 0,
+                "success": True,
+                "error": None
+            }
+        
+        # Test valid parameters
+        result = await mock_get_trending_players("add", 24, 25)
+        assert result["success"] is True
+        
+        # Test invalid trend_type
+        result = await mock_get_trending_players("invalid", 24, 25)
+        assert result["success"] is False
+        assert "trend_type must be 'add' or 'drop'" in result["error"]
+        
+        # Test invalid lookback_hours
+        result = await mock_get_trending_players("add", 0, 25)
+        assert result["success"] is False
+        assert "lookback_hours must be between 1 and 168" in result["error"]
+        
+        result = await mock_get_trending_players("add", 200, 25)
+        assert result["success"] is False
+        assert "lookback_hours must be between 1 and 168" in result["error"]
+        
+        # Test invalid limit
+        result = await mock_get_trending_players("add", 24, 0)
+        assert result["success"] is False
+        assert "limit must be between 1 and 100" in result["error"]
+        
+        result = await mock_get_trending_players("add", 24, 150)
+        assert result["success"] is False
+        assert "limit must be between 1 and 100" in result["error"]
+    
+    @pytest.mark.asyncio
+    async def test_get_trending_players_mock_successful_response(self):
+        """Test successful get_trending_players response."""
+        
+        async def mock_get_trending_players(trend_type: str = "add", lookback_hours: int = 24, limit: int = 25) -> dict:
+            mock_trending_data = [
+                {
+                    "player_id": "4029",
+                    "count": 142,
+                    "player": {
+                        "full_name": "Christian McCaffrey",
+                        "position": "RB",
+                        "team": "SF"
+                    }
+                },
+                {
+                    "player_id": "5045",
+                    "count": 128,
+                    "player": {
+                        "full_name": "Tyreek Hill",
+                        "position": "WR",
+                        "team": "MIA"
+                    }
+                }
+            ]
+            
+            return {
+                "trending_players": mock_trending_data,
+                "trend_type": trend_type,
+                "lookback_hours": lookback_hours,
+                "count": len(mock_trending_data),
+                "success": True,
+                "error": None
+            }
+        
+        result = await mock_get_trending_players("add", 24, 25)
+        assert result["success"] is True
+        assert result["trend_type"] == "add"
+        assert result["lookback_hours"] == 24
+        assert result["count"] == 2
+        assert result["trending_players"][0]["player"]["full_name"] == "Christian McCaffrey"
+
+
+class TestSleeperApiNflStateLogic:
+    """Test the Sleeper API NFL state-related business logic."""
+    
+    @pytest.mark.asyncio
+    async def test_get_nfl_state_mock_successful_response(self):
+        """Test successful get_nfl_state response."""
+        
+        async def mock_get_nfl_state() -> dict:
+            mock_nfl_state = {
+                "season": "2024",
+                "season_type": "regular",
+                "week": 10,
+                "leg": 1,
+                "display_week": 10
+            }
+            
+            return {
+                "nfl_state": mock_nfl_state,
+                "success": True,
+                "error": None
+            }
+        
+        result = await mock_get_nfl_state()
+        assert result["success"] is True
+        assert result["nfl_state"]["season"] == "2024"
+        assert result["nfl_state"]["week"] == 10
+        assert result["error"] is None
+
+
+class TestSleeperApiToolsIntegration:
+    """Test integration of all Sleeper API tools."""
+    
+    def test_server_with_sleeper_tools_creation(self):
+        """Test that the server creates successfully with all Sleeper tools."""
+        from nfl_mcp.server import create_app
+        
+        app = create_app()
+        assert app.name == "NFL MCP Server"
+        # Test passes if no exceptions are raised during app creation

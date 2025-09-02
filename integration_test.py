@@ -369,13 +369,114 @@ async def main():
     # Test MCP athlete functionality
     athletes_ok = await test_mcp_athlete_tools()
     
+    # Test MCP Sleeper API functionality  
+    sleeper_ok = await test_mcp_sleeper_api_tools()
+    
     print("\n" + "=" * 50)
-    if health_ok and multiply_ok and crawl_ok and news_ok and teams_ok and athletes_ok:
+    if health_ok and multiply_ok and crawl_ok and news_ok and teams_ok and athletes_ok and sleeper_ok:
         print("🎉 All tests passed! Server is working correctly.")
         return 0
     else:
         print("💥 Some tests failed!")
         return 1
+
+
+async def test_mcp_sleeper_api_tools():
+    """Test the MCP Sleeper API tools."""
+    print("\n🏈 Testing MCP Sleeper API Tools...")
+    
+    try:
+        async with Client("http://localhost:9000/mcp/") as client:
+            
+            # Test 1: Test get_nfl_state (no parameters needed)
+            print("  Testing get_nfl_state...")
+            result = await client.call_tool("get_nfl_state", {})
+            
+            if result.data.get("success"):
+                print("   ✅ get_nfl_state working correctly")
+                if result.data.get("nfl_state"):
+                    nfl_state = result.data["nfl_state"]
+                    print(f"      Current NFL season: {nfl_state.get('season', 'Unknown')}")
+                    print(f"      Current week: {nfl_state.get('week', 'Unknown')}")
+            else:
+                print(f"   ⚠️  get_nfl_state returned error: {result.data.get('error', 'Unknown error')}")
+            
+            # Test 2: Test get_trending_players with valid parameters
+            print("  Testing get_trending_players...")
+            result = await client.call_tool("get_trending_players", {
+                "trend_type": "add",
+                "lookback_hours": 24,
+                "limit": 5
+            })
+            
+            if result.data.get("success"):
+                print("   ✅ get_trending_players working correctly")
+                count = result.data.get("count", 0)
+                print(f"      Found {count} trending players")
+            else:
+                print(f"   ⚠️  get_trending_players returned error: {result.data.get('error', 'Unknown error')}")
+            
+            # Test 3: Test parameter validation for get_trending_players
+            print("  Testing get_trending_players parameter validation...")
+            result = await client.call_tool("get_trending_players", {
+                "trend_type": "invalid",
+                "lookback_hours": 24,
+                "limit": 5
+            })
+            
+            if not result.data.get("success") and "trend_type must be" in result.data.get("error", ""):
+                print("   ✅ get_trending_players parameter validation working")
+            else:
+                print("   ❌ get_trending_players parameter validation failed")
+                return False
+            
+            # Test 4: Test get_league with a test league ID (this will likely fail with 404, which is expected)
+            print("  Testing get_league with test league ID...")
+            result = await client.call_tool("get_league", {"league_id": "123456789"})
+            
+            # We expect this to fail since we're using a fake league ID
+            if not result.data.get("success"):
+                expected_errors = ["404", "Not Found", "HTTP"]
+                error_msg = result.data.get("error", "")
+                if any(expected in error_msg for expected in expected_errors):
+                    print("   ✅ get_league correctly handles invalid league ID")
+                else:
+                    print(f"   ⚠️  get_league returned unexpected error: {error_msg}")
+            else:
+                print("   ⚠️  get_league unexpectedly succeeded with fake league ID")
+            
+            # Test 5: Test get_matchups parameter validation
+            print("  Testing get_matchups week validation...")
+            result = await client.call_tool("get_matchups", {
+                "league_id": "123456789",
+                "week": 0  # Invalid week
+            })
+            
+            if not result.data.get("success") and "Week must be between" in result.data.get("error", ""):
+                print("   ✅ get_matchups week validation working")
+            else:
+                print("   ❌ get_matchups week validation failed")
+                return False
+            
+            # Test 6: Test get_transactions parameter validation  
+            print("  Testing get_transactions round validation...")
+            result = await client.call_tool("get_transactions", {
+                "league_id": "123456789",
+                "round": 20  # Invalid round
+            })
+            
+            if not result.data.get("success") and "Round must be between" in result.data.get("error", ""):
+                print("   ✅ get_transactions round validation working")
+            else:
+                print("   ❌ get_transactions round validation failed")
+                return False
+            
+            print("   ✅ All Sleeper API tools working correctly!")
+            return True
+            
+    except Exception as e:
+        print(f"❌ MCP Sleeper API tools error: {e}")
+        return False
 
 
 if __name__ == "__main__":

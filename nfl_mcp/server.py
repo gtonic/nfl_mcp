@@ -9,6 +9,9 @@ A FastMCP server that provides:
 - NFL news tool (MCP tool for fetching latest NFL news from ESPN)
 - NFL teams tool (MCP tool for fetching all NFL teams from ESPN)
 - Athlete tools (MCP tools for fetching and looking up NFL athletes from Sleeper API)
+- Sleeper API tools (MCP tools for comprehensive fantasy league management):
+  - League information, rosters, users, matchups, playoffs
+  - Transactions, traded picks, NFL state, trending players
 """
 
 import re
@@ -518,6 +521,656 @@ def create_app() -> FastMCP:
                 "count": 0,
                 "team_id": team_id,
                 "error": f"Error getting athletes for team: {str(e)}"
+            }
+
+    # SLEEPER API TOOLS
+    
+    # MCP Tool: Get league information by ID
+    @mcp.tool
+    async def get_league(league_id: str) -> dict:
+        """
+        Get specific league information from Sleeper API.
+        
+        This tool fetches detailed information about a specific fantasy league
+        including settings, roster positions, scoring, and other league metadata.
+        
+        Args:
+            league_id: The unique identifier for the league
+            
+        Returns:
+            A dictionary containing:
+            - league: League information and settings
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (Sleeper League Fetcher)"
+            }
+            
+            # Sleeper API endpoint for specific league
+            url = f"https://api.sleeper.app/v1/league/{league_id}"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                league_data = response.json()
+                
+                return {
+                    "league": league_data,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "league": None,
+                "success": False,
+                "error": "Request timed out while fetching league information"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "league": None,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "league": None,
+                "success": False,
+                "error": f"Unexpected error fetching league: {str(e)}"
+            }
+
+    # MCP Tool: Get rosters in a league
+    @mcp.tool
+    async def get_rosters(league_id: str) -> dict:
+        """
+        Get all rosters in a fantasy league from Sleeper API.
+        
+        This tool fetches all team rosters including player IDs, starters,
+        bench players, and other roster information for the specified league.
+        
+        Args:
+            league_id: The unique identifier for the league
+            
+        Returns:
+            A dictionary containing:
+            - rosters: List of all rosters in the league
+            - count: Number of rosters found
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (Sleeper Rosters Fetcher)"
+            }
+            
+            # Sleeper API endpoint for league rosters
+            url = f"https://api.sleeper.app/v1/league/{league_id}/rosters"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                rosters_data = response.json()
+                
+                return {
+                    "rosters": rosters_data,
+                    "count": len(rosters_data) if rosters_data else 0,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "rosters": [],
+                "count": 0,
+                "success": False,
+                "error": "Request timed out while fetching league rosters"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "rosters": [],
+                "count": 0,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "rosters": [],
+                "count": 0,
+                "success": False,
+                "error": f"Unexpected error fetching rosters: {str(e)}"
+            }
+
+    # MCP Tool: Get users in a league
+    @mcp.tool
+    async def get_league_users(league_id: str) -> dict:
+        """
+        Get all users in a fantasy league from Sleeper API.
+        
+        This tool fetches information about all users/managers in a specific
+        fantasy league including usernames, display names, and avatars.
+        
+        Args:
+            league_id: The unique identifier for the league
+            
+        Returns:
+            A dictionary containing:
+            - users: List of all users in the league
+            - count: Number of users found
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (Sleeper Users Fetcher)"
+            }
+            
+            # Sleeper API endpoint for league users
+            url = f"https://api.sleeper.app/v1/league/{league_id}/users"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                users_data = response.json()
+                
+                return {
+                    "users": users_data,
+                    "count": len(users_data) if users_data else 0,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "users": [],
+                "count": 0,
+                "success": False,
+                "error": "Request timed out while fetching league users"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "users": [],
+                "count": 0,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "users": [],
+                "count": 0,
+                "success": False,
+                "error": f"Unexpected error fetching users: {str(e)}"
+            }
+
+    # MCP Tool: Get matchups in a league for a specific week
+    @mcp.tool
+    async def get_matchups(league_id: str, week: int) -> dict:
+        """
+        Get matchups for a specific week in a fantasy league from Sleeper API.
+        
+        This tool fetches matchup information including points scored, roster IDs,
+        and other matchup details for the specified week.
+        
+        Args:
+            league_id: The unique identifier for the league
+            week: The week number (1-18 for regular season, 19+ for playoffs)
+            
+        Returns:
+            A dictionary containing:
+            - matchups: List of all matchups for the week
+            - week: The week number requested
+            - count: Number of matchups found
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Validate week parameter
+            if week < 1 or week > 22:
+                return {
+                    "matchups": [],
+                    "week": week,
+                    "count": 0,
+                    "success": False,
+                    "error": "Week must be between 1 and 22"
+                }
+            
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (Sleeper Matchups Fetcher)"
+            }
+            
+            # Sleeper API endpoint for league matchups
+            url = f"https://api.sleeper.app/v1/league/{league_id}/matchups/{week}"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                matchups_data = response.json()
+                
+                return {
+                    "matchups": matchups_data,
+                    "week": week,
+                    "count": len(matchups_data) if matchups_data else 0,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "matchups": [],
+                "week": week,
+                "count": 0,
+                "success": False,
+                "error": "Request timed out while fetching matchups"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "matchups": [],
+                "week": week,
+                "count": 0,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "matchups": [],
+                "week": week,
+                "count": 0,
+                "success": False,
+                "error": f"Unexpected error fetching matchups: {str(e)}"
+            }
+
+    # MCP Tool: Get playoff bracket for a league
+    @mcp.tool
+    async def get_playoff_bracket(league_id: str) -> dict:
+        """
+        Get playoff bracket information for a fantasy league from Sleeper API.
+        
+        This tool fetches the playoff bracket structure including matchups,
+        rounds, and playoff results for the specified league.
+        
+        Args:
+            league_id: The unique identifier for the league
+            
+        Returns:
+            A dictionary containing:
+            - bracket: Playoff bracket information
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (Sleeper Playoffs Fetcher)"
+            }
+            
+            # Sleeper API endpoint for playoff bracket
+            url = f"https://api.sleeper.app/v1/league/{league_id}/playoffs_bracket"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                bracket_data = response.json()
+                
+                return {
+                    "bracket": bracket_data,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "bracket": None,
+                "success": False,
+                "error": "Request timed out while fetching playoff bracket"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "bracket": None,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "bracket": None,
+                "success": False,
+                "error": f"Unexpected error fetching playoff bracket: {str(e)}"
+            }
+
+    # MCP Tool: Get transactions for a league
+    @mcp.tool
+    async def get_transactions(league_id: str, round: Optional[int] = None) -> dict:
+        """
+        Get transactions for a fantasy league from Sleeper API.
+        
+        This tool fetches transaction history including trades, waiver pickups,
+        and free agent additions for the specified league and round.
+        
+        Args:
+            league_id: The unique identifier for the league
+            round: Optional round number (1-18, if not provided gets all transactions)
+            
+        Returns:
+            A dictionary containing:
+            - transactions: List of transactions
+            - round: The round number (if specified)
+            - count: Number of transactions found
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (Sleeper Transactions Fetcher)"
+            }
+            
+            # Build URL - with or without round
+            if round is not None:
+                if round < 1 or round > 18:
+                    return {
+                        "transactions": [],
+                        "round": round,
+                        "count": 0,
+                        "success": False,
+                        "error": "Round must be between 1 and 18"
+                    }
+                url = f"https://api.sleeper.app/v1/league/{league_id}/transactions/{round}"
+            else:
+                url = f"https://api.sleeper.app/v1/league/{league_id}/transactions"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                transactions_data = response.json()
+                
+                return {
+                    "transactions": transactions_data,
+                    "round": round,
+                    "count": len(transactions_data) if transactions_data else 0,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "transactions": [],
+                "round": round,
+                "count": 0,
+                "success": False,
+                "error": "Request timed out while fetching transactions"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "transactions": [],
+                "round": round,
+                "count": 0,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "transactions": [],
+                "round": round,
+                "count": 0,
+                "success": False,
+                "error": f"Unexpected error fetching transactions: {str(e)}"
+            }
+
+    # MCP Tool: Get traded picks for a league
+    @mcp.tool
+    async def get_traded_picks(league_id: str) -> dict:
+        """
+        Get traded draft picks for a fantasy league from Sleeper API.
+        
+        This tool fetches information about draft picks that have been traded
+        between teams in the specified league.
+        
+        Args:
+            league_id: The unique identifier for the league
+            
+        Returns:
+            A dictionary containing:
+            - traded_picks: List of traded draft picks
+            - count: Number of traded picks found
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (Sleeper Traded Picks Fetcher)"
+            }
+            
+            # Sleeper API endpoint for traded picks
+            url = f"https://api.sleeper.app/v1/league/{league_id}/traded_picks"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                traded_picks_data = response.json()
+                
+                return {
+                    "traded_picks": traded_picks_data,
+                    "count": len(traded_picks_data) if traded_picks_data else 0,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "traded_picks": [],
+                "count": 0,
+                "success": False,
+                "error": "Request timed out while fetching traded picks"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "traded_picks": [],
+                "count": 0,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "traded_picks": [],
+                "count": 0,
+                "success": False,
+                "error": f"Unexpected error fetching traded picks: {str(e)}"
+            }
+
+    # MCP Tool: Get NFL state
+    @mcp.tool
+    async def get_nfl_state() -> dict:
+        """
+        Get current NFL state information from Sleeper API.
+        
+        This tool fetches the current state of the NFL including season type,
+        current week, and other league-wide information.
+        
+        Returns:
+            A dictionary containing:
+            - nfl_state: Current NFL state information
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (Sleeper NFL State Fetcher)"
+            }
+            
+            # Sleeper API endpoint for NFL state
+            url = "https://api.sleeper.app/v1/state/nfl"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                nfl_state_data = response.json()
+                
+                return {
+                    "nfl_state": nfl_state_data,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "nfl_state": None,
+                "success": False,
+                "error": "Request timed out while fetching NFL state"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "nfl_state": None,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "nfl_state": None,
+                "success": False,
+                "error": f"Unexpected error fetching NFL state: {str(e)}"
+            }
+
+    # MCP Tool: Get trending players
+    @mcp.tool
+    async def get_trending_players(trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
+        """
+        Get trending players from Sleeper API.
+        
+        This tool fetches players that are trending in fantasy leagues,
+        either being added or dropped frequently.
+        
+        Args:
+            trend_type: Type of trend - "add" or "drop" (default: "add")
+            lookback_hours: Hours to look back for trends (default: 24, max: 168)
+            limit: Maximum number of players to return (default: 25, max: 100)
+            
+        Returns:
+            A dictionary containing:
+            - trending_players: List of trending players with trend data
+            - trend_type: The type of trend requested
+            - lookback_hours: Hours looked back
+            - count: Number of players returned
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Validate parameters
+            if trend_type not in ["add", "drop"]:
+                return {
+                    "trending_players": [],
+                    "trend_type": trend_type,
+                    "lookback_hours": lookback_hours,
+                    "count": 0,
+                    "success": False,
+                    "error": "trend_type must be 'add' or 'drop'"
+                }
+            
+            if lookback_hours is not None and (lookback_hours < 1 or lookback_hours > 168):
+                return {
+                    "trending_players": [],
+                    "trend_type": trend_type,
+                    "lookback_hours": lookback_hours,
+                    "count": 0,
+                    "success": False,
+                    "error": "lookback_hours must be between 1 and 168"
+                }
+            
+            if limit is not None and (limit < 1 or limit > 100):
+                return {
+                    "trending_players": [],
+                    "trend_type": trend_type,
+                    "lookback_hours": lookback_hours,
+                    "count": 0,
+                    "success": False,
+                    "error": "limit must be between 1 and 100"
+                }
+            
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (Sleeper Trending Players Fetcher)"
+            }
+            
+            # Build URL with query parameters
+            url = f"https://api.sleeper.app/v1/players/nfl/trending/{trend_type}"
+            params = {}
+            if lookback_hours:
+                params["lookback_hours"] = lookback_hours
+            if limit:
+                params["limit"] = limit
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                response = await client.get(url, params=params, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                trending_data = response.json()
+                
+                return {
+                    "trending_players": trending_data,
+                    "trend_type": trend_type,
+                    "lookback_hours": lookback_hours,
+                    "count": len(trending_data) if trending_data else 0,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "trending_players": [],
+                "trend_type": trend_type,
+                "lookback_hours": lookback_hours,
+                "count": 0,
+                "success": False,
+                "error": "Request timed out while fetching trending players"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "trending_players": [],
+                "trend_type": trend_type,
+                "lookback_hours": lookback_hours,
+                "count": 0,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "trending_players": [],
+                "trend_type": trend_type,
+                "lookback_hours": lookback_hours,
+                "count": 0,
+                "success": False,
+                "error": f"Unexpected error fetching trending players: {str(e)}"
             }
     
     return mcp
