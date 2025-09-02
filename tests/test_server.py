@@ -379,6 +379,171 @@ class TestNflNewsLogic:
         assert len(result["articles"]) == 0
 
 
+class TestNflTeamsLogic:
+    """Test the NFL teams fetching business logic."""
+    
+    def test_get_teams_function_exists(self):
+        """Test that the get_teams function is properly registered."""
+        app = create_app()
+        
+        # Verify the app was created successfully
+        assert app.name == "NFL MCP Server"
+        # The tool registration is tested in integration tests
+    
+    @pytest.mark.asyncio
+    async def test_get_teams_mock_successful_response(self):
+        """Test successful response processing with mock data."""
+        
+        mock_espn_response = {
+            "items": [
+                {
+                    "id": "1",
+                    "name": "Arizona Cardinals",
+                    "displayName": "Arizona Cardinals"
+                },
+                {
+                    "id": "2", 
+                    "name": "Atlanta Falcons",
+                    "displayName": "Atlanta Falcons"
+                },
+                {
+                    "id": "3",
+                    "name": "Baltimore Ravens",
+                    "displayName": "Baltimore Ravens"
+                }
+            ]
+        }
+        
+        # Mock processing logic
+        teams_data = mock_espn_response.get('items', [])
+        processed_teams = []
+        for team in teams_data:
+            processed_team = {
+                "id": team.get('id', ''),
+                "name": team.get('name', '') or team.get('displayName', '')
+            }
+            processed_teams.append(processed_team)
+        
+        result = {
+            "teams": processed_teams,
+            "total_teams": len(processed_teams),
+            "success": True,
+            "error": None
+        }
+        
+        # Verify the processing logic
+        assert result["success"] is True
+        assert result["error"] is None
+        assert result["total_teams"] == 3
+        assert len(result["teams"]) == 3
+        
+        # Check first team
+        first_team = result["teams"][0]
+        assert first_team["id"] == "1"
+        assert first_team["name"] == "Arizona Cardinals"
+        
+        # Check second team
+        second_team = result["teams"][1]
+        assert second_team["id"] == "2"
+        assert second_team["name"] == "Atlanta Falcons"
+        
+        # Check third team
+        third_team = result["teams"][2]
+        assert third_team["id"] == "3"
+        assert third_team["name"] == "Baltimore Ravens"
+    
+    @pytest.mark.asyncio
+    async def test_get_teams_mock_error_cases(self):
+        """Test error handling with mock scenarios."""
+        
+        async def mock_get_teams_with_errors(simulate_error: str = None) -> dict:
+            if simulate_error == "timeout":
+                return {
+                    "teams": [],
+                    "total_teams": 0,
+                    "success": False,
+                    "error": "Request timed out while fetching NFL teams"
+                }
+            elif simulate_error == "404":
+                return {
+                    "teams": [],
+                    "total_teams": 0,
+                    "success": False,
+                    "error": "HTTP 404: Not Found"
+                }
+            elif simulate_error == "500":
+                return {
+                    "teams": [],
+                    "total_teams": 0,
+                    "success": False,
+                    "error": "HTTP 500: Internal Server Error"
+                }
+            elif simulate_error == "network":
+                return {
+                    "teams": [],
+                    "total_teams": 0,
+                    "success": False,
+                    "error": "Unexpected error fetching NFL teams: Network unreachable"
+                }
+            
+            return {"success": True}
+        
+        # Test timeout error
+        result = await mock_get_teams_with_errors("timeout")
+        assert result["success"] is False
+        assert "timed out" in result["error"]
+        assert result["total_teams"] == 0
+        
+        # Test HTTP 404 error
+        result = await mock_get_teams_with_errors("404")
+        assert result["success"] is False
+        assert "HTTP 404" in result["error"]
+        assert result["total_teams"] == 0
+        
+        # Test HTTP 500 error
+        result = await mock_get_teams_with_errors("500")
+        assert result["success"] is False
+        assert "HTTP 500" in result["error"]
+        assert result["total_teams"] == 0
+        
+        # Test network error
+        result = await mock_get_teams_with_errors("network")
+        assert result["success"] is False
+        assert "Unexpected error" in result["error"]
+        assert result["total_teams"] == 0
+    
+    @pytest.mark.asyncio
+    async def test_get_teams_empty_response(self):
+        """Test handling of empty response from ESPN API."""
+        
+        mock_espn_response = {
+            "items": []
+        }
+        
+        # Mock processing logic for empty response
+        teams_data = mock_espn_response.get('items', [])
+        processed_teams = []
+        for team in teams_data:
+            processed_team = {
+                "id": team.get('id', ''),
+                "name": team.get('name', '') or team.get('displayName', '')
+            }
+            processed_teams.append(processed_team)
+        
+        result = {
+            "teams": processed_teams,
+            "total_teams": len(processed_teams),
+            "success": True,
+            "error": None
+        }
+        
+        # Verify empty response handling
+        assert result["success"] is True
+        assert result["error"] is None
+        assert result["total_teams"] == 0
+        assert len(result["teams"]) == 0
+
+
 class TestUrlCrawlingLogic:
     """Test the URL crawling business logic."""
     

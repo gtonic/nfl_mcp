@@ -7,6 +7,7 @@ A FastMCP server that provides:
 - Multiply tool (MCP tool for arithmetic operations)
 - URL crawling tool (MCP tool for web content extraction)
 - NFL news tool (MCP tool for fetching latest NFL news from ESPN)
+- NFL teams tool (MCP tool for fetching all NFL teams from ESPN)
 """
 
 import re
@@ -139,6 +140,81 @@ def create_app() -> FastMCP:
                 "total_articles": 0,
                 "success": False,
                 "error": f"Unexpected error fetching NFL news: {str(e)}"
+            }
+
+    # MCP Tool: Get NFL teams
+    @mcp.tool
+    async def get_teams() -> dict:
+        """
+        Get all NFL teams from ESPN API.
+        
+        This tool fetches the current NFL teams from ESPN's API and returns
+        them in a structured format with team names and IDs.
+        
+        Returns:
+            A dictionary containing:
+            - teams: List of teams with name and id
+            - total_teams: Number of teams returned
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (NFL Teams Fetcher)"
+            }
+            
+            # Build the ESPN API URL for teams
+            url = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2025/teams"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                # Fetch the teams from ESPN API
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                data = response.json()
+                
+                # Extract teams from the response
+                teams_data = data.get('items', [])
+                
+                # Process teams to extract key information
+                processed_teams = []
+                for team in teams_data:
+                    processed_team = {
+                        "id": team.get('id', ''),
+                        "name": team.get('name', '') or team.get('displayName', '')
+                    }
+                    processed_teams.append(processed_team)
+                
+                return {
+                    "teams": processed_teams,
+                    "total_teams": len(processed_teams),
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "teams": [],
+                "total_teams": 0,
+                "success": False,
+                "error": "Request timed out while fetching NFL teams"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "teams": [],
+                "total_teams": 0,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "teams": [],
+                "total_teams": 0,
+                "success": False,
+                "error": f"Unexpected error fetching NFL teams: {str(e)}"
             }
 
     # MCP Tool: Crawl URL and extract content
