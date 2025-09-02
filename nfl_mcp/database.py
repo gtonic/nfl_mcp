@@ -3,85 +3,689 @@ SQLite database management for NFL athletes and teams data.
 
 This module handles the persistence layer for athlete information fetched from
 the Sleeper API and teams information from ESPN API, providing caching and lookup functionality.
+Features connection pooling, health checks, optimized indexing, migration support, and async operations.
 """
 
 import sqlite3
 import json
 import logging
+import threading
+import time
+import asyncio
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Dict, List, Optional, Union
-from contextlib import contextmanager
+from typing import Dict, List, Optional, Union, AsyncContextManager
+from contextlib import contextmanager, asynccontextmanager
+from queue import Queue, Empty
+from dataclasses import dataclass
+
+try:
+    import aiosqlite
+    ASYNC_SUPPORT = True
+except ImportError:
+    aiosqlite = None
+    ASYNC_SUPPORT = False
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ConnectionPoolConfig:
+    """Configuration for database connection pool."""
+    max_connections: int = 5
+    connection_timeout: float = 30.0
+    health_check_interval: float = 60.0
+
+
+class DatabaseConnectionPool:
+    """Simple connection pool for SQLite database with thread safety."""
+    
+    def __init__(self, db_path: str, config: ConnectionPoolConfig):
+        self.db_path = db_path
+        self.config = config
+        self._pool = Queue(maxsize=config.max_connections)
+        self._lock = threading.RLock()
+        self._total_connections = 0
+        self._last_health_check = 0
+        
+        # Pre-populate pool with initial connections
+        self._initialize_pool()
+    
+    def _initialize_pool(self):
+        """Initialize the connection pool with initial connections."""
+        with self._lock:
+            for _ in range(min(2, self.config.max_connections)):  # Start with 2 connections
+                conn = self._create_connection()
+                if conn:
+                    self._pool.put(conn)
+                    self._total_connections += 1
+    
+    def _create_connection(self) -> Optional[sqlite3.Connection]:
+        """Create a new database connection with proper settings."""
+        try:
+            conn = sqlite3.connect(
+                self.db_path,
+                timeout=self.config.connection_timeout,
+                check_same_thread=False  # Allow connection sharing between threads
+            )
+            conn.row_factory = sqlite3.Row  # Enable dict-like access
+            
+            # Enable WAL mode for better concurrent access
+            conn.execute("PRAGMA journal_mode=WAL")
+            # Set reasonable timeout for busy database
+            conn.execute("PRAGMA busy_timeout=30000")  # 30 seconds
+            
+            return conn
+        except Exception as e:
+            logger.error(f"Failed to create database connection: {e}")
+            return None
+    
+    @contextmanager
+    def get_connection(self):
+        """Get a connection from the pool with automatic cleanup."""
+        conn = None
+        try:
+            # Try to get connection from pool
+            try:
+                conn = self._pool.get(timeout=5.0)
+            except Empty:
+                # Pool is empty, try to create new connection if under limit
+                with self._lock:
+                    if self._total_connections < self.config.max_connections:
+                        conn = self._create_connection()
+                        if conn:
+                            self._total_connections += 1
+                    
+                if not conn:
+                    # Wait longer for a connection to become available
+                    conn = self._pool.get(timeout=self.config.connection_timeout)
+            
+            if not conn:
+                raise Exception("Failed to obtain database connection")
+            
+            # Health check connection if needed
+            if self._should_health_check():
+                if not self._test_connection(conn):
+                    conn.close()
+                    conn = self._create_connection()
+                    if not conn:
+                        raise Exception("Failed to create healthy database connection")
+            
+            yield conn
+            
+        finally:
+            if conn:
+                try:
+                    # Return connection to pool
+                    self._pool.put_nowait(conn)
+                except:
+                    # Pool is full, close the connection
+                    conn.close()
+                    with self._lock:
+                        self._total_connections -= 1
+    
+    def _should_health_check(self) -> bool:
+        """Check if it's time for a health check."""
+        now = time.time()
+        if now - self._last_health_check > self.config.health_check_interval:
+            self._last_health_check = now
+            return True
+        return False
+    
+    def _test_connection(self, conn: sqlite3.Connection) -> bool:
+        """Test if a connection is healthy."""
+        try:
+            conn.execute("SELECT 1").fetchone()
+            return True
+        except Exception:
+            return False
+    
+    def health_check(self) -> Dict[str, Union[bool, int, str]]:
+        """Perform a comprehensive health check of the connection pool."""
+        try:
+            with self.get_connection() as conn:
+                # Test basic connectivity
+                conn.execute("SELECT 1").fetchone()
+                
+                # Get database stats
+                stats = {}
+                cursor = conn.execute("PRAGMA database_list")
+                db_info = cursor.fetchall()
+                
+                # Check if database file exists and is accessible
+                db_size = 0
+                if Path(self.db_path).exists():
+                    db_size = Path(self.db_path).stat().st_size
+                
+                return {
+                    "healthy": True,
+                    "pool_size": self._total_connections,
+                    "pool_capacity": self.config.max_connections,
+                    "database_size_bytes": db_size,
+                    "database_path": str(self.db_path),
+                    "wal_mode": "enabled",
+                    "last_check": datetime.now(UTC).isoformat()
+                }
+        except Exception as e:
+            logger.error(f"Database health check failed: {e}")
+            return {
+                "healthy": False,
+                "error": str(e),
+                "pool_size": self._total_connections,
+                "last_check": datetime.now(UTC).isoformat()
+            }
+    
+    def close(self):
+        """Close all connections in the pool."""
+        with self._lock:
+            while not self._pool.empty():
+                try:
+                    conn = self._pool.get_nowait()
+                    conn.close()
+                except Empty:
+                    break
+            self._total_connections = 0
 
 
 class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
-    def __init__(self, db_path: str = "nfl_data.db"):
+    # Database schema version for migrations
+    CURRENT_SCHEMA_VERSION = 2
+    
+    def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
         """
         Initialize the NFL database.
         
         Args:
             db_path: Path to the SQLite database file
+            pool_config: Configuration for connection pooling
         """
         self.db_path = Path(db_path)
+        self.pool_config = pool_config or ConnectionPoolConfig()
+        self._pool = DatabaseConnectionPool(str(self.db_path), self.pool_config)
         self._ensure_database()
     
     def _ensure_database(self) -> None:
-        """Create database and tables if they don't exist."""
-        with self._get_connection() as conn:
-            # Create athletes table
+        """Create database and tables if they don't exist, run migrations."""
+        with self._pool.get_connection() as conn:
+            # Create schema_version table for migration tracking
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS athletes (
-                    id TEXT PRIMARY KEY,
-                    full_name TEXT,
-                    first_name TEXT,
-                    last_name TEXT,
-                    team_id TEXT,
-                    position TEXT,
-                    status TEXT,
-                    updated_at TEXT NOT NULL,
-                    raw JSON
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
                 )
             """)
             
-            # Create teams table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS teams (
-                    id TEXT PRIMARY KEY,
-                    abbreviation TEXT,
-                    name TEXT,
-                    display_name TEXT,
-                    short_display_name TEXT,
-                    location TEXT,
-                    color TEXT,
-                    alternate_color TEXT,
-                    logo TEXT,
-                    updated_at TEXT NOT NULL,
-                    raw JSON
-                )
-            """)
+            # Get current schema version
+            cursor = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
+            row = cursor.fetchone()
+            current_version = row[0] if row else 0
             
-            # Create indexes for efficient lookups
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_team ON athletes(team_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_name ON athletes(full_name)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_position ON athletes(position)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_name ON teams(name)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_abbreviation ON teams(abbreviation)")
+            # Run migrations
+            self._run_migrations(conn, current_version)
             
             conn.commit()
     
+    def _run_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
+        """Run database migrations from the current version to the latest."""
+        migrations = {
+            1: self._migration_v1_initial_schema,
+            2: self._migration_v2_optimized_indexes,
+        }
+        
+        for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
+            if version in migrations:
+                logger.info(f"Running migration to version {version}")
+                migrations[version](conn)
+                conn.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                    (version, datetime.now(UTC).isoformat())
+                )
+    
+    def _migration_v1_initial_schema(self, conn: sqlite3.Connection) -> None:
+        """Migration v1: Create initial database schema."""
+        # Create athletes table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS athletes (
+                id TEXT PRIMARY KEY,
+                full_name TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                team_id TEXT,
+                position TEXT,
+                status TEXT,
+                updated_at TEXT NOT NULL,
+                raw JSON
+            )
+        """)
+        
+        # Create teams table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS teams (
+                id TEXT PRIMARY KEY,
+                abbreviation TEXT,
+                name TEXT,
+                display_name TEXT,
+                short_display_name TEXT,
+                location TEXT,
+                color TEXT,
+                alternate_color TEXT,
+                logo TEXT,
+                updated_at TEXT NOT NULL,
+                raw JSON
+            )
+        """)
+        
+        # Create basic indexes
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_team ON athletes(team_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_name ON athletes(full_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_abbreviation ON teams(abbreviation)")
+    
+    def _migration_v2_optimized_indexes(self, conn: sqlite3.Connection) -> None:
+        """Migration v2: Add optimized indexes for better query performance."""
+        # Compound indexes for common query patterns
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_team_position ON athletes(team_id, position)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_position_status ON athletes(position, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_name_search ON athletes(full_name COLLATE NOCASE)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_updated ON athletes(updated_at)")
+        
+        # Team search optimizations
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_name_search ON teams(name COLLATE NOCASE)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_updated ON teams(updated_at)")
+        
+        # Covering indexes for frequent lookups
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_athletes_lookup 
+            ON athletes(id, full_name, team_id, position, status)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_teams_lookup 
+            ON teams(id, abbreviation, name, display_name)
+        """)
+    
     @contextmanager
     def _get_connection(self):
-        """Get a database connection with proper cleanup."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Enable dict-like access
-        try:
+        """Get a database connection with proper cleanup. (Legacy method for compatibility)"""
+        with self._pool.get_connection() as conn:
             yield conn
-        finally:
-            conn.close()
+    
+    def health_check(self) -> Dict[str, Union[bool, int, str]]:
+        """Perform a comprehensive health check of the database."""
+        pool_health = self._pool.health_check()
+        
+        if not pool_health["healthy"]:
+            return pool_health
+        
+        try:
+            with self._pool.get_connection() as conn:
+                # Additional database-specific checks
+                athlete_count = conn.execute("SELECT COUNT(*) FROM athletes").fetchone()[0]
+                team_count = conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
+                
+                # Check for recent data
+                cursor = conn.execute("SELECT MAX(updated_at) FROM athletes")
+                last_athlete_update = cursor.fetchone()[0]
+                
+                cursor = conn.execute("SELECT MAX(updated_at) FROM teams")
+                last_team_update = cursor.fetchone()[0]
+                
+                pool_health.update({
+                    "athlete_count": athlete_count,
+                    "team_count": team_count,
+                    "last_athlete_update": last_athlete_update,
+                    "last_team_update": last_team_update,
+                    "schema_version": self.CURRENT_SCHEMA_VERSION
+                })
+                
+                return pool_health
+        except Exception as e:
+            logger.error(f"Database health check failed: {e}")
+            pool_health.update({
+                "healthy": False,
+                "error": f"Database check failed: {str(e)}"
+            })
+            return pool_health
+    
+    def get_connection_stats(self) -> Dict[str, int]:
+        """Get connection pool statistics."""
+        return {
+            "active_connections": self._pool._total_connections,
+            "max_connections": self._pool.config.max_connections,
+            "pool_utilization": (self._pool._total_connections / self._pool.config.max_connections) * 100
+        }
+    
+    def close(self) -> None:
+        """Close the database connection pool."""
+        self._pool.close()
+    
+    # Async Database Operations
+    # These methods provide async alternatives to the main database operations
+    
+    @asynccontextmanager
+    async def _get_async_connection(self) -> AsyncContextManager:
+        """Get an async database connection with proper cleanup."""
+        if not ASYNC_SUPPORT:
+            raise RuntimeError("Async operations require aiosqlite. Install with: pip install aiosqlite")
+        
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            # Enable WAL mode and set timeouts
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA busy_timeout=30000")
+            conn.row_factory = aiosqlite.Row
+            yield conn
+    
+    async def async_health_check(self) -> Dict[str, Union[bool, int, str]]:
+        """Perform an async health check of the database."""
+        if not ASYNC_SUPPORT:
+            return {
+                "healthy": False,
+                "error": "Async operations not supported. Install aiosqlite.",
+                "last_check": datetime.now(UTC).isoformat()
+            }
+        
+        try:
+            async with self._get_async_connection() as conn:
+                # Test basic connectivity
+                await conn.execute("SELECT 1")
+                
+                # Get database stats
+                athlete_count = await conn.execute_fetchall("SELECT COUNT(*) FROM athletes")
+                team_count = await conn.execute_fetchall("SELECT COUNT(*) FROM teams")
+                
+                last_athlete_update = await conn.execute_fetchall("SELECT MAX(updated_at) FROM athletes")
+                last_team_update = await conn.execute_fetchall("SELECT MAX(updated_at) FROM teams")
+                
+                # Get database size
+                db_size = 0
+                if self.db_path.exists():
+                    db_size = self.db_path.stat().st_size
+                
+                return {
+                    "healthy": True,
+                    "athlete_count": athlete_count[0][0] if athlete_count else 0,
+                    "team_count": team_count[0][0] if team_count else 0,
+                    "last_athlete_update": last_athlete_update[0][0] if last_athlete_update and last_athlete_update[0][0] else None,
+                    "last_team_update": last_team_update[0][0] if last_team_update and last_team_update[0][0] else None,
+                    "database_size_bytes": db_size,
+                    "schema_version": self.CURRENT_SCHEMA_VERSION,
+                    "async_support": True,
+                    "last_check": datetime.now(UTC).isoformat()
+                }
+        except Exception as e:
+            logger.error(f"Async database health check failed: {e}")
+            return {
+                "healthy": False,
+                "error": str(e),
+                "async_support": True,
+                "last_check": datetime.now(UTC).isoformat()
+            }
+    
+    async def async_get_athlete_by_id(self, athlete_id: str) -> Optional[Dict]:
+        """
+        Async version: Get athlete by ID.
+        
+        Args:
+            athlete_id: The athlete's unique identifier
+            
+        Returns:
+            Athlete dictionary or None if not found
+        """
+        if not ASYNC_SUPPORT:
+            raise RuntimeError("Async operations require aiosqlite")
+        
+        async with self._get_async_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM athletes WHERE id = ?", 
+                (athlete_id,)
+            )
+            row = await cursor.fetchone()
+            
+            if row:
+                return dict(row)
+            return None
+    
+    async def async_search_athletes_by_name(self, name: str, limit: int = 10) -> List[Dict]:
+        """
+        Async version: Search athletes by name (partial match).
+        
+        Args:
+            name: Name to search for (partial match supported)
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of matching athlete dictionaries
+        """
+        if not ASYNC_SUPPORT:
+            raise RuntimeError("Async operations require aiosqlite")
+        
+        search_term = f"%{name}%"
+        
+        async with self._get_async_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT * FROM athletes 
+                WHERE full_name LIKE ? OR first_name LIKE ? OR last_name LIKE ?
+                ORDER BY full_name
+                LIMIT ?
+            """, (search_term, search_term, search_term, limit))
+            
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    async def async_get_athletes_by_team(self, team_id: str) -> List[Dict]:
+        """
+        Async version: Get all athletes for a specific team.
+        
+        Args:
+            team_id: The team identifier
+            
+        Returns:
+            List of athlete dictionaries for the team
+        """
+        if not ASYNC_SUPPORT:
+            raise RuntimeError("Async operations require aiosqlite")
+        
+        async with self._get_async_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM athletes WHERE team_id = ? ORDER BY full_name",
+                (team_id,)
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    async def async_get_team_by_id(self, team_id: str) -> Optional[Dict]:
+        """
+        Async version: Get team by ID.
+        
+        Args:
+            team_id: The team's unique identifier
+            
+        Returns:
+            Team dictionary or None if not found
+        """
+        if not ASYNC_SUPPORT:
+            raise RuntimeError("Async operations require aiosqlite")
+        
+        async with self._get_async_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM teams WHERE id = ?", 
+                (team_id,)
+            )
+            row = await cursor.fetchone()
+            
+            if row:
+                return dict(row)
+            return None
+    
+    async def async_get_team_by_abbreviation(self, abbreviation: str) -> Optional[Dict]:
+        """
+        Async version: Get team by abbreviation (e.g., 'KC', 'TB').
+        
+        Args:
+            abbreviation: The team's abbreviation
+            
+        Returns:
+            Team dictionary or None if not found
+        """
+        if not ASYNC_SUPPORT:
+            raise RuntimeError("Async operations require aiosqlite")
+        
+        async with self._get_async_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM teams WHERE abbreviation = ?", 
+                (abbreviation,)
+            )
+            row = await cursor.fetchone()
+            
+            if row:
+                return dict(row)
+            return None
+    
+    async def async_get_all_teams(self) -> List[Dict]:
+        """
+        Async version: Get all teams from the database.
+        
+        Returns:
+            List of all team dictionaries
+        """
+        if not ASYNC_SUPPORT:
+            raise RuntimeError("Async operations require aiosqlite")
+        
+        async with self._get_async_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM teams ORDER BY name")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    async def async_upsert_athletes(self, athletes_data: List[Dict]) -> int:
+        """
+        Async version: Insert or update athlete records.
+        
+        Args:
+            athletes_data: List of athlete dictionaries from Sleeper API
+            
+        Returns:
+            Number of athletes processed
+        """
+        if not ASYNC_SUPPORT:
+            raise RuntimeError("Async operations require aiosqlite")
+        
+        if not athletes_data:
+            return 0
+        
+        updated_at = datetime.now(UTC).isoformat()
+        processed_count = 0
+        
+        async with self._get_async_connection() as conn:
+            try:
+                for athlete_id, athlete in athletes_data.items():
+                    # Extract key fields with safe defaults
+                    full_name = athlete.get('full_name', '') or ''
+                    first_name = athlete.get('first_name', '') or ''
+                    last_name = athlete.get('last_name', '') or ''
+                    team_id = athlete.get('team', '') or ''
+                    position = athlete.get('position', '') or ''
+                    status = athlete.get('status', '') or ''
+                    
+                    # Store the complete raw data as JSON
+                    raw_json = json.dumps(athlete)
+                    
+                    # Upsert the athlete record
+                    await conn.execute("""
+                        INSERT INTO athletes(
+                            id, full_name, first_name, last_name, 
+                            team_id, position, status, updated_at, raw
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, json(?))
+                        ON CONFLICT(id) DO UPDATE SET 
+                            full_name=excluded.full_name,
+                            first_name=excluded.first_name,
+                            last_name=excluded.last_name,
+                            team_id=excluded.team_id,
+                            position=excluded.position,
+                            status=excluded.status,
+                            updated_at=excluded.updated_at,
+                            raw=excluded.raw
+                    """, (
+                        athlete_id, full_name, first_name, last_name,
+                        team_id, position, status, updated_at, raw_json
+                    ))
+                    processed_count += 1
+                
+                await conn.commit()
+                logger.info(f"Successfully processed {processed_count} athletes (async)")
+                return processed_count
+                
+            except Exception as e:
+                await conn.rollback()
+                logger.error(f"Error upserting athletes (async): {e}")
+                raise
+    
+    async def async_upsert_teams(self, teams_data: List[Dict]) -> int:
+        """
+        Async version: Insert or update team records.
+        
+        Args:
+            teams_data: List of team dictionaries from ESPN API
+            
+        Returns:
+            Number of teams processed
+        """
+        if not ASYNC_SUPPORT:
+            raise RuntimeError("Async operations require aiosqlite")
+        
+        if not teams_data:
+            return 0
+        
+        updated_at = datetime.now(UTC).isoformat()
+        processed_count = 0
+        
+        async with self._get_async_connection() as conn:
+            try:
+                for team in teams_data:
+                    # Extract key fields with safe defaults
+                    team_id = team.get('id', '') or ''
+                    abbreviation = team.get('abbreviation', '') or ''
+                    name = team.get('name', '') or ''
+                    display_name = team.get('displayName', '') or ''
+                    short_display_name = team.get('shortDisplayName', '') or ''
+                    location = team.get('location', '') or ''
+                    color = team.get('color', '') or ''
+                    alternate_color = team.get('alternateColor', '') or ''
+                    logo = team.get('logo', '') or ''
+                    
+                    # Store the complete raw data as JSON
+                    raw_json = json.dumps(team)
+                    
+                    # Upsert the team record
+                    await conn.execute("""
+                        INSERT INTO teams(
+                            id, abbreviation, name, display_name, short_display_name,
+                            location, color, alternate_color, logo, updated_at, raw
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?))
+                        ON CONFLICT(id) DO UPDATE SET 
+                            abbreviation=excluded.abbreviation,
+                            name=excluded.name,
+                            display_name=excluded.display_name,
+                            short_display_name=excluded.short_display_name,
+                            location=excluded.location,
+                            color=excluded.color,
+                            alternate_color=excluded.alternate_color,
+                            logo=excluded.logo,
+                            updated_at=excluded.updated_at,
+                            raw=excluded.raw
+                    """, (
+                        team_id, abbreviation, name, display_name, short_display_name,
+                        location, color, alternate_color, logo, updated_at, raw_json
+                    ))
+                    processed_count += 1
+                
+                await conn.commit()
+                logger.info(f"Successfully processed {processed_count} teams (async)")
+                return processed_count
+                
+            except Exception as e:
+                await conn.rollback()
+                logger.error(f"Error upserting teams (async): {e}")
+                raise
     
     def upsert_athletes(self, athletes_data: List[Dict]) -> int:
         """
