@@ -53,11 +53,13 @@ class TestSleeperToolsModule:
         result = await func("test_league", 0)
         assert result["success"] is False
         assert "Week must be between" in result["error"]
+        assert result["error_type"] == "validation_error"  # Test new field
         
         # Test invalid week (too high)
         result = await func("test_league", 25)
         assert result["success"] is False
         assert "Week must be between" in result["error"]
+        assert result["error_type"] == "validation_error"  # Test new field
     
     @pytest.mark.asyncio 
     async def test_get_transactions_parameter_validation(self):
@@ -68,11 +70,13 @@ class TestSleeperToolsModule:
         result = await func("test_league", 0)
         assert result["success"] is False
         assert "Round must be between" in result["error"]
+        assert result["error_type"] == "validation_error"  # Test new field
         
         # Test invalid round (too high)  
         result = await func("test_league", 20)
         assert result["success"] is False
         assert "Round must be between" in result["error"]
+        assert result["error_type"] == "validation_error"  # Test new field
     
     @pytest.mark.asyncio
     async def test_get_trending_players_parameter_validation(self):
@@ -83,3 +87,4 @@ class TestSleeperToolsModule:
         result = await func("invalid_type", 24, 25)
         assert result["success"] is False
         assert "trend_type must be one of" in result["error"]
+        assert result["error_type"] == "validation_error"  # Test new field

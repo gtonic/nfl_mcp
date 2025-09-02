@@ -8,8 +8,16 @@ import httpx
 from typing import Optional
 
 from .config import get_http_headers, create_http_client, validate_limit, LIMITS, LONG_TIMEOUT
+from .errors import (
+    create_error_response, create_success_response, ErrorType,
+    handle_http_errors, handle_database_errors
+)
 
 
+@handle_http_errors(
+    default_data={"athletes_count": 0, "last_updated": None},
+    operation_name="fetching athletes from Sleeper API"
+)
 async def fetch_athletes(nfl_db) -> dict:
     """
     Fetch all NFL players from Sleeper API and store them in the local database.
@@ -26,55 +34,35 @@ async def fetch_athletes(nfl_db) -> dict:
         - last_updated: Timestamp of the update
         - success: Whether the fetch was successful
         - error: Error message (if any)
+        - error_type: Type of error (if any)
     """
-    try:
-        headers = get_http_headers("athletes")
+    headers = get_http_headers("athletes")
+    
+    # Sleeper API endpoint for all players
+    url = "https://api.sleeper.app/v1/players/nfl"
+    
+    async with create_http_client(LONG_TIMEOUT) as client:
+        # Fetch the athletes from Sleeper API
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
         
-        # Sleeper API endpoint for all players
-        url = "https://api.sleeper.app/v1/players/nfl"
+        # Parse JSON response
+        athletes_data = response.json()
         
-        async with create_http_client(LONG_TIMEOUT) as client:
-            # Fetch the athletes from Sleeper API
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            
-            # Parse JSON response
-            athletes_data = response.json()
-            
-            # Store in database
-            count = nfl_db.upsert_athletes(athletes_data)
-            last_updated = nfl_db.get_last_updated()
-            
-            return {
-                "athletes_count": count,
-                "last_updated": last_updated,
-                "success": True,
-                "error": None
-            }
-            
-    except httpx.TimeoutException:
-        return {
-            "athletes_count": 0,
-            "last_updated": None,
-            "success": False,
-            "error": "Request timed out while fetching athletes from Sleeper API"
-        }
-    except httpx.HTTPStatusError as e:
-        return {
-            "athletes_count": 0,
-            "last_updated": None,
-            "success": False,
-            "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
-        }
-    except Exception as e:
-        return {
-            "athletes_count": 0,
-            "last_updated": None,
-            "success": False,
-            "error": f"Unexpected error fetching athletes: {str(e)}"
-        }
+        # Store in database
+        count = nfl_db.upsert_athletes(athletes_data)
+        last_updated = nfl_db.get_last_updated()
+        
+        return create_success_response({
+            "athletes_count": count,
+            "last_updated": last_updated
+        })
 
 
+@handle_database_errors(
+    default_data={"athlete": None, "found": False},
+    operation_name="looking up athlete"
+)
 def lookup_athlete(nfl_db, athlete_id: str) -> dict:
     """
     Look up an athlete by their ID.
@@ -91,31 +79,26 @@ def lookup_athlete(nfl_db, athlete_id: str) -> dict:
         - athlete: Athlete information (if found)
         - found: Whether the athlete was found
         - error: Error message (if any)
+        - error_type: Type of error (if any)
     """
-    try:
-        athlete = nfl_db.get_athlete_by_id(athlete_id)
-        
-        if athlete:
-            return {
-                "athlete": athlete,
-                "found": True,
-                "error": None
-            }
-        else:
-            return {
-                "athlete": None,
-                "found": False,
-                "error": f"Athlete with ID '{athlete_id}' not found"
-            }
-            
-    except Exception as e:
-        return {
+    athlete = nfl_db.get_athlete_by_id(athlete_id)
+    
+    if athlete:
+        return create_success_response({
+            "athlete": athlete,
+            "found": True
+        })
+    else:
+        return create_success_response({
             "athlete": None,
-            "found": False,
-            "error": f"Error looking up athlete: {str(e)}"
-        }
+            "found": False
+        })
 
 
+@handle_database_errors(
+    default_data={"athletes": [], "count": 0, "search_term": None},
+    operation_name="searching athletes"
+)
 def search_athletes(nfl_db, name: str, limit: Optional[int] = 10) -> dict:
     """
     Search for athletes by name (partial match supported).
@@ -134,34 +117,29 @@ def search_athletes(nfl_db, name: str, limit: Optional[int] = 10) -> dict:
         - count: Number of athletes found
         - search_term: The search term used
         - error: Error message (if any)
+        - error_type: Type of error (if any)
     """
-    try:
-        # Validate limit using shared validation
-        limit = validate_limit(
-            limit,
-            LIMITS["athletes_search_min"],
-            LIMITS["athletes_search_max"],
-            LIMITS["athletes_search_default"]
-        )
-        
-        athletes = nfl_db.search_athletes_by_name(name, limit)
-        
-        return {
-            "athletes": athletes,
-            "count": len(athletes),
-            "search_term": name,
-            "error": None
-        }
-        
-    except Exception as e:
-        return {
-            "athletes": [],
-            "count": 0,
-            "search_term": name,
-            "error": f"Error searching athletes: {str(e)}"
-        }
+    # Validate limit using shared validation
+    limit = validate_limit(
+        limit,
+        LIMITS["athletes_search_min"],
+        LIMITS["athletes_search_max"],
+        LIMITS["athletes_search_default"]
+    )
+    
+    athletes = nfl_db.search_athletes_by_name(name, limit)
+    
+    return create_success_response({
+        "athletes": athletes,
+        "count": len(athletes),
+        "search_term": name
+    })
 
 
+@handle_database_errors(
+    default_data={"athletes": [], "count": 0, "team_id": None},
+    operation_name="getting athletes by team"
+)
 def get_athletes_by_team(nfl_db, team_id: str) -> dict:
     """
     Get all athletes for a specific team.
@@ -179,21 +157,12 @@ def get_athletes_by_team(nfl_db, team_id: str) -> dict:
         - count: Number of athletes found
         - team_id: The team ID searched for
         - error: Error message (if any)
+        - error_type: Type of error (if any)
     """
-    try:
-        athletes = nfl_db.get_athletes_by_team(team_id)
-        
-        return {
-            "athletes": athletes,
-            "count": len(athletes),
-            "team_id": team_id,
-            "error": None
-        }
-        
-    except Exception as e:
-        return {
-            "athletes": [],
-            "count": 0,
-            "team_id": team_id,
-            "error": f"Error getting athletes for team: {str(e)}"
-        }
+    athletes = nfl_db.get_athletes_by_team(team_id)
+    
+    return create_success_response({
+        "athletes": athletes,
+        "count": len(athletes),
+        "team_id": team_id
+    })
