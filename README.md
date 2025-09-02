@@ -14,6 +14,7 @@ A FastMCP server that provides health monitoring, web content extraction, NFL ne
 - **Sleeper API Tools**: Comprehensive MCP tools for fantasy league management including:
   - League information, rosters, users, matchups, playoff brackets
   - Transactions, traded picks, NFL state, trending players
+- **Flexible Configuration**: Environment variables and configuration files (YAML/JSON) with hot-reloading
 - **HTTP Transport**: Runs on HTTP transport protocol (default port 9000)
 - **Containerized**: Docker support for easy deployment
 - **Well Tested**: Comprehensive unit tests for all functionality
@@ -60,6 +61,48 @@ docker run --rm -p 9000:9000 nfl-mcp-server
 task run          # Run locally
 task run-docker   # Run in Docker
 task all          # Complete pipeline
+```
+
+## Configuration
+
+The NFL MCP Server supports flexible configuration through environment variables and configuration files. See [CONFIGURATION.md](CONFIGURATION.md) for detailed documentation.
+
+### Quick Configuration Examples
+
+#### Environment Variables
+```bash
+# Set custom timeouts and limits
+export NFL_MCP_TIMEOUT_TOTAL=45.0
+export NFL_MCP_NFL_NEWS_MAX=75
+export NFL_MCP_SERVER_VERSION="1.0.0"
+
+# Run the server
+python -m nfl_mcp.server
+```
+
+#### Configuration File (config.yml)
+```yaml
+timeout:
+  total: 45.0
+  connect: 15.0
+
+limits:
+  nfl_news_max: 75
+  athletes_search_max: 150
+
+rate_limits:
+  default_requests_per_minute: 120
+
+security:
+  max_string_length: 2000
+```
+
+#### Docker with Environment Variables
+```bash
+docker run --rm -p 9000:9000 \
+  -e NFL_MCP_TIMEOUT_TOTAL=45.0 \
+  -e NFL_MCP_RATE_LIMIT_DEFAULT=120 \
+  nfl-mcp-server
 ```
 
 ## API Documentation
