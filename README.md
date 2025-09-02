@@ -453,18 +453,40 @@ Run `task --list` to see all available tasks:
 
 This server implements several security measures:
 
-- **URL Validation**: Only HTTP/HTTPS URLs are allowed for web crawling
+- **Enhanced Input Validation**: 
+  - String inputs are validated against injection patterns (SQL, XSS, command injection)
+  - Numeric parameters have type checking and range validation
+  - URL validation includes private network blocking and dangerous pattern detection
+- **Content Sanitization**: Web crawled content is sanitized to remove scripts and dangerous patterns
+- **URL Security**: Only HTTP/HTTPS URLs are allowed with additional security checks
 - **Request Timeouts**: All HTTP requests have reasonable timeout limits (30s total, 10s connect)
 - **User-Agent Headers**: All requests are properly identified
 - **SQL Injection Prevention**: All database queries use parameterized statements
-- **Input Validation**: All user inputs are validated and sanitized
+- **Rate Limiting**: Built-in rate limiting utilities to prevent abuse
 - **No Code Execution**: The server does not execute arbitrary code or eval statements
+
+**Input Validation Features:**
+- SQL injection pattern detection and prevention
+- XSS injection pattern detection and prevention  
+- Command injection pattern detection and prevention
+- Path traversal pattern detection and prevention
+- HTML content sanitization with script removal
+- Team ID, League ID, and other parameter format validation
+- Safe character pattern matching for different input types
+
+**Rate Limiting:**
+- Configurable per-endpoint rate limiting
+- In-memory storage for development (Redis recommended for production)
+- Customizable limits and time windows
+- Rate limit status reporting
 
 When deploying in production:
 - Run in a containerized environment
 - Use proper network security controls
+- Implement persistent rate limiting with Redis or similar
 - Monitor for unusual request patterns
 - Keep dependencies updated
+- Consider additional WAF (Web Application Firewall) protection
 
 ## License
 
