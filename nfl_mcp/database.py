@@ -1,8 +1,8 @@
 """
-SQLite database management for NFL athletes data.
+SQLite database management for NFL athletes and teams data.
 
 This module handles the persistence layer for athlete information fetched from
-the Sleeper API, providing caching and lookup functionality.
+the Sleeper API and teams information from ESPN API, providing caching and lookup functionality.
 """
 
 import sqlite3
@@ -16,12 +16,12 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 
-class AthleteDatabase:
-    """SQLite database manager for athlete data with caching and lookup functionality."""
+class NFLDatabase:
+    """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
-    def __init__(self, db_path: str = "athletes.db"):
+    def __init__(self, db_path: str = "nfl_data.db"):
         """
-        Initialize the athlete database.
+        Initialize the NFL database.
         
         Args:
             db_path: Path to the SQLite database file
@@ -47,10 +47,29 @@ class AthleteDatabase:
                 )
             """)
             
+            # Create teams table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS teams (
+                    id TEXT PRIMARY KEY,
+                    abbreviation TEXT,
+                    name TEXT,
+                    display_name TEXT,
+                    short_display_name TEXT,
+                    location TEXT,
+                    color TEXT,
+                    alternate_color TEXT,
+                    logo TEXT,
+                    updated_at TEXT NOT NULL,
+                    raw JSON
+                )
+            """)
+            
             # Create indexes for efficient lookups
             conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_team ON athletes(team_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_name ON athletes(full_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_position ON athletes(position)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_name ON teams(name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_abbreviation ON teams(abbreviation)")
             
             conn.commit()
     
@@ -223,3 +242,166 @@ class AthleteDatabase:
             conn.commit()
             logger.info(f"Cleared {count} athlete records")
             return count
+
+    # Teams-related methods
+    
+    def upsert_teams(self, teams_data: List[Dict]) -> int:
+        """
+        Insert or update team records.
+        
+        Args:
+            teams_data: List of team dictionaries from ESPN API
+            
+        Returns:
+            Number of teams processed
+        """
+        if not teams_data:
+            return 0
+        
+        updated_at = datetime.now(UTC).isoformat()
+        processed_count = 0
+        
+        with self._get_connection() as conn:
+            try:
+                for team in teams_data:
+                    # Extract key fields with safe defaults
+                    team_id = team.get('id', '') or ''
+                    abbreviation = team.get('abbreviation', '') or ''
+                    name = team.get('name', '') or ''
+                    display_name = team.get('displayName', '') or ''
+                    short_display_name = team.get('shortDisplayName', '') or ''
+                    location = team.get('location', '') or ''
+                    color = team.get('color', '') or ''
+                    alternate_color = team.get('alternateColor', '') or ''
+                    logo = team.get('logo', '') or ''
+                    
+                    # Store the complete raw data as JSON
+                    raw_json = json.dumps(team)
+                    
+                    # Upsert the team record
+                    conn.execute("""
+                        INSERT INTO teams(
+                            id, abbreviation, name, display_name, short_display_name,
+                            location, color, alternate_color, logo, updated_at, raw
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?))
+                        ON CONFLICT(id) DO UPDATE SET 
+                            abbreviation=excluded.abbreviation,
+                            name=excluded.name,
+                            display_name=excluded.display_name,
+                            short_display_name=excluded.short_display_name,
+                            location=excluded.location,
+                            color=excluded.color,
+                            alternate_color=excluded.alternate_color,
+                            logo=excluded.logo,
+                            updated_at=excluded.updated_at,
+                            raw=excluded.raw
+                    """, (
+                        team_id, abbreviation, name, display_name, short_display_name,
+                        location, color, alternate_color, logo, updated_at, raw_json
+                    ))
+                    processed_count += 1
+                
+                conn.commit()
+                logger.info(f"Successfully processed {processed_count} teams")
+                return processed_count
+                
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"Error upserting teams: {e}")
+                raise
+    
+    def get_team_by_id(self, team_id: str) -> Optional[Dict]:
+        """
+        Get team by ID.
+        
+        Args:
+            team_id: The team's unique identifier
+            
+        Returns:
+            Team dictionary or None if not found
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM teams WHERE id = ?", 
+                (team_id,)
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                return dict(row)
+            return None
+    
+    def get_team_by_abbreviation(self, abbreviation: str) -> Optional[Dict]:
+        """
+        Get team by abbreviation (e.g., 'KC', 'TB').
+        
+        Args:
+            abbreviation: The team's abbreviation
+            
+        Returns:
+            Team dictionary or None if not found
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM teams WHERE abbreviation = ?", 
+                (abbreviation,)
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                return dict(row)
+            return None
+    
+    def get_all_teams(self) -> List[Dict]:
+        """
+        Get all teams from the database.
+        
+        Returns:
+            List of all team dictionaries
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute("SELECT * FROM teams ORDER BY name")
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_team_count(self) -> int:
+        """
+        Get the total number of teams in the database.
+        
+        Returns:
+            Total count of teams
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM teams")
+            return cursor.fetchone()[0]
+    
+    def get_teams_last_updated(self) -> Optional[str]:
+        """
+        Get the timestamp of the most recent teams update.
+        
+        Returns:
+            ISO timestamp string or None if no data
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT MAX(updated_at) FROM teams"
+            )
+            result = cursor.fetchone()[0]
+            return result
+    
+    def clear_teams(self) -> int:
+        """
+        Clear all team data from the database.
+        
+        Returns:
+            Number of records deleted
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute("DELETE FROM teams")
+            count = cursor.rowcount
+            conn.commit()
+            logger.info(f"Cleared {count} team records")
+            return count
+
+
+# For backward compatibility
+AthleteDatabase = NFLDatabase

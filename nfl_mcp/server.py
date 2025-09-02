@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 from fastmcp import FastMCP
 from starlette.responses import JSONResponse
 
-from .database import AthleteDatabase
+from .database import NFLDatabase
 
 
 def create_app() -> FastMCP:
@@ -32,8 +32,8 @@ def create_app() -> FastMCP:
         name="NFL MCP Server"
     )
     
-    # Initialize athlete database
-    athlete_db = AthleteDatabase()
+    # Initialize NFL database
+    nfl_db = NFLDatabase()
     
     # Health endpoint (non-MCP, directly exposed REST endpoint)
     @mcp.custom_route(path="/health", methods=["GET"])
@@ -174,8 +174,8 @@ def create_app() -> FastMCP:
                 "User-Agent": "NFL-MCP-Server/0.1.0 (NFL Teams Fetcher)"
             }
             
-            # Build the ESPN API URL for teams
-            url = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2025/teams"
+            # Build the ESPN API URL for teams (fixed to use correct endpoint)
+            url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
             
             async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
                 # Fetch the teams from ESPN API
@@ -186,14 +186,22 @@ def create_app() -> FastMCP:
                 data = response.json()
                 
                 # Extract teams from the response
-                teams_data = data.get('items', [])
+                teams_data = data.get('sports', [{}])[0].get('leagues', [{}])[0].get('teams', [])
                 
                 # Process teams to extract key information
                 processed_teams = []
                 for team in teams_data:
+                    team_info = team.get('team', {})
                     processed_team = {
-                        "id": team.get('id', ''),
-                        "name": team.get('name', '') or team.get('displayName', '')
+                        "id": team_info.get('id', ''),
+                        "abbreviation": team_info.get('abbreviation', ''),
+                        "name": team_info.get('name', ''),
+                        "displayName": team_info.get('displayName', ''),
+                        "shortDisplayName": team_info.get('shortDisplayName', ''),
+                        "location": team_info.get('location', ''),
+                        "color": team_info.get('color', ''),
+                        "alternateColor": team_info.get('alternateColor', ''),
+                        "logo": team_info.get('logo', '')
                     }
                     processed_teams.append(processed_team)
                 
@@ -224,6 +232,200 @@ def create_app() -> FastMCP:
                 "total_teams": 0,
                 "success": False,
                 "error": f"Unexpected error fetching NFL teams: {str(e)}"
+            }
+
+    # MCP Tool: Fetch teams from ESPN API and store in database
+    @mcp.tool
+    async def fetch_teams() -> dict:
+        """
+        Fetch all NFL teams from ESPN API and store them in the local database.
+        
+        This tool fetches the complete teams data from ESPN's API and 
+        upserts the data into the SQLite database for fast local lookups.
+        
+        Returns:
+            A dictionary containing:
+            - teams_count: Number of teams processed
+            - last_updated: Timestamp of the update
+            - success: Whether the fetch was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (NFL Teams Fetcher)"
+            }
+            
+            # ESPN API endpoint for teams
+            url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                # Fetch the teams from ESPN API
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                data = response.json()
+                
+                # Extract teams from the response
+                teams_data = data.get('sports', [{}])[0].get('leagues', [{}])[0].get('teams', [])
+                
+                # Process teams to get the team info
+                processed_teams = []
+                for team in teams_data:
+                    team_info = team.get('team', {})
+                    processed_teams.append(team_info)
+                
+                # Store in database
+                count = nfl_db.upsert_teams(processed_teams)
+                last_updated = nfl_db.get_teams_last_updated()
+                
+                return {
+                    "teams_count": count,
+                    "last_updated": last_updated,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "teams_count": 0,
+                "last_updated": None,
+                "success": False,
+                "error": "Request timed out while fetching teams from ESPN API"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "teams_count": 0,
+                "last_updated": None,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "teams_count": 0,
+                "last_updated": None,
+                "success": False,
+                "error": f"Unexpected error fetching teams: {str(e)}"
+            }
+
+    # MCP Tool: Get team depth chart
+    @mcp.tool
+    async def get_depth_chart(team_id: str) -> dict:
+        """
+        Get the depth chart for a specific NFL team.
+        
+        This tool fetches the depth chart from ESPN for the specified team,
+        showing player positions and depth ordering.
+        
+        Args:
+            team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE')
+            
+        Returns:
+            A dictionary containing:
+            - team_id: The team identifier used
+            - team_name: The team's full name
+            - depth_chart: List of positions with players in depth order
+            - success: Whether the request was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Validate team_id
+            if not team_id or not isinstance(team_id, str):
+                return {
+                    "team_id": team_id,
+                    "team_name": None,
+                    "depth_chart": [],
+                    "success": False,
+                    "error": "Team ID is required and must be a string"
+                }
+            
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (NFL Depth Chart Fetcher)"
+            }
+            
+            # Build the ESPN depth chart URL
+            url = f"https://www.espn.com/nfl/team/depth/_/name/{team_id.upper()}"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                # Fetch the depth chart page
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse HTML content
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Extract team name
+                team_name = None
+                team_header = soup.find('h1')
+                if team_header:
+                    team_name = team_header.get_text(strip=True)
+                
+                # Extract depth chart information
+                depth_chart = []
+                
+                # Look for depth chart tables or sections
+                # ESPN depth chart structure may vary, so we'll look for common patterns
+                depth_sections = soup.find_all(['table', 'div'], class_=lambda x: x and 'depth' in x.lower() if x else False)
+                
+                if not depth_sections:
+                    # Try alternative selectors
+                    depth_sections = soup.find_all('table')
+                
+                for section in depth_sections:
+                    # Extract position and players
+                    rows = section.find_all('tr')
+                    for row in rows:
+                        cells = row.find_all(['td', 'th'])
+                        if len(cells) >= 2:
+                            position = cells[0].get_text(strip=True)
+                            players = []
+                            for cell in cells[1:]:
+                                player_text = cell.get_text(strip=True)
+                                if player_text and player_text != position:
+                                    players.append(player_text)
+                            
+                            if position and players:
+                                depth_chart.append({
+                                    "position": position,
+                                    "players": players
+                                })
+                
+                return {
+                    "team_id": team_id.upper(),
+                    "team_name": team_name,
+                    "depth_chart": depth_chart,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "team_id": team_id,
+                "team_name": None,
+                "depth_chart": [],
+                "success": False,
+                "error": "Request timed out while fetching depth chart"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "team_id": team_id,
+                "team_name": None,
+                "depth_chart": [],
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "team_id": team_id,
+                "team_name": None,
+                "depth_chart": [],
+                "success": False,
+                "error": f"Unexpected error fetching depth chart: {str(e)}"
             }
 
     # MCP Tool: Crawl URL and extract content
@@ -369,8 +571,8 @@ def create_app() -> FastMCP:
                 athletes_data = response.json()
                 
                 # Store in database
-                count = athlete_db.upsert_athletes(athletes_data)
-                last_updated = athlete_db.get_last_updated()
+                count = nfl_db.upsert_athletes(athletes_data)
+                last_updated = nfl_db.get_last_updated()
                 
                 return {
                     "athletes_count": count,
@@ -420,7 +622,7 @@ def create_app() -> FastMCP:
             - error: Error message (if any)
         """
         try:
-            athlete = athlete_db.get_athlete_by_id(athlete_id)
+            athlete = nfl_db.get_athlete_by_id(athlete_id)
             
             if athlete:
                 return {
@@ -469,7 +671,7 @@ def create_app() -> FastMCP:
             elif limit > 100:
                 limit = 100
             
-            athletes = athlete_db.search_athletes_by_name(name, limit)
+            athletes = nfl_db.search_athletes_by_name(name, limit)
             
             return {
                 "athletes": athletes,
@@ -506,7 +708,7 @@ def create_app() -> FastMCP:
             - error: Error message (if any)
         """
         try:
-            athletes = athlete_db.get_athletes_by_team(team_id)
+            athletes = nfl_db.get_athletes_by_team(team_id)
             
             return {
                 "athletes": athletes,

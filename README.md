@@ -8,7 +8,9 @@ A FastMCP server that provides health monitoring, arithmetic operations, web con
 - **Multiply Tool**: MCP tool that multiplies two integers and returns the result
 - **URL Crawling Tool**: MCP tool that crawls arbitrary URLs and extracts LLM-friendly text content
 - **NFL News Tool**: MCP tool that fetches the latest NFL news from ESPN API
-- **NFL Teams Tool**: MCP tool that fetches all NFL teams from ESPN API
+- **NFL Teams Tools**: Comprehensive MCP tools for NFL teams including:
+  - Team data fetching and database caching from ESPN API
+  - Depth chart retrieval for individual teams
 - **Athlete Tools**: MCP tools for fetching, caching, and looking up NFL athletes from Sleeper API with SQLite persistence
 - **Sleeper API Tools**: Comprehensive MCP tools for fantasy league management including:
   - League information, rosters, users, matchups, playoff brackets
@@ -119,17 +121,47 @@ Each article in the `articles` list contains:
 - `categories`: List of category descriptions
 - `links`: Associated links (web, mobile, etc.)
 
-### NFL Teams Tool (MCP)
+### NFL Teams Tools (MCP)
 
-**Tool Name:** `get_teams`
+**Tools:** `get_teams`, `fetch_teams`, `get_depth_chart`
+
+These tools provide comprehensive NFL teams data management with database caching and depth chart access.
+
+#### get_teams
 
 Fetches all NFL teams from ESPN API and returns structured team data.
 
 **Parameters:** None
 
 **Returns:** Dictionary with the following fields:
-- `teams`: List of teams with id and name
+- `teams`: List of teams with comprehensive team information
 - `total_teams`: Number of teams returned
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+#### fetch_teams
+
+Fetches all NFL teams from ESPN API and stores them in the local database for caching.
+
+**Parameters:** None
+
+**Returns:** Dictionary with the following fields:
+- `teams_count`: Number of teams processed and stored
+- `last_updated`: Timestamp of the update
+- `success`: Whether the fetch was successful
+- `error`: Error message (if any)
+
+#### get_depth_chart
+
+Fetches the depth chart for a specific NFL team from ESPN.
+
+**Parameters:**
+- `team_id`: Team abbreviation (e.g., 'KC', 'TB', 'NE')
+
+**Returns:** Dictionary with the following fields:
+- `team_id`: The team identifier used
+- `team_name`: The team's full name
+- `depth_chart`: List of positions with players in depth order
 - `success`: Whether the request was successful
 - `error`: Error message (if any)
 
@@ -138,14 +170,20 @@ Fetches all NFL teams from ESPN API and returns structured team data.
 from fastmcp import Client
 
 async with Client("http://localhost:9000/mcp/") as client:
+    # Get all teams
     result = await client.call_tool("get_teams", {})
+    for team in result.data["teams"]:
+        print(f"- {team['displayName']} ({team['abbreviation']})")
     
-    if result.data["success"]:
-        print(f"Found {result.data['total_teams']} teams")
-        for team in result.data["teams"]:
-            print(f"- {team['name']} (ID: {team['id']})")
-    else:
-        print(f"Error: {result.data['error']}")
+    # Fetch and cache teams data
+    result = await client.call_tool("fetch_teams", {})
+    print(f"Cached {result.data['teams_count']} teams")
+    
+    # Get depth chart for Kansas City Chiefs
+    result = await client.call_tool("get_depth_chart", {"team_id": "KC"})
+    print(f"Depth chart for {result.data['team_name']}:")
+    for position in result.data['depth_chart']:
+        print(f"  {position['position']}: {', '.join(position['players'])}")
 ```
 
 **Team Structure:**
