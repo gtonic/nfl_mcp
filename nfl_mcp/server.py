@@ -23,7 +23,8 @@ from starlette.responses import JSONResponse
 from .database import NFLDatabase
 from .config import (
     DEFAULT_TIMEOUT, get_http_headers, create_http_client, 
-    is_valid_url, validate_limit, LIMITS
+    is_valid_url, validate_limit, LIMITS, validate_string_input, 
+    validate_numeric_input, validate_url_enhanced, sanitize_content
 )
 from . import sleeper_tools
 
@@ -317,6 +318,17 @@ def create_app() -> FastMCP:
             - success: Whether the request was successful
             - error: Error message (if any)
         """
+        # Validate team_id input
+        try:
+            team_id = validate_string_input(team_id, 'team_id', max_length=4, required=True)
+        except ValueError as e:
+            return {
+                "team_id": team_id,
+                "team_name": None,
+                "depth_chart": [],
+                "success": False,
+                "error": f"Invalid team_id: {str(e)}"
+            }
         try:
             # Validate team_id
             if not team_id or not isinstance(team_id, str):
@@ -437,16 +449,34 @@ def create_app() -> FastMCP:
             - success: Whether the crawl was successful
             - error: Error message (if any)
         """
-        # Validate URL format for security
-        if not is_valid_url(url):
+        # Enhanced URL validation for security
+        try:
+            url = validate_string_input(url, 'general', max_length=2000, required=True)
+        except ValueError as e:
             return {
                 "url": url,
                 "title": None,
                 "content": "",
                 "content_length": 0,
                 "success": False,
-                "error": "URL must start with http:// or https://"
+                "error": f"Invalid URL: {str(e)}"
             }
+        
+        if not validate_url_enhanced(url):
+            return {
+                "url": url,
+                "title": None,
+                "content": "",
+                "content_length": 0,
+                "success": False,
+                "error": "URL validation failed - potentially unsafe URL"
+            }
+        
+        # Validate max_length parameter
+        try:
+            max_length = validate_numeric_input(max_length, min_val=100, max_val=50000, default=10000, required=False)
+        except ValueError:
+            max_length = 10000
         
         try:
             headers = get_http_headers("web_crawler")
@@ -459,9 +489,9 @@ def create_app() -> FastMCP:
                 # Parse HTML content
                 soup = BeautifulSoup(response.text, 'lxml')
                 
-                # Extract title
+                # Extract title and sanitize
                 title_tag = soup.find('title')
-                title = title_tag.get_text().strip() if title_tag else None
+                title = sanitize_content(title_tag.get_text().strip()) if title_tag else None
                 
                 # Remove script and style elements
                 for script in soup(["script", "style", "nav", "footer", "aside", "form"]):
@@ -470,17 +500,8 @@ def create_app() -> FastMCP:
                 # Get text content
                 text = soup.get_text()
                 
-                # Clean up the text
-                lines = (line.strip() for line in text.splitlines())
-                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                text = ' '.join(chunk for chunk in chunks if chunk)
-                
-                # Remove excessive whitespace and normalize
-                text = re.sub(r'\s+', ' ', text).strip()
-                
-                # Apply length limit if specified
-                if max_length and len(text) > max_length:
-                    text = text[:max_length] + "..."
+                # Use enhanced content sanitization
+                text = sanitize_content(text, max_length=max_length)
                 
                 return {
                     "url": url,
@@ -604,6 +625,15 @@ def create_app() -> FastMCP:
             - found: Whether the athlete was found
             - error: Error message (if any)
         """
+        # Validate athlete_id input
+        try:
+            athlete_id = validate_string_input(athlete_id, 'alphanumeric_id', max_length=50, required=True)
+        except ValueError as e:
+            return {
+                "athlete": None,
+                "found": False,
+                "error": f"Invalid athlete_id: {str(e)}"
+            }
         try:
             athlete = nfl_db.get_athlete_by_id(athlete_id)
             
@@ -647,6 +677,25 @@ def create_app() -> FastMCP:
             - search_term: The search term used
             - error: Error message (if any)
         """
+        # Validate name input
+        try:
+            name = validate_string_input(name, 'athlete_name', max_length=100, required=True)
+        except ValueError as e:
+            return {
+                "athletes": [],
+                "count": 0,
+                "search_term": name,
+                "error": f"Invalid name: {str(e)}"
+            }
+        
+        # Validate limit parameter
+        limit = validate_limit(
+            limit,
+            LIMITS["athletes_search_min"],
+            LIMITS["athletes_search_max"],
+            LIMITS["athletes_search_default"]
+        )
+        
         try:
             # Validate limit using shared validation
             limit = validate_limit(
@@ -692,6 +741,17 @@ def create_app() -> FastMCP:
             - team_id: The team ID searched for
             - error: Error message (if any)
         """
+        # Validate team_id input
+        try:
+            team_id = validate_string_input(team_id, 'team_id', max_length=4, required=True)
+        except ValueError as e:
+            return {
+                "athletes": [],
+                "count": 0,
+                "team_id": team_id,
+                "error": f"Invalid team_id: {str(e)}"
+            }
+        
         try:
             athletes = nfl_db.get_athletes_by_team(team_id)
             
@@ -715,39 +775,139 @@ def create_app() -> FastMCP:
     # Register all Sleeper API tools from the sleeper_tools module
     @mcp.tool
     async def get_league(league_id: str) -> dict:
-        return await sleeper_tools.get_league(league_id)
+        """Get league information with input validation."""
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+            return await sleeper_tools.get_league(league_id)
+        except ValueError as e:
+            return {
+                "league": None,
+                "success": False,
+                "error": f"Invalid league_id: {str(e)}"
+            }
 
     @mcp.tool
     async def get_rosters(league_id: str) -> dict:
-        return await sleeper_tools.get_rosters(league_id)
+        """Get league rosters with input validation."""
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+            return await sleeper_tools.get_rosters(league_id)
+        except ValueError as e:
+            return {
+                "rosters": [],
+                "count": 0,
+                "success": False,
+                "error": f"Invalid league_id: {str(e)}"
+            }
 
     @mcp.tool
     async def get_league_users(league_id: str) -> dict:
-        return await sleeper_tools.get_league_users(league_id)
+        """Get league users with input validation."""
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+            return await sleeper_tools.get_league_users(league_id)
+        except ValueError as e:
+            return {
+                "users": [],
+                "count": 0,
+                "success": False,
+                "error": f"Invalid league_id: {str(e)}"
+            }
     
     @mcp.tool
     async def get_matchups(league_id: str, week: int) -> dict:
-        return await sleeper_tools.get_matchups(league_id, week)
+        """Get league matchups with input validation."""
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+            week = validate_numeric_input(week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
+            return await sleeper_tools.get_matchups(league_id, week)
+        except ValueError as e:
+            return {
+                "matchups": [],
+                "week": week,
+                "count": 0,
+                "success": False,
+                "error": f"Invalid input: {str(e)}"
+            }
     
     @mcp.tool
     async def get_playoff_bracket(league_id: str) -> dict:
-        return await sleeper_tools.get_playoff_bracket(league_id)
+        """Get playoff bracket with input validation."""
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+            return await sleeper_tools.get_playoff_bracket(league_id)
+        except ValueError as e:
+            return {
+                "playoff_bracket": None,
+                "success": False,
+                "error": f"Invalid league_id: {str(e)}"
+            }
     
     @mcp.tool
     async def get_transactions(league_id: str, round: Optional[int] = None) -> dict:
-        return await sleeper_tools.get_transactions(league_id, round)
+        """Get league transactions with input validation."""
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+            if round is not None:
+                round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
+            return await sleeper_tools.get_transactions(league_id, round)
+        except ValueError as e:
+            return {
+                "transactions": [],
+                "round": round,
+                "count": 0,
+                "success": False,
+                "error": f"Invalid input: {str(e)}"
+            }
     
     @mcp.tool
     async def get_traded_picks(league_id: str) -> dict:
-        return await sleeper_tools.get_traded_picks(league_id)
+        """Get traded picks with input validation."""
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+            return await sleeper_tools.get_traded_picks(league_id)
+        except ValueError as e:
+            return {
+                "traded_picks": [],
+                "count": 0,
+                "success": False,
+                "error": f"Invalid league_id: {str(e)}"
+            }
     
     @mcp.tool
     async def get_nfl_state() -> dict:
+        """Get NFL state - no validation needed as it has no parameters."""
         return await sleeper_tools.get_nfl_state()
     
     @mcp.tool
     async def get_trending_players(trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
-        return await sleeper_tools.get_trending_players(trend_type, lookback_hours, limit)
+        """Get trending players with input validation."""
+        try:
+            trend_type = validate_string_input(trend_type, 'trend_type', max_length=10, required=True)
+            lookback_hours = validate_numeric_input(
+                lookback_hours, 
+                min_val=LIMITS["trending_lookback_min"], 
+                max_val=LIMITS["trending_lookback_max"], 
+                default=24, 
+                required=False
+            )
+            limit = validate_numeric_input(
+                limit,
+                min_val=LIMITS["trending_limit_min"],
+                max_val=LIMITS["trending_limit_max"],
+                default=25,
+                required=False
+            )
+            return await sleeper_tools.get_trending_players(trend_type, lookback_hours, limit)
+        except ValueError as e:
+            return {
+                "trending_players": [],
+                "trend_type": trend_type,
+                "lookback_hours": lookback_hours,
+                "count": 0,
+                "success": False,
+                "error": f"Invalid input: {str(e)}"
+            }
 
     return mcp
 
