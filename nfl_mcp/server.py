@@ -1135,12 +1135,39 @@ def create_app() -> FastMCP:
                 
                 # Parse JSON response
                 trending_data = response.json()
-                
+
+                # Enrich with local DB lookups for full names and metadata
+                enriched_players = []
+                for item in trending_data or []:
+                    pid = str(item.get("player_id", ""))
+                    cnt = item.get("count", 0)
+                    athlete = athlete_db.get_athlete_by_id(pid)
+                    if athlete:
+                        full_name = athlete.get("full_name") or (
+                            ((athlete.get("first_name") or "") + " " + (athlete.get("last_name") or "")).strip()
+                        )
+                        team = athlete.get("team_id")
+                        position = athlete.get("position")
+                        found = True
+                    else:
+                        full_name = None
+                        team = None
+                        position = None
+                        found = False
+                    enriched_players.append({
+                        "player_id": pid,
+                        "full_name": full_name,
+                        "team_id": team,
+                        "position": position,
+                        "count": cnt,
+                        "found": found
+                    })
+
                 return {
-                    "trending_players": trending_data,
+                    "trending_players": enriched_players,
                     "trend_type": trend_type,
                     "lookback_hours": lookback_hours,
-                    "count": len(trending_data) if trending_data else 0,
+                    "count": len(enriched_players),
                     "success": True,
                     "error": None
                 }
