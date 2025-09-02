@@ -3,6 +3,9 @@ Configuration constants and shared utilities for NFL MCP Server.
 
 This module contains common configuration values and utility functions
 to reduce code duplication across the application.
+
+This module now uses the new ConfigManager for flexible configuration
+while maintaining backward compatibility with existing code.
 """
 
 import re
@@ -12,6 +15,9 @@ import time
 from collections import defaultdict, deque
 import httpx
 from typing import Dict, Any, Optional, Union
+
+# Import the new configuration manager
+from .config_manager import get_config_manager
 
 
 # Rate limiting storage (in production, use Redis or similar)
@@ -76,31 +82,86 @@ def get_rate_limit_status(identifier: str, limit: int, window_seconds: int = 60)
     }
 
 
-# HTTP Client Configuration
-DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
-LONG_TIMEOUT = httpx.Timeout(60.0, connect=15.0)  # For large data fetches
+# HTTP Client Configuration - now loaded from ConfigManager
+def _get_timeout_config():
+    """Get timeout configuration from ConfigManager."""
+    try:
+        return get_config_manager().get_http_timeout()
+    except Exception:
+        # Fallback to hardcoded values if ConfigManager fails
+        return httpx.Timeout(30.0, connect=10.0)
 
-# User Agent Configuration
-SERVER_VERSION = "0.1.0"
-BASE_USER_AGENT = f"NFL-MCP-Server/{SERVER_VERSION}"
+def _get_long_timeout_config():
+    """Get long timeout configuration from ConfigManager."""
+    try:
+        return get_config_manager().get_long_http_timeout()
+    except Exception:
+        # Fallback to hardcoded values if ConfigManager fails
+        return httpx.Timeout(60.0, connect=15.0)
 
-# User Agent strings for different services
-USER_AGENTS = {
-    "nfl_news": f"{BASE_USER_AGENT} (NFL News Fetcher)",
-    "nfl_teams": f"{BASE_USER_AGENT} (NFL Teams Fetcher)",
-    "depth_chart": f"{BASE_USER_AGENT} (NFL Depth Chart Fetcher)",
-    "web_crawler": f"{BASE_USER_AGENT} (Web Content Extractor)",
-    "athletes": f"{BASE_USER_AGENT} (NFL Athletes Fetcher)",
-    "sleeper_league": f"{BASE_USER_AGENT} (Sleeper League Fetcher)",
-    "sleeper_rosters": f"{BASE_USER_AGENT} (Sleeper Rosters Fetcher)",
-    "sleeper_users": f"{BASE_USER_AGENT} (Sleeper Users Fetcher)",
-    "sleeper_matchups": f"{BASE_USER_AGENT} (Sleeper Matchups Fetcher)",
-    "sleeper_playoffs": f"{BASE_USER_AGENT} (Sleeper Playoffs Fetcher)",
-    "sleeper_transactions": f"{BASE_USER_AGENT} (Sleeper Transactions Fetcher)",
-    "sleeper_traded_picks": f"{BASE_USER_AGENT} (Sleeper Traded Picks Fetcher)",
-    "sleeper_nfl_state": f"{BASE_USER_AGENT} (Sleeper NFL State Fetcher)",
-    "sleeper_trending": f"{BASE_USER_AGENT} (Sleeper Trending Players Fetcher)",
-}
+DEFAULT_TIMEOUT = _get_timeout_config()
+LONG_TIMEOUT = _get_long_timeout_config()
+
+# User Agent Configuration - now loaded from ConfigManager
+def _get_server_version():
+    """Get server version from ConfigManager."""
+    try:
+        return get_config_manager().config.server.version
+    except Exception:
+        return "0.1.0"
+
+def _get_base_user_agent():
+    """Get base user agent from ConfigManager."""
+    try:
+        return get_config_manager().config.server.base_user_agent
+    except Exception:
+        return f"NFL-MCP-Server/{_get_server_version()}"
+
+SERVER_VERSION = _get_server_version()
+BASE_USER_AGENT = _get_base_user_agent()
+
+# User Agent strings for different services - now uses ConfigManager
+def _get_user_agents():
+    """Get user agents dictionary from ConfigManager."""
+    try:
+        config_manager = get_config_manager()
+        return {
+            "nfl_news": config_manager.get_user_agent("nfl_news"),
+            "nfl_teams": config_manager.get_user_agent("nfl_teams"),
+            "depth_chart": config_manager.get_user_agent("depth_chart"),
+            "web_crawler": config_manager.get_user_agent("web_crawler"),
+            "athletes": config_manager.get_user_agent("athletes"),
+            "sleeper_league": config_manager.get_user_agent("sleeper_league"),
+            "sleeper_rosters": config_manager.get_user_agent("sleeper_rosters"),
+            "sleeper_users": config_manager.get_user_agent("sleeper_users"),
+            "sleeper_matchups": config_manager.get_user_agent("sleeper_matchups"),
+            "sleeper_playoffs": config_manager.get_user_agent("sleeper_playoffs"),
+            "sleeper_transactions": config_manager.get_user_agent("sleeper_transactions"),
+            "sleeper_traded_picks": config_manager.get_user_agent("sleeper_traded_picks"),
+            "sleeper_nfl_state": config_manager.get_user_agent("sleeper_nfl_state"),
+            "sleeper_trending": config_manager.get_user_agent("sleeper_trending"),
+        }
+    except Exception:
+        # Fallback to hardcoded values
+        base_agent = f"NFL-MCP-Server/{_get_server_version()}"
+        return {
+            "nfl_news": f"{base_agent} (NFL News Fetcher)",
+            "nfl_teams": f"{base_agent} (NFL Teams Fetcher)",
+            "depth_chart": f"{base_agent} (NFL Depth Chart Fetcher)",
+            "web_crawler": f"{base_agent} (Web Content Extractor)",
+            "athletes": f"{base_agent} (NFL Athletes Fetcher)",
+            "sleeper_league": f"{base_agent} (Sleeper League Fetcher)",
+            "sleeper_rosters": f"{base_agent} (Sleeper Rosters Fetcher)",
+            "sleeper_users": f"{base_agent} (Sleeper Users Fetcher)",
+            "sleeper_matchups": f"{base_agent} (Sleeper Matchups Fetcher)",
+            "sleeper_playoffs": f"{base_agent} (Sleeper Playoffs Fetcher)",
+            "sleeper_transactions": f"{base_agent} (Sleeper Transactions Fetcher)",
+            "sleeper_traded_picks": f"{base_agent} (Sleeper Traded Picks Fetcher)",
+            "sleeper_nfl_state": f"{base_agent} (Sleeper NFL State Fetcher)",
+            "sleeper_trending": f"{base_agent} (Sleeper Trending Players Fetcher)",
+        }
+
+USER_AGENTS = _get_user_agents()
 
 
 def get_http_headers(service_name: str) -> Dict[str, str]:
@@ -134,8 +195,15 @@ def create_http_client(timeout: httpx.Timeout = None) -> httpx.AsyncClient:
     )
 
 
-# URL Validation
-ALLOWED_URL_SCHEMES = ["http://", "https://"]
+# URL Validation - now loaded from ConfigManager
+def _get_allowed_url_schemes():
+    """Get allowed URL schemes from ConfigManager."""
+    try:
+        return get_config_manager().config.security.allowed_url_schemes
+    except Exception:
+        return ["http://", "https://"]
+
+ALLOWED_URL_SCHEMES = _get_allowed_url_schemes()
 
 
 def is_valid_url(url: str) -> bool:
@@ -154,22 +222,30 @@ def is_valid_url(url: str) -> bool:
     return any(url.startswith(scheme) for scheme in ALLOWED_URL_SCHEMES)
 
 
-# Parameter Validation Limits
-LIMITS = {
-    "nfl_news_max": 50,
-    "nfl_news_min": 1,
-    "athletes_search_max": 100,
-    "athletes_search_min": 1,
-    "athletes_search_default": 10,
-    "week_min": 1,
-    "week_max": 22,
-    "round_min": 1,
-    "round_max": 18,
-    "trending_lookback_min": 1,
-    "trending_lookback_max": 168,
-    "trending_limit_min": 1,
-    "trending_limit_max": 100,
-}
+# Parameter Validation Limits - now loaded from ConfigManager
+def _get_limits():
+    """Get validation limits from ConfigManager."""
+    try:
+        return get_config_manager().get_limits_dict()
+    except Exception:
+        # Fallback to hardcoded values
+        return {
+            "nfl_news_max": 50,
+            "nfl_news_min": 1,
+            "athletes_search_max": 100,
+            "athletes_search_min": 1,
+            "athletes_search_default": 10,
+            "week_min": 1,
+            "week_max": 22,
+            "round_min": 1,
+            "round_max": 18,
+            "trending_lookback_min": 1,
+            "trending_lookback_max": 168,
+            "trending_limit_min": 1,
+            "trending_limit_max": 100,
+        }
+
+LIMITS = _get_limits()
 
 
 # Input Validation Security Patterns
@@ -210,22 +286,30 @@ SAFE_PATTERNS = {
     'trend_type': re.compile(r'^(add|drop)$'),  # Only valid trend types
 }
 
-# Rate limiting constants
-RATE_LIMITS = {
-    'default_requests_per_minute': 60,
-    'heavy_requests_per_minute': 10,  # For fetch operations
-    'burst_limit': 5,  # Max consecutive requests
-}
+# Rate limiting constants - now loaded from ConfigManager
+def _get_rate_limits():
+    """Get rate limits from ConfigManager."""
+    try:
+        return get_config_manager().get_rate_limits_dict()
+    except Exception:
+        # Fallback to hardcoded values
+        return {
+            'default_requests_per_minute': 60,
+            'heavy_requests_per_minute': 10,
+            'burst_limit': 5,
+        }
+
+RATE_LIMITS = _get_rate_limits()
 
 
-def validate_string_input(value: str, input_type: str = 'general', max_length: int = 1000, required: bool = True) -> str:
+def validate_string_input(value: str, input_type: str = 'general', max_length: int = None, required: bool = True) -> str:
     """
     Validate and sanitize string inputs to prevent injection attacks.
     
     Args:
         value: The string value to validate
         input_type: Type of input (general, id, name, team_id, league_id, trend_type)
-        max_length: Maximum allowed length
+        max_length: Maximum allowed length (uses ConfigManager default if None)
         required: Whether the input is required (cannot be empty)
         
     Returns:
@@ -241,6 +325,13 @@ def validate_string_input(value: str, input_type: str = 'general', max_length: i
     
     if not isinstance(value, str):
         raise ValueError(f"Input must be a string, got {type(value)}")
+    
+    # Get max_length from ConfigManager if not provided
+    if max_length is None:
+        try:
+            max_length = get_config_manager().config.security.max_string_length
+        except Exception:
+            max_length = 1000  # Fallback default
     
     # Check length
     if len(value) > max_length:
@@ -258,7 +349,13 @@ def validate_string_input(value: str, input_type: str = 'general', max_length: i
     sanitized = html.escape(value.strip())
     
     # Check for dangerous patterns only if not a specific safe pattern type
-    if input_type not in SAFE_PATTERNS:
+    # and if injection detection is enabled
+    try:
+        enable_injection_detection = get_config_manager().config.security.enable_injection_detection
+    except Exception:
+        enable_injection_detection = True  # Default to enabled
+    
+    if input_type not in SAFE_PATTERNS and enable_injection_detection:
         value_lower = value.lower()
         for pattern_type, patterns in DANGEROUS_PATTERNS.items():
             for pattern in patterns:

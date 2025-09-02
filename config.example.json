@@ -1,0 +1,39 @@
+{
+  "_comment": "Example Configuration File for NFL MCP Server in JSON format",
+  "timeout": {
+    "total": 30.0,
+    "connect": 10.0
+  },
+  "long_timeout": {
+    "total": 60.0,
+    "connect": 15.0
+  },
+  "server": {
+    "version": "0.1.0"
+  },
+  "limits": {
+    "nfl_news_max": 50,
+    "nfl_news_min": 1,
+    "athletes_search_max": 100,
+    "athletes_search_min": 1,
+    "athletes_search_default": 10,
+    "week_min": 1,
+    "week_max": 22,
+    "round_min": 1,
+    "round_max": 18,
+    "trending_lookback_min": 1,
+    "trending_lookback_max": 168,
+    "trending_limit_min": 1,
+    "trending_limit_max": 100
+  },
+  "rate_limits": {
+    "default_requests_per_minute": 60,
+    "heavy_requests_per_minute": 10,
+    "burst_limit": 5
+  },
+  "security": {
+    "allowed_url_schemes": ["https://", "http://"],
+    "max_string_length": 1000,
+    "enable_injection_detection": true
+  }
+}

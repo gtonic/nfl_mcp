@@ -1,0 +1,46 @@
+# Example Configuration File for NFL MCP Server
+# This file demonstrates all available configuration options
+
+# HTTP timeouts
+timeout:
+  total: 30.0      # Total timeout in seconds
+  connect: 10.0    # Connection timeout in seconds
+
+# Long timeouts for heavy operations
+long_timeout:
+  total: 60.0      # Total timeout for large data fetches
+  connect: 15.0    # Connection timeout for large data fetches
+
+# Server configuration
+server:
+  version: "0.1.0"  # Server version (affects User-Agent)
+
+# Parameter validation limits
+limits:
+  nfl_news_max: 50                    # Maximum NFL news items to fetch
+  nfl_news_min: 1                     # Minimum NFL news items to fetch
+  athletes_search_max: 100            # Maximum athletes in search results
+  athletes_search_min: 1              # Minimum athletes in search results
+  athletes_search_default: 10         # Default number of athletes to return
+  week_min: 1                         # Minimum week number
+  week_max: 22                        # Maximum week number (including playoffs)
+  round_min: 1                        # Minimum round number
+  round_max: 18                       # Maximum round number
+  trending_lookback_min: 1            # Minimum trending lookback hours
+  trending_lookback_max: 168          # Maximum trending lookback hours (1 week)
+  trending_limit_min: 1               # Minimum trending players limit
+  trending_limit_max: 100             # Maximum trending players limit
+
+# Rate limiting configuration
+rate_limits:
+  default_requests_per_minute: 60     # Default rate limit per minute
+  heavy_requests_per_minute: 10       # Rate limit for heavy operations
+  burst_limit: 5                      # Maximum consecutive requests
+
+# Security configuration
+security:
+  allowed_url_schemes:                # Allowed URL schemes for web crawling
+    - "https://"
+    - "http://"
+  max_string_length: 1000             # Maximum string input length
+  enable_injection_detection: true    # Enable SQL/XSS injection detection
