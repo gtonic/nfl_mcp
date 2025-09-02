@@ -4,7 +4,28 @@ A FastMCP server that provides health monitoring, web content extraction, NFL ne
 
 ## Features
 
-- **Health Endpoint**: Non-MCP REST endpoint at `/health` for monitoring server status
+- **Enhanced Health Monitoring**: Multiple health check endpoints for comprehensive monitoring
+  - `/health` - Basic health status
+  - `/health?include_dependencies=true` - Comprehensive health with dependency checks
+  - System resource monitoring (CPU, memory, disk usage)
+  - Database connectivity and health verification
+  - External API availability checks
+- **Performance Metrics**: Comprehensive metrics collection and export
+  - Request/response timing and counts
+  - Database operation metrics
+  - System resource metrics
+  - Prometheus-compatible metrics endpoint at `/metrics`
+  - JSON metrics export for custom monitoring tools
+- **Structured Logging**: JSON-formatted logs with contextual information
+  - Request/response logging with timing and status codes
+  - Error tracking with structured error information
+  - Configurable log levels and file rotation
+  - Integration-ready for log aggregation tools
+- **Request/Response Monitoring**: Automatic tracking of all HTTP requests
+  - Response time measurement
+  - Status code tracking
+  - Request/response size monitoring
+  - Client IP and User-Agent logging
 - **URL Crawling Tool**: MCP tool that crawls arbitrary URLs and extracts LLM-friendly text content
 - **NFL News Tool**: MCP tool that fetches the latest NFL news from ESPN API
 - **NFL Teams Tools**: Comprehensive MCP tools for NFL teams including:
@@ -107,19 +128,89 @@ docker run --rm -p 9000:9000 \
 
 ## API Documentation
 
-### Health Endpoint (REST)
+### Health Endpoints (REST)
+
+The server provides comprehensive health monitoring through multiple endpoints:
 
 **GET** `/health`
 
-Returns server health status.
+Basic health check for simple monitoring.
 
 **Response:**
 ```json
 {
   "status": "healthy",
   "service": "NFL MCP Server", 
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "timestamp": "2025-01-01T12:00:00Z",
+  "response_time_ms": 5.2,
+  "checks": [
+    {
+      "name": "server",
+      "status": "healthy",
+      "message": "Server is running normally",
+      "response_time_ms": 1.5
+    }
+  ],
+  "summary": {
+    "total_checks": 3,
+    "healthy_checks": 3,
+    "degraded_checks": 0,
+    "unhealthy_checks": 0
+  }
 }
+```
+
+**GET** `/health?include_dependencies=true`
+
+Comprehensive health check including external dependencies.
+
+**Response includes additional checks for:**
+- Database connectivity and health
+- System resources (CPU, memory, disk)
+- External API availability (ESPN, Sleeper)
+
+**GET** `/health/basic`
+
+Simple health check that always returns basic status information.
+
+### Metrics Endpoint (REST)
+
+**GET** `/metrics`
+
+Performance metrics for monitoring and alerting.
+
+**JSON Format (default):**
+```json
+{
+  "timestamp": "2025-01-01T12:00:00Z",
+  "counters": {
+    "http_requests_total": 1250,
+    "database_operations_total": 45
+  },
+  "gauges": {
+    "active_connections": 12,
+    "memory_usage_percent": 68.4
+  },
+  "timings": {
+    "http_request_duration": {
+      "count": 1250,
+      "p50_ms": 85.5,
+      "p90_ms": 150.2,
+      "p95_ms": 200.1,
+      "p99_ms": 350.8,
+      "avg_ms": 95.3
+    }
+  }
+}
+```
+
+**Prometheus Format:**
+Add `Accept: text/plain` header to get Prometheus-compatible metrics:
+```
+http_requests_total{method="GET",status_code="200"} 1250
+http_request_duration_seconds{method="GET"} 0.095
+memory_usage_percent 68.4
 ```
 
 ### NFL News Tool (MCP)
@@ -491,6 +582,42 @@ Run `task --list` to see all available tasks:
 - `task run-docker` - Build and run in Docker
 - `task health-check` - Check server health
 - `task clean` - Clean up Docker resources
+
+### Monitoring and Observability
+
+The server includes comprehensive monitoring features:
+
+#### Structured Logging
+- JSON-formatted logs with contextual information
+- Automatic request/response logging
+- Configurable log levels and file rotation
+- Log files stored in `logs/` directory
+
+#### Performance Metrics
+- Request/response timing and counts
+- Database operation metrics
+- System resource monitoring
+- Error rate tracking
+- Prometheus-compatible export
+
+#### Health Monitoring
+- Basic and comprehensive health checks
+- Dependency availability monitoring
+- System resource thresholds
+- Database connectivity verification
+
+#### Demonstration
+Run the monitoring demo to see all features in action:
+```bash
+python monitoring_demo.py
+```
+
+#### Production Monitoring
+For production deployments, consider:
+- Setting up log aggregation (ELK Stack, Fluentd)
+- Connecting Prometheus/Grafana for metrics visualization
+- Configuring alerting based on health check endpoints
+- Using structured logging for better debugging
 
 ## Security Considerations
 
