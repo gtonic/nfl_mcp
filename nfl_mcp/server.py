@@ -4,7 +4,6 @@ NFL MCP Server
 
 A FastMCP server that provides:
 - Health endpoint (non-MCP REST endpoint)
-- Multiply tool (MCP tool for arithmetic operations)
 - URL crawling tool (MCP tool for web content extraction)
 - NFL news tool (MCP tool for fetching latest NFL news from ESPN)
 - NFL teams tool (MCP tool for fetching all NFL teams from ESPN)
@@ -22,6 +21,10 @@ from fastmcp import FastMCP
 from starlette.responses import JSONResponse
 
 from .database import NFLDatabase
+from .config import (
+    DEFAULT_TIMEOUT, get_http_headers, create_http_client, 
+    is_valid_url, validate_limit, LIMITS
+)
 
 
 def create_app() -> FastMCP:
@@ -45,20 +48,7 @@ def create_app() -> FastMCP:
             "version": "0.1.0"
         })
     
-    # MCP Tool: Multiply two integers
-    @mcp.tool
-    def multiply(x: int, y: int) -> int:
-        """
-        Multiply two integer numbers and return the result.
-        
-        Args:
-            x: First integer to multiply
-            y: Second integer to multiply
-            
-        Returns:
-            The product of x and y
-        """
-        return x * y
+
     
     # MCP Tool: Get NFL news from ESPN
     @mcp.tool
@@ -80,26 +70,22 @@ def create_app() -> FastMCP:
             - error: Error message (if any)
         """
         # Validate and cap the limit
-        if limit is None:
-            limit = 50
-        elif limit < 1:
-            limit = 1
-        elif limit > 50:
-            limit = 50
+        limit = validate_limit(
+            limit, 
+            LIMITS["nfl_news_min"], 
+            LIMITS["nfl_news_max"], 
+            LIMITS["nfl_news_max"]
+        )
             
         try:
-            # Set reasonable timeout and user agent
-            timeout = httpx.Timeout(30.0, connect=10.0)
-            headers = {
-                "User-Agent": "NFL-MCP-Server/0.1.0 (NFL News Fetcher)"
-            }
+            headers = get_http_headers("nfl_news")
             
             # Build the ESPN API URL
             url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?limit={limit}"
             
-            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+            async with create_http_client() as client:
                 # Fetch the news from ESPN API
-                response = await client.get(url, follow_redirects=True)
+                response = await client.get(url, headers=headers)
                 response.raise_for_status()
                 
                 # Parse JSON response
@@ -450,8 +436,8 @@ def create_app() -> FastMCP:
             - success: Whether the crawl was successful
             - error: Error message (if any)
         """
-        # Validate URL format
-        if not url.startswith(('http://', 'https://')):
+        # Validate URL format for security
+        if not is_valid_url(url):
             return {
                 "url": url,
                 "title": None,
@@ -462,15 +448,11 @@ def create_app() -> FastMCP:
             }
         
         try:
-            # Set reasonable timeout and user agent
-            timeout = httpx.Timeout(30.0, connect=10.0)
-            headers = {
-                "User-Agent": "NFL-MCP-Server/0.1.0 (Web Content Extractor)"
-            }
+            headers = get_http_headers("web_crawler")
             
-            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+            async with create_http_client() as client:
                 # Fetch the URL
-                response = await client.get(url, follow_redirects=True)
+                response = await client.get(url, headers=headers)
                 response.raise_for_status()
                 
                 # Parse HTML content
@@ -665,11 +647,13 @@ def create_app() -> FastMCP:
             - error: Error message (if any)
         """
         try:
-            # Validate limit
-            if limit is None or limit < 1:
-                limit = 10
-            elif limit > 100:
-                limit = 100
+            # Validate limit using shared validation
+            limit = validate_limit(
+                limit,
+                LIMITS["athletes_search_min"],
+                LIMITS["athletes_search_max"],
+                LIMITS["athletes_search_default"]
+            )
             
             athletes = nfl_db.search_athletes_by_name(name, limit)
             
@@ -1343,7 +1327,7 @@ def create_app() -> FastMCP:
                 for item in trending_data or []:
                     pid = str(item.get("player_id", ""))
                     cnt = item.get("count", 0)
-                    athlete = athlete_db.get_athlete_by_id(pid)
+                    athlete = nfl_db.get_athlete_by_id(pid)
                     if athlete:
                         full_name = athlete.get("full_name") or (
                             ((athlete.get("first_name") or "") + " " + (athlete.get("last_name") or "")).strip()
