@@ -432,7 +432,18 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
         
         # Look up each trending player in our database for enriched data
         enriched_players = []
-        for player_id in trending_player_ids:
+        for player_item in trending_player_ids:
+            # Handle both string IDs and dict objects from the API
+            if isinstance(player_item, dict):
+                # Extract player_id from dict object
+                player_id = player_item.get('player_id') or player_item.get('id')
+                if not player_id:
+                    # Skip if we can't find a valid ID
+                    continue
+            else:
+                # Assume it's a string ID
+                player_id = player_item
+            
             player_info = nfl_db.get_athlete_by_id(player_id)
             if player_info:
                 enriched_players.append(player_info)

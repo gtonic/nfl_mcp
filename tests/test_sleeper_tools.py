@@ -88,3 +88,124 @@ class TestSleeperToolsModule:
         assert result["success"] is False
         assert "trend_type must be one of" in result["error"]
         assert result["error_type"] == "validation_error"  # Test new field
+    
+    @pytest.mark.asyncio
+    async def test_get_trending_players_with_dict_response(self):
+        """Test that get_trending_players handles dict responses from API."""
+        from unittest.mock import MagicMock
+        
+        func = getattr(sleeper_tools, 'get_trending_players')
+        
+        # Mock response that returns dict objects instead of string IDs
+        mock_response = MagicMock()
+        mock_response.json.return_value = [
+            {'player_id': '12345', 'name': 'Player 1'},
+            {'player_id': '67890', 'name': 'Player 2'}
+        ]
+        mock_response.raise_for_status = MagicMock()
+        
+        # Mock the HTTP client  
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client', return_value=mock_client):
+            result = await func()
+            assert result["success"] is True
+            assert result["error"] is None
+            assert result["count"] == 2
+            assert len(result["trending_players"]) == 2
+    
+    @pytest.mark.asyncio
+    async def test_get_trending_players_with_string_ids(self):
+        """Test backward compatibility with string ID responses."""
+        from unittest.mock import MagicMock
+        
+        func = getattr(sleeper_tools, 'get_trending_players')
+        
+        # Mock response with string IDs (original format)
+        mock_response = MagicMock()
+        mock_response.json.return_value = ['12345', '67890']
+        mock_response.raise_for_status = MagicMock()
+        
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client', return_value=mock_client):
+            result = await func()
+            assert result["success"] is True
+            assert result["error"] is None
+            assert result["count"] == 2
+            assert len(result["trending_players"]) == 2
+    
+    @pytest.mark.asyncio
+    async def test_get_trending_players_with_mixed_formats(self):
+        """Test handling of mixed response formats."""
+        from unittest.mock import MagicMock
+        
+        func = getattr(sleeper_tools, 'get_trending_players')
+        
+        # Mock response with mixed formats
+        mock_response = MagicMock()
+        mock_response.json.return_value = [
+            '12345',  # String ID
+            {'player_id': '67890'},  # Dict with player_id
+            {'id': '11111'},  # Dict with id
+            {'name': 'Player without ID'},  # Dict without valid ID - should be skipped
+        ]
+        mock_response.raise_for_status = MagicMock()
+        
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client', return_value=mock_client):
+            result = await func()
+            assert result["success"] is True
+            assert result["error"] is None
+            assert result["count"] == 3  # Only valid IDs should be processed
+            assert len(result["trending_players"]) == 3
+
+
+class TestSleeperToolsIntegration:
+    """Integration tests for sleeper tools in real server context."""
+    
+    @pytest.mark.asyncio
+    async def test_trending_players_dict_response_integration(self):
+        """Integration test to ensure dict responses work with server tooling."""
+        from unittest.mock import MagicMock
+        from nfl_mcp.server import create_app
+        
+        # This test simulates the real server environment where the function
+        # is called through the MCP tool interface
+        
+        app = create_app()
+        
+        # Mock the HTTP response to return dict objects
+        mock_response = MagicMock()
+        mock_response.json.return_value = [
+            {'player_id': 'test123', 'name': 'Test Player'},
+            {'id': 'test456', 'name': 'Another Player'}  # Different ID field
+        ]
+        mock_response.raise_for_status = MagicMock()
+        
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client', return_value=mock_client):
+            # Import and call the function as the server would
+            from nfl_mcp import sleeper_tools
+            result = await sleeper_tools.get_trending_players("add", 24, 10)
+            
+            # Verify the fix works in integration context
+            assert result["success"] is True
+            assert result["error"] is None
+            assert result["count"] == 2
+            assert result["trend_type"] == "add"
+            assert result["lookback_hours"] == 24
