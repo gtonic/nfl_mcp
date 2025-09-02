@@ -1,11 +1,10 @@
 # NFL MCP Server
 
-A FastMCP server that provides health monitoring, arithmetic operations, web content extraction, NFL news fetching, NFL teams information, and comprehensive fantasy league management through both REST and MCP protocols.
+A FastMCP server that provides health monitoring, web content extraction, NFL news fetching, NFL teams information, and comprehensive fantasy league management through both REST and MCP protocols.
 
 ## Features
 
 - **Health Endpoint**: Non-MCP REST endpoint at `/health` for monitoring server status
-- **Multiply Tool**: MCP tool that multiplies two integers and returns the result
 - **URL Crawling Tool**: MCP tool that crawls arbitrary URLs and extracts LLM-friendly text content
 - **NFL News Tool**: MCP tool that fetches the latest NFL news from ESPN API
 - **NFL Teams Tools**: Comprehensive MCP tools for NFL teams including:
@@ -413,27 +412,6 @@ async with Client("http://localhost:9000/mcp/") as client:
         print(f"League: {result.data['league']['name']}")
 ```
 
-### Multiply Tool (MCP)
-
-**Tool Name:** `multiply`
-
-Multiplies two integer numbers and returns the result.
-
-**Parameters:**
-- `x` (integer): First number to multiply
-- `y` (integer): Second number to multiply
-
-**Returns:** Integer result of x * y
-
-**Example Usage with MCP Client:**
-```python
-from fastmcp import Client
-
-async with Client("http://localhost:9000/mcp/") as client:
-    result = await client.call_tool("multiply", {"x": 5, "y": 3})
-    print(result.data)  # Output: 15
-```
-
 ## Development
 
 ### Running Tests
@@ -446,7 +424,9 @@ pytest tests/ -v --cov=nfl_mcp --cov-report=term-missing
 nfl_mcp/
 ├── nfl_mcp/           # Main package
 │   ├── __init__.py
-│   └── server.py      # FastMCP server implementation
+│   ├── server.py      # FastMCP server implementation
+│   ├── database.py    # SQLite database management
+│   └── config.py      # Shared configuration and utilities
 ├── tests/             # Unit tests
 │   ├── __init__.py
 │   └── test_server.py
@@ -468,6 +448,23 @@ Run `task --list` to see all available tasks:
 - `task run-docker` - Build and run in Docker
 - `task health-check` - Check server health
 - `task clean` - Clean up Docker resources
+
+## Security Considerations
+
+This server implements several security measures:
+
+- **URL Validation**: Only HTTP/HTTPS URLs are allowed for web crawling
+- **Request Timeouts**: All HTTP requests have reasonable timeout limits (30s total, 10s connect)
+- **User-Agent Headers**: All requests are properly identified
+- **SQL Injection Prevention**: All database queries use parameterized statements
+- **Input Validation**: All user inputs are validated and sanitized
+- **No Code Execution**: The server does not execute arbitrary code or eval statements
+
+When deploying in production:
+- Run in a containerized environment
+- Use proper network security controls
+- Monitor for unusual request patterns
+- Keep dependencies updated
 
 ## License
 
