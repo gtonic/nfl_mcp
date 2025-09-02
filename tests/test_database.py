@@ -8,7 +8,7 @@ import pytest
 import tempfile
 import json
 from pathlib import Path
-from nfl_mcp.database import AthleteDatabase
+from nfl_mcp.database import NFLDatabase
 
 
 class TestAthleteDatabase:
@@ -18,7 +18,7 @@ class TestAthleteDatabase:
         """Set up a temporary database for each test."""
         self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
         self.temp_db.close()
-        self.db = AthleteDatabase(self.temp_db.name)
+        self.db = NFLDatabase(self.temp_db.name)
     
     def teardown_method(self):
         """Clean up the temporary database after each test."""

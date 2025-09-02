@@ -21,7 +21,7 @@ class TestAthleteMCPTools:
         self.temp_db.close()
         
         # Patch the database path for testing
-        with patch('nfl_mcp.server.AthleteDatabase') as mock_db_class:
+        with patch('nfl_mcp.server.NFLDatabase') as mock_db_class:
             self.mock_db = MagicMock()
             mock_db_class.return_value = self.mock_db
             self.app = create_app()
@@ -426,7 +426,7 @@ class TestAthleteToolsIntegration:
     
     def test_athlete_database_initialization(self):
         """Test that the athlete database initializes properly."""
-        with patch('nfl_mcp.server.AthleteDatabase') as mock_db_class:
+        with patch('nfl_mcp.server.NFLDatabase') as mock_db_class:
             mock_db = MagicMock()
             mock_db_class.return_value = mock_db
             
