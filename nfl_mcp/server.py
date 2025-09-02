@@ -8,6 +8,7 @@ A FastMCP server that provides:
 - URL crawling tool (MCP tool for web content extraction)
 - NFL news tool (MCP tool for fetching latest NFL news from ESPN)
 - NFL teams tool (MCP tool for fetching all NFL teams from ESPN)
+- Athlete tools (MCP tools for fetching and looking up NFL athletes from Sleeper API)
 """
 
 import re
@@ -17,6 +18,8 @@ from bs4 import BeautifulSoup
 from fastmcp import FastMCP
 from starlette.responses import JSONResponse
 
+from .database import AthleteDatabase
+
 
 def create_app() -> FastMCP:
     """Create and configure the FastMCP server application."""
@@ -25,6 +28,9 @@ def create_app() -> FastMCP:
     mcp = FastMCP(
         name="NFL MCP Server"
     )
+    
+    # Initialize athlete database
+    athlete_db = AthleteDatabase()
     
     # Health endpoint (non-MCP, directly exposed REST endpoint)
     @mcp.custom_route(path="/health", methods=["GET"])
@@ -323,6 +329,195 @@ def create_app() -> FastMCP:
                 "content_length": 0,
                 "success": False,
                 "error": f"Unexpected error: {str(e)}"
+            }
+    
+    # MCP Tool: Fetch athletes from Sleeper API and store in database
+    @mcp.tool
+    async def fetch_athletes() -> dict:
+        """
+        Fetch all NFL players from Sleeper API and store them in the local database.
+        
+        This tool fetches the complete athlete roster from Sleeper's API and 
+        upserts the data into the SQLite database for fast local lookups.
+        
+        Returns:
+            A dictionary containing:
+            - athletes_count: Number of athletes processed
+            - last_updated: Timestamp of the update
+            - success: Whether the fetch was successful
+            - error: Error message (if any)
+        """
+        try:
+            # Set reasonable timeout and user agent
+            timeout = httpx.Timeout(60.0, connect=15.0)  # Longer timeout for large dataset
+            headers = {
+                "User-Agent": "NFL-MCP-Server/0.1.0 (NFL Athletes Fetcher)"
+            }
+            
+            # Sleeper API endpoint for all players
+            url = "https://api.sleeper.app/v1/players/nfl"
+            
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                # Fetch the athletes from Sleeper API
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                athletes_data = response.json()
+                
+                # Store in database
+                count = athlete_db.upsert_athletes(athletes_data)
+                last_updated = athlete_db.get_last_updated()
+                
+                return {
+                    "athletes_count": count,
+                    "last_updated": last_updated,
+                    "success": True,
+                    "error": None
+                }
+                
+        except httpx.TimeoutException:
+            return {
+                "athletes_count": 0,
+                "last_updated": None,
+                "success": False,
+                "error": "Request timed out while fetching athletes from Sleeper API"
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "athletes_count": 0,
+                "last_updated": None,
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            }
+        except Exception as e:
+            return {
+                "athletes_count": 0,
+                "last_updated": None,
+                "success": False,
+                "error": f"Unexpected error fetching athletes: {str(e)}"
+            }
+    
+    # MCP Tool: Lookup athlete by ID
+    @mcp.tool
+    def lookup_athlete(athlete_id: str) -> dict:
+        """
+        Look up an athlete by their ID.
+        
+        This tool queries the local database for an athlete with the given ID
+        and returns their information including name, team, position, etc.
+        
+        Args:
+            athlete_id: The unique identifier for the athlete
+            
+        Returns:
+            A dictionary containing:
+            - athlete: Athlete information (if found)
+            - found: Whether the athlete was found
+            - error: Error message (if any)
+        """
+        try:
+            athlete = athlete_db.get_athlete_by_id(athlete_id)
+            
+            if athlete:
+                return {
+                    "athlete": athlete,
+                    "found": True,
+                    "error": None
+                }
+            else:
+                return {
+                    "athlete": None,
+                    "found": False,
+                    "error": f"Athlete with ID '{athlete_id}' not found"
+                }
+                
+        except Exception as e:
+            return {
+                "athlete": None,
+                "found": False,
+                "error": f"Error looking up athlete: {str(e)}"
+            }
+    
+    # MCP Tool: Search athletes by name
+    @mcp.tool
+    def search_athletes(name: str, limit: Optional[int] = 10) -> dict:
+        """
+        Search for athletes by name (partial match supported).
+        
+        This tool searches the local database for athletes whose names match
+        the given search term, supporting partial matches.
+        
+        Args:
+            name: Name or partial name to search for
+            limit: Maximum number of results to return (default: 10)
+            
+        Returns:
+            A dictionary containing:
+            - athletes: List of matching athletes
+            - count: Number of athletes found
+            - search_term: The search term used
+            - error: Error message (if any)
+        """
+        try:
+            # Validate limit
+            if limit is None or limit < 1:
+                limit = 10
+            elif limit > 100:
+                limit = 100
+            
+            athletes = athlete_db.search_athletes_by_name(name, limit)
+            
+            return {
+                "athletes": athletes,
+                "count": len(athletes),
+                "search_term": name,
+                "error": None
+            }
+            
+        except Exception as e:
+            return {
+                "athletes": [],
+                "count": 0,
+                "search_term": name,
+                "error": f"Error searching athletes: {str(e)}"
+            }
+    
+    # MCP Tool: Get athletes by team
+    @mcp.tool  
+    def get_athletes_by_team(team_id: str) -> dict:
+        """
+        Get all athletes for a specific team.
+        
+        This tool retrieves all athletes associated with a given team ID
+        from the local database.
+        
+        Args:
+            team_id: The team identifier (e.g., "SF", "DAL", "NE")
+            
+        Returns:
+            A dictionary containing:
+            - athletes: List of athletes on the team
+            - count: Number of athletes found
+            - team_id: The team ID searched for
+            - error: Error message (if any)
+        """
+        try:
+            athletes = athlete_db.get_athletes_by_team(team_id)
+            
+            return {
+                "athletes": athletes,
+                "count": len(athletes),
+                "team_id": team_id,
+                "error": None
+            }
+            
+        except Exception as e:
+            return {
+                "athletes": [],
+                "count": 0,
+                "team_id": team_id,
+                "error": f"Error getting athletes for team: {str(e)}"
             }
     
     return mcp

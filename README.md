@@ -9,6 +9,7 @@ A FastMCP server that provides health monitoring, arithmetic operations, web con
 - **URL Crawling Tool**: MCP tool that crawls arbitrary URLs and extracts LLM-friendly text content
 - **NFL News Tool**: MCP tool that fetches the latest NFL news from ESPN API
 - **NFL Teams Tool**: MCP tool that fetches all NFL teams from ESPN API
+- **Athlete Tools**: MCP tools for fetching, caching, and looking up NFL athletes from Sleeper API with SQLite persistence
 - **HTTP Transport**: Runs on HTTP transport protocol (default port 9000)
 - **Containerized**: Docker support for easy deployment
 - **Well Tested**: Comprehensive unit tests for all functionality
@@ -148,6 +149,72 @@ async with Client("http://localhost:9000/mcp/") as client:
 Each team in the `teams` list contains:
 - `id`: Unique team identifier
 - `name`: Team name
+
+### Athlete Tools (MCP)
+
+**Tools:** `fetch_athletes`, `lookup_athlete`, `search_athletes`, `get_athletes_by_team`
+
+These tools provide comprehensive athlete data management with SQLite-based caching.
+
+#### fetch_athletes
+
+Fetches all NFL players from Sleeper API and stores them in the local SQLite database.
+
+**Parameters:** None
+
+**Returns:** Dictionary with athlete count, last updated timestamp, success status, and error (if any)
+
+#### lookup_athlete
+
+Look up an athlete by their unique ID.
+
+**Parameters:**
+- `athlete_id`: The unique identifier for the athlete
+
+**Returns:** Dictionary with athlete information, found status, and error (if any)
+
+#### search_athletes
+
+Search for athletes by name (supports partial matches).
+
+**Parameters:**
+- `name`: Name or partial name to search for
+- `limit`: Maximum number of results (default: 10, max: 100)
+
+**Returns:** Dictionary with matching athletes, count, search term, and error (if any)
+
+#### get_athletes_by_team
+
+Get all athletes for a specific team.
+
+**Parameters:**
+- `team_id`: The team identifier (e.g., "SF", "KC", "NE")
+
+**Returns:** Dictionary with team athletes, count, team ID, and error (if any)
+
+**Example Usage with MCP Client:**
+```python
+from fastmcp import Client
+
+async with Client("http://localhost:9000/mcp/") as client:
+    # Fetch and cache all athletes
+    result = await client.call_tool("fetch_athletes", {})
+    print(f"Cached {result.data['athletes_count']} athletes")
+    
+    # Look up specific athlete
+    result = await client.call_tool("lookup_athlete", {"athlete_id": "2307"})
+    if result.data["found"]:
+        print(f"Found: {result.data['athlete']['full_name']}")
+    
+    # Search by name
+    result = await client.call_tool("search_athletes", {"name": "Mahomes"})
+    for athlete in result.data["athletes"]:
+        print(f"- {athlete['full_name']} ({athlete['position']})")
+    
+    # Get team roster
+    result = await client.call_tool("get_athletes_by_team", {"team_id": "KC"})
+    print(f"KC has {result.data['count']} players")
+```
 
 ### Crawl URL Tool (MCP)
 
