@@ -9,8 +9,16 @@ from typing import Optional
 from bs4 import BeautifulSoup
 
 from .config import get_http_headers, create_http_client, validate_limit, LIMITS
+from .errors import (
+    create_error_response, create_success_response, ErrorType,
+    handle_http_errors, handle_validation_error
+)
 
 
+@handle_http_errors(
+    default_data={"articles": [], "total_articles": 0},
+    operation_name="fetching NFL news"
+)
 async def get_nfl_news(limit: Optional[int] = 50) -> dict:
     """
     Get the latest NFL news from ESPN API.
@@ -27,6 +35,7 @@ async def get_nfl_news(limit: Optional[int] = 50) -> dict:
         - total_articles: Number of articles returned
         - success: Whether the request was successful
         - error: Error message (if any)
+        - error_type: Type of error (if any)
     """
     # Validate and cap the limit
     limit = validate_limit(
@@ -36,67 +45,46 @@ async def get_nfl_news(limit: Optional[int] = 50) -> dict:
         LIMITS["nfl_news_max"]
     )
         
-    try:
-        headers = get_http_headers("nfl_news")
+    headers = get_http_headers("nfl_news")
+    
+    # Build the ESPN API URL
+    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?limit={limit}"
+    
+    async with create_http_client() as client:
+        # Fetch the news from ESPN API
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
         
-        # Build the ESPN API URL
-        url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?limit={limit}"
+        # Parse JSON response
+        data = response.json()
         
-        async with create_http_client() as client:
-            # Fetch the news from ESPN API
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            
-            # Parse JSON response
-            data = response.json()
-            
-            # Extract articles from the response
-            articles = data.get('articles', [])
-            
-            # Process articles to extract key information
-            processed_articles = []
-            for article in articles:
-                processed_article = {
-                    "headline": article.get('headline', ''),
-                    "description": article.get('description', ''),
-                    "published": article.get('published', ''),
-                    "type": article.get('type', ''),
-                    "story": article.get('story', ''),
-                    "categories": [cat.get('description', '') for cat in article.get('categories', [])],
-                    "links": article.get('links', {})
-                }
-                processed_articles.append(processed_article)
-            
-            return {
-                "articles": processed_articles,
-                "total_articles": len(processed_articles),
-                "success": True,
-                "error": None
+        # Extract articles from the response
+        articles = data.get('articles', [])
+        
+        # Process articles to extract key information
+        processed_articles = []
+        for article in articles:
+            processed_article = {
+                "headline": article.get('headline', ''),
+                "description": article.get('description', ''),
+                "published": article.get('published', ''),
+                "type": article.get('type', ''),
+                "story": article.get('story', ''),
+                "categories": [cat.get('description', '') for cat in article.get('categories', [])],
+                "links": article.get('links', {})
             }
-            
-    except httpx.TimeoutException:
-        return {
-            "articles": [],
-            "total_articles": 0,
-            "success": False,
-            "error": "Request timed out while fetching NFL news"
-        }
-    except httpx.HTTPStatusError as e:
-        return {
-            "articles": [],
-            "total_articles": 0,
-            "success": False,
-            "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
-        }
-    except Exception as e:
-        return {
-            "articles": [],
-            "total_articles": 0,
-            "success": False,
-            "error": f"Unexpected error fetching NFL news: {str(e)}"
-        }
+            processed_articles.append(processed_article)
+        
+        return create_success_response({
+            "articles": processed_articles,
+            "total_articles": len(processed_articles)
+        })
 
 
+@handle_http_errors(
+    default_data={"teams": [], "total_teams": 0},
+    operation_name="fetching NFL teams"
+)
 async def get_teams() -> dict:
     """
     Get all NFL teams from ESPN API.
@@ -110,71 +98,51 @@ async def get_teams() -> dict:
         - total_teams: Number of teams returned
         - success: Whether the request was successful
         - error: Error message (if any)
+        - error_type: Type of error (if any)
     """
-    try:
-        headers = get_http_headers("nfl_teams")
+    headers = get_http_headers("nfl_teams")
+    
+    # Build the ESPN API URL for teams (fixed to use correct endpoint)
+    url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
+    
+    async with create_http_client() as client:
+        # Fetch the teams from ESPN API
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
         
-        # Build the ESPN API URL for teams (fixed to use correct endpoint)
-        url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
+        # Parse JSON response
+        data = response.json()
         
-        async with create_http_client() as client:
-            # Fetch the teams from ESPN API
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            
-            # Parse JSON response
-            data = response.json()
-            
-            # Extract teams from the response
-            teams_data = data.get('sports', [{}])[0].get('leagues', [{}])[0].get('teams', [])
-            
-            # Process teams to extract key information
-            processed_teams = []
-            for team in teams_data:
-                team_info = team.get('team', {})
-                processed_team = {
-                    "id": team_info.get('id', ''),
-                    "abbreviation": team_info.get('abbreviation', ''),
-                    "name": team_info.get('name', ''),
-                    "displayName": team_info.get('displayName', ''),
-                    "shortDisplayName": team_info.get('shortDisplayName', ''),
-                    "location": team_info.get('location', ''),
-                    "color": team_info.get('color', ''),
-                    "alternateColor": team_info.get('alternateColor', ''),
-                    "logo": team_info.get('logo', '')
-                }
-                processed_teams.append(processed_team)
-            
-            return {
-                "teams": processed_teams,
-                "total_teams": len(processed_teams),
-                "success": True,
-                "error": None
+        # Extract teams from the response
+        teams_data = data.get('sports', [{}])[0].get('leagues', [{}])[0].get('teams', [])
+        
+        # Process teams to extract key information
+        processed_teams = []
+        for team in teams_data:
+            team_info = team.get('team', {})
+            processed_team = {
+                "id": team_info.get('id', ''),
+                "abbreviation": team_info.get('abbreviation', ''),
+                "name": team_info.get('name', ''),
+                "displayName": team_info.get('displayName', ''),
+                "shortDisplayName": team_info.get('shortDisplayName', ''),
+                "location": team_info.get('location', ''),
+                "color": team_info.get('color', ''),
+                "alternateColor": team_info.get('alternateColor', ''),
+                "logo": team_info.get('logo', '')
             }
-            
-    except httpx.TimeoutException:
-        return {
-            "teams": [],
-            "total_teams": 0,
-            "success": False,
-            "error": "Request timed out while fetching NFL teams"
-        }
-    except httpx.HTTPStatusError as e:
-        return {
-            "teams": [],
-            "total_teams": 0,
-            "success": False,
-            "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
-        }
-    except Exception as e:
-        return {
-            "teams": [],
-            "total_teams": 0,
-            "success": False,
-            "error": f"Unexpected error fetching NFL teams: {str(e)}"
-        }
+            processed_teams.append(processed_team)
+        
+        return create_success_response({
+            "teams": processed_teams,
+            "total_teams": len(processed_teams)
+        })
 
 
+@handle_http_errors(
+    default_data={"teams_count": 0, "last_updated": None},
+    operation_name="fetching teams from ESPN API"
+)
 async def fetch_teams(nfl_db) -> dict:
     """
     Fetch all NFL teams from ESPN API and store them in the local database.
@@ -191,64 +159,44 @@ async def fetch_teams(nfl_db) -> dict:
         - last_updated: Timestamp of the update
         - success: Whether the fetch was successful
         - error: Error message (if any)
+        - error_type: Type of error (if any)
     """
-    try:
-        headers = get_http_headers("nfl_teams")
+    headers = get_http_headers("nfl_teams")
+    
+    # ESPN API endpoint for teams
+    url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
+    
+    async with create_http_client() as client:
+        # Fetch the teams from ESPN API
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
         
-        # ESPN API endpoint for teams
-        url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
+        # Parse JSON response
+        data = response.json()
         
-        async with create_http_client() as client:
-            # Fetch the teams from ESPN API
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            
-            # Parse JSON response
-            data = response.json()
-            
-            # Extract teams from the response
-            teams_data = data.get('sports', [{}])[0].get('leagues', [{}])[0].get('teams', [])
-            
-            # Process teams to get the team info
-            processed_teams = []
-            for team in teams_data:
-                team_info = team.get('team', {})
-                processed_teams.append(team_info)
-            
-            # Store in database
-            count = nfl_db.upsert_teams(processed_teams)
-            last_updated = nfl_db.get_teams_last_updated()
-            
-            return {
-                "teams_count": count,
-                "last_updated": last_updated,
-                "success": True,
-                "error": None
-            }
-            
-    except httpx.TimeoutException:
-        return {
-            "teams_count": 0,
-            "last_updated": None,
-            "success": False,
-            "error": "Request timed out while fetching teams from ESPN API"
-        }
-    except httpx.HTTPStatusError as e:
-        return {
-            "teams_count": 0,
-            "last_updated": None,
-            "success": False,
-            "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
-        }
-    except Exception as e:
-        return {
-            "teams_count": 0,
-            "last_updated": None,
-            "success": False,
-            "error": f"Unexpected error fetching teams: {str(e)}"
-        }
+        # Extract teams from the response
+        teams_data = data.get('sports', [{}])[0].get('leagues', [{}])[0].get('teams', [])
+        
+        # Process teams to get the team info
+        processed_teams = []
+        for team in teams_data:
+            team_info = team.get('team', {})
+            processed_teams.append(team_info)
+        
+        # Store in database
+        count = nfl_db.upsert_teams(processed_teams)
+        last_updated = nfl_db.get_teams_last_updated()
+        
+        return create_success_response({
+            "teams_count": count,
+            "last_updated": last_updated
+        })
 
 
+@handle_http_errors(
+    default_data={"team_id": None, "team_name": None, "depth_chart": []},
+    operation_name="fetching depth chart"
+)
 async def get_depth_chart(team_id: str) -> dict:
     """
     Get the depth chart for a specific NFL team.
@@ -266,96 +214,66 @@ async def get_depth_chart(team_id: str) -> dict:
         - depth_chart: List of positions with players in depth order
         - success: Whether the request was successful
         - error: Error message (if any)
+        - error_type: Type of error (if any)
     """
-    try:
-        # Validate team_id
-        if not team_id or not isinstance(team_id, str):
-            return {
-                "team_id": team_id,
-                "team_name": None,
-                "depth_chart": [],
-                "success": False,
-                "error": "Team ID is required and must be a string"
-            }
+    # Validate team_id
+    if not team_id or not isinstance(team_id, str):
+        return handle_validation_error(
+            "Team ID is required and must be a string",
+            {"team_id": team_id, "team_name": None, "depth_chart": []}
+        )
+    
+    headers = get_http_headers("depth_chart")
+    
+    # Build the ESPN depth chart URL
+    url = f"https://www.espn.com/nfl/team/depth/_/name/{team_id.upper()}"
+    
+    async with create_http_client() as client:
+        # Fetch the depth chart page
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
         
-        headers = get_http_headers("depth_chart")
+        # Parse HTML content
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Build the ESPN depth chart URL
-        url = f"https://www.espn.com/nfl/team/depth/_/name/{team_id.upper()}"
+        # Extract team name
+        team_name = None
+        team_header = soup.find('h1')
+        if team_header:
+            team_name = team_header.get_text(strip=True)
         
-        async with create_http_client() as client:
-            # Fetch the depth chart page
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            
-            # Parse HTML content
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extract team name
-            team_name = None
-            team_header = soup.find('h1')
-            if team_header:
-                team_name = team_header.get_text(strip=True)
-            
-            # Extract depth chart information
-            depth_chart = []
-            
-            # Look for depth chart tables or sections
-            # ESPN depth chart structure may vary, so we'll look for common patterns
-            depth_sections = soup.find_all(['table', 'div'], class_=lambda x: x and 'depth' in x.lower() if x else False)
-            
-            if not depth_sections:
-                # Try alternative selectors
-                depth_sections = soup.find_all('table')
-            
-            for section in depth_sections:
-                # Extract position and players
-                rows = section.find_all('tr')
-                for row in rows:
-                    cells = row.find_all(['td', 'th'])
-                    if len(cells) >= 2:
-                        position = cells[0].get_text(strip=True)
-                        players = []
-                        for cell in cells[1:]:
-                            player_text = cell.get_text(strip=True)
-                            if player_text and player_text != position:
-                                players.append(player_text)
-                        
-                        if position and players:
-                            depth_chart.append({
-                                "position": position,
-                                "players": players
-                            })
-            
-            return {
-                "team_id": team_id.upper(),
-                "team_name": team_name,
-                "depth_chart": depth_chart,
-                "success": True,
-                "error": None
-            }
-            
-    except httpx.TimeoutException:
-        return {
-            "team_id": team_id,
-            "team_name": None,
-            "depth_chart": [],
-            "success": False,
-            "error": "Request timed out while fetching depth chart"
-        }
-    except httpx.HTTPStatusError as e:
-        return {
-            "team_id": team_id,
-            "team_name": None,
-            "depth_chart": [],
-            "success": False,
-            "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
-        }
-    except Exception as e:
-        return {
-            "team_id": team_id,
-            "team_name": None,
-            "depth_chart": [],
-            "success": False,
-            "error": f"Unexpected error fetching depth chart: {str(e)}"
-        }
+        # Extract depth chart information
+        depth_chart = []
+        
+        # Look for depth chart tables or sections
+        # ESPN depth chart structure may vary, so we'll look for common patterns
+        depth_sections = soup.find_all(['table', 'div'], class_=lambda x: x and 'depth' in x.lower() if x else False)
+        
+        if not depth_sections:
+            # Try alternative selectors
+            depth_sections = soup.find_all('table')
+        
+        for section in depth_sections:
+            # Extract position and players
+            rows = section.find_all('tr')
+            for row in rows:
+                cells = row.find_all(['td', 'th'])
+                if len(cells) >= 2:
+                    position = cells[0].get_text(strip=True)
+                    players = []
+                    for cell in cells[1:]:
+                        player_text = cell.get_text(strip=True)
+                        if player_text and player_text != position:
+                            players.append(player_text)
+                    
+                    if position and players:
+                        depth_chart.append({
+                            "position": position,
+                            "players": players
+                        })
+        
+        return create_success_response({
+            "team_id": team_id.upper(),
+            "team_name": team_name,
+            "depth_chart": depth_chart
+        })
