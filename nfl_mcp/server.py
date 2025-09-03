@@ -35,32 +35,99 @@ from . import nfl_tools
 from . import athlete_tools
 from . import web_tools
 
+# Import new monitoring modules
+from .logging_config import setup_logging, get_logger
+from .metrics import get_metrics_collector, timing_decorator
+from .monitoring import get_health_checker
+from .middleware import RequestLoggingMiddleware
+
+
+# Setup structured logging
+setup_logging()
+logger = get_logger(__name__)
+
 
 def create_app() -> FastMCP:
     """Create and configure the FastMCP server application."""
+    
+    logger.info("Creating NFL MCP Server application")
     
     # Create FastMCP server instance
     mcp = FastMCP(
         name="NFL MCP Server"
     )
     
+    # Add request logging middleware
+    middleware = RequestLoggingMiddleware(None, exclude_paths=["/health", "/metrics"])
+    mcp.add_middleware(RequestLoggingMiddleware)
+    
     # Initialize NFL database
     nfl_db = NFLDatabase()
     
-    # Health endpoint (non-MCP, directly exposed REST endpoint)
+    # Initialize monitoring components
+    metrics = get_metrics_collector()
+    health_checker = get_health_checker(nfl_db)
+    
+    logger.info("NFL MCP Server application created successfully")
+    
+    # Enhanced health endpoint (non-MCP, directly exposed REST endpoint)
     @mcp.custom_route(path="/health", methods=["GET"])
     async def health_check(request):
-        """Health check endpoint for monitoring server status."""
+        """Enhanced health check endpoint for monitoring server status."""
+        include_deps = request.query_params.get("include_dependencies", "false").lower() == "true"
+        
+        try:
+            health_result = await health_checker.check_health(include_dependencies=include_deps)
+            status_code = 200 if health_result["status"] == "healthy" else 503
+            
+            return JSONResponse(health_result, status_code=status_code)
+        except Exception as e:
+            logger.error("Health check endpoint failed", extra={"error": str(e)})
+            return JSONResponse({
+                "status": "unhealthy",
+                "service": "NFL MCP Server",
+                "version": "0.1.0",
+                "error": str(e)
+            }, status_code=500)
+    
+    # Basic health endpoint for simple monitoring
+    @mcp.custom_route(path="/health/basic", methods=["GET"])
+    async def basic_health_check(request):
+        """Basic health check endpoint for simple monitoring."""
         return JSONResponse({
             "status": "healthy",
             "service": "NFL MCP Server",
             "version": "0.1.0"
         })
     
-
+    # Metrics endpoint for monitoring tools
+    @mcp.custom_route(path="/metrics", methods=["GET"])
+    async def metrics_endpoint(request):
+        """Metrics endpoint for performance monitoring."""
+        try:
+            accept_header = request.headers.get("accept", "")
+            
+            if "application/json" in accept_header:
+                # Return JSON metrics
+                metrics_data = metrics.get_metrics()
+                return JSONResponse(metrics_data)
+            else:
+                # Return Prometheus format metrics
+                prometheus_metrics = metrics.get_prometheus_metrics()
+                return JSONResponse(
+                    content=prometheus_metrics,
+                    media_type="text/plain"
+                )
+        except Exception as e:
+            logger.error("Metrics endpoint failed", extra={"error": str(e)})
+            return JSONResponse({
+                "error": "Failed to retrieve metrics",
+                "details": str(e)
+            }, status_code=500)
     
     # MCP Tool: Get NFL news from ESPN  
     @mcp.tool
+    @timing_decorator("get_nfl_news", tool_type="nfl")
     async def get_nfl_news(limit: Optional[int] = 50) -> dict:
         """
         Get the latest NFL news from ESPN API.
@@ -79,10 +146,12 @@ def create_app() -> FastMCP:
             - error: Error message (if any)
             - error_type: Type of error (if any)
         """
+        logger.info("NFL news request received", extra={"limit": limit})
         return await nfl_tools.get_nfl_news(limit)
 
     # MCP Tool: Get NFL teams
     @mcp.tool
+    @timing_decorator("get_teams", tool_type="nfl")
     async def get_teams() -> dict:
         """
         Get all NFL teams from ESPN API.
@@ -98,10 +167,12 @@ def create_app() -> FastMCP:
             - error: Error message (if any)
             - error_type: Type of error (if any)
         """
+        logger.info("NFL teams request received")
         return await nfl_tools.get_teams()
 
     # MCP Tool: Fetch teams from ESPN API and store in database
     @mcp.tool
+    @timing_decorator("fetch_teams", tool_type="nfl")
     async def fetch_teams() -> dict:
         """
         Fetch all NFL teams from ESPN API and store them in the local database.
@@ -117,6 +188,7 @@ def create_app() -> FastMCP:
             - error: Error message (if any)
             - error_type: Type of error (if any)
         """
+        logger.info("Fetch teams request received")
         return await nfl_tools.fetch_teams(nfl_db)
 
     # MCP Tool: Get team depth chart
@@ -363,6 +435,7 @@ def create_app() -> FastMCP:
     
     # MCP Tool: Fetch athletes from Sleeper API and store in database
     @mcp.tool
+    @timing_decorator("fetch_athletes", tool_type="athlete")
     async def fetch_athletes() -> dict:
         """
         Fetch all NFL players from Sleeper API and store them in the local database.
@@ -377,6 +450,7 @@ def create_app() -> FastMCP:
             - success: Whether the fetch was successful
             - error: Error message (if any)
         """
+        logger.info("Fetch athletes request received")
         try:
             # Set reasonable timeout and user agent
             timeout = httpx.Timeout(60.0, connect=15.0)  # Longer timeout for large dataset
@@ -399,6 +473,8 @@ def create_app() -> FastMCP:
                 count = nfl_db.upsert_athletes(athletes_data)
                 last_updated = nfl_db.get_last_updated()
                 
+                logger.info("Athletes fetched successfully", extra={"count": count})
+                
                 return {
                     "athletes_count": count,
                     "last_updated": last_updated,
@@ -407,6 +483,7 @@ def create_app() -> FastMCP:
                 }
                 
         except httpx.TimeoutException:
+            logger.error("Athletes fetch timed out")
             return {
                 "athletes_count": 0,
                 "last_updated": None,
@@ -414,6 +491,7 @@ def create_app() -> FastMCP:
                 "error": "Request timed out while fetching athletes from Sleeper API"
             }
         except httpx.HTTPStatusError as e:
+            logger.error("Athletes fetch HTTP error", extra={"status_code": e.response.status_code})
             return {
                 "athletes_count": 0,
                 "last_updated": None,
@@ -421,6 +499,7 @@ def create_app() -> FastMCP:
                 "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
             }
         except Exception as e:
+            logger.error("Athletes fetch failed", extra={"error": str(e)})
             return {
                 "athletes_count": 0,
                 "last_updated": None,
