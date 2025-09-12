@@ -83,7 +83,6 @@ def create_app() -> FastMCP:
 
     # MCP Tool: Get NFL league leaders
     @mcp.tool
-    @timing_decorator("get_league_leaders", tool_type="nfl")
     async def get_league_leaders(season: Optional[int] = 2025, season_type: Optional[int] = 2, limit: Optional[int] = 25) -> dict:
         """Get current NFL statistical leaders.
 

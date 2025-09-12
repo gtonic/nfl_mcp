@@ -214,3 +214,8 @@ config.yml
 config.yaml  
 config.json
 !config.example.*
+
+# SQLite journaling sidecar files & local patch artifacts
+*.db-wal
+*.db-shm
+*.patch
