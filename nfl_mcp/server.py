@@ -81,6 +81,35 @@ def create_app() -> FastMCP:
         """
         return await nfl_tools.get_nfl_news(limit)
 
+    # MCP Tool: Get NFL league leaders
+    @mcp.tool
+    @timing_decorator("get_league_leaders", tool_type="nfl")
+    async def get_league_leaders(season: Optional[int] = 2025, season_type: Optional[int] = 2, limit: Optional[int] = 25) -> dict:
+        """Get current NFL statistical leaders.
+
+        Args:
+            season: Season year (e.g. 2025)
+            season_type: 1=Preseason, 2=Regular, 3=Postseason
+            limit: Max categories to return (cap 100)
+        """
+        # Lightweight numeric validation with fallbacks
+        try:
+            if season is not None:
+                season = int(season)
+        except Exception:
+            season = 2025
+        try:
+            if season_type is not None:
+                season_type = int(season_type)
+        except Exception:
+            season_type = 2
+        try:
+            if limit is not None:
+                limit = int(limit)
+        except Exception:
+            limit = 25
+        return await nfl_tools.get_league_leaders(season=season or 2025, season_type=season_type or 2, limit=limit or 25)
+
     # MCP Tool: Get NFL teams
     @mcp.tool
     async def get_teams() -> dict:

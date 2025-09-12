@@ -277,3 +277,77 @@ async def get_depth_chart(team_id: str) -> dict:
             "team_name": team_name,
             "depth_chart": depth_chart
         })
+
+
+@handle_http_errors(
+    default_data={"leaders": [], "season": None, "type": None},
+    operation_name="fetching league leaders"
+)
+async def get_league_leaders(season: int = 2025, season_type: int = 2, limit: int = 25) -> dict:
+    """Fetch current NFL statistical leaders from ESPN core API.
+
+    Args:
+        season: Season year (default 2025)
+        season_type: Season type (2 = regular season, 1 = preseason, 3 = postseason)
+        limit: Max leader categories to return after processing (simple cap; API returns many)
+
+    Returns:
+        Dict with leaders list. Each entry contains:
+          - category: stat category name
+          - displayName: ESPN display name
+          - leaders: list of {rank, value, athlete_id, athlete_name, team_id, team_abbr}
+    """
+    # Basic safety on inputs
+    if season < 2000 or season > 2100:
+        season = 2025
+    if season_type not in (1, 2, 3):
+        season_type = 2
+    if limit <= 0:
+        limit = 25
+    limit = min(limit, 100)
+
+    headers = get_http_headers("nfl_news")  # reuse a generic UA
+    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/leaders"
+
+    async with create_http_client() as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        # The core API returns a 'categories' array with references; sometimes items under 'items'
+        categories = data.get('categories') or data.get('items') or []
+        processed = []
+
+        for cat in categories:
+            cat_name = cat.get('name') or cat.get('displayName') or cat.get('shortName')
+            display_name = cat.get('displayName') or cat_name
+            leaders_list = []
+            # Each category may have 'leaders' array
+            for leader_group in cat.get('leaders', []):
+                # leader_group may contain 'leaders' deeper or directly 'athlete'
+                lg_leaders = leader_group.get('leaders') or []
+                for entry in lg_leaders:
+                    athlete = entry.get('athlete', {})
+                    team = entry.get('team', {})
+                    leaders_list.append({
+                        "rank": entry.get('rank'),
+                        "value": entry.get('value'),
+                        "athlete_id": athlete.get('id'),
+                        "athlete_name": athlete.get('displayName') or athlete.get('shortName'),
+                        "team_id": team.get('id'),
+                        "team_abbr": team.get('abbreviation'),
+                    })
+            processed.append({
+                "category": cat_name,
+                "displayName": display_name,
+                "leaders": leaders_list
+            })
+            if len(processed) >= limit:
+                break
+
+        return create_success_response({
+            "season": season,
+            "season_type": season_type,
+            "leaders": processed,
+            "categories_returned": len(processed)
+        })
