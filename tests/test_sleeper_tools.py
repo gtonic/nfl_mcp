@@ -84,7 +84,7 @@ class TestSleeperToolsModule:
         func = getattr(sleeper_tools, 'get_trending_players')
         
         # Test invalid trend_type
-        result = await func("invalid_type", 24, 25)
+        result = await func(None, "invalid_type", 24, 25)
         assert result["success"] is False
         assert "trend_type must be one of" in result["error"]
         assert result["error_type"] == "validation_error"  # Test new field
@@ -201,7 +201,7 @@ class TestSleeperToolsIntegration:
         with patch('nfl_mcp.sleeper_tools.create_http_client', return_value=mock_client):
             # Import and call the function as the server would
             from nfl_mcp import sleeper_tools
-            result = await sleeper_tools.get_trending_players("add", 24, 10)
+            result = await sleeper_tools.get_trending_players(None, "add", 24, 10)
             
             # Verify the fix works in integration context
             assert result["success"] is True

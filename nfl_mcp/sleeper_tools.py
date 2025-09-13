@@ -7,6 +7,7 @@ matchups, transactions, and more.
 """
 
 import httpx
+import logging
 from typing import Optional
 
 from .config import get_http_headers, create_http_client, validate_limit, LIMITS
@@ -14,6 +15,8 @@ from .errors import (
     create_error_response, create_success_response, ErrorType,
     handle_http_errors, handle_validation_error
 )
+
+logger = logging.getLogger(__name__)
 
 
 @handle_http_errors(
@@ -354,7 +357,7 @@ async def get_nfl_state() -> dict:
     default_data={"trending_players": [], "trend_type": None, "lookback_hours": None, "count": 0},
     operation_name="fetching trending players"
 )
-async def get_trending_players(trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
+async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
     """
     Get trending players from Sleeper API.
     
@@ -362,6 +365,7 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
     activity metrics from the Sleeper platform.
     
     Args:
+        nfl_db: NFLDatabase instance to use for player lookups (if None, creates new instance)
         trend_type: Type of trend to fetch ("add" or "drop", defaults to "add")
         lookback_hours: Hours to look back for trends (1-168, defaults to 24)
         limit: Maximum number of players to return (1-100, defaults to 25)
@@ -426,9 +430,29 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
                 "count": 0
             })
         
-        # Need to import database here to avoid circular imports
-        from .database import NFLDatabase
-        nfl_db = NFLDatabase()
+        # Use provided database or create new one
+        if nfl_db is None:
+            # Need to import database here to avoid circular imports
+            from .database import NFLDatabase
+            nfl_db = NFLDatabase()
+        
+        # Check if database has athletes, if not try to fetch them
+        # First do a quick check to see if we have any athletes
+        try:
+            # Query a small sample to check if database is populated
+            sample_athletes = nfl_db.search_athletes_by_name("", limit=1)
+            if not sample_athletes:
+                # Database appears empty, try to fetch athletes
+                from . import athlete_tools
+                try:
+                    logger.info("Database appears empty, attempting to fetch athletes for trending players lookup")
+                    await athlete_tools.fetch_athletes(nfl_db)
+                except Exception as fetch_error:
+                    logger.warning(f"Failed to automatically fetch athletes: {fetch_error}")
+                    # Continue anyway - we'll just return basic data without enrichment
+        except Exception as db_error:
+            logger.warning(f"Could not check database status: {db_error}")
+            # Continue anyway
         
         # Look up each trending player in our database for enriched data
         enriched_players = []
