@@ -10,6 +10,11 @@ A FastMCP server that provides health monitoring, web content extraction, NFL ne
 - **NFL Teams Tools**: Comprehensive MCP tools for NFL teams including:
   - Team data fetching and database caching from ESPN API
   - Depth chart retrieval for individual teams
+- **Fantasy Intelligence APIs**: Advanced MCP tools for fantasy football decision making:
+  - **Injury Reports**: Real-time injury status for start/sit decisions
+  - **Player Performance Stats**: Team player statistics and fantasy relevance indicators  
+  - **NFL Standings**: League standings with playoff implications and team motivation context
+  - **Team Schedules**: Matchup analysis with fantasy implications and strength of schedule
 - **Athlete Tools**: MCP tools for fetching, caching, and looking up NFL athletes from Sleeper API with SQLite persistence
 - **Sleeper API Tools**: Comprehensive MCP tools for fantasy league management including:
   - League information, rosters, users, matchups, playoff brackets
@@ -232,6 +237,120 @@ async with Client("http://localhost:9000/mcp/") as client:
 Each team in the `teams` list contains:
 - `id`: Unique team identifier
 - `name`: Team name
+
+### Fantasy Intelligence APIs (MCP)
+
+**Tools:** `get_team_injuries`, `get_team_player_stats`, `get_nfl_standings`, `get_team_schedule`
+
+These advanced tools provide critical fantasy football intelligence for making informed decisions about lineups, waiver wire pickups, and long-term strategy.
+
+#### get_team_injuries
+
+Fetches real-time injury reports for a specific NFL team from ESPN's Core API.
+
+**Parameters:**
+- `team_id`: Team abbreviation (e.g., 'KC', 'TB', 'NE')
+- `limit`: Maximum number of injuries to return (1-100, defaults to 50)
+
+**Returns:** Dictionary with the following fields:
+- `team_id`: The team identifier used
+- `team_name`: The team's full name
+- `injuries`: List of injured players with status and fantasy severity
+- `count`: Number of injuries returned
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+**Injury Structure:**
+Each injury contains:
+- `player_name`: Player's full name
+- `position`: Player's position (QB, RB, WR, etc.)
+- `status`: Injury status (Out, Questionable, Doubtful, etc.)
+- `severity`: Fantasy impact level (High, Medium, Low)
+- `description`: Injury description
+- `type`: Type of injury
+
+#### get_team_player_stats
+
+Fetches player statistics and fantasy relevance for a specific NFL team.
+
+**Parameters:**
+- `team_id`: Team abbreviation (e.g., 'KC', 'TB', 'NE')
+- `season`: Season year (defaults to 2025)
+- `season_type`: 1=Pre, 2=Regular, 3=Post, 4=Off (defaults to 2)
+- `limit`: Maximum number of players to return (1-100, defaults to 50)
+
+**Returns:** Dictionary with the following fields:
+- `team_id`: The team identifier used
+- `team_name`: The team's full name
+- `season`: Season year requested
+- `season_type`: Season type requested
+- `player_stats`: List of players with performance data
+- `count`: Number of players returned
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+**Player Stats Structure:**
+Each player contains:
+- `player_name`: Player's full name
+- `position`: Player's position
+- `fantasy_relevant`: Boolean indicating fantasy football relevance
+- `jersey`: Jersey number
+- `age`: Player's age
+- `experience`: Years of NFL experience
+
+#### get_nfl_standings
+
+Fetches current NFL standings with fantasy context about team motivation and playoff implications.
+
+**Parameters:**
+- `season`: Season year (defaults to 2025)
+- `season_type`: 1=Pre, 2=Regular, 3=Post, 4=Off (defaults to 2)
+- `group`: Conference group (1=AFC, 2=NFC, None=both, defaults to None)
+
+**Returns:** Dictionary with the following fields:
+- `standings`: List of teams with records and fantasy context
+- `season`: Season year requested
+- `season_type`: Season type requested
+- `group`: Conference group requested
+- `count`: Number of teams returned
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+**Standings Structure:**
+Each team contains:
+- `team_name`: Team's full name
+- `abbreviation`: Team abbreviation
+- `wins`: Number of wins
+- `losses`: Number of losses
+- `motivation_level`: Team motivation for fantasy purposes (High/Medium/Low)
+- `fantasy_context`: Description of potential player usage implications
+
+#### get_team_schedule
+
+Fetches team schedule with matchup analysis and fantasy implications.
+
+**Parameters:**
+- `team_id`: Team abbreviation (e.g., 'KC', 'TB', 'NE')
+- `season`: Season year (defaults to 2025)
+
+**Returns:** Dictionary with the following fields:
+- `team_id`: The team identifier used
+- `team_name`: The team's full name
+- `season`: Season year requested
+- `schedule`: List of games with matchup details
+- `count`: Number of games returned
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+**Schedule Structure:**
+Each game contains:
+- `date`: Game date and time
+- `week`: Week number
+- `season_type`: Season type (Regular Season, Playoffs, etc.)
+- `opponent`: Opponent team information
+- `is_home`: Boolean indicating if it's a home game
+- `result`: Game result (win/loss/scheduled)
+- `fantasy_implications`: List of fantasy-relevant insights for the matchup
 
 ### Athlete Tools (MCP)
 

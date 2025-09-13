@@ -139,6 +139,57 @@ async def get_depth_chart(team_id: str) -> dict:
         return {"team_id": team_id, "team_name": None, "depth_chart": [], "success": False, "error": f"Unexpected error fetching depth chart: {e}"}
 
 @_dummy.tool
+async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
+    """Get current injury report for an NFL team from ESPN Core API.
+
+    Parameters:
+        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
+        limit (int, default 50, range 1-100): Max number of injuries to return.
+    Returns: {team_id, team_name, injuries:[{player_name, position, status, severity}], count, success, error?}
+    Example: get_team_injuries(team_id="KC", limit=20)
+    """
+    return await nfl_tools.get_team_injuries(team_id, limit)
+
+@_dummy.tool
+async def get_team_player_stats(team_id: str, season: Optional[int] = 2025, season_type: Optional[int] = 2, limit: Optional[int] = 50) -> dict:
+    """Get player statistics for an NFL team from ESPN Core API.
+
+    Parameters:
+        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
+        season (int, default 2025): Season year.
+        season_type (int, default 2): 1=Pre, 2=Regular, 3=Post, 4=Off.
+        limit (int, default 50, range 1-100): Max number of players to return.
+    Returns: {team_id, team_name, season, season_type, player_stats:[{player_name, position, fantasy_relevant}], count, success, error?}
+    Example: get_team_player_stats(team_id="KC", season=2025, limit=25)
+    """
+    return await nfl_tools.get_team_player_stats(team_id, season, season_type, limit)
+
+@_dummy.tool
+async def get_nfl_standings(season: Optional[int] = 2025, season_type: Optional[int] = 2, group: Optional[int] = None) -> dict:
+    """Get current NFL standings from ESPN Core API with fantasy context.
+
+    Parameters:
+        season (int, default 2025): Season year.
+        season_type (int, default 2): 1=Pre, 2=Regular, 3=Post, 4=Off.
+        group (int, optional): Conference group (1=AFC, 2=NFC, None=both).
+    Returns: {standings:[{team_name, wins, losses, fantasy_context, motivation_level}], season, season_type, count, success, error?}
+    Example: get_nfl_standings(season=2025, season_type=2)
+    """
+    return await nfl_tools.get_nfl_standings(season, season_type, group)
+
+@_dummy.tool
+async def get_team_schedule(team_id: str, season: Optional[int] = 2025) -> dict:
+    """Get team schedule from ESPN Site API with fantasy implications.
+
+    Parameters:
+        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
+        season (int, default 2025): Season year.
+    Returns: {team_id, team_name, season, schedule:[{date, week, opponent, is_home, fantasy_implications}], count, success, error?}
+    Example: get_team_schedule(team_id="KC", season=2025)
+    """
+    return await nfl_tools.get_team_schedule(team_id, season)
+
+@_dummy.tool
 async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
     """Retrieve and sanitize page text content.
 
