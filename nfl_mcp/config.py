@@ -257,7 +257,7 @@ def is_feature_enabled(flag_name: str, default: bool = False) -> bool:
     return val.strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 # Specific flags
-FEATURE_LEAGUE_LEADERS = is_feature_enabled("league_leaders", default=False)
+FEATURE_LEAGUE_LEADERS = is_feature_enabled("league_leaders", default=True)
 
 
 # Input Validation Security Patterns

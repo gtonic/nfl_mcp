@@ -14,8 +14,8 @@ def _tool_names(app):
 
 @pytest.mark.asyncio
 async def test_league_leaders_flag_disabled(monkeypatch):
-    # Ensure flag is unset/disabled
-    monkeypatch.delenv('MCP_FEATURE_LEAGUE_LEADERS', raising=False)
+    # Explicitly disable the feature flag
+    monkeypatch.setenv('MCP_FEATURE_LEAGUE_LEADERS', '0')
     # Re-import config to recompute flag
     from nfl_mcp import config as cfg
     reload(cfg)
