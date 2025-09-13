@@ -367,7 +367,7 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
         trend_type = validate_string_input(trend_type, 'trend_type', max_length=10, required=True)
         lookback_hours = validate_numeric_input(lookback_hours, min_val=LIMITS["trending_lookback_min"], max_val=LIMITS["trending_lookback_max"], default=24, required=False)
         limit = validate_numeric_input(limit, min_val=LIMITS["trending_limit_min"], max_val=LIMITS["trending_limit_max"], default=25, required=False)
-        return await sleeper_tools.get_trending_players(trend_type, lookback_hours, limit)
+        return await sleeper_tools.get_trending_players(_nfl_db, trend_type, lookback_hours, limit)
     except ValueError as e:
         return {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0, "success": False, "error": f"Invalid input: {str(e)}"}
 
