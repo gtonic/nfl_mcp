@@ -8,6 +8,8 @@ This document provides comprehensive tool documentation optimized for Large Lang
 1. Zentraler Aggregator: `get_fantasy_context` bündelt `league`, `rosters`, `users`, `matchups`, `transactions` (automatische Week-Inferenz wenn nötig).
 2. Automatische Week-Erkennung: `get_transactions` akzeptiert fehlende `week` und setzt `auto_week_inferred=true` bei erfolgreicher Inferenz.
 3. Param-Validator Infrastruktur: Neues Modul `param_validator.py` für zukünftige vereinheitlichte Eingabe-Prüfung (schrittweise Migration geplant).
+4. Robustheits-Layer (Retry + Snapshot Fallback) jetzt aktiv für: `get_rosters`, `get_transactions`, `get_matchups`.
+5. Einheitliche Snapshot-Metadaten Felder: `retries_used`, `stale`, `failure_reason`, `snapshot_fetched_at`, `snapshot_age_seconds`.
 
 ### get_fantasy_context – Schnelle Gesamtsicht
 Parameter:
@@ -133,10 +135,11 @@ Beende weitere Datenerhebung sobald:
 
 | Problem | Ursache | Lösung |
 |---------|---------|-------|
-| Missing week in get_transactions | Woche Pflicht | Übergib `week` oder alias `round` |
+| Missing week in get_transactions | Woche Pflicht (falls Inferenz scheitert) | Übergib `week` oder alias `round` |
 | Falscher bracket_type | Tippfehler | Nur `winners` oder `losers` |
 | Leere rosters | Privat / falsche Liga | user_id & league_id prüfen, Access-Hinweis beachten |
 | Wenig enrichment | Athleten-Datenbank leer | Vorher einmal `fetch_athletes` (teuer) nur falls wirklich nötig |
+| success=false aber Daten vorhanden | Snapshot Fallback aktiv | Daten nutzen, aber Hinweis geben dass sie evtl. veraltet sind |
 
 ---
 ## 🧪 Empfehlung für Analyse-Antworten
@@ -150,7 +153,7 @@ Wenn du eine textuelle Analyse erzeugst:
 ---
 ## 📦 Zusammenfassung der Kern-Pipeline (Merksatz)
 
-"User → Ligen → Roster → (Matchup / Waiver / Playoffs / Draft) nur wenn gefragt."
+"User → Ligen → Roster → (Matchup / Waiver / Playoffs / Draft) nur wenn gefragt."  (Bei Fehlern: Snapshot Felder prüfen.)
 
 ---
 

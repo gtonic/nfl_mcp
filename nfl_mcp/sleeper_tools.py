@@ -165,7 +165,9 @@ async def get_rosters(league_id: str) -> dict:
                                     "access_help": "Ask league owner to review roster privacy settings",
                                     "retries_used": attempts-1,
                                     "stale": False,
-                                    "failure_reason": None
+                                    "failure_reason": None,
+                                    "snapshot_fetched_at": None,
+                                    "snapshot_age_seconds": None
                                 })
                     except Exception:
                         pass
@@ -200,7 +202,9 @@ async def get_rosters(league_id: str) -> dict:
                     "count": len(rosters_data),
                     "retries_used": attempts-1,
                     "stale": False,
-                    "failure_reason": None
+                    "failure_reason": None,
+                    "snapshot_fetched_at": None,
+                    "snapshot_age_seconds": None
                 })
         except httpx.TimeoutException:
             last_error = "timeout"
@@ -232,13 +236,15 @@ async def get_rosters(league_id: str) -> dict:
                 "count": len(snap["rosters"]),
                 "retries_used": attempts,
                 "stale": snap.get("stale", True),
-                "failure_reason": last_error or "unknown"
+        "failure_reason": last_error or "unknown",
+        "snapshot_fetched_at": snap.get("fetched_at"),
+        "snapshot_age_seconds": snap.get("age_seconds")
             }
         )
     return create_error_response(
         f"Roster fetch failed after retries: {last_error}",
         ErrorType.NETWORK if last_error and last_error.startswith("network") else ErrorType.UNEXPECTED,
-        {"rosters": [], "count": 0, "retries_used": attempts, "stale": False, "failure_reason": last_error or "unknown"}
+    {"rosters": [], "count": 0, "retries_used": attempts, "stale": False, "failure_reason": last_error or "unknown", "snapshot_fetched_at": None, "snapshot_age_seconds": None}
     )
 
 
@@ -282,69 +288,137 @@ async def get_league_users(league_id: str) -> dict:
         })
 
 
-@handle_http_errors(
-    default_data={"matchups": [], "week": None, "count": 0},
-    operation_name="fetching matchups"
-)
 async def get_matchups(league_id: str, week: int) -> dict:
-    """
-    Get matchups for a specific week in a fantasy league from Sleeper API.
-    
-    This tool fetches all matchups for the specified week including scores,
-    player performances, and matchup results.
-    
-    Args:
-        league_id: The unique identifier for the league
-        week: The week number (1-22)
-        
-    Returns:
-        A dictionary containing:
-        - matchups: List of matchups for the specified week
-        - week: The week number
-        - count: Number of matchups found
-        - success: Whether the request was successful
-        - error: Error message (if any)
-        - error_type: Type of error (if any)
-    """
-    # Validate week parameter
-    if week < LIMITS["week_min"] or week > LIMITS["week_max"]:
-        return handle_validation_error(
-            f"Week must be between {LIMITS['week_min']} and {LIMITS['week_max']}",
-            {"matchups": [], "week": week, "count": 0}
-        )
-    
-    headers = get_http_headers("sleeper_matchups")
-    
-    # Sleeper API endpoint for league matchups
-    url = f"https://api.sleeper.app/v1/league/{league_id}/matchups/{week}"
-    
-    async with create_http_client() as client:
-        response = await client.get(url, headers=headers, follow_redirects=True)
-        response.raise_for_status()
-        
-        # Parse JSON response
-        matchups_data = response.json()
-        
-        # Add enrichment for players/starters
-        try:
-            nfl_db = _init_db()
-            cache = {}
-            if isinstance(matchups_data, list):
-                for m in matchups_data:
-                    if not isinstance(m, dict):
-                        continue
-                    if isinstance(m.get("players"), list):
-                        m["players_enriched"] = [_enrich_single(nfl_db, pid, cache) for pid in m["players"]]
-                    if isinstance(m.get("starters"), list):
-                        m["starters_enriched"] = [_enrich_single(nfl_db, pid, cache) for pid in m["starters"]]
-        except Exception as e:
-            logger.debug(f"Matchup enrichment skipped: {e}")
+    """Get matchups for a week with robustness (retry + snapshot fallback)."""
+    try:
+        from .param_validator import validate_params, format_errors
+        schema = {"week": {"type": int, "required": True, "min": LIMITS["week_min"], "max": LIMITS["week_max"]}}
+        validated, errors = validate_params(schema, {"week": week})
+        if errors:
+            bounds_prefixes = ("'week' must be >=", "'week' must be <=")
+            if all(any(e.startswith(p) for p in bounds_prefixes) for e in errors):
+                return handle_validation_error(
+                    f"Week must be between {LIMITS['week_min']} and {LIMITS['week_max']}",
+                    {"matchups": [], "week": week, "count": 0}
+                )
+            return handle_validation_error(format_errors(errors), {"matchups": [], "week": week, "count": 0})
+        week = validated["week"]
+    except Exception:
+        if week < LIMITS["week_min"] or week > LIMITS["week_max"]:
+            return handle_validation_error(
+                f"Week must be between {LIMITS['week_min']} and {LIMITS['week_max']}",
+                {"matchups": [], "week": week, "count": 0}
+            )
 
-        return create_success_response({
-            "matchups": matchups_data,
-            "week": week,
-            "count": len(matchups_data)
-        })
+    headers = get_http_headers("sleeper_matchups")
+    url = f"https://api.sleeper.app/v1/league/{league_id}/matchups/{week}"
+    retry_delays = [0.0, 0.4, 1.0]
+    attempts = 0
+    last_error = None
+    from .database import NFLDatabase
+    nfl_db = NFLDatabase()
+
+    for delay in retry_delays:
+        if delay:
+            import asyncio as _asyncio
+            await _asyncio.sleep(delay)
+        attempts += 1
+        try:
+            async with create_http_client() as client:
+                response = await client.get(url, headers=headers, follow_redirects=True, timeout=DEFAULT_TIMEOUT)
+                if response.status_code in (401,403,404):
+                    if response.status_code == 404:
+                        return create_error_response(
+                            f"League or matchups not found for league '{league_id}' week {week}",
+                            ErrorType.HTTP,
+                            {"matchups": [], "week": week, "count": 0, "retries_used": attempts-1, "stale": False, "failure_reason": "not_found"}
+                        )
+                    err_type = ErrorType.ACCESS_DENIED
+                    if response.status_code == 403:
+                        msg = "Access denied: Matchups are private for this league"
+                        help_text = "League owner must enable public matchup visibility"
+                    else:
+                        msg = "Authentication required to view matchups for this league"
+                        help_text = "Contact league owner for access to private league matchups"
+                    return create_error_response(
+                        msg,
+                        err_type,
+                        {"matchups": [], "week": week, "count": 0, "retries_used": attempts-1, "stale": False, "failure_reason": "access_denied", "access_help": help_text}
+                    )
+                if response.status_code == 429:
+                    last_error = "rate_limited"
+                    continue
+                response.raise_for_status()
+                matchups_data = response.json()
+                if isinstance(matchups_data, list) and len(matchups_data) == 0 and attempts < len(retry_delays):
+                    last_error = "empty_matchups"
+                    continue
+
+                # Enrichment
+                try:
+                    cache = {}
+                    if isinstance(matchups_data, list):
+                        for m in matchups_data:
+                            if not isinstance(m, dict):
+                                continue
+                            if isinstance(m.get("players"), list):
+                                m["players_enriched"] = [_enrich_single(nfl_db, pid, cache) for pid in m["players"]]
+                            if isinstance(m.get("starters"), list):
+                                m["starters_enriched"] = [_enrich_single(nfl_db, pid, cache) for pid in m["starters"]]
+                except Exception as e:
+                    logger.debug(f"Matchup enrichment skipped: {e}")
+
+                nfl_db.save_matchup_snapshot(league_id, week, matchups_data)
+                return create_success_response({
+                    "matchups": matchups_data,
+                    "week": week,
+                    "count": len(matchups_data),
+                    "retries_used": attempts-1,
+                    "stale": False,
+                    "failure_reason": None,
+                    "snapshot_fetched_at": None,
+                    "snapshot_age_seconds": None
+                })
+        except httpx.TimeoutException:
+            last_error = "timeout"
+            continue
+        except httpx.HTTPStatusError as he:
+            if he.response is not None and he.response.status_code == 429:
+                return create_error_response(
+                    "Rate limit exceeded for Sleeper API - please try again later",
+                    ErrorType.HTTP,
+                    {"matchups": [], "week": week, "count": 0, "retries_used": attempts-1, "stale": False, "failure_reason": "rate_limited"}
+                )
+            last_error = f"http:{getattr(he.response,'status_code','?')}"
+            continue
+        except httpx.NetworkError as ne:
+            last_error = f"network:{ne}"
+            continue
+        except Exception as e:
+            last_error = f"unexpected:{e}"
+            continue
+
+    snap = nfl_db.load_matchup_snapshot(league_id, week)
+    if snap:
+        return create_error_response(
+            "Matchup fetch failed after retries (serving snapshot)",
+            ErrorType.NETWORK if last_error and last_error.startswith("network") else ErrorType.UNEXPECTED,
+            {
+                "matchups": snap["matchups"],
+                "week": week,
+                "count": len(snap["matchups"]),
+                "retries_used": attempts,
+                "stale": snap.get("stale", True),
+                "failure_reason": last_error or "unknown",
+                "snapshot_fetched_at": snap.get("fetched_at"),
+                "snapshot_age_seconds": snap.get("age_seconds")
+            }
+        )
+    return create_error_response(
+        f"Matchup fetch failed after retries: {last_error}",
+        ErrorType.NETWORK if last_error and last_error.startswith("network") else ErrorType.UNEXPECTED,
+        {"matchups": [], "week": week, "count": 0, "retries_used": attempts, "stale": False, "failure_reason": last_error or "unknown", "snapshot_fetched_at": None, "snapshot_age_seconds": None}
+    )
 
 
 @handle_http_errors(
@@ -367,12 +441,26 @@ async def get_playoff_bracket(league_id: str, bracket_type: str = "winners") -> 
         - playoff_bracket: list bracket structure
         - bracket_type: which bracket was fetched
     """
-    bracket_type_normalized = bracket_type.lower().strip()
-    if bracket_type_normalized not in {"winners", "losers"}:
-        return handle_validation_error(
-            "bracket_type must be one of: winners, losers",
-            {"playoff_bracket": None, "bracket_type": bracket_type}
-        )
+    try:
+        from .param_validator import validate_params, format_errors
+        schema = {"bracket_type": {"type": str, "required": True, "choices": ["winners", "losers"]}}
+        normalized = bracket_type.lower().strip() if isinstance(bracket_type, str) else bracket_type
+        validated, errors = validate_params(schema, {"bracket_type": normalized})
+        if errors:
+            if any("bracket_type" in e for e in errors):
+                return handle_validation_error(
+                    "bracket_type must be one of: winners, losers",
+                    {"playoff_bracket": None, "bracket_type": bracket_type}
+                )
+            return handle_validation_error(format_errors(errors), {"playoff_bracket": None, "bracket_type": bracket_type})
+        bracket_type_normalized = validated["bracket_type"].lower().strip()
+    except Exception:
+        bracket_type_normalized = bracket_type.lower().strip()
+        if bracket_type_normalized not in {"winners", "losers"}:
+            return handle_validation_error(
+                "bracket_type must be one of: winners, losers",
+                {"playoff_bracket": None, "bracket_type": bracket_type}
+            )
 
     headers = get_http_headers("sleeper_playoffs")
     path = "winners_bracket" if bracket_type_normalized == "winners" else "losers_bracket"
@@ -388,25 +476,40 @@ async def get_playoff_bracket(league_id: str, bracket_type: str = "winners") -> 
         })
 
 
-@handle_http_errors(
-    default_data={"transactions": [], "week": None, "count": 0},
-    operation_name="fetching transactions"
-)
 async def get_transactions(league_id: str, round: Optional[int] = None, week: Optional[int] = None) -> dict:
-    """Get transactions for a specific (or inferred) week of a Sleeper league.
+    """Get transactions for a specific (or inferred) week of a Sleeper league with robustness.
 
-    Enhancements:
-    - Accepts either `week` or deprecated `round` (must match if both provided)
-    - If neither provided, automatically infers current NFL week via get_nfl_state
-      and sets `auto_week_inferred` flag in response.
-
-    Args:
-        league_id: League identifier
-        round: (Deprecated) alias for week
-        week: Week number (1-18 typical). Optional (auto-inferred if omitted)
+    Robustness features:
+    - Week auto-inference (existing behavior)
+    - Retry/backoff on transient failures & empty anomaly
+    - Snapshot persistence & fallback (per league/week)
+    - Additive metadata: retries_used, stale, failure_reason
+    - Preserves legacy validation & success contract
     """
     auto_inferred = False
-    # Normalize parameters
+    # Central param schema validation (except league_id which is positional)
+    try:
+        from .param_validator import validate_params, format_errors
+        schema = {
+            "round": {"type": (int, type(None)), "required": False, "min": LIMITS["round_min"], "max": LIMITS["round_max"], "nullable": True},
+            "week": {"type": (int, type(None)), "required": False, "min": LIMITS["round_min"], "max": LIMITS["round_max"], "nullable": True},
+        }
+        validated, errors = validate_params(schema, {"round": round, "week": week})
+        if errors:
+            # If the only errors are min/max for round/week, convert to legacy message for tests
+            legacy_bounds = {"'round' must be >=", "'round' must be <=", "'week' must be >=", "'week' must be <="}
+            if all(any(e.startswith(prefix) for prefix in legacy_bounds) for e in errors):
+                return handle_validation_error(
+                    f"Week must be between {LIMITS['round_min']} and {LIMITS['round_max']}",
+                    {"transactions": [], "week": week, "count": 0}
+                )
+            return handle_validation_error(format_errors(errors), {"transactions": [], "week": week, "count": 0})
+        round = validated.get("round")
+        week = validated.get("week")
+    except Exception as e:
+        logger.debug(f"Param validator fallback (non-fatal) for transactions: {e}")
+
+    # Normalize week/round
     if week is None and round is not None:
         week = round
     elif week is not None and round is not None and week != round:
@@ -415,7 +518,7 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
             {"transactions": [], "week": week, "count": 0}
         )
 
-    # Auto-infer current week if not provided
+    # Infer week if absent
     if week is None:
         try:
             nfl_state_resp = await get_nfl_state()
@@ -432,6 +535,7 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
                 {"transactions": [], "week": None, "count": 0}
             )
 
+    # Range validation
     if week < LIMITS["round_min"] or week > LIMITS["round_max"]:
         return handle_validation_error(
             f"Week must be between {LIMITS['round_min']} and {LIMITS['round_max']}",
@@ -440,45 +544,130 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
 
     headers = get_http_headers("sleeper_transactions")
     url = f"https://api.sleeper.app/v1/league/{league_id}/transactions/{week}"
+    retry_delays = [0.0, 0.4, 1.0]
+    attempts = 0
+    last_error = None
+    from .database import NFLDatabase
+    nfl_db = NFLDatabase()
 
-    async with create_http_client() as client:
-        response = await client.get(url, headers=headers, follow_redirects=True)
-        response.raise_for_status()
-        transactions_data = response.json()
-
-        # Enrich player IDs inside adds/drops maps
+    for delay in retry_delays:
+        if delay:
+            import asyncio as _asyncio
+            await _asyncio.sleep(delay)
+        attempts += 1
         try:
-            from .database import NFLDatabase
-            nfl_db = NFLDatabase()
-            cache = {}
+            async with create_http_client() as client:
+                response = await client.get(url, headers=headers, follow_redirects=True, timeout=DEFAULT_TIMEOUT)
+                if response.status_code in (401,403,404):
+                    # Direct terminal errors (no further retry)
+                    if response.status_code == 404:
+                        return create_error_response(
+                            f"League or transactions endpoint not found for league '{league_id}' week {week}",
+                            ErrorType.HTTP,
+                            {"transactions": [], "week": week, "count": 0, "retries_used": attempts-1, "stale": False, "failure_reason": "not_found"}
+                        )
+                    err_type = ErrorType.ACCESS_DENIED
+                    if response.status_code == 403:
+                        msg = "Access denied: Transactions are private for this league"
+                        help_text = "The league owner must adjust privacy settings to allow transaction viewing"
+                    else:
+                        msg = "Authentication required to view transactions for this private league"
+                        help_text = "This league requires authentication. Contact the league owner for access"
+                    return create_error_response(
+                        msg,
+                        err_type,
+                        {"transactions": [], "week": week, "count": 0, "retries_used": attempts-1, "stale": False, "failure_reason": "access_denied", "access_help": help_text}
+                    )
+                if response.status_code == 429:
+                    last_error = "rate_limited"
+                    continue
+                response.raise_for_status()
+                tx_data = response.json()
+                # Empty anomaly (treat like rosters) -> retry unless last attempt
+                if isinstance(tx_data, list) and len(tx_data) == 0 and attempts < len(retry_delays):
+                    last_error = "empty_transactions"
+                    continue
 
-            def enrich_player(pid):
-                if pid in cache:
-                    return cache[pid]
-                athlete = nfl_db.get_athlete_by_id(pid) or {}
-                data = {"player_id": pid, "full_name": athlete.get("full_name"), "position": athlete.get("position")}
-                cache[pid] = data
-                return data
+                # Enrichment
+                try:
+                    cache = {}
+                    def enrich_player(pid):
+                        if pid in cache:
+                            return cache[pid]
+                        athlete = nfl_db.get_athlete_by_id(pid) or {}
+                        obj = {"player_id": pid, "full_name": athlete.get("full_name"), "position": athlete.get("position")}
+                        cache[pid] = obj; return obj
+                    if isinstance(tx_data, list):
+                        for tx in tx_data:
+                            if not isinstance(tx, dict):
+                                continue
+                            adds = tx.get("adds") or {}
+                            drops = tx.get("drops") or {}
+                            if isinstance(adds, dict):
+                                tx["adds_enriched"] = [enrich_player(pid) for pid in adds.keys()]
+                            if isinstance(drops, dict):
+                                tx["drops_enriched"] = [enrich_player(pid) for pid in drops.keys()]
+                except Exception as enrich_error:
+                    logger.debug(f"Transaction enrichment skipped: {enrich_error}")
 
-            if isinstance(transactions_data, list):
-                for tx in transactions_data:
-                    if not isinstance(tx, dict):
-                        continue
-                    adds = tx.get("adds") or {}
-                    drops = tx.get("drops") or {}
-                    if isinstance(adds, dict):
-                        tx["adds_enriched"] = [enrich_player(pid) for pid in adds.keys()]
-                    if isinstance(drops, dict):
-                        tx["drops_enriched"] = [enrich_player(pid) for pid in drops.keys()]
-        except Exception as enrich_error:
-            logger.debug(f"Transaction enrichment skipped due to error: {enrich_error}")
+                # Save snapshot
+                nfl_db.save_transaction_snapshot(league_id, week, tx_data)
+                return create_success_response({
+                    "transactions": tx_data,
+                    "week": week,
+                    "auto_week_inferred": auto_inferred,
+                    "count": len(tx_data),
+                    "retries_used": attempts-1,
+                    "stale": False,
+                    "failure_reason": None,
+                    "snapshot_fetched_at": None,
+                    "snapshot_age_seconds": None
+                })
+        except httpx.TimeoutException:
+            last_error = "timeout"
+            continue
+        except httpx.HTTPStatusError as he:
+            if he.response is not None and he.response.status_code == 429:
+                return create_error_response(
+                    "Rate limit exceeded for Sleeper API - please try again later",
+                    ErrorType.HTTP,
+                    {"transactions": [], "week": week, "count": 0, "retries_used": attempts-1, "stale": False, "failure_reason": "rate_limited"}
+                )
+            last_error = f"http:{getattr(he.response,'status_code','?')}"
+            continue
+        except httpx.NetworkError as ne:
+            last_error = f"network:{ne}"
+            continue
+        except Exception as e:
+            last_error = f"unexpected:{e}"
+            continue
 
-        return create_success_response({
-            "transactions": transactions_data,
-            "week": week,
-            "auto_week_inferred": auto_inferred,
-            "count": len(transactions_data)
-        })
+    # Fallback: transaction snapshot (specific week preferred)
+    snap = nfl_db.load_transaction_snapshot(league_id, week)
+    if not snap and auto_inferred:
+        # If week was inferred and no snapshot, attempt last any-week snapshot
+        snap = nfl_db.load_transaction_snapshot(league_id, None)
+    if snap:
+        return create_error_response(
+            "Transaction fetch failed after retries (serving snapshot)",
+            ErrorType.NETWORK if last_error and last_error.startswith("network") else ErrorType.UNEXPECTED,
+            {
+                "transactions": snap["transactions"],
+                "week": snap.get("week", week),
+                "auto_week_inferred": auto_inferred,
+                "count": len(snap["transactions"]),
+                "retries_used": attempts,
+                "stale": snap.get("stale", True),
+        "failure_reason": last_error or "unknown",
+        "snapshot_fetched_at": snap.get("fetched_at"),
+        "snapshot_age_seconds": snap.get("age_seconds")
+            }
+        )
+    return create_error_response(
+        f"Transaction fetch failed after retries: {last_error}",
+        ErrorType.NETWORK if last_error and last_error.startswith("network") else ErrorType.UNEXPECTED,
+    {"transactions": [], "week": week, "auto_week_inferred": auto_inferred, "count": 0, "retries_used": attempts, "stale": False, "failure_reason": last_error or "unknown", "snapshot_fetched_at": None, "snapshot_age_seconds": None}
+    )
 
 
 @handle_http_errors(
@@ -592,35 +781,53 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
         - error: Error message (if any)
         - error_type: Type of error (if any)
     """
-    # Validate trend_type
-    valid_trend_types = ["add", "drop"]
-    if trend_type not in valid_trend_types:
-        return handle_validation_error(
-            f"trend_type must be one of: {', '.join(valid_trend_types)}",
-            {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0}
-        )
-    
-    # Validate and normalize lookback_hours
-    if lookback_hours is not None:
-        lookback_hours = validate_limit(
-            lookback_hours,
-            LIMITS["trending_lookback_min"],
-            LIMITS["trending_lookback_max"],
-            24
-        )
-    else:
-        lookback_hours = 24
-    
-    # Validate and normalize limit
-    if limit is not None:
-        limit = validate_limit(
-            limit,
-            LIMITS["trending_limit_min"],
-            LIMITS["trending_limit_max"],
-            25
-        )
-    else:
-        limit = 25
+    # Central validation via param_validator (preserve legacy messages)
+    try:
+        from .param_validator import validate_params, format_errors
+        schema = {
+            "trend_type": {"type": str, "required": True, "choices": ["add", "drop"]},
+            "lookback_hours": {"type": (int, type(None)), "required": False, "min": LIMITS["trending_lookback_min"], "max": LIMITS["trending_lookback_max"], "nullable": True, "default": 24},
+            "limit": {"type": (int, type(None)), "required": False, "min": LIMITS["trending_limit_min"], "max": LIMITS["trending_limit_max"], "nullable": True, "default": 25},
+        }
+        values = {"trend_type": trend_type, "lookback_hours": lookback_hours, "limit": limit}
+        validated, errors = validate_params(schema, values)
+        if errors:
+            # Legacy message mapping
+            if any("trend_type" in e for e in errors):
+                return handle_validation_error(
+                    "trend_type must be one of: add, drop",
+                    {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0}
+                )
+            return handle_validation_error(format_errors(errors), {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0})
+        trend_type = validated["trend_type"]
+        lookback_hours = validated["lookback_hours"] or 24
+        limit = validated["limit"] or 25
+    except Exception:
+        # Fallback to legacy validation
+        valid_trend_types = ["add", "drop"]
+        if trend_type not in valid_trend_types:
+            return handle_validation_error(
+                f"trend_type must be one of: {', '.join(valid_trend_types)}",
+                {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0}
+            )
+        if lookback_hours is not None:
+            lookback_hours = validate_limit(
+                lookback_hours,
+                LIMITS["trending_lookback_min"],
+                LIMITS["trending_lookback_max"],
+                24
+            )
+        else:
+            lookback_hours = 24
+        if limit is not None:
+            limit = validate_limit(
+                limit,
+                LIMITS["trending_limit_min"],
+                LIMITS["trending_limit_max"],
+                25
+            )
+        else:
+            limit = 25
     
     headers = get_http_headers("sleeper_trending")
     
@@ -754,18 +961,47 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
         - error: Error message (if any)
         - error_type: Type of error (if any)
     """
-    # Validate parameters
-    if current_week < LIMITS["week_min"] or current_week > LIMITS["week_max"]:
-        return handle_validation_error(
-            f"Current week must be between {LIMITS['week_min']} and {LIMITS['week_max']}",
-            {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
-        )
-    
-    if weeks_ahead < 1 or weeks_ahead > 8:
-        return handle_validation_error(
-            "Weeks ahead must be between 1 and 8",
-            {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
-        )
+    # Validate parameters via param_validator
+    try:
+        from .param_validator import validate_params, format_errors
+        schema = {
+            "current_week": {"type": int, "required": True, "min": LIMITS["week_min"], "max": LIMITS["week_max"]},
+            "weeks_ahead": {"type": int, "required": False, "min": 1, "max": 8, "default": 4},
+        }
+        validated, errors = validate_params(schema, {"current_week": current_week, "weeks_ahead": weeks_ahead})
+        if errors:
+            # Legacy phrasing preservation
+            msgs = []
+            for e in errors:
+                if e.startswith("'current_week' must be >=") or e.startswith("'current_week' must be <="):
+                    return handle_validation_error(
+                        f"Current week must be between {LIMITS['week_min']} and {LIMITS['week_max']}",
+                        {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
+                    )
+                if e.startswith("'weeks_ahead' must be >=") or e.startswith("'weeks_ahead' must be <="):
+                    return handle_validation_error(
+                        "Weeks ahead must be between 1 and 8",
+                        {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
+                    )
+                msgs.append(e)
+            if msgs:
+                return handle_validation_error(
+                    format_errors(msgs),
+                    {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
+                )
+        current_week = validated["current_week"]
+        weeks_ahead = validated.get("weeks_ahead", 4)
+    except Exception:
+        if current_week < LIMITS["week_min"] or current_week > LIMITS["week_max"]:
+            return handle_validation_error(
+                f"Current week must be between {LIMITS['week_min']} and {LIMITS['week_max']}",
+                {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
+            )
+        if weeks_ahead < 1 or weeks_ahead > 8:
+            return handle_validation_error(
+                "Weeks ahead must be between 1 and 8",
+                {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
+            )
     
     strategic_data = {
         "analysis_period": f"Week {current_week} through Week {current_week + weeks_ahead - 1}",

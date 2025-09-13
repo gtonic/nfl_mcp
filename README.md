@@ -185,6 +185,28 @@ Recent upgrades to Sleeper tooling:
 - Automatic week inference for `get_transactions` (adds `auto_week_inferred`)
 - Aggregator endpoint `get_fantasy_context` to batch league core data (optional `include`)
 - Introduced central param validator utility (`param_validator.py`) for future consolidation
+ - Robustness layer (retry + snapshot fallback) for: `get_rosters`, `get_transactions`, `get_matchups`
+ - Snapshot metadata fields now returned:
+   - `retries_used`: number of retry attempts consumed
+   - `stale`: indicates if served data came from a snapshot beyond freshness TTL
+   - `failure_reason`: last encountered failure code/category
+   - `snapshot_fetched_at`, `snapshot_age_seconds`: present when snapshot used (or null on fresh)
+
+#### Robustness & Snapshot Behavior
+Each robust endpoint attempts multiple fetches with backoff. If all fail, the server returns the most recent cached snapshot **with `success=false`** but still provides usable data so LLM workflows can continue gracefully. Always check:
+
+```jsonc
+{
+  "success": false,
+  "stale": true,
+  "retries_used": 3,
+  "failure_reason": "timeout",
+  "snapshot_fetched_at": "2025-09-13T11:22:33Z",
+  "snapshot_age_seconds": 642
+}
+```
+
+For fresh successful responses the snapshot fields are present with `null` values (allowing uniform downstream parsing).
 
 #### Aggregator Quick Use
 ```

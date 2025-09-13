@@ -191,7 +191,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 3
+    CURRENT_SCHEMA_VERSION = 5
     
     def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
         """
@@ -233,6 +233,8 @@ class NFLDatabase:
             1: self._migration_v1_initial_schema,
             2: self._migration_v2_optimized_indexes,
             3: self._migration_v3_roster_snapshots,
+            4: self._migration_v4_transaction_snapshots,
+            5: self._migration_v5_matchup_snapshots,
         }
         
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -323,6 +325,46 @@ class NFLDatabase:
             ON roster_snapshots (league_id, fetched_at DESC)
             """
         )
+
+    def _migration_v4_transaction_snapshots(self, conn: sqlite3.Connection) -> None:
+        """Migration v4: Add transaction_snapshots table for robust transactions fallback."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_snapshots (
+                id INTEGER PRIMARY KEY,
+                league_id TEXT NOT NULL,
+                week INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                fetched_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_transaction_snapshots_league_week_time
+            ON transaction_snapshots (league_id, week, fetched_at DESC)
+            """
+        )
+
+    def _migration_v5_matchup_snapshots(self, conn: sqlite3.Connection) -> None:
+        """Migration v5: Add matchup_snapshots table for robust matchup fallback."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS matchup_snapshots (
+                id INTEGER PRIMARY KEY,
+                league_id TEXT NOT NULL,
+                week INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                fetched_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_matchup_snapshots_league_week_time
+            ON matchup_snapshots (league_id, week, fetched_at DESC)
+            """
+        )
     
     @contextmanager
     def _get_connection(self):
@@ -409,17 +451,96 @@ class NFLDatabase:
                     return None
                 payload_json, fetched_at = row
                 dt = datetime.datetime.fromisoformat(fetched_at)
-                stale = (datetime.datetime.utcnow() - dt).total_seconds() > ttl_minutes * 60
-                return {"rosters": json.loads(payload_json), "stale": stale, "fetched_at": fetched_at}
+                age_seconds = (datetime.datetime.utcnow() - dt).total_seconds()
+                stale = age_seconds > ttl_minutes * 60
+                return {"rosters": json.loads(payload_json), "stale": stale, "fetched_at": fetched_at, "age_seconds": age_seconds}
         except Exception as e:
             logger.debug(f"load_roster_snapshot failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Transaction snapshot helpers
+    # ------------------------------------------------------------------
+    def save_transaction_snapshot(self, league_id: str, week: int, transactions) -> None:
+        """Persist latest transactions payload snapshot keyed by league/week."""
+        try:
+            import json, datetime
+            with self._pool.get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO transaction_snapshots (league_id, week, payload_json, fetched_at) VALUES (?,?,?,?)",
+                    (league_id, week, json.dumps(transactions), datetime.datetime.utcnow().isoformat())
+                )
+                conn.commit()
+        except Exception as e:
+            logger.debug(f"save_transaction_snapshot failed: {e}")
+
+    def load_transaction_snapshot(self, league_id: str, week: Optional[int] = None, ttl_minutes: int = 15):
+        """Load most recent transactions snapshot for league (and week if provided)."""
+        try:
+            import json, datetime
+            with self._pool.get_connection() as conn:
+                if week is not None:
+                    cur = conn.execute(
+                        "SELECT week, payload_json, fetched_at FROM transaction_snapshots WHERE league_id=? AND week=? ORDER BY fetched_at DESC LIMIT 1",
+                        (league_id, week)
+                    )
+                else:
+                    cur = conn.execute(
+                        "SELECT week, payload_json, fetched_at FROM transaction_snapshots WHERE league_id=? ORDER BY fetched_at DESC LIMIT 1",
+                        (league_id,)
+                    )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                snap_week, payload_json, fetched_at = row
+                dt = datetime.datetime.fromisoformat(fetched_at)
+                age_seconds = (datetime.datetime.utcnow() - dt).total_seconds()
+                stale = age_seconds > ttl_minutes * 60
+                return {"transactions": json.loads(payload_json), "week": snap_week, "stale": stale, "fetched_at": fetched_at, "age_seconds": age_seconds}
+        except Exception as e:
+            logger.debug(f"load_transaction_snapshot failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Matchup snapshot helpers
+    # ------------------------------------------------------------------
+    def save_matchup_snapshot(self, league_id: str, week: int, matchups) -> None:
+        try:
+            import json, datetime
+            with self._pool.get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO matchup_snapshots (league_id, week, payload_json, fetched_at) VALUES (?,?,?,?)",
+                    (league_id, week, json.dumps(matchups), datetime.datetime.utcnow().isoformat())
+                )
+                conn.commit()
+        except Exception as e:
+            logger.debug(f"save_matchup_snapshot failed: {e}")
+
+    def load_matchup_snapshot(self, league_id: str, week: int, ttl_minutes: int = 15):
+        try:
+            import json, datetime
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT payload_json, fetched_at FROM matchup_snapshots WHERE league_id=? AND week=? ORDER BY fetched_at DESC LIMIT 1",
+                    (league_id, week)
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                payload_json, fetched_at = row
+                dt = datetime.datetime.fromisoformat(fetched_at)
+                age_seconds = (datetime.datetime.utcnow() - dt).total_seconds()
+                stale = age_seconds > ttl_minutes * 60
+                return {"matchups": json.loads(payload_json), "stale": stale, "fetched_at": fetched_at, "age_seconds": age_seconds}
+        except Exception as e:
+            logger.debug(f"load_matchup_snapshot failed: {e}")
             return None
     
     # Async Database Operations
     # These methods provide async alternatives to the main database operations
     
     @asynccontextmanager
-    async def _get_async_connection(self) -> AsyncContextManager:
+    async def _get_async_connection(self):  # Return type left un-annotated to satisfy runtime and avoid mismatched protocol
         """Get an async database connection with proper cleanup."""
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite. Install with: pip install aiosqlite")
