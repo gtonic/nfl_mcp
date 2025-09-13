@@ -355,3 +355,324 @@ if injuries:
 ```
 
 These examples show how to leverage the new Fantasy Intelligence APIs to make data-driven decisions that can help you "win the fantasy league by having an always up to date team with strong players."
+
+## Strategic Sleeper API Usage
+
+The following examples demonstrate the strategic use of Sleeper API tools to plan for future events (matchups, bye weeks) early enough for competitive advantage.
+
+### Multi-Week Strategic Preview
+
+```python
+async def strategic_season_planning(league_id, current_week=8):
+    """Use Sleeper API strategically to plan multiple weeks ahead."""
+    
+    print(f"📊 Strategic Season Planning - Starting Week {current_week}")
+    print("=" * 60)
+    
+    # Get strategic preview for next 6 weeks
+    preview = await client.call_tool("get_strategic_matchup_preview", {
+        "league_id": league_id,
+        "current_week": current_week,
+        "weeks_ahead": 6
+    })
+    
+    if preview.data.get("success"):
+        strategic_data = preview.data["strategic_preview"]
+        
+        print(f"\n📈 Analysis Period: {strategic_data['analysis_period']}")
+        
+        # Show critical bye weeks coming up
+        critical_byes = strategic_data["summary"]["critical_bye_weeks"]
+        if critical_byes:
+            print(f"\n🚨 CRITICAL BYE WEEKS AHEAD:")
+            for bye in critical_byes:
+                print(f"   Week {bye['week']}: {bye['team']} on bye")
+        
+        # Show high opportunity weeks
+        opportunity_weeks = strategic_data["summary"]["high_opportunity_weeks"]
+        if opportunity_weeks:
+            print(f"\n🎯 HIGH OPPORTUNITY WEEKS: {', '.join(map(str, opportunity_weeks))}")
+            print("   → Good weeks to be aggressive with lineup decisions")
+        
+        # Show challenging weeks
+        challenging_weeks = strategic_data["summary"]["challenging_weeks"]
+        if challenging_weeks:
+            print(f"\n⚠️  CHALLENGING WEEKS: {', '.join(map(str, challenging_weeks))}")
+            print("   → Start planning backup options now")
+        
+        # Show trade recommendations
+        trade_recs = strategic_data["summary"]["trade_recommendations"]
+        for rec in trade_recs:
+            print(f"\n💡 STRATEGIC RECOMMENDATION: {rec}")
+    
+    return preview.data
+
+# Usage
+await strategic_season_planning("your_league_id_here", current_week=8)
+```
+
+### Season-Long Bye Week Coordination
+
+```python
+async def master_bye_week_strategy(league_id, season=2025):
+    """Coordinate entire season bye week planning with your league schedule."""
+    
+    coordination = await client.call_tool("get_season_bye_week_coordination", {
+        "league_id": league_id,
+        "season": season
+    })
+    
+    if coordination.data.get("success"):
+        plan = coordination.data["coordination_plan"]
+        
+        print("🗓️  SEASON BYE WEEK MASTER PLAN")
+        print("=" * 50)
+        
+        # Show season overview
+        overview = plan["season_overview"]
+        print(f"Regular Season: Weeks 1-{overview['regular_season_weeks']}")
+        print(f"Playoffs Start: Week {overview['playoff_start_week']}")
+        print(f"Trade Deadline: Week {overview['trade_deadline']}")
+        
+        # Show bye week calendar
+        print(f"\n📅 BYE WEEK CALENDAR:")
+        bye_calendar = plan["bye_week_calendar"]
+        for week_key in sorted(bye_calendar.keys(), key=lambda x: int(x.split('_')[1])):
+            week_data = bye_calendar[week_key]
+            impact = week_data["strategic_impact"]
+            teams = ", ".join(week_data["teams_on_bye"])
+            print(f"   Week {week_data['week']}: {teams} ({impact} impact)")
+            print(f"      → Start preparing by Week {week_data['recommended_prep_week']}")
+        
+        # Show strategic periods
+        print(f"\n🎯 KEY STRATEGIC PERIODS:")
+        periods = plan["strategic_periods"]
+        for period_name, period_data in periods.items():
+            if period_data["weeks"]:
+                weeks_str = ", ".join(map(str, period_data["weeks"]))
+                print(f"   {period_name.replace('_', ' ').title()}: Weeks {weeks_str}")
+                print(f"      Focus: {period_data['focus']}")
+        
+        # Show recommendations
+        print(f"\n📋 STRATEGIC RECOMMENDATIONS:")
+        for i, rec in enumerate(plan["recommendations"], 1):
+            print(f"   {i}. {rec['action']} ({rec['priority']} Priority)")
+            print(f"      Timing: {rec['timing']}")
+            print(f"      Strategy: {rec['strategy']}")
+    
+    return coordination.data
+
+# Usage  
+await master_bye_week_strategy("your_league_id_here", 2025)
+```
+
+### Trade Deadline Strategic Analysis
+
+```python
+async def optimize_trade_deadline_timing(league_id, current_week):
+    """Analyze optimal trade timing before deadline."""
+    
+    analysis = await client.call_tool("get_trade_deadline_analysis", {
+        "league_id": league_id,
+        "current_week": current_week
+    })
+    
+    if analysis.data.get("success"):
+        trade_data = analysis.data["trade_analysis"]
+        
+        print("📈 TRADE DEADLINE STRATEGIC ANALYSIS")
+        print("=" * 45)
+        
+        # Show timing analysis
+        timing = trade_data["timing_analysis"]
+        print(f"Current Week: {timing['current_week']}")
+        print(f"Trade Deadline: Week {timing['trade_deadline']}")
+        print(f"Weeks Until Deadline: {timing['weeks_until_deadline']}")
+        print(f"Weeks Until Playoffs: {timing['weeks_until_playoffs']}")
+        
+        # Show current strategic window
+        windows = trade_data["strategic_windows"]
+        print(f"\n🎯 CURRENT PHASE: {windows['current_phase']}")
+        print(f"Strategy: {windows['strategy']}")
+        print(f"Urgency Level: {windows['urgency']}")
+        
+        # Show urgency factors
+        urgency_factors = trade_data.get("urgency_factors", [])
+        if urgency_factors:
+            print(f"\n🚨 URGENCY FACTORS:")
+            for factor in urgency_factors:
+                print(f"   • {factor}")
+        
+        # Show specific recommendations
+        print(f"\n💡 ACTIONABLE RECOMMENDATIONS:")
+        for i, rec in enumerate(trade_data["recommendations"], 1):
+            print(f"   {i}. {rec['action']} ({rec['priority']} Priority)")
+            print(f"      Reasoning: {rec['reasoning']}")
+    
+    return analysis.data
+
+# Usage
+await optimize_trade_deadline_timing("your_league_id_here", current_week=11)
+```
+
+### Comprehensive Playoff Preparation
+
+```python
+async def playoff_readiness_assessment(league_id, current_week):
+    """Get comprehensive playoff preparation plan with readiness score."""
+    
+    prep_plan = await client.call_tool("get_playoff_preparation_plan", {
+        "league_id": league_id,
+        "current_week": current_week
+    })
+    
+    if prep_plan.data.get("success"):
+        plan = prep_plan.data["playoff_plan"]
+        score = prep_plan.data["readiness_score"]
+        
+        print(f"🏆 PLAYOFF PREPARATION PLAN (Readiness: {score}/100)")
+        print("=" * 55)
+        
+        # Show timeline
+        timeline = plan["timeline"]
+        print(f"📅 TIMELINE:")
+        print(f"   Current Week: {timeline['current_week']}")
+        print(f"   Playoff Start: Week {timeline['playoff_start']}")
+        print(f"   Weeks to Playoffs: {timeline['weeks_to_playoffs']}")
+        print(f"   Championship Week: {timeline['championship_week']}")
+        
+        # Show current preparation phase
+        phase = plan["preparation_phases"]["current_phase"]
+        print(f"\n🎯 CURRENT PHASE: {phase['name']}")
+        print(f"   Strategy: {phase['strategy']}")
+        print(f"   Urgency: {phase['urgency']}")
+        print(f"   Weeks Remaining: {phase['weeks_remaining']}")
+        
+        # Show strategic priorities
+        print(f"\n📋 STRATEGIC PRIORITIES:")
+        for i, priority in enumerate(plan["strategic_priorities"], 1):
+            print(f"   {i}. {priority}")
+        
+        # Show NFL schedule analysis
+        nfl_analysis = plan["nfl_schedule_analysis"]
+        if nfl_analysis:
+            print(f"\n🏈 NFL SCHEDULE INSIGHTS:")
+            for team, data in nfl_analysis.items():
+                print(f"   {team}: {data['recommendation']} ({data['playoff_games_count']} playoff games)")
+                if data["key_insights"]:
+                    for insight in data["key_insights"][:2]:  # Top 2 insights
+                        print(f"      • {insight}")
+        
+        # Show recommendations
+        print(f"\n💡 RECOMMENDATIONS:")
+        for rec in plan["recommendations"]:
+            print(f"   📌 {rec['category']}: {rec['action']}")
+            print(f"      Priority: {rec['priority']} | Deadline: {rec['deadline']}")
+        
+        # Show readiness assessment
+        assessment = plan["readiness_assessment"]
+        print(f"\n📊 READINESS BREAKDOWN:")
+        print(f"   Roster Depth: {assessment['roster_depth']}")
+        print(f"   Schedule Strength: {assessment['schedule_strength']}")
+        print(f"   Bye Week Planning: {assessment['bye_week_planning']}")
+        print(f"   Overall Score: {assessment['overall_score']}/100")
+    
+    return prep_plan.data
+
+# Usage
+await playoff_readiness_assessment("your_league_id_here", current_week=12)
+```
+
+### Combined Strategic Workflow
+
+```python
+async def full_strategic_analysis(league_id, current_week):
+    """Complete strategic analysis combining all Sleeper API tools."""
+    
+    print("🚀 COMPREHENSIVE STRATEGIC ANALYSIS")
+    print("=" * 50)
+    
+    # 1. Multi-week preview
+    print("\n1️⃣ UPCOMING WEEKS PREVIEW")
+    print("-" * 30)
+    preview = await strategic_season_planning(league_id, current_week)
+    
+    # 2. Trade deadline analysis
+    print("\n\n2️⃣ TRADE DEADLINE ANALYSIS")
+    print("-" * 30)
+    trade_analysis = await optimize_trade_deadline_timing(league_id, current_week)
+    
+    # 3. Playoff preparation
+    print("\n\n3️⃣ PLAYOFF PREPARATION")
+    print("-" * 30)
+    playoff_prep = await playoff_readiness_assessment(league_id, current_week)
+    
+    # 4. Season coordination (run less frequently)
+    if current_week <= 6:  # Early season - good time for full season planning
+        print("\n\n4️⃣ SEASON BYE WEEK COORDINATION")
+        print("-" * 30)
+        season_plan = await master_bye_week_strategy(league_id, 2025)
+    
+    print("\n\n✅ STRATEGIC ANALYSIS COMPLETE")
+    print("Use these insights to make informed decisions about:")
+    print("• When to trade vs when to hold")
+    print("• Which weeks to target for waiver claims")
+    print("• How to prepare for challenging bye weeks")
+    print("• Optimal playoff roster construction")
+
+# Usage - Run this weekly during the season
+await full_strategic_analysis("your_league_id_here", current_week=9)
+```
+
+## Best Practices for Strategic Sleeper API Usage
+
+### 1. Timing is Everything
+- **Early Season (Weeks 1-4)**: Use `get_season_bye_week_coordination()` to plan entire season
+- **Mid Season (Weeks 5-10)**: Use `get_strategic_matchup_preview()` weekly for tactical decisions  
+- **Trade Season (Weeks 8-13)**: Use `get_trade_deadline_analysis()` to optimize timing
+- **Playoff Prep (Weeks 11+)**: Use `get_playoff_preparation_plan()` for readiness assessment
+
+### 2. Strategic Integration
+- Combine Sleeper league data with NFL schedule insights
+- Use bye week forecasting to plan trades 2-3 weeks early
+- Coordinate waiver claims with upcoming matchup difficulties
+- Balance short-term needs with playoff preparation
+
+### 3. Competitive Advantage
+- Most managers only look 1 week ahead - these tools give you 4-8 week vision
+- Early identification of bye week clusters allows proactive roster moves
+- Trade deadline timing optimization can secure better deals
+- Playoff preparation scoring helps prioritize the right players
+
+### 4. Automation Opportunities
+```python
+# Set up weekly strategic check
+async def weekly_strategic_check():
+    """Automated weekly strategic assessment."""
+    
+    current_week = 9  # Update this weekly or get from NFL state
+    league_id = "your_league_id_here"
+    
+    # Quick strategic pulse check
+    preview = await client.call_tool("get_strategic_matchup_preview", {
+        "league_id": league_id,
+        "current_week": current_week, 
+        "weeks_ahead": 3
+    })
+    
+    # Alert on critical upcoming issues
+    if preview.data.get("success"):
+        summary = preview.data["strategic_preview"]["summary"]
+        
+        if summary["critical_bye_weeks"]:
+            print("🚨 ALERT: Critical bye weeks detected in next 3 weeks!")
+            
+        if len(summary["challenging_weeks"]) >= 2:
+            print("⚠️  WARNING: Multiple challenging weeks ahead - prepare now!")
+        
+        if summary["trade_recommendations"]:
+            print("💡 OPPORTUNITY: Strategic trade window identified!")
+
+# Run this every Tuesday during the season
+await weekly_strategic_check()
+```

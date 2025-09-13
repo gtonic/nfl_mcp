@@ -464,9 +464,11 @@ async with Client("http://localhost:9000/mcp/") as client:
 
 ### Sleeper API Tools (MCP)
 
-**Tools:** `get_league`, `get_rosters`, `get_league_users`, `get_matchups`, `get_playoff_bracket`, `get_transactions`, `get_traded_picks`, `get_nfl_state`, `get_trending_players`
+**Basic Tools:** `get_league`, `get_rosters`, `get_league_users`, `get_matchups`, `get_playoff_bracket`, `get_transactions`, `get_traded_picks`, `get_nfl_state`, `get_trending_players`
 
-These tools provide comprehensive fantasy league management by connecting to the Sleeper API.
+**Strategic Tools:** `get_strategic_matchup_preview`, `get_season_bye_week_coordination`, `get_trade_deadline_analysis`, `get_playoff_preparation_plan`
+
+These tools provide comprehensive fantasy league management by connecting to the Sleeper API, including advanced strategic planning capabilities for multi-week analysis and competitive advantage.
 
 #### get_league
 
@@ -552,6 +554,49 @@ Get trending players from fantasy leagues.
 
 **Returns:** Dictionary with trending players list, parameters, count, success status, and error (if any)
 
+### Strategic Planning Tools
+
+#### get_strategic_matchup_preview
+
+Strategic preview of upcoming matchups for multi-week planning. Combines Sleeper league data with NFL schedules to identify bye weeks, challenging periods, and opportunities 4-8 weeks ahead.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+- `current_week` (integer): Current NFL week (1-22)
+- `weeks_ahead` (integer, optional): Weeks to analyze ahead (1-8, default: 4)
+
+**Returns:** Dictionary with strategic analysis including bye week alerts, opportunity windows, and trade recommendations
+
+#### get_season_bye_week_coordination
+
+Season-long bye week coordination with fantasy league schedule. Analyzes entire NFL bye week calendar against your league's playoff schedule for strategic roster planning.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league  
+- `season` (integer, optional): NFL season year (default: 2025)
+
+**Returns:** Dictionary with coordination plan including bye week calendar, strategic periods, and timing recommendations
+
+#### get_trade_deadline_analysis
+
+Strategic trade deadline timing analysis. Evaluates optimal trade timing by analyzing upcoming bye weeks, playoff schedules, and league patterns.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+- `current_week` (integer): Current NFL week for timeline analysis
+
+**Returns:** Dictionary with trade analysis including timing windows, urgency factors, and strategic recommendations
+
+#### get_playoff_preparation_plan
+
+Comprehensive playoff preparation plan combining league and NFL data. Provides detailed preparation strategy including roster optimization and readiness assessment.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+- `current_week` (integer): Current NFL week for timeline analysis
+
+**Returns:** Dictionary with playoff plan, strategic priorities, NFL schedule insights, and readiness score (0-100)
+
 **Example Usage with MCP Client:**
 ```python
 from fastmcp import Client
@@ -572,6 +617,36 @@ async with Client("http://localhost:9000/mcp/") as client:
     result = await client.call_tool("get_league", {"league_id": "your_league_id"})
     if result.data["success"]:
         print(f"League: {result.data['league']['name']}")
+        
+    # Strategic planning - Preview upcoming challenges
+    result = await client.call_tool("get_strategic_matchup_preview", {
+        "league_id": "your_league_id",
+        "current_week": 8,
+        "weeks_ahead": 6
+    })
+    if result.data["success"]:
+        critical_byes = result.data["strategic_preview"]["summary"]["critical_bye_weeks"]
+        print(f"Critical bye weeks coming: {len(critical_byes)}")
+        
+    # Strategic planning - Trade deadline analysis
+    result = await client.call_tool("get_trade_deadline_analysis", {
+        "league_id": "your_league_id", 
+        "current_week": 11
+    })
+    if result.data["success"]:
+        phase = result.data["trade_analysis"]["strategic_windows"]["current_phase"]
+        urgency = result.data["trade_analysis"]["strategic_windows"]["urgency"]
+        print(f"Trade strategy: {phase} ({urgency} urgency)")
+        
+    # Strategic planning - Playoff preparation 
+    result = await client.call_tool("get_playoff_preparation_plan", {
+        "league_id": "your_league_id",
+        "current_week": 12
+    })
+    if result.data["success"]:
+        score = result.data["readiness_score"]
+        phase = result.data["playoff_plan"]["preparation_phases"]["current_phase"]["name"]
+        print(f"Playoff readiness: {score}/100 ({phase})")
 ```
 
 ## Development
