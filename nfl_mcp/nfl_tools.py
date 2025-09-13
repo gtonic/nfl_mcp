@@ -280,33 +280,58 @@ async def get_depth_chart(team_id: str) -> dict:
 
 
 @handle_http_errors(
-    default_data={"leaders": [], "season": None, "type": None},
+    default_data={"players": [], "season": None, "category": None},
     operation_name="fetching league leaders"
 )
-async def get_league_leaders(season: int = 2025, season_type: int = 2, limit: int = 25) -> dict:
-    """Fetch current NFL statistical leaders from ESPN core API.
+async def get_league_leaders(category: str, season: int = 2025, season_type: int = 2) -> dict:
+    """Fetch current NFL statistical leaders for a single category.
+
+    Instead of returning all categories, this focuses on one requested category.
+
+    Supported input categories (case-insensitive):
+      - pass  (passing yards leaders)
+      - rush  (rushing yards leaders)
+      - receiving (receiving yards leaders)
+      - tackles (total tackles leaders)
+      - sacks (sacks leaders)
 
     Args:
+        category: One of pass, rush, receiving, tackles, sacks
         season: Season year (default 2025)
-        season_type: Season type (2 = regular season, 1 = preseason, 3 = postseason)
-        limit: Max leader categories to return after processing (simple cap; API returns many)
+        season_type: 1=Pre, 2=Regular, 3=Post
 
     Returns:
-        Dict with leaders list. Each entry contains:
-          - category: stat category name
-          - displayName: ESPN display name
-          - leaders: list of {rank, value, athlete_id, athlete_name, team_id, team_abbr}
+        success response containing:
+          - season / season_type
+          - category (echoed normalized short token)
+          - stat_category_name (resolved underlying ESPN category identifier)
+          - players: list[{rank, value, athlete_id, athlete_name, team_id, team_abbr}]
     """
-    # Basic safety on inputs
+    # Normalize & validate inputs
+    raw_category = (category or "").strip().lower()
+    allowed = {"pass", "rush", "receiving", "tackles", "sacks"}
+    if raw_category not in allowed:
+        return create_error_response(
+            error_message=f"Invalid category '{category}'. Must be one of: pass, rush, receiving, tackles, sacks",
+            error_type=ErrorType.VALIDATION,
+            data={"players": [], "season": season, "category": raw_category}
+        )
+
     if season < 2000 or season > 2100:
         season = 2025
     if season_type not in (1, 2, 3):
         season_type = 2
-    if limit <= 0:
-        limit = 25
-    limit = min(limit, 100)
 
-    headers = get_http_headers("nfl_news")  # reuse a generic UA
+    # Mapping from short token to prioritized list of canonical stat category name fragments
+    target_fragments = {
+        "pass": ["passingyards", "passing_yards", "passingyds"],
+        "rush": ["rushingyards", "rushing_yards", "rushingyds"],
+        "receiving": ["receivingyards", "receiving_yards", "receivingyds"],
+        "tackles": ["totaltackles", "tackles"],
+        "sacks": ["sacks"],
+    }
+
+    headers = get_http_headers("nfl_news")  # reuse a generic UA header config
     url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/leaders"
 
     async with create_http_client() as client:
@@ -314,40 +339,49 @@ async def get_league_leaders(season: int = 2025, season_type: int = 2, limit: in
         response.raise_for_status()
         data = response.json()
 
-        # The core API returns a 'categories' array with references; sometimes items under 'items'
         categories = data.get('categories') or data.get('items') or []
-        processed = []
 
+        def normalize_name(name: str) -> str:
+            return ''.join(ch for ch in name.lower() if ch.isalnum())
+
+        # Select best matching category
+        chosen = None
+        chosen_display = None
+        fragments = target_fragments[raw_category]
         for cat in categories:
-            cat_name = cat.get('name') or cat.get('displayName') or cat.get('shortName')
-            display_name = cat.get('displayName') or cat_name
-            leaders_list = []
-            # Each category may have 'leaders' array
-            for leader_group in cat.get('leaders', []):
-                # leader_group may contain 'leaders' deeper or directly 'athlete'
-                lg_leaders = leader_group.get('leaders') or []
-                for entry in lg_leaders:
-                    athlete = entry.get('athlete', {})
-                    team = entry.get('team', {})
-                    leaders_list.append({
-                        "rank": entry.get('rank'),
-                        "value": entry.get('value'),
-                        "athlete_id": athlete.get('id'),
-                        "athlete_name": athlete.get('displayName') or athlete.get('shortName'),
-                        "team_id": team.get('id'),
-                        "team_abbr": team.get('abbreviation'),
-                    })
-            processed.append({
-                "category": cat_name,
-                "displayName": display_name,
-                "leaders": leaders_list
-            })
-            if len(processed) >= limit:
+            cat_name = cat.get('name') or cat.get('displayName') or cat.get('shortName') or ''
+            norm = normalize_name(cat_name)
+            if any(frag in norm for frag in fragments):
+                chosen = cat
+                chosen_display = cat.get('displayName') or cat_name
                 break
+
+        if not chosen:
+            return create_error_response(
+                error_message=f"No matching stat category found for '{raw_category}'",
+                error_type=ErrorType.NOT_FOUND,
+                data={"players": [], "season": season, "category": raw_category}
+            )
+
+        players = []
+        for leader_group in chosen.get('leaders', []):
+            for entry in (leader_group.get('leaders') or []):
+                athlete = entry.get('athlete', {})
+                team = entry.get('team', {})
+                players.append({
+                    "rank": entry.get('rank'),
+                    "value": entry.get('value'),
+                    "athlete_id": athlete.get('id'),
+                    "athlete_name": athlete.get('displayName') or athlete.get('shortName'),
+                    "team_id": team.get('id'),
+                    "team_abbr": team.get('abbreviation'),
+                })
 
         return create_success_response({
             "season": season,
             "season_type": season_type,
-            "leaders": processed,
-            "categories_returned": len(processed)
+            "category": raw_category,
+            "stat_category_name": chosen_display,
+            "players": players,
+            "players_count": len(players)
         })

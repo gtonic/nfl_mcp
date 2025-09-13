@@ -40,8 +40,9 @@ async def test_get_league_leaders_basic(monkeypatch):
     async def dummy_client_factory(*args, **kwargs):
         return DummyClient(sample)
     monkeypatch.setattr(nfl_tools, "create_http_client", lambda *a, **k: DummyClient(sample))
-    result = await nfl_tools.get_league_leaders(season=2025, season_type=2, limit=5)
+    result = await nfl_tools.get_league_leaders(category="pass", season=2025, season_type=2)
     assert result['success'] is True
-    leaders = result['leaders']
-    assert leaders[0]['category'] == 'passingYards'
-    assert len(leaders[0]['leaders']) == 2
+    assert result['category'] == 'pass'
+    assert result['players_count'] == 2
+    assert len(result['players']) == 2
+    assert result['players'][0]['athlete_name'] == 'QB One'

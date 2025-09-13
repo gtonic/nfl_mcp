@@ -40,14 +40,19 @@ async def get_nfl_news(limit: Optional[int] = 50) -> dict:
 
 @_dummy.tool
 @timing_decorator("get_league_leaders", tool_type="nfl")
-async def get_league_leaders(season: Optional[int] = 2025, season_type: Optional[int] = 2, limit: Optional[int] = 25) -> dict:
-    for name, val, default in (('season', season, 2025), ('season_type', season_type, 2), ('limit', limit, 25)):
-        try:
-            if locals()[name] is not None:
-                locals()[name] = int(locals()[name])  # type: ignore
-        except Exception:
-            locals()[name] = default  # type: ignore
-    return await nfl_tools.get_league_leaders(season=season or 2025, season_type=season_type or 2, limit=limit or 25)
+async def get_league_leaders(category: str, season: Optional[int] = 2025, season_type: Optional[int] = 2) -> dict:
+    # Basic numeric coercion
+    try:
+        if season is not None:
+            season = int(season)
+    except Exception:
+        season = 2025
+    try:
+        if season_type is not None:
+            season_type = int(season_type)
+    except Exception:
+        season_type = 2
+    return await nfl_tools.get_league_leaders(category=category, season=season or 2025, season_type=season_type or 2)
 
 @_dummy.tool
 @timing_decorator("get_teams", tool_type="nfl")

@@ -83,13 +83,13 @@ def create_app() -> FastMCP:
 
     # MCP Tool: Get NFL league leaders
     @mcp.tool
-    async def get_league_leaders(season: Optional[int] = 2025, season_type: Optional[int] = 2, limit: Optional[int] = 25) -> dict:
-        """Get current NFL statistical leaders.
+    async def get_league_leaders(category: str, season: Optional[int] = 2025, season_type: Optional[int] = 2) -> dict:
+        """Get current NFL statistical leaders for a single category.
 
         Args:
+            category: One of pass, rush, receiving, tackles, sacks
             season: Season year (e.g. 2025)
             season_type: 1=Preseason, 2=Regular, 3=Postseason
-            limit: Max categories to return (cap 100)
         """
         # Lightweight numeric validation with fallbacks
         try:
@@ -102,12 +102,7 @@ def create_app() -> FastMCP:
                 season_type = int(season_type)
         except Exception:
             season_type = 2
-        try:
-            if limit is not None:
-                limit = int(limit)
-        except Exception:
-            limit = 25
-        return await nfl_tools.get_league_leaders(season=season or 2025, season_type=season_type or 2, limit=limit or 25)
+        return await nfl_tools.get_league_leaders(category=category, season=season or 2025, season_type=season_type or 2)
 
     # MCP Tool: Get NFL teams
     @mcp.tool
