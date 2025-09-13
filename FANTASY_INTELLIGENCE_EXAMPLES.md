@@ -31,6 +31,22 @@ for team in standings.data["standings"]:
         players = await client.call_tool("get_team_player_stats", {"team_id": team["abbreviation"]})
         fantasy_players = [p for p in players.data["player_stats"] if p["fantasy_relevant"]]
         print(f"   Fantasy relevant players: {len(fantasy_players)}")
+
+# Enhanced waiver wire analysis with de-duplication
+waiver_dashboard = await client.call_tool("get_waiver_wire_dashboard", {"league_id": "your_league_id"})
+
+if waiver_dashboard.data["success"]:
+    summary = waiver_dashboard.data["dashboard_summary"]
+    print(f"📊 Waiver Wire Dashboard:")
+    print(f"   Total transactions: {summary['total_waiver_transactions']}")
+    print(f"   Duplicates removed: {summary['duplicates_removed']}")
+    print(f"   Volatile players: {summary['volatile_players_count']}")
+    
+    # Check for volatile players (dropped and re-added)
+    if waiver_dashboard.data["volatile_players"]:
+        print("⚠️  Volatile players to avoid:")
+        for player_id in waiver_dashboard.data["volatile_players"]:
+            print(f"   - Player ID: {player_id}")
 ```
 
 ### 3. Matchup Analysis
@@ -50,7 +66,104 @@ for game in upcoming_games:
         print(f"  💡 {implication}")
 ```
 
-## Advanced Decision Making Workflows
+### Waiver Wire Intelligence
+
+```python
+async def comprehensive_waiver_analysis(league_id):
+    """Comprehensive waiver wire analysis with de-duplication and re-entry tracking."""
+    
+    print("🔍 Waiver Wire Intelligence Report")
+    print("=" * 50)
+    
+    # Get comprehensive waiver dashboard
+    dashboard = await client.call_tool("get_waiver_wire_dashboard", {"league_id": league_id})
+    
+    if not dashboard.data["success"]:
+        print(f"❌ Error: {dashboard.data['error']}")
+        return
+    
+    summary = dashboard.data["dashboard_summary"]
+    
+    # Summary statistics
+    print("\n📊 Summary Statistics:")
+    print(f"   Total waiver transactions: {summary['total_waiver_transactions']}")
+    print(f"   Unique transactions (after dedup): {summary['unique_transactions']}")
+    print(f"   Duplicates removed: {summary['duplicates_removed']}")
+    print(f"   Deduplication rate: {summary['deduplication_rate']:.1f}%")
+    print(f"   Players analyzed: {summary['total_players_analyzed']}")
+    
+    # Re-entry analysis
+    print(f"\n🔄 Re-Entry Analysis:")
+    print(f"   Players with re-entries: {summary['players_with_re_entries']}")
+    print(f"   Volatile players (multiple re-entries): {summary['volatile_players_count']}")
+    
+    # Show volatile players detail
+    if dashboard.data["volatile_players"]:
+        print("\n⚠️  Volatile Players to Monitor:")
+        re_entry_data = dashboard.data["re_entry_analysis"]
+        
+        for player_id in dashboard.data["volatile_players"]:
+            if player_id in re_entry_data:
+                player_info = re_entry_data[player_id]
+                re_entries = len(player_info["re_entries"])
+                print(f"   🔴 Player {player_id}: {re_entries} re-entries")
+                print(f"      Total activities: {player_info['total_activities']}")
+                print(f"      Current status: {player_info['latest_status']}")
+    
+    # Show recent clean waiver activity
+    print(f"\n✅ Clean Waiver Activity (Last 10):")
+    waiver_log = dashboard.data["waiver_log"][-10:]  # Last 10 transactions
+    
+    for tx in waiver_log:
+        tx_type = tx.get("type", "unknown")
+        adds = tx.get("adds", {})
+        drops = tx.get("drops", {})
+        
+        if adds:
+            for player_id in adds.keys():
+                print(f"   ➕ {tx_type}: Player {player_id} added")
+        
+        if drops:
+            for player_id in drops.keys():
+                print(f"   ➖ {tx_type}: Player {player_id} dropped")
+
+async def focused_re_entry_check(league_id):
+    """Check specific players for re-entry patterns."""
+    
+    print("🔄 Re-Entry Status Check")
+    print("=" * 30)
+    
+    re_entry_result = await client.call_tool("check_re_entry_status", {"league_id": league_id})
+    
+    if not re_entry_result.data["success"]:
+        print(f"❌ Error: {re_entry_result.data['error']}")
+        return
+    
+    re_entry_players = re_entry_result.data["re_entry_players"]
+    
+    if not re_entry_players:
+        print("✅ No re-entry patterns detected - all waiver activity looks stable")
+        return
+    
+    print(f"Found {len(re_entry_players)} players with re-entry patterns:")
+    
+    for player_id, analysis in re_entry_players.items():
+        print(f"\n🔍 Player {player_id}:")
+        print(f"   Activities: {analysis['total_activities']}")
+        print(f"   Drops: {analysis['drops_count']}, Adds: {analysis['adds_count']}")
+        print(f"   Volatile: {'⚠️ YES' if analysis['is_volatile'] else '✅ No'}")
+        
+        for i, re_entry in enumerate(analysis['re_entries'], 1):
+            days = re_entry.get('days_between', 0) or 0
+            same_roster = "🔄 Same team" if re_entry['same_roster'] else "↔️  Different team"
+            print(f"   Re-entry {i}: {days:.1f} days between drop/add - {same_roster}")
+
+# Usage examples
+await comprehensive_waiver_analysis("your_league_id")
+await focused_re_entry_check("your_league_id")
+```
+
+### Advanced Decision Making Workflows
 
 ### Weekly Lineup Strategy
 
