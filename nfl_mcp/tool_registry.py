@@ -36,12 +36,16 @@ def initialize_shared(db: NFLDatabase):
 @_dummy.tool
 @timing_decorator("get_nfl_news", tool_type="nfl")
 async def get_nfl_news(limit: Optional[int] = 50) -> dict:
-    """Fetch latest NFL news headlines from ESPN.
-
+    """Get latest NFL news articles from ESPN API.
+    
+    Use this tool when users ask for current NFL news, recent stories, or league updates.
+    
     Parameters:
-        limit (int, default 50, range 1-50): Max number of articles.
-    Returns: {articles: [...], total_articles, success, error?}
-    Example: get_nfl_news(limit=10)
+        limit (int, optional): Number of articles to return (1-50, default: 50)
+    
+    Returns: {articles: [...], total_articles, success, error}
+    
+    Call this for: "NFL news", "recent NFL stories", "what's happening in the NFL"
     """
     return await nfl_tools.get_nfl_news(limit)
 
@@ -49,16 +53,24 @@ if FEATURE_LEAGUE_LEADERS:
     @_dummy.tool
     @timing_decorator("get_league_leaders", tool_type="nfl")
     async def get_league_leaders(category: str, season: Optional[int] = 2025, season_type: Optional[int] = 2, week: Optional[int] = None) -> dict:  # pragma: no cover - conditional
-        """Get NFL stat leaders for one or multiple categories (feature-flagged).
-
-        Categories tokens (comma/space separated): pass, rush, receiving, tackles, sacks.
+        """Get NFL statistical leaders by category (pass, rush, receiving, tackles, sacks).
+        
+        Use when users want to see who leads the NFL in specific statistical categories.
+        
         Parameters:
-            category (str, required): One or many tokens (e.g. "pass, rush").
-            season (int, default 2025): Season year.
-            season_type (int, default 2): 1=Pre,2=Regular,3=Post.
-            week (int|None, optional): Reserved for future filtering (currently ignored if provided).
-        Returns: Single category => players list; Multi => categories array.
-        Example: get_league_leaders(category="pass, rush", season=2025)
+            category (str, required): Stats to get - combine with commas for multiple (e.g., "pass, rush")
+                - "pass" for passing leaders (yards, TDs, completions)
+                - "rush" for rushing leaders (yards, TDs, attempts)  
+                - "receiving" for receiving leaders (yards, receptions, TDs)
+                - "tackles" for defensive tackle leaders
+                - "sacks" for sack leaders
+            season (int, optional): Year (default: 2025)
+            season_type (int, optional): 1=Preseason, 2=Regular season, 3=Postseason (default: 2)
+            week (int, optional): Specific week filter (currently ignored)
+        
+        Returns: Single category => {players: [...]}; Multiple => {categories: [...]}
+        
+        Call this for: "who leads in passing yards", "top rushers", "sack leaders", "receiving leaders"
         """
         # Basic numeric coercion
         try:
@@ -81,31 +93,45 @@ if FEATURE_LEAGUE_LEADERS:
 @_dummy.tool
 @timing_decorator("get_teams", tool_type="nfl")
 async def get_teams() -> dict:
-    """List current NFL teams (ESPN) with metadata.
-
-    Returns: {teams: [...], total_teams, success, error?}
-    Example: get_teams()
+    """Get all current NFL teams with basic information.
+    
+    Use this tool when users need a list of NFL teams, team names, or team IDs.
+    
+    Parameters: None
+    
+    Returns: {teams: [...], total_teams, success, error}
+    
+    Call this for: "NFL teams", "list all teams", "team names", "what teams are in the NFL"
     """
     return await nfl_tools.get_teams()
 
 @_dummy.tool
 @timing_decorator("fetch_teams", tool_type="nfl")
 async def fetch_teams() -> dict:
-    """Fetch & upsert NFL teams into local DB.
-
-    Returns: {teams_count, last_updated, success, error?}
-    Example: fetch_teams()
+    """Update local database with latest NFL team information from ESPN.
+    
+    Use this tool to refresh team data in the local cache before accessing team information.
+    
+    Parameters: None
+    
+    Returns: {teams_count, last_updated, success, error}
+    
+    Call this for: "update team data", "refresh teams", "fetch latest team info"
     """
     return await nfl_tools.fetch_teams(_nfl_db)  # type: ignore[arg-type]
 
 @_dummy.tool
 async def get_depth_chart(team_id: str) -> dict:
-    """Fetch a team's depth chart from ESPN HTML page.
-
+    """Get a team's depth chart showing player positions and depth order.
+    
+    Use this tool when users want to see starting lineups, backups, or positional depth for a team.
+    
     Parameters:
-        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
-    Returns: {team_id, team_name, depth_chart:[{position, players[]}], success, error?}
-    Example: get_depth_chart(team_id="KC")
+        team_id (str, required): Team abbreviation (e.g., 'KC', 'NE', 'SF', 'DAL')
+    
+    Returns: {team_id, team_name, depth_chart: [{position, players}], success, error}
+    
+    Call this for: "Chiefs depth chart", "who starts at QB for KC", "team starters", "depth chart"
     """
     try:
         team_id = validate_string_input(team_id, 'team_id', max_length=4, required=True)
@@ -140,13 +166,17 @@ async def get_depth_chart(team_id: str) -> dict:
 
 @_dummy.tool
 async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
-    """Retrieve and sanitize page text content.
-
+    """Extract clean text content from any web page for analysis.
+    
+    Use this tool when users provide URLs and want the text content analyzed or summarized.
+    
     Parameters:
-        url (str, required): HTTP/HTTPS URL.
-        max_length (int, default 10000, range 100-50000): Truncate content.
-    Returns: {url, title, content, content_length, success, error?}
-    Example: crawl_url(url="https://example.com", max_length=4000)
+        url (str, required): Full URL starting with http:// or https://
+        max_length (int, optional): Maximum text length to return (100-50000, default: 10000)
+    
+    Returns: {url, title, content, content_length, success, error}
+    
+    Call this for: "analyze this URL", "summarize this page", "what does this website say"
     """
     try:
         url = validate_string_input(url, 'general', max_length=2000, required=True)
@@ -178,11 +208,16 @@ async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
 @_dummy.tool
 @timing_decorator("fetch_athletes", tool_type="athlete")
 async def fetch_athletes() -> dict:
-    """Bulk import Sleeper NFL player dataset into local DB.
-
-    Returns: {athletes_count, last_updated, success, error?}
-    Warning: Large payload (tens of MB) – use sparingly.
-    Example: fetch_athletes()
+    """Download and cache all NFL player data from Sleeper API into local database.
+    
+    Use this tool to update the local player database before searching or looking up athletes.
+    WARNING: This downloads a large dataset (tens of MB) - use sparingly.
+    
+    Parameters: None
+    
+    Returns: {athletes_count, last_updated, success, error}
+    
+    Call this for: "update player database", "refresh athlete data", "download latest players"
     """
     try:
         timeout = httpx.Timeout(60.0, connect=15.0)
@@ -198,12 +233,16 @@ async def fetch_athletes() -> dict:
 
 @_dummy.tool
 def lookup_athlete(athlete_id: str) -> dict:
-    """Lookup a single athlete by ID (Sleeper player id key).
-
+    """Find a specific NFL player by their unique Sleeper ID.
+    
+    Use this tool when you have a specific player ID and need detailed player information.
+    
     Parameters:
-        athlete_id (str, required): Player identifier.
-    Returns: {athlete, found (bool), error?}
-    Example: lookup_athlete(athlete_id="1234")
+        athlete_id (str, required): Player's Sleeper API identifier (numeric string)
+    
+    Returns: {athlete, found (bool), error}
+    
+    Call this for: "player ID 1234", "lookup athlete 5678", when you have a specific player ID
     """
     try:
         athlete_id = validate_string_input(athlete_id, 'alphanumeric_id', max_length=50, required=True)
@@ -217,13 +256,17 @@ def lookup_athlete(athlete_id: str) -> dict:
 
 @_dummy.tool
 def search_athletes(name: str, limit: Optional[int] = 10) -> dict:
-    """Search athletes by (case-insensitive) name substring.
-
+    """Search for NFL players by name (supports partial matching).
+    
+    Use this tool when users mention player names or want to find players by name.
+    
     Parameters:
-        name (str, required): Partial or full name.
-        limit (int, default 10, range 1-100): Max results.
-    Returns: {athletes: [...], count, search_term, error?}
-    Example: search_athletes(name="Mahomes", limit=5)
+        name (str, required): Player name or partial name to search for
+        limit (int, optional): Maximum results to return (1-100, default: 10)
+    
+    Returns: {athletes: [...], count, search_term, error}
+    
+    Call this for: "find Mahomes", "search for Josh Allen", "players named Williams"
     """
     try:
         name = validate_string_input(name, 'athlete_name', max_length=100, required=True)
@@ -238,12 +281,16 @@ def search_athletes(name: str, limit: Optional[int] = 10) -> dict:
 
 @_dummy.tool
 def get_athletes_by_team(team_id: str) -> dict:
-    """List athletes (local DB) for a team abbreviation.
-
+    """Get all players currently on a specific NFL team's roster.
+    
+    Use this tool when users ask about a team's players, roster, or who plays for a team.
+    
     Parameters:
-        team_id (str, required): Abbrev (e.g. 'KC').
-    Returns: {athletes: [...], count, team_id, error?}
-    Example: get_athletes_by_team(team_id="KC")
+        team_id (str, required): Team abbreviation (e.g., 'KC', 'SF', 'NE', 'DAL')
+    
+    Returns: {athletes: [...], count, team_id, error}
+    
+    Call this for: "Chiefs roster", "who plays for KC", "49ers players", "team roster"
     """
     try:
         team_id = validate_string_input(team_id, 'team_id', max_length=4, required=True)
@@ -255,15 +302,19 @@ def get_athletes_by_team(team_id: str) -> dict:
     except Exception as e:
         return {"athletes": [], "count": 0, "team_id": team_id, "error": f"Error getting athletes for team: {e}"}
 
-# Sleeper tools
+# Sleeper Fantasy League Tools
 @_dummy.tool
 async def get_league(league_id: str) -> dict:
-    """Fetch Sleeper league metadata.
-
+    """Get detailed information about a Sleeper fantasy football league.
+    
+    Use this tool when users provide a league ID and want league settings, scoring, roster positions.
+    
     Parameters:
-        league_id (str, required)
-    Returns: {league, success, error?}
-    Example: get_league(league_id="123456789012345678")
+        league_id (str, required): Sleeper league ID (18-digit numeric string)
+    
+    Returns: {league, success, error}
+    
+    Call this for: "my league info", "league settings", when users provide a league ID
     """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
@@ -273,12 +324,16 @@ async def get_league(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_rosters(league_id: str) -> dict:
-    """Fetch rosters for a Sleeper league.
-
+    """Get all team rosters in a Sleeper fantasy league.
+    
+    Use this tool to see team compositions, player ownership, and roster construction.
+    
     Parameters:
-        league_id (str, required)
-    Returns: {rosters:[...], count, success, error?}
-    Example: get_rosters(league_id="123456789012345678")
+        league_id (str, required): Sleeper league ID (18-digit numeric string)
+    
+    Returns: {rosters: [...], count, success, error}
+    
+    Call this for: "league rosters", "who has which players", "team rosters"
     """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
@@ -288,12 +343,16 @@ async def get_rosters(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_league_users(league_id: str) -> dict:
-    """List users in a Sleeper league.
-
+    """Get all managers/users in a Sleeper fantasy league.
+    
+    Use this tool to see league membership, manager names, and user information.
+    
     Parameters:
-        league_id (str, required)
-    Returns: {users:[...], count, success, error?}
-    Example: get_league_users(league_id="123456789012345678")
+        league_id (str, required): Sleeper league ID (18-digit numeric string)
+    
+    Returns: {users: [...], count, success, error}
+    
+    Call this for: "league members", "who's in my league", "league managers"
     """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
@@ -303,13 +362,17 @@ async def get_league_users(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_matchups(league_id: str, week: int) -> dict:
-    """Fetch matchups for a given week.
-
+    """Get fantasy matchups for a specific week in a Sleeper league.
+    
+    Use this tool to see weekly head-to-head matchups, scores, and results.
+    
     Parameters:
-        league_id (str, required)
-        week (int, required, range config week_min-week_max)
-    Returns: {matchups:[...], week, count, success, error?}
-    Example: get_matchups(league_id="123456789012345678", week=3)
+        league_id (str, required): Sleeper league ID (18-digit numeric string)
+        week (int, required): NFL week number (1-22)
+    
+    Returns: {matchups: [...], week, count, success, error}
+    
+    Call this for: "week 5 matchups", "this week's games", "my matchup week 3"
     """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
@@ -320,7 +383,17 @@ async def get_matchups(league_id: str, week: int) -> dict:
 
 @_dummy.tool
 async def get_playoff_bracket(league_id: str) -> dict:
-    """Fetch playoff bracket for a league (if available)."""
+    """Get playoff bracket structure and results for a Sleeper fantasy league.
+    
+    Use this tool during fantasy playoffs to see bracket, matchups, and advancement.
+    
+    Parameters:
+        league_id (str, required): Sleeper league ID (18-digit numeric string)
+    
+    Returns: {playoff_bracket, success, error}
+    
+    Call this for: "playoff bracket", "fantasy playoffs", "championship bracket"
+    """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_playoff_bracket(league_id)
@@ -329,13 +402,17 @@ async def get_playoff_bracket(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_transactions(league_id: str, round: Optional[int] = None) -> dict:
-    """List transactions for a league (optionally filter by round).
-
+    """Get all transactions (trades, adds, drops) in a Sleeper fantasy league.
+    
+    Use this tool to see league activity, recent moves, and transaction history.
+    
     Parameters:
-        league_id (str, required)
-        round (int|None, optional): Draft round filter.
-    Returns: {transactions:[...], round, count, success, error?}
-    Example: get_transactions(league_id="123", round=2)
+        league_id (str, required): Sleeper league ID (18-digit numeric string)
+        round (int, optional): Filter by specific draft round (1-18)
+    
+    Returns: {transactions: [...], round, count, success, error}
+    
+    Call this for: "recent transactions", "league moves", "who got dropped/added"
     """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
@@ -347,7 +424,17 @@ async def get_transactions(league_id: str, round: Optional[int] = None) -> dict:
 
 @_dummy.tool
 async def get_traded_picks(league_id: str) -> dict:
-    """List traded picks for a league."""
+    """Get all traded draft picks in a Sleeper dynasty fantasy league.
+    
+    Use this tool for dynasty leagues to see which draft picks have been traded.
+    
+    Parameters:
+        league_id (str, required): Sleeper league ID (18-digit numeric string)
+    
+    Returns: {traded_picks: [...], count, success, error}
+    
+    Call this for: "traded picks", "draft pick trades", "who owns which picks"
+    """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_traded_picks(league_id)
@@ -356,19 +443,32 @@ async def get_traded_picks(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_nfl_state() -> dict:
-    """Return current Sleeper NFL state (week, season type, etc)."""
+    """Get current NFL season information (week, season type, year).
+    
+    Use this tool to check what week/season it is according to Sleeper's data.
+    
+    Parameters: None
+    
+    Returns: {nfl_state: {week, season, season_type, ...}, success, error}
+    
+    Call this for: "what week is it", "current NFL week", "season info"
+    """
     return await sleeper_tools.get_nfl_state()
 
 @_dummy.tool
 async def get_trending_players(trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
-    """Fetch trending add/drop players.
-
+    """Get trending players being added or dropped in Sleeper fantasy leagues.
+    
+    Use this tool to see which players are popular on the waiver wire or being dropped.
+    
     Parameters:
-        trend_type (str, default 'add'): 'add' or 'drop'.
-        lookback_hours (int, default 24): Window size.
-        limit (int, default 25): Max players.
-    Returns: {trending_players:[...], count, success, error?}
-    Example: get_trending_players(trend_type='drop', lookback_hours=48, limit=15)
+        trend_type (str, optional): "add" for popular adds, "drop" for popular drops (default: "add")
+        lookback_hours (int, optional): Hours to look back for trends (1-168, default: 24)
+        limit (int, optional): Maximum players to return (1-100, default: 25)
+    
+    Returns: {trending_players: [...], trend_type, lookback_hours, count, success, error}
+    
+    Call this for: "trending players", "waiver wire targets", "popular adds", "who's being dropped"
     """
     try:
         trend_type = validate_string_input(trend_type, 'trend_type', max_length=10, required=True)
@@ -377,5 +477,3 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
         return await sleeper_tools.get_trending_players(trend_type, lookback_hours, limit)
     except ValueError as e:
         return {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0, "success": False, "error": f"Invalid input: {e}"}
-
-    return result
