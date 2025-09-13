@@ -526,7 +526,15 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
     # Get league information for context
     league_info = await get_league(league_id)
     if not league_info.get("success", True):
-        return league_info
+        return create_error_response(
+            league_info.get("error", "Failed to get league information"),
+            {
+                "strategic_preview": {},
+                "weeks_analyzed": 0,
+                "league_id": league_id
+            },
+            error_type=league_info.get("error_type", ErrorType.API_ERROR)
+        )
     
     # Analyze each upcoming week
     weeks_analyzed = 0
@@ -644,7 +652,15 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2025) -
     # Get league information for playoff schedule context
     league_info = await get_league(league_id)
     if not league_info.get("success", True):
-        return league_info
+        return create_error_response(
+            league_info.get("error", "Failed to get league information"),
+            {
+                "coordination_plan": {},
+                "season": season,
+                "league_id": league_id
+            },
+            error_type=league_info.get("error_type", ErrorType.API_ERROR)
+        )
     
     league_data = league_info.get("league", {})
     playoff_start = league_data.get("settings", {}).get("playoff_week_start", 14)
@@ -773,7 +789,15 @@ async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict
     # Get league information
     league_info = await get_league(league_id)
     if not league_info.get("success", True):
-        return league_info
+        return create_error_response(
+            league_info.get("error", "Failed to get league information"),
+            {
+                "trade_analysis": {},
+                "league_id": league_id,
+                "current_week": current_week
+            },
+            error_type=league_info.get("error_type", ErrorType.API_ERROR)
+        )
     
     league_data = league_info.get("league", {})
     settings = league_data.get("settings", {})
@@ -897,7 +921,15 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
     # Get league information for playoff structure
     league_info = await get_league(league_id)
     if not league_info.get("success", True):
-        return league_info
+        return create_error_response(
+            league_info.get("error", "Failed to get league information"),
+            {
+                "playoff_plan": {},
+                "league_id": league_id,
+                "readiness_score": 0
+            },
+            error_type=league_info.get("error_type", ErrorType.API_ERROR)
+        )
     
     league_data = league_info.get("league", {})
     settings = league_data.get("settings", {})

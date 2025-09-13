@@ -116,9 +116,9 @@ docker run --rm -p 9000:9000 \
 
 ### Quick Overview
 
-The NFL MCP Server provides **25+ MCP tools** organized into these categories:
+The NFL MCP Server provides **26+ MCP tools** organized into these categories:
 
-#### 🏈 NFL Information (8 tools)
+#### 🏈 NFL Information (9 tools)
 - `get_nfl_news` - Latest NFL news from ESPN
 - `get_teams` - All NFL team information  
 - `fetch_teams` - Cache teams in database
@@ -127,6 +127,7 @@ The NFL MCP Server provides **25+ MCP tools** organized into these categories:
 - `get_team_player_stats` - Team player statistics
 - `get_nfl_standings` - Current NFL standings
 - `get_team_schedule` - Team schedules with fantasy context
+- `get_league_leaders` - NFL statistical leaders by category
 
 #### 👥 Player/Athlete (4 tools)
 - `fetch_athletes` - Import all NFL players (expensive, use sparingly)
