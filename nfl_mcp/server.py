@@ -269,6 +269,91 @@ def create_app() -> FastMCP:
                 "error": f"Unexpected error fetching depth chart: {str(e)}"
             }
 
+    # MCP Tool: Get team injuries
+    @mcp.tool
+    async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
+        """Fetch current injury report for a team (ESPN Core API).
+
+        Args:
+            team_id: Team abbreviation or ESPN team id (e.g. 'KC').
+            limit: Max injuries to return (1-100, default 50).
+        Returns: {team_id, team_name, injuries:[...], count, success, error?}
+        """
+        try:
+            if team_id is None or not isinstance(team_id, str):
+                raise ValueError("team_id required")
+            limit_val = int(limit) if limit is not None else 50
+        except Exception:
+            limit_val = 50
+        return await nfl_tools.get_team_injuries(team_id=team_id, limit=limit_val)
+
+    # MCP Tool: Get team player statistics
+    @mcp.tool
+    async def get_team_player_stats(team_id: str, season: Optional[int] = 2025, season_type: Optional[int] = 2, limit: Optional[int] = 50) -> dict:
+        """Fetch current season player summary stats for a team.
+
+        Args:
+            team_id: Team abbreviation or ESPN id.
+            season: Season year (default 2025).
+            season_type: 1=Pre,2=Regular,3=Post (default 2).
+            limit: Max players (1-100, default 50).
+        Returns: {team_id, season, season_type, player_stats:[...], count, success, error?}
+        """
+        try:
+            season_i = int(season) if season is not None else 2025
+        except Exception:
+            season_i = 2025
+        try:
+            season_type_i = int(season_type) if season_type is not None else 2
+        except Exception:
+            season_type_i = 2
+        try:
+            limit_i = int(limit) if limit is not None else 50
+        except Exception:
+            limit_i = 50
+        return await nfl_tools.get_team_player_stats(team_id=team_id, season=season_i, season_type=season_type_i, limit=limit_i)
+
+    # MCP Tool: Get NFL standings
+    @mcp.tool
+    async def get_nfl_standings(season: Optional[int] = 2025, season_type: Optional[int] = 2, group: Optional[int] = None) -> dict:
+        """Fetch NFL standings (league or conference) from ESPN Core API.
+
+        Args:
+            season: Season year (default 2025)
+            season_type: 1=Pre,2=Regular,3=Post (default 2)
+            group: 1=AFC,2=NFC, None=all
+        Returns: {standings:[...], season, season_type, group, count, success, error?}
+        """
+        try:
+            season_i = int(season) if season is not None else 2025
+        except Exception:
+            season_i = 2025
+        try:
+            season_type_i = int(season_type) if season_type is not None else 2
+        except Exception:
+            season_type_i = 2
+        try:
+            group_i = int(group) if group is not None else None
+        except Exception:
+            group_i = None
+        return await nfl_tools.get_nfl_standings(season=season_i, season_type=season_type_i, group=group_i)
+
+    # MCP Tool: Get team schedule
+    @mcp.tool
+    async def get_team_schedule(team_id: str, season: Optional[int] = 2025) -> dict:
+        """Fetch a team's schedule (Site API) including matchup context.
+
+        Args:
+            team_id: Team abbreviation or ESPN id.
+            season: Season year (default 2025).
+        Returns: {team_id, team_name, season, schedule:[...], count, success, error?}
+        """
+        try:
+            season_i = int(season) if season is not None else 2025
+        except Exception:
+            season_i = 2025
+        return await nfl_tools.get_team_schedule(team_id=team_id, season=season_i)
+
     # MCP Tool: Crawl URL and extract content
     @mcp.tool
     async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:

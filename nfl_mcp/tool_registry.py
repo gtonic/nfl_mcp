@@ -140,6 +140,57 @@ async def get_depth_chart(team_id: str) -> dict:
 
 @_dummy.tool
 async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
+    """Team injury report (ESPN Core API).
+
+    Parameters:
+        team_id (str): Team abbreviation/id.
+        limit (int, default 50, range 1-100)
+    Returns: {team_id, team_name, injuries:[...], count, success, error?}
+    Example: get_team_injuries(team_id="KC", limit=25)
+    """
+    return await nfl_tools.get_team_injuries(team_id=team_id, limit=limit)
+
+@_dummy.tool
+async def get_team_player_stats(team_id: str, season: Optional[int] = 2025, season_type: Optional[int] = 2, limit: Optional[int] = 50) -> dict:
+    """Team player summary stats.
+
+    Parameters:
+        team_id (str)
+        season (int, default 2025)
+        season_type (int, default 2)
+        limit (int, default 50)
+    Returns: {team_id, season, season_type, player_stats:[...], count}
+    Example: get_team_player_stats(team_id="KC", season=2025)
+    """
+    return await nfl_tools.get_team_player_stats(team_id=team_id, season=season, season_type=season_type, limit=limit)
+
+@_dummy.tool
+async def get_nfl_standings(season: Optional[int] = 2025, season_type: Optional[int] = 2, group: Optional[int] = None) -> dict:
+    """NFL standings (league or conference).
+
+    Parameters:
+        season (int, default 2025)
+        season_type (int, default 2)
+        group (int|None, optional): 1=AFC,2=NFC
+    Returns: {standings:[...], count, season, season_type, group}
+    Example: get_nfl_standings(season=2025, group=1)
+    """
+    return await nfl_tools.get_nfl_standings(season=season, season_type=season_type, group=group)
+
+@_dummy.tool
+async def get_team_schedule(team_id: str, season: Optional[int] = 2025) -> dict:
+    """Team schedule with matchup context.
+
+    Parameters:
+        team_id (str)
+        season (int, default 2025)
+    Returns: {team_id, season, schedule:[...], count}
+    Example: get_team_schedule(team_id="KC", season=2025)
+    """
+    return await nfl_tools.get_team_schedule(team_id=team_id, season=season)
+
+@_dummy.tool
+async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
     """Get current injury report for an NFL team from ESPN Core API.
 
     Parameters:
