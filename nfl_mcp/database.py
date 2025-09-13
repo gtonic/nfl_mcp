@@ -191,7 +191,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 2
+    CURRENT_SCHEMA_VERSION = 3
     
     def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
         """
@@ -232,6 +232,7 @@ class NFLDatabase:
         migrations = {
             1: self._migration_v1_initial_schema,
             2: self._migration_v2_optimized_indexes,
+            3: self._migration_v3_roster_snapshots,
         }
         
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -303,6 +304,25 @@ class NFLDatabase:
             CREATE INDEX IF NOT EXISTS idx_teams_lookup 
             ON teams(id, abbreviation, name, display_name)
         """)
+
+    def _migration_v3_roster_snapshots(self, conn: sqlite3.Connection) -> None:
+        """Migration v3: Add roster_snapshots table for robust roster fallback."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS roster_snapshots (
+                id INTEGER PRIMARY KEY,
+                league_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                fetched_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_roster_snapshots_league_time
+            ON roster_snapshots (league_id, fetched_at DESC)
+            """
+        )
     
     @contextmanager
     def _get_connection(self):
@@ -358,6 +378,42 @@ class NFLDatabase:
     def close(self) -> None:
         """Close the database connection pool."""
         self._pool.close()
+
+    # ------------------------------------------------------------------
+    # Roster snapshot helpers
+    # ------------------------------------------------------------------
+    def save_roster_snapshot(self, league_id: str, rosters) -> None:
+        """Persist latest roster payload snapshot (JSON serialized)."""
+        try:
+            import json, datetime
+            with self._pool.get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO roster_snapshots (league_id, payload_json, fetched_at) VALUES (?,?,?)",
+                    (league_id, json.dumps(rosters), datetime.datetime.utcnow().isoformat())
+                )
+                conn.commit()
+        except Exception as e:
+            logger.debug(f"save_roster_snapshot failed: {e}")
+
+    def load_roster_snapshot(self, league_id: str, ttl_minutes: int = 15):
+        """Load most recent roster snapshot; mark stale if beyond TTL."""
+        try:
+            import json, datetime
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT payload_json, fetched_at FROM roster_snapshots WHERE league_id=? ORDER BY fetched_at DESC LIMIT 1",
+                    (league_id,)
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                payload_json, fetched_at = row
+                dt = datetime.datetime.fromisoformat(fetched_at)
+                stale = (datetime.datetime.utcnow() - dt).total_seconds() > ttl_minutes * 60
+                return {"rosters": json.loads(payload_json), "stale": stale, "fetched_at": fetched_at}
+        except Exception as e:
+            logger.debug(f"load_roster_snapshot failed: {e}")
+            return None
     
     # Async Database Operations
     # These methods provide async alternatives to the main database operations

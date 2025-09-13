@@ -10,7 +10,7 @@ import httpx
 import logging
 from typing import Optional
 
-from .config import get_http_headers, create_http_client, validate_limit, LIMITS, LONG_TIMEOUT
+from .config import get_http_headers, create_http_client, validate_limit, LIMITS, LONG_TIMEOUT, DEFAULT_TIMEOUT
 from .errors import (
     create_error_response, create_success_response, ErrorType,
     handle_http_errors, handle_validation_error
@@ -109,146 +109,137 @@ async def get_rosters(league_id: str) -> dict:
         - access_help: Guidance for resolving access issues (if applicable)
     """
     headers = get_http_headers("sleeper_rosters")
-    
-    # Sleeper API endpoint for league rosters
     url = f"https://api.sleeper.app/v1/league/{league_id}/rosters"
-    
-    try:
-        async with create_http_client() as client:
-            response = await client.get(url, headers=headers, follow_redirects=True)
-            
-            # Handle specific Sleeper API roster access scenarios
-            if response.status_code == 404:
-                return create_error_response(
-                    f"League with ID '{league_id}' not found or does not exist",
-                    ErrorType.HTTP,
-                    {
-                        "rosters": [],
-                        "count": 0,
-                        "access_help": "Please verify the league ID is correct and the league exists"
-                    }
-                )
-            elif response.status_code == 403:
-                return create_error_response(
-                    "Access denied: Roster information is private for this league",
-                    ErrorType.ACCESS_DENIED,
-                    {
-                        "rosters": [],
-                        "count": 0,
-                        "access_help": "The league owner needs to enable public roster access in league settings or you need appropriate permissions to view rosters"
-                    }
-                )
-            elif response.status_code == 401:
-                return create_error_response(
-                    "Authentication required: This league requires login to view rosters",
-                    ErrorType.ACCESS_DENIED,
-                    {
-                        "rosters": [],
-                        "count": 0,
-                        "access_help": "This is a private league requiring authentication. Contact the league owner for access"
-                    }
-                )
-                
-            response.raise_for_status()
-            
-            # Parse JSON response
-            rosters_data = response.json()
-            
-            # Check if rosters are empty (could indicate access restrictions)
-            if isinstance(rosters_data, list) and len(rosters_data) == 0:
-                # Try to get league info to see if the league exists but rosters are restricted
+    retry_delays = [0.0, 0.4, 1.2]
+    attempts = 0
+    last_error = None
+    from .database import NFLDatabase
+    nfl_db = NFLDatabase()
+
+    for delay in retry_delays:
+        if delay:
+            import asyncio as _asyncio
+            await _asyncio.sleep(delay)
+        attempts += 1
+        try:
+            async with create_http_client() as client:
+                response = await client.get(url, headers=headers, follow_redirects=True, timeout=DEFAULT_TIMEOUT)
+                if response.status_code in (401,403,404):
+                    # Direct terminal errors (no retry beyond first)
+                    if response.status_code == 404:
+                        return create_error_response(
+                            f"League with ID '{league_id}' not found or does not exist",
+                            ErrorType.HTTP,
+                            {"rosters": [], "count": 0, "retries_used": attempts-1, "access_help": "Please verify the league ID is correct and the league exists"}
+                        )
+                    err_type = ErrorType.ACCESS_DENIED
+                    if response.status_code == 403:
+                        msg = "Access denied: Roster information is private for this league"
+                        help_text = "The league owner needs to enable public roster access in league settings or you need appropriate permissions to view rosters"
+                    else:
+                        msg = "Authentication required: This league requires login to view rosters"
+                        help_text = "This is a private league requiring authentication. Contact the league owner for access"
+                    return create_error_response(
+                        msg,
+                        err_type,
+                        {"rosters": [], "count": 0, "retries_used": attempts-1, "access_help": help_text}
+                    )
+                if response.status_code == 429:
+                    last_error = "rate_limited"
+                    continue
+                response.raise_for_status()
+                rosters_data = response.json()
+                # Empty roster anomaly: retry unless final attempt
+                if isinstance(rosters_data, list) and len(rosters_data) == 0 and attempts < len(retry_delays):
+                    last_error = "empty_rosters"
+                    # Try league info to determine privacy (single attempt)
+                    try:
+                        league_resp = await client.get(f"https://api.sleeper.app/v1/league/{league_id}", headers=headers)
+                        if league_resp.status_code == 200:
+                            league_data = league_resp.json() or {}
+                            if league_data:  # treat as privacy scenario -> return immediately (success, warning)
+                                return create_success_response({
+                                    "rosters": [],
+                                    "count": 0,
+                                    "warning": "League found but no rosters returned - this may indicate roster privacy settings are enabled",
+                                    "access_help": "Ask league owner to review roster privacy settings",
+                                    "retries_used": attempts-1,
+                                    "stale": False,
+                                    "failure_reason": None
+                                })
+                    except Exception:
+                        pass
+                    continue
+
+                # Enrichment (best-effort)
                 try:
-                    league_response = await client.get(f"https://api.sleeper.app/v1/league/{league_id}", headers=headers)
-                    if league_response.status_code == 200:
-                        league_data = league_response.json()
-                        if league_data:
-                            return create_success_response({
-                                "rosters": rosters_data,
-                                "count": len(rosters_data),
-                                "warning": "League found but no rosters returned - this may indicate roster privacy settings are enabled",
-                                "access_help": "If this league should have rosters, ask the league owner to check roster privacy settings"
-                            })
-                except:
-                    # If league check fails, just continue with empty rosters
-                    pass
-            
-            # Enrich player IDs with name/position (additive, keeps original lists)
-            try:
-                from .database import NFLDatabase
-                nfl_db = NFLDatabase()
-                cache = {}
+                    cache = {}
+                    def enrich_players(player_ids):
+                        enriched = []
+                        for pid in player_ids or []:
+                            if pid in cache:
+                                enriched.append(cache[pid]); continue
+                            athlete = nfl_db.get_athlete_by_id(pid) or {}
+                            obj = {"player_id": pid, "full_name": athlete.get("full_name"), "position": athlete.get("position")}
+                            cache[pid] = obj; enriched.append(obj)
+                        return enriched
+                    if isinstance(rosters_data, list):
+                        for roster in rosters_data:
+                            if isinstance(roster, dict):
+                                if isinstance(roster.get("players"), list):
+                                    roster["players_enriched"] = enrich_players(roster["players"])
+                                if isinstance(roster.get("starters"), list):
+                                    roster["starters_enriched"] = enrich_players(roster["starters"])
+                except Exception as enrich_error:
+                    logger.debug(f"Roster enrichment skipped: {enrich_error}")
 
-                def enrich_players(player_ids):
-                    enriched = []
-                    for pid in player_ids or []:
-                        if pid in cache:
-                            enriched.append(cache[pid])
-                            continue
-                        athlete = nfl_db.get_athlete_by_id(pid) or {}
-                        obj = {
-                            "player_id": pid,
-                            "full_name": athlete.get("full_name"),
-                            "position": athlete.get("position")
-                        }
-                            
-                        cache[pid] = obj
-                        enriched.append(obj)
-                    return enriched
+                # Save snapshot
+                nfl_db.save_roster_snapshot(league_id, rosters_data)
+                return create_success_response({
+                    "rosters": rosters_data,
+                    "count": len(rosters_data),
+                    "retries_used": attempts-1,
+                    "stale": False,
+                    "failure_reason": None
+                })
+        except httpx.TimeoutException:
+            last_error = "timeout"
+            continue
+        except httpx.HTTPStatusError as he:
+            if he.response is not None and he.response.status_code == 429:
+                return create_error_response(
+                    "Rate limit exceeded for Sleeper API - please try again in a few minutes",
+                    ErrorType.HTTP,
+                    {"rosters": [], "count": 0, "retries_used": attempts-1, "access_help": "Sleeper API has rate limits. Wait a few minutes before trying again"}
+                )
+            last_error = f"http:{getattr(he.response,'status_code', '?')}"
+            continue
+        except httpx.NetworkError as ne:
+            last_error = f"network:{ne}"
+            continue
+        except Exception as e:
+            last_error = f"unexpected:{e}"
+            continue
 
-                if isinstance(rosters_data, list):
-                    for roster in rosters_data:
-                        if isinstance(roster, dict):
-                            if "players" in roster and isinstance(roster["players"], list):
-                                roster["players_enriched"] = enrich_players(roster["players"])
-                            if "starters" in roster and isinstance(roster["starters"], list):
-                                roster["starters_enriched"] = enrich_players(roster["starters"])
-            except Exception as enrich_error:
-                logger.debug(f"Roster enrichment skipped due to error: {enrich_error}")
-
-            return create_success_response({
-                "rosters": rosters_data,
-                "count": len(rosters_data)
-            })
-            
-    except httpx.TimeoutException:
+    # Fallback: snapshot
+    snap = nfl_db.load_roster_snapshot(league_id)
+    if snap:
         return create_error_response(
-            "Request timed out while fetching rosters",
-            ErrorType.TIMEOUT,
-            {"rosters": [], "count": 0}
+            f"Roster fetch failed after retries (serving snapshot)",
+            ErrorType.NETWORK if last_error and last_error.startswith("network") else ErrorType.UNEXPECTED,
+            {
+                "rosters": snap["rosters"],
+                "count": len(snap["rosters"]),
+                "retries_used": attempts,
+                "stale": snap.get("stale", True),
+                "failure_reason": last_error or "unknown"
+            }
         )
-        
-    except httpx.HTTPStatusError as e:
-        # Handle any other HTTP errors not caught above
-        if e.response.status_code == 429:
-            return create_error_response(
-                "Rate limit exceeded for Sleeper API - please try again in a few minutes",
-                ErrorType.HTTP,
-                {
-                    "rosters": [],
-                    "count": 0,
-                    "access_help": "Sleeper API has rate limits. Wait a few minutes before trying again"
-                }
-            )
-        else:
-            return create_error_response(
-                f"HTTP {e.response.status_code}: {e.response.reason_phrase}",
-                ErrorType.HTTP,
-                {"rosters": [], "count": 0}
-            )
-            
-    except httpx.NetworkError as e:
-        return create_error_response(
-            f"Network error while fetching rosters: {str(e)}",
-            ErrorType.NETWORK,
-            {"rosters": [], "count": 0}
-        )
-        
-    except Exception as e:
-        return create_error_response(
-            f"Unexpected error during fetching rosters: {str(e)}",
-            ErrorType.UNEXPECTED,
-            {"rosters": [], "count": 0}
-        )
+    return create_error_response(
+        f"Roster fetch failed after retries: {last_error}",
+        ErrorType.NETWORK if last_error and last_error.startswith("network") else ErrorType.UNEXPECTED,
+        {"rosters": [], "count": 0, "retries_used": attempts, "stale": False, "failure_reason": last_error or "unknown"}
+    )
 
 
 @handle_http_errors(
