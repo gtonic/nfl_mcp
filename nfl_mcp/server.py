@@ -11,6 +11,7 @@ A FastMCP server that provides:
 - Sleeper API tools (MCP tools for comprehensive fantasy league management):
   - League information, rosters, users, matchups, playoffs
   - Transactions, traded picks, NFL state, trending players
+- Waiver wire analysis tools (MCP tools for advanced fantasy football waiver management)
 """
 
 from fastmcp import FastMCP
