@@ -10,7 +10,7 @@ import json
 import httpx
 from fastmcp import FastMCP
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools
+from . import nfl_tools, sleeper_tools, waiver_tools
 from .config import (
     validate_string_input, validate_limit, LIMITS, validate_numeric_input,
     validate_url_enhanced, get_http_headers, create_http_client, sanitize_content,
@@ -27,7 +27,6 @@ def get_tools():
 
 # Shared single DB instance placeholder for pure read operations requiring DB; will be reset by server.
 _nfl_db: NFLDatabase | None = None
-_waiver_store = None
 
 def initialize_shared(db: NFLDatabase):
     global _nfl_db
@@ -460,6 +459,61 @@ async def get_traded_picks(league_id: str) -> dict:
 async def get_nfl_state() -> dict:
     """Return current Sleeper NFL state (week, season type, etc)."""
     return await sleeper_tools.get_nfl_state()
+
+@_dummy.tool
+async def get_waiver_log(league_id: str, round: Optional[int] = None, dedupe: bool = True) -> dict:
+    """Get waiver wire log with de-duplication analysis.
+
+    Parameters:
+        league_id (str, required): League identifier
+        round (int|None, optional): Round filter
+        dedupe (bool, optional): Enable de-duplication (default: True)
+    Returns: {waiver_log:[...], duplicates_found:[...], total_transactions, unique_transactions, success, error?}
+    Example: get_waiver_log(league_id="123456", dedupe=True)
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        if round is not None:
+            round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
+        return await waiver_tools.get_waiver_log(league_id, round, dedupe)
+    except ValueError as e:
+        return {"waiver_log": [], "duplicates_found": [], "total_transactions": 0, "unique_transactions": 0, "success": False, "error": f"Invalid input: {e}"}
+
+@_dummy.tool
+async def check_re_entry_status(league_id: str, round: Optional[int] = None) -> dict:
+    """Check re-entry status for players (dropped then re-added).
+
+    Parameters:
+        league_id (str, required): League identifier
+        round (int|None, optional): Round filter
+    Returns: {re_entry_players:{...}, volatile_players:[...], total_players_analyzed, players_with_re_entries, success, error?}
+    Example: check_re_entry_status(league_id="123456")
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        if round is not None:
+            round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
+        return await waiver_tools.check_re_entry_status(league_id, round)
+    except ValueError as e:
+        return {"re_entry_players": {}, "volatile_players": [], "total_players_analyzed": 0, "players_with_re_entries": 0, "success": False, "error": f"Invalid input: {e}"}
+
+@_dummy.tool
+async def get_waiver_wire_dashboard(league_id: str, round: Optional[int] = None) -> dict:
+    """Get comprehensive waiver wire dashboard with analysis.
+
+    Parameters:
+        league_id (str, required): League identifier  
+        round (int|None, optional): Round filter
+    Returns: {waiver_log:[...], re_entry_analysis:{...}, dashboard_summary:{...}, volatile_players:[...], success, error?}
+    Example: get_waiver_wire_dashboard(league_id="123456")
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        if round is not None:
+            round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
+        return await waiver_tools.get_waiver_wire_dashboard(league_id, round)
+    except ValueError as e:
+        return {"waiver_log": [], "re_entry_analysis": {}, "dashboard_summary": {}, "volatile_players": [], "success": False, "error": f"Invalid input: {e}"}
 
 @_dummy.tool
 async def get_trending_players(trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
