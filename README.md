@@ -112,6 +112,73 @@ docker run --rm -p 9000:9000 \
 
 ## API Documentation
 
+📋 **[Complete API Documentation](./API_DOCS.md)** - Comprehensive tool reference optimized for LLM understanding
+
+### Quick Overview
+
+The NFL MCP Server provides **25+ MCP tools** organized into these categories:
+
+#### 🏈 NFL Information (8 tools)
+- `get_nfl_news` - Latest NFL news from ESPN
+- `get_teams` - All NFL team information  
+- `fetch_teams` - Cache teams in database
+- `get_depth_chart` - Team roster/depth chart
+- `get_team_injuries` - Injury reports by team
+- `get_team_player_stats` - Team player statistics
+- `get_nfl_standings` - Current NFL standings
+- `get_team_schedule` - Team schedules with fantasy context
+
+#### 👥 Player/Athlete (4 tools)
+- `fetch_athletes` - Import all NFL players (expensive, use sparingly)
+- `lookup_athlete` - Find player by ID
+- `search_athletes` - Search players by name
+- `get_athletes_by_team` - Get team roster
+
+#### 🌐 Web Scraping (1 tool)
+- `crawl_url` - Extract text from any webpage
+
+#### 🏆 Fantasy League - Sleeper API (12 tools)
+- `get_league`, `get_rosters`, `get_league_users` - League management
+- `get_matchups`, `get_playoff_bracket` - Competition info
+- `get_transactions`, `get_traded_picks` - Trade analysis
+- `get_nfl_state`, `get_trending_players` - Season/waiver info
+
+#### ❤️ Health Endpoint (REST)
+- **GET** `/health` - Server status monitoring
+
+### Tool Selection Guide
+
+**For LLMs:** The [detailed API documentation](./API_DOCS.md) includes:
+- 🎯 **When to use each tool** - Decision matrix for tool selection
+- 📊 **Parameter validation** - Input constraints and validation rules
+- 💡 **Usage patterns** - Common workflows and examples  
+- ⚡ **Performance notes** - Which tools are expensive vs. fast
+- 🛡️ **Error handling** - Consistent error response patterns
+
+### Basic Usage Example
+
+```python
+from fastmcp import Client
+
+async with Client("http://localhost:9000/mcp/") as client:
+    # Get latest NFL news
+    news = await client.call_tool("get_nfl_news", {"limit": 5})
+    
+    # Search for a player
+    player = await client.call_tool("search_athletes", {"name": "Mahomes"})
+    
+    # Get team depth chart
+    depth = await client.call_tool("get_depth_chart", {"team_id": "KC"})
+```
+
+### Architecture Improvements
+
+**Simplified Design** (v2.0):
+- ✅ **Single Tool Registry** - All tools defined in one place
+- ✅ **92% Code Reduction** - Server simplified from 766 to 59 lines
+- ✅ **Zero Duplication** - Eliminated redundant tool definitions
+- ✅ **Clean Dependencies** - Straightforward import structure
+
 ### Health Endpoint (REST)
 
 **GET** `/health`
