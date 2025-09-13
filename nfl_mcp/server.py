@@ -81,26 +81,26 @@ def create_app() -> FastMCP:
         """
         return await nfl_tools.get_nfl_news(limit)
 
-        # MCP Tool: Get NFL league leaders
-        @mcp.tool
-        async def get_league_leaders(category: str, season: Optional[int] = 2025, season_type: Optional[int] = 2) -> dict:
-                """Get current NFL statistical leaders for one or multiple categories.
+    # MCP Tool: Get NFL league leaders
+    @mcp.tool
+    async def get_league_leaders(category: str, season: Optional[int] = 2025, season_type: Optional[int] = 2) -> dict:
+        """Get current NFL statistical leaders for one or multiple categories.
 
-                Supported input tokens (case-insensitive) map to ESPN stat categories:
-                    - pass      → passingYards
-                    - rush      → rushingYards
-                    - receiving → receivingYards
-                    - tackles   → totalTackles
-                    - sacks     → sacks
+        Supported input tokens (case-insensitive) map to ESPN stat categories:
+          - pass      → passingYards
+          - rush      → rushingYards
+          - receiving → receivingYards
+          - tackles   → totalTackles
+          - sacks     → sacks
 
-                Multiple categories can be requested by separating tokens with commas or whitespace
-                (e.g. "pass, rush receiving"). Single category returns a flat players list.
+        Multiple categories can be requested by separating tokens with commas or whitespace
+        (e.g. "pass, rush receiving"). Single category returns a flat players list.
 
-                Args:
-                        category: One or more tokens from: pass, rush, receiving, tackles, sacks
-                        season: Season year (e.g. 2025)
-                        season_type: 1=Preseason, 2=Regular, 3=Postseason
-                """
+        Args:
+            category: One or more tokens from: pass, rush, receiving, tackles, sacks
+            season: Season year (e.g. 2025)
+            season_type: 1=Preseason, 2=Regular, 3=Postseason
+        """
         # Lightweight numeric validation with fallbacks
         try:
             if season is not None:
