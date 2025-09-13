@@ -19,6 +19,67 @@ from starlette.responses import JSONResponse
 
 from .database import NFLDatabase
 from . import tool_registry
+import asyncio, os, logging
+from datetime import datetime, UTC
+
+logger = logging.getLogger(__name__)
+
+PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
+PREFETCH_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900"))  # default 15m
+PREFETCH_SNAPS_TTL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_SNAPS_TTL", "900"))  # refetch snaps after 15m by default
+
+async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
+    """Background loop to prefetch weekly schedule and player snaps to warm caches.
+
+    Strategy:
+      - Determine season/week via get_nfl_state tool (internal call)
+      - Fetch schedule (stores opponents for DEF) if not already cached
+      - Fetch player snaps (stores usage) with capped volume
+      - Sleep until next interval or shutdown
+    Controlled by env NFL_MCP_PREFETCH=1.
+    """
+    if not PREFETCH_ENABLED:
+        return
+    # Import late to avoid circular
+    from .sleeper_tools import get_nfl_state, _fetch_week_schedule, _fetch_week_player_snaps, ADVANCED_ENRICH_ENABLED
+    if not ADVANCED_ENRICH_ENABLED:
+        logger.info("Prefetch loop disabled: advanced enrichment not enabled (set NFL_MCP_ADVANCED_ENRICH=1)")
+        return
+    logger.info("Starting prefetch loop (interval=%ss)" % PREFETCH_INTERVAL_SECONDS)
+    while not shutdown_event.is_set():
+        try:
+            state = await get_nfl_state()
+            if state.get("success") and state.get("nfl_state"):
+                st = state["nfl_state"]
+                season = st.get("season") or st.get("league_season")
+                week = st.get("week") or st.get("display_week")
+                if isinstance(season, int) and isinstance(week, int):
+                    # Schedule prefetch
+                    try:
+                        sched_rows = await _fetch_week_schedule(season, week)
+                        if sched_rows:
+                            inserted = nfl_db.upsert_schedule_games(sched_rows)
+                            logger.debug(f"Prefetch schedule: {inserted} rows (season={season} week={week})")
+                    except Exception as e:
+                        logger.debug(f"Prefetch schedule failed: {e}")
+                    # Snaps prefetch (subset to reduce load)
+                    try:
+                        snap_rows = await _fetch_week_player_snaps(season, week)
+                        # Take only first 2000 to avoid huge memory churn
+                        if snap_rows:
+                            subset = snap_rows[:2000]
+                            inserted = nfl_db.upsert_player_week_stats(subset)
+                            logger.debug(f"Prefetch snaps: {inserted} rows (season={season} week={week})")
+                    except Exception as e:
+                        logger.debug(f"Prefetch snaps failed: {e}")
+            else:
+                logger.debug("Prefetch: nfl_state unavailable this cycle")
+        except Exception as e:
+            logger.debug(f"Prefetch iteration error: {e}")
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=PREFETCH_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            continue
 
 
 def create_app() -> FastMCP:
@@ -49,6 +110,21 @@ def create_app() -> FastMCP:
     for tool_func in tool_registry.get_all_tools():
         mcp.tool(tool_func)
     
+    # Background prefetch
+    if PREFETCH_ENABLED:
+        shutdown_event = asyncio.Event()
+        prefetch_task = None
+
+        @mcp.on_startup
+        async def _start_prefetch():
+            nonlocal prefetch_task
+            prefetch_task = asyncio.create_task(_prefetch_loop(nfl_db, shutdown_event))
+
+        @mcp.on_shutdown
+        async def _stop_prefetch():
+            shutdown_event.set()
+            if prefetch_task:
+                await prefetch_task
     return mcp
 
 
