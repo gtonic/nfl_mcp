@@ -3,7 +3,7 @@ Test the sleeper_tools module to ensure functions are properly extracted.
 """
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 
 from nfl_mcp import sleeper_tools
 
@@ -43,6 +43,181 @@ class TestSleeperToolsModule:
             assert "league" in result
             assert "success" in result
             assert "error" in result
+
+
+class TestRosterAccessPermissions:
+    """Test roster access permission handling."""
+    
+    @pytest.mark.asyncio
+    async def test_get_rosters_access_denied_403(self):
+        """Test handling of 403 Forbidden response (private rosters)."""
+        func = getattr(sleeper_tools, 'get_rosters')
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 403
+            mock_response.raise_for_status.side_effect = Exception("Mocked - shouldn't be called")
+            
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_create_client.return_value = mock_client
+            
+            result = await func("private_league_id")
+            
+            assert result["success"] is False
+            assert result["error_type"] == "access_denied_error"
+            assert "Access denied" in result["error"]
+            assert "rosters" in result
+            assert result["rosters"] == []
+            assert "access_help" in result
+            assert "league owner" in result["access_help"]
+    
+    @pytest.mark.asyncio
+    async def test_get_rosters_authentication_required_401(self):
+        """Test handling of 401 Unauthorized response."""
+        func = getattr(sleeper_tools, 'get_rosters')
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 401
+            
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_create_client.return_value = mock_client
+            
+            result = await func("auth_required_league")
+            
+            assert result["success"] is False
+            assert result["error_type"] == "access_denied_error"
+            assert "Authentication required" in result["error"]
+            assert "access_help" in result
+            assert "private league" in result["access_help"]
+    
+    @pytest.mark.asyncio
+    async def test_get_rosters_league_not_found_404(self):
+        """Test handling of 404 Not Found response."""
+        func = getattr(sleeper_tools, 'get_rosters')
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 404
+            
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_create_client.return_value = mock_client
+            
+            result = await func("nonexistent_league")
+            
+            assert result["success"] is False
+            assert result["error_type"] == "http_error"
+            assert "not found" in result["error"]
+            assert "access_help" in result
+            assert "verify the league ID" in result["access_help"]
+    
+    @pytest.mark.asyncio
+    async def test_get_rosters_rate_limit_429(self):
+        """Test handling of 429 Rate Limit response."""
+        func = getattr(sleeper_tools, 'get_rosters')
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
+            from httpx import HTTPStatusError, Response, Request
+            
+            # Create a mock request and response for HTTPStatusError
+            mock_request = MagicMock(spec=Request)
+            mock_response = MagicMock(spec=Response)
+            mock_response.status_code = 429
+            mock_response.reason_phrase = "Too Many Requests"
+            
+            mock_client = AsyncMock()
+            mock_client.get.side_effect = HTTPStatusError("Too Many Requests", request=mock_request, response=mock_response)
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_create_client.return_value = mock_client
+            
+            result = await func("test_league")
+            
+            assert result["success"] is False
+            assert result["error_type"] == "http_error"
+            assert "Rate limit exceeded" in result["error"]
+            assert "access_help" in result
+            assert "rate limits" in result["access_help"]
+    
+    @pytest.mark.asyncio
+    async def test_get_rosters_empty_but_league_exists(self):
+        """Test case where league exists but no rosters are returned (privacy setting)."""
+        func = getattr(sleeper_tools, 'get_rosters')
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
+            # Mock successful roster request with empty array
+            mock_roster_response = MagicMock()
+            mock_roster_response.status_code = 200
+            mock_roster_response.json.return_value = []
+            mock_roster_response.raise_for_status.return_value = None
+            
+            # Mock successful league info request 
+            mock_league_response = MagicMock()
+            mock_league_response.status_code = 200
+            mock_league_response.json.return_value = {"name": "Test League", "settings": {}}
+            
+            mock_client = AsyncMock()
+            # First call returns empty rosters, second call returns league info
+            mock_client.get.side_effect = [mock_roster_response, mock_league_response]
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_create_client.return_value = mock_client
+            
+            result = await func("league_with_private_rosters")
+            
+            assert result["success"] is True
+            assert result["rosters"] == []
+            assert result["count"] == 0
+            assert "warning" in result
+            assert "privacy settings" in result["warning"]
+            assert "access_help" in result
+    
+    @pytest.mark.asyncio
+    async def test_get_rosters_successful_with_data(self):
+        """Test successful roster retrieval with data."""
+        func = getattr(sleeper_tools, 'get_rosters')
+        
+        mock_rosters_data = [
+            {
+                "roster_id": 1,
+                "owner_id": "user123",
+                "players": ["4029", "5045", "6797"]
+            },
+            {
+                "roster_id": 2,
+                "owner_id": "user456", 
+                "players": ["4034", "5046", "6798"]
+            }
+        ]
+        
+        with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = mock_rosters_data
+            mock_response.raise_for_status.return_value = None
+            
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_create_client.return_value = mock_client
+            
+            result = await func("public_league")
+            
+            assert result["success"] is True
+            assert result["error"] is None
+            assert result["count"] == 2
+            assert len(result["rosters"]) == 2
+            assert result["rosters"][0]["roster_id"] == 1
     
     @pytest.mark.asyncio
     async def test_get_matchups_parameter_validation(self):
