@@ -18,6 +18,34 @@ from .errors import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Player enrichment helpers
+# ---------------------------------------------------------------------------
+def _init_db():
+    try:
+        from .database import NFLDatabase
+        return NFLDatabase()
+    except Exception as e:
+        logger.debug(f"NFLDatabase init failed (enrichment disabled): {e}")
+        return None
+
+def _enrich_single(nfl_db, pid, cache):
+    if pid in cache:
+        return cache[pid]
+    athlete = {}
+    if nfl_db:
+        try:
+            athlete = nfl_db.get_athlete_by_id(pid) or {}
+        except Exception as e:
+            logger.debug(f"Lookup failed for {pid}: {e}")
+    data = {"player_id": pid, "full_name": athlete.get("full_name"), "position": athlete.get("position")}
+    cache[pid] = data
+    return data
+
+def _enrich_id_list(nfl_db, ids):
+    cache = {}
+    return [_enrich_single(nfl_db, pid, cache) for pid in (ids or [])]
+
 
 @handle_http_errors(
     default_data={"league": None},
@@ -144,6 +172,39 @@ async def get_rosters(league_id: str) -> dict:
                     # If league check fails, just continue with empty rosters
                     pass
             
+            # Enrich player IDs with name/position (additive, keeps original lists)
+            try:
+                from .database import NFLDatabase
+                nfl_db = NFLDatabase()
+                cache = {}
+
+                def enrich_players(player_ids):
+                    enriched = []
+                    for pid in player_ids or []:
+                        if pid in cache:
+                            enriched.append(cache[pid])
+                            continue
+                        athlete = nfl_db.get_athlete_by_id(pid) or {}
+                        obj = {
+                            "player_id": pid,
+                            "full_name": athlete.get("full_name"),
+                            "position": athlete.get("position")
+                        }
+                            
+                        cache[pid] = obj
+                        enriched.append(obj)
+                    return enriched
+
+                if isinstance(rosters_data, list):
+                    for roster in rosters_data:
+                        if isinstance(roster, dict):
+                            if "players" in roster and isinstance(roster["players"], list):
+                                roster["players_enriched"] = enrich_players(roster["players"])
+                            if "starters" in roster and isinstance(roster["starters"], list):
+                                roster["starters_enriched"] = enrich_players(roster["starters"])
+            except Exception as enrich_error:
+                logger.debug(f"Roster enrichment skipped due to error: {enrich_error}")
+
             return create_success_response({
                 "rosters": rosters_data,
                 "count": len(rosters_data)
@@ -273,6 +334,21 @@ async def get_matchups(league_id: str, week: int) -> dict:
         # Parse JSON response
         matchups_data = response.json()
         
+        # Add enrichment for players/starters
+        try:
+            nfl_db = _init_db()
+            cache = {}
+            if isinstance(matchups_data, list):
+                for m in matchups_data:
+                    if not isinstance(m, dict):
+                        continue
+                    if isinstance(m.get("players"), list):
+                        m["players_enriched"] = [_enrich_single(nfl_db, pid, cache) for pid in m["players"]]
+                    if isinstance(m.get("starters"), list):
+                        m["starters_enriched"] = [_enrich_single(nfl_db, pid, cache) for pid in m["starters"]]
+        except Exception as e:
+            logger.debug(f"Matchup enrichment skipped: {e}")
+
         return create_success_response({
             "matchups": matchups_data,
             "week": week,
@@ -366,6 +442,34 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
         transactions_data = response.json()
+
+        # Enrich player IDs inside adds/drops maps
+        try:
+            from .database import NFLDatabase
+            nfl_db = NFLDatabase()
+            cache = {}
+
+            def enrich_player(pid):
+                if pid in cache:
+                    return cache[pid]
+                athlete = nfl_db.get_athlete_by_id(pid) or {}
+                data = {"player_id": pid, "full_name": athlete.get("full_name"), "position": athlete.get("position")}
+                cache[pid] = data
+                return data
+
+            if isinstance(transactions_data, list):
+                for tx in transactions_data:
+                    if not isinstance(tx, dict):
+                        continue
+                    adds = tx.get("adds") or {}
+                    drops = tx.get("drops") or {}
+                    if isinstance(adds, dict):
+                        tx["adds_enriched"] = [enrich_player(pid) for pid in adds.keys()]
+                    if isinstance(drops, dict):
+                        tx["drops_enriched"] = [enrich_player(pid) for pid in drops.keys()]
+        except Exception as enrich_error:
+            logger.debug(f"Transaction enrichment skipped due to error: {enrich_error}")
+
         return create_success_response({
             "transactions": transactions_data,
             "week": week,
@@ -407,6 +511,15 @@ async def get_traded_picks(league_id: str) -> dict:
         # Parse JSON response
         traded_picks_data = response.json()
         
+        try:
+            nfl_db = _init_db()
+            cache = {}
+            if isinstance(traded_picks_data, list):
+                for tp in traded_picks_data:
+                    if isinstance(tp, dict) and tp.get("player_id"):
+                        tp["player_enriched"] = _enrich_single(nfl_db, tp["player_id"], cache)
+        except Exception as e:
+            logger.debug(f"Traded pick enrichment skipped: {e}")
         return create_success_response({
             "traded_picks": traded_picks_data,
             "count": len(traded_picks_data)
@@ -571,6 +684,41 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
             "trend_type": trend_type,
             "lookback_hours": lookback_hours,
             "count": len(enriched_players)
+        })
+
+
+@handle_http_errors(
+    default_data={"picks": [], "count": 0},
+    operation_name="fetching draft picks"
+)
+async def get_draft_picks(draft_id: str) -> dict:  # type: ignore[override]
+    """Override earlier definition to add enrichment (keeps same name).
+
+    Returns picks with additive `player_enriched` for each pick containing
+    player_id if available.
+    """
+    headers = get_http_headers("sleeper_draft_picks")
+    url = f"https://api.sleeper.app/v1/draft/{draft_id}/picks"
+    async with create_http_client() as client:
+        response = await client.get(url, headers=headers, follow_redirects=True)
+        response.raise_for_status()
+        picks = response.json()
+        try:
+            from .database import NFLDatabase
+            nfl_db = NFLDatabase()
+            for p in picks:
+                if isinstance(p, dict) and p.get("player_id"):
+                    athlete = nfl_db.get_athlete_by_id(p["player_id"]) or {}
+                    p["player_enriched"] = {
+                        "player_id": p["player_id"],
+                        "full_name": athlete.get("full_name"),
+                        "position": athlete.get("position")
+                    }
+        except Exception as enrich_error:
+            logger.debug(f"Draft pick enrichment skipped: {enrich_error}")
+        return create_success_response({
+            "picks": picks,
+            "count": len(picks)
         })
 
 
@@ -1292,6 +1440,15 @@ async def get_draft_traded_picks(draft_id: str) -> dict:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
         data = response.json()
+        try:
+            nfl_db = _init_db()
+            cache = {}
+            if isinstance(data, list):
+                for tp in data:
+                    if isinstance(tp, dict) and tp.get("player_id"):
+                        tp["player_enriched"] = _enrich_single(nfl_db, tp["player_id"], cache)
+        except Exception as e:
+            logger.debug(f"Draft traded pick enrichment skipped: {e}")
         return create_success_response({"traded_picks": data, "count": len(data)})
 
 
