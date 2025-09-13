@@ -288,12 +288,13 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
 
     Instead of returning all categories, this focuses on one requested category.
 
-    Supported input categories (case-insensitive):
-      - pass  (passing yards leaders)
-      - rush  (rushing yards leaders)
-      - receiving (receiving yards leaders)
-      - tackles (total tackles leaders)
-      - sacks (sacks leaders)
+        Supported input categories (case-insensitive) and their underlying ESPN
+        stat category identifiers:
+            - pass      → passingYards
+            - rush      → rushingYards
+            - receiving → receivingYards
+            - tackles   → totalTackles
+            - sacks     → sacks
 
     Args:
         category: One of pass, rush, receiving, tackles, sacks
