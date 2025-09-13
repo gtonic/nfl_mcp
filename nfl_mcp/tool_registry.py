@@ -534,4 +534,88 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
     except ValueError as e:
         return {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0, "success": False, "error": f"Invalid input: {e}"}
 
+# Strategic Planning Functions
+
+@_dummy.tool
+async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks_ahead: Optional[int] = 4) -> dict:
+    """Strategic preview of upcoming matchups for multi-week planning.
+    
+    Combines Sleeper league data with NFL schedules for early warning about bye weeks, 
+    tough matchups, and strategic opportunities. Essential for forward-looking fantasy management.
+    
+    Parameters:
+        league_id (str, required): Sleeper league identifier.
+        current_week (int, required): Current NFL week (1-22).
+        weeks_ahead (int, default 4, range 1-8): Weeks to analyze ahead.
+    Returns: {strategic_preview:{weeks, summary}, weeks_analyzed, league_id, success, error?}
+    Example: get_strategic_matchup_preview(league_id="123456789012345678", current_week=8, weeks_ahead=6)
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
+        weeks_ahead = validate_numeric_input(weeks_ahead, min_val=1, max_val=8, default=4, required=False)
+        return await sleeper_tools.get_strategic_matchup_preview(league_id, current_week, weeks_ahead)
+    except ValueError as e:
+        return {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id, "success": False, "error": f"Invalid input: {e}"}
+
+@_dummy.tool  
+async def get_season_bye_week_coordination(league_id: str, season: Optional[int] = 2025) -> dict:
+    """Season-long bye week coordination with fantasy league schedule.
+    
+    Analyzes entire NFL bye week calendar against your fantasy playoffs to identify
+    optimal trading periods, waiver timing, and roster construction strategies.
+    
+    Parameters:
+        league_id (str, required): Sleeper league identifier.
+        season (int, default 2025): NFL season year.
+    Returns: {coordination_plan:{bye_week_calendar, strategic_periods, recommendations}, season, league_id, success, error?}
+    Example: get_season_bye_week_coordination(league_id="123456789012345678", season=2025)
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        season = validate_numeric_input(season, min_val=2020, max_val=2030, default=2025, required=False)
+        return await sleeper_tools.get_season_bye_week_coordination(league_id, season)
+    except ValueError as e:
+        return {"coordination_plan": {}, "season": season, "league_id": league_id, "success": False, "error": f"Invalid input: {e}"}
+
+@_dummy.tool
+async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict:
+    """Strategic trade deadline timing analysis.
+    
+    Evaluates optimal trade timing by analyzing upcoming bye weeks, playoff schedules,
+    and league patterns to maximize competitive advantage before deadline.
+    
+    Parameters:
+        league_id (str, required): Sleeper league identifier.
+        current_week (int, required): Current NFL week for timeline analysis.
+    Returns: {trade_analysis:{timing_analysis, strategic_windows, recommendations}, league_id, current_week, success, error?}
+    Example: get_trade_deadline_analysis(league_id="123456789012345678", current_week=11)
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
+        return await sleeper_tools.get_trade_deadline_analysis(league_id, current_week)
+    except ValueError as e:
+        return {"trade_analysis": {}, "league_id": league_id, "current_week": current_week, "success": False, "error": f"Invalid input: {e}"}
+
+@_dummy.tool
+async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dict:
+    """Comprehensive playoff preparation plan combining league and NFL data.
+    
+    Analyzes playoff structure, NFL schedules, and provides detailed preparation plan
+    including roster optimization, matchup analysis, and strategic timing recommendations.
+    
+    Parameters:
+        league_id (str, required): Sleeper league identifier.
+        current_week (int, required): Current NFL week for timeline analysis.
+    Returns: {playoff_plan:{timeline, strategic_priorities, recommendations}, readiness_score, league_id, success, error?}
+    Example: get_playoff_preparation_plan(league_id="123456789012345678", current_week=12)
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
+        return await sleeper_tools.get_playoff_preparation_plan(league_id, current_week)
+    except ValueError as e:
+        return {"playoff_plan": {}, "league_id": league_id, "readiness_score": 0, "success": False, "error": f"Invalid input: {e}"}
+
     return result
