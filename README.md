@@ -465,10 +465,15 @@ async with Client("http://localhost:9000/mcp/") as client:
 ### Sleeper API Tools (MCP)
 
 **Basic Tools:** `get_league`, `get_rosters`, `get_league_users`, `get_matchups`, `get_playoff_bracket`, `get_transactions`, `get_traded_picks`, `get_nfl_state`, `get_trending_players`
-
 **Strategic Tools:** `get_strategic_matchup_preview`, `get_season_bye_week_coordination`, `get_trade_deadline_analysis`, `get_playoff_preparation_plan`
 
-These tools provide comprehensive fantasy league management by connecting to the Sleeper API, including advanced strategic planning capabilities for multi-week analysis and competitive advantage.
+### Waiver Wire Analysis Tools (MCP)
+
+**Tools:** `get_waiver_log`, `check_re_entry_status`, `get_waiver_wire_dashboard`
+
+These advanced tools provide enhanced waiver wire intelligence for fantasy football decision making, addressing common issues like duplicate transaction tracking and identifying volatile players.
+
+These tools provide comprehensive fantasy league management by connecting to the Sleeper API.
 
 #### get_league
 
@@ -554,6 +559,7 @@ Get trending players from fantasy leagues.
 
 **Returns:** Dictionary with trending players list, parameters, count, success status, and error (if any)
 
+
 ### Strategic Planning Tools
 
 #### get_strategic_matchup_preview
@@ -596,6 +602,38 @@ Comprehensive playoff preparation plan combining league and NFL data. Provides d
 - `current_week` (integer): Current NFL week for timeline analysis
 
 **Returns:** Dictionary with playoff plan, strategic priorities, NFL schedule insights, and readiness score (0-100)
+
+#### get_waiver_log
+
+Get waiver wire log with optional de-duplication.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+- `round` (integer, optional): Round number (1-18, omit for all transactions)  
+- `dedupe` (boolean, optional): Enable de-duplication (default: true)
+
+**Returns:** Dictionary with waiver log, duplicates found, transaction counts, success status, and error (if any)
+
+#### check_re_entry_status
+
+Check re-entry status for players (dropped then re-added).
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+- `round` (integer, optional): Round number (1-18, omit for all transactions)
+
+**Returns:** Dictionary with re-entry analysis, volatile players list, player counts, success status, and error (if any)
+
+#### get_waiver_wire_dashboard
+
+Get comprehensive waiver wire dashboard with analysis.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the league
+- `round` (integer, optional): Round number (1-18, omit for all transactions)
+
+**Returns:** Dictionary with waiver log, re-entry analysis, dashboard summary, volatile players, success status, and error (if any)
+
 
 **Example Usage with MCP Client:**
 ```python
