@@ -52,6 +52,7 @@ def get_all_tools() -> List[Callable]:
         get_traded_picks,
         get_nfl_state,
         get_trending_players,
+    get_fantasy_context,
         
         # Sleeper API Tools - Strategic Planning (New from main)
         get_strategic_matchup_preview,
@@ -383,6 +384,26 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
         return await sleeper_tools.get_trending_players(_nfl_db, trend_type, lookback_hours, limit)
     except ValueError as e:
         return {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+
+
+@timing_decorator("get_fantasy_context", tool_type="sleeper")
+async def get_fantasy_context(league_id: str, week: Optional[int] = None, include: Optional[str] = None) -> dict:
+    """Aggregate core league context (league, rosters, users, matchups, transactions).
+
+    Parameters:
+        league_id (str, required)
+        week (int, optional) - auto inferred if omitted
+        include (str, optional) comma list subset
+    Returns: {context:{...}, week, auto_week_inferred, success, error?}
+    Example: get_fantasy_context(league_id="12345", include="league,rosters,matchups")
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        if week is not None:
+            week = validate_numeric_input(week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=False)
+        return await sleeper_tools.get_fantasy_context(league_id, week, include)
+    except ValueError as e:
+        return {"context": {}, "league_id": league_id, "week": week, "success": False, "error": f"Invalid input: {str(e)}"}
 
 
 # =============================================================================

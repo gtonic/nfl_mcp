@@ -106,8 +106,15 @@ async def test_playoff_bracket_invalid_type():
 
 @pytest.mark.asyncio
 async def test_transactions_require_week():
-    result = await sleeper_tools.get_transactions("L1")  # no week/round
-    assert result["success"] is False and "required" in result["error"].lower()
+    # now auto-infers week; mock nfl state + transactions
+    with patch('nfl_mcp.sleeper_tools.get_nfl_state') as mock_state, \
+         patch('nfl_mcp.sleeper_tools.create_http_client') as mock_client_factory:
+        mock_state.return_value = {"success": True, "nfl_state": {"week": 7}}
+        mock_resp = MagicMock(); mock_resp.json.return_value = []; mock_resp.raise_for_status.return_value=None
+        mock_client = AsyncMock(); mock_client.get.return_value = mock_resp; mock_client.__aenter__.return_value = mock_client
+        mock_client_factory.return_value = mock_client
+        result = await sleeper_tools.get_transactions("L1")  # no week/round
+        assert result["success"] is True and result["auto_week_inferred"] is True and result["week"] == 7
 
 
 @pytest.mark.asyncio

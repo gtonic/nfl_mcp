@@ -181,6 +181,19 @@ Recent upgrades to Sleeper tooling:
 - Trending players now preserves Sleeper-provided `count` and enriches with local athlete data under `enriched`
 - Added draft suite (`get_league_drafts`, `get_draft`, `get_draft_picks`, `get_draft_traded_picks`)
 - Added full players dataset endpoint `fetch_all_players` with 12h in-memory TTL (returns metadata, not massive map)
+- Added enrichment across core endpoints (rosters, matchups, transactions, traded picks, draft picks, trending)
+- Automatic week inference for `get_transactions` (adds `auto_week_inferred`)
+- Aggregator endpoint `get_fantasy_context` to batch league core data (optional `include`)
+- Introduced central param validator utility (`param_validator.py`) for future consolidation
+
+#### Aggregator Quick Use
+```
+get_fantasy_context(league_id="12345", include="league,rosters,matchups")
+```
+If `week` omitted it will be inferred from NFL state. Response includes `week` and `auto_week_inferred`.
+
+#### Updated Transactions Behavior
+Calling `get_transactions(league_id)` without `week` now attempts inference; falls back to validation error only if NFL state unavailable.
 
 ### Architecture Improvements
 

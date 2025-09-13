@@ -402,18 +402,19 @@ async def get_playoff_bracket(league_id: str, bracket_type: str = "winners") -> 
     operation_name="fetching transactions"
 )
 async def get_transactions(league_id: str, round: Optional[int] = None, week: Optional[int] = None) -> dict:
-    """Get transactions for a specific week (round) of a Sleeper league.
+    """Get transactions for a specific (or inferred) week of a Sleeper league.
 
-    The official Sleeper API requires a week (round) path segment. Previous
-    implementation allowed calling without a round which is not documented; now
-    a week/round is required. For backward compatibility both parameter names
-    are accepted; if both are provided they must match.
+    Enhancements:
+    - Accepts either `week` or deprecated `round` (must match if both provided)
+    - If neither provided, automatically infers current NFL week via get_nfl_state
+      and sets `auto_week_inferred` flag in response.
 
     Args:
         league_id: League identifier
         round: (Deprecated) alias for week
-        week: Week number (1-18 typical). Required.
+        week: Week number (1-18 typical). Optional (auto-inferred if omitted)
     """
+    auto_inferred = False
     # Normalize parameters
     if week is None and round is not None:
         week = round
@@ -422,13 +423,24 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
             "Conflicting values provided for week and round; they must match",
             {"transactions": [], "week": week, "count": 0}
         )
-    
+
+    # Auto-infer current week if not provided
     if week is None:
-        return handle_validation_error(
-            "A week (round) parameter is required by Sleeper: provide week= or round=",
-            {"transactions": [], "week": None, "count": 0}
-        )
-    
+        try:
+            nfl_state_resp = await get_nfl_state()
+            if nfl_state_resp.get("success") and nfl_state_resp.get("nfl_state"):
+                inferred = nfl_state_resp["nfl_state"].get("week") or nfl_state_resp["nfl_state"].get("display_week")
+                if isinstance(inferred, int):
+                    week = inferred
+                    auto_inferred = True
+        except Exception as e:
+            logger.debug(f"Week auto-inference failed: {e}")
+        if week is None:
+            return handle_validation_error(
+                "Unable to infer current week from NFL state",
+                {"transactions": [], "week": None, "count": 0}
+            )
+
     if week < LIMITS["round_min"] or week > LIMITS["round_max"]:
         return handle_validation_error(
             f"Week must be between {LIMITS['round_min']} and {LIMITS['round_max']}",
@@ -473,6 +485,7 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
         return create_success_response({
             "transactions": transactions_data,
             "week": week,
+            "auto_week_inferred": auto_inferred,
             "count": len(transactions_data)
         })
 
@@ -1491,3 +1504,80 @@ async def fetch_all_players(force_refresh: bool = False) -> dict:
             "cached": False,
             "player_count": len(data)
         })
+
+
+@handle_http_errors(
+    default_data={"context": {}, "league_id": None, "week": None},
+    operation_name="fetching consolidated fantasy context"
+)
+async def get_fantasy_context(league_id: str, week: Optional[int] = None, include: Optional[str] = None) -> dict:
+    """Aggregate core fantasy data (league, rosters, users, matchups, transactions) in one call.
+
+    Parameters:
+        league_id (str): Sleeper league id.
+        week (int, optional): Week to fetch matchups & transactions. If omitted will be auto-inferred.
+        include (str, optional): Comma-separated subset filters (e.g. "league,rosters,matchups,transactions,users").
+
+    Returns success with:
+        context: {
+            league, rosters, users, matchups, transactions
+        }
+        week: effective week used
+        auto_week_inferred: bool if week was inferred
+    """
+    wanted = {s.strip() for s in (include.split(",") if include else []) if s.strip()}
+    if not wanted:
+        wanted = {"league", "rosters", "users", "matchups", "transactions"}
+
+    context: dict = {}
+    # Always fetch league first for structural context
+    league_resp = await get_league(league_id) if "league" in wanted else {"success": True}
+    if not league_resp.get("success"):
+        return create_error_response(
+            league_resp.get("error", "Failed to fetch league"),
+            error_type=league_resp.get("error_type"),
+            data={"context": {}, "league_id": league_id}
+        )
+    if "league" in wanted:
+        context["league"] = league_resp.get("league")
+
+    # Parallelizable fetches executed sequentially here (simplicity, avoid new deps)
+    if "rosters" in wanted:
+        rosters_resp = await get_rosters(league_id)
+        if rosters_resp.get("success"):
+            context["rosters"] = rosters_resp.get("rosters")
+    if "users" in wanted:
+        users_resp = await get_league_users(league_id)
+        if users_resp.get("success"):
+            context["users"] = users_resp.get("users")
+
+    # Determine effective week (auto inference if needed)
+    auto_inferred = False
+    effective_week = week
+    if ("matchups" in wanted or "transactions" in wanted) and effective_week is None:
+        try:
+            nfl_state = await get_nfl_state()
+            if nfl_state.get("success") and nfl_state.get("nfl_state"):
+                inferred = nfl_state["nfl_state"].get("week") or nfl_state["nfl_state"].get("display_week")
+                if isinstance(inferred, int):
+                    effective_week = inferred
+                    auto_inferred = True
+        except Exception as e:
+            logger.debug(f"Context week inference failed: {e}")
+
+    # Fetch week bound data
+    if "matchups" in wanted and effective_week is not None:
+        matchups_resp = await get_matchups(league_id, effective_week)
+        if matchups_resp.get("success"):
+            context["matchups"] = matchups_resp.get("matchups")
+    if "transactions" in wanted:
+        tx_resp = await get_transactions(league_id, week=effective_week)
+        if tx_resp.get("success"):
+            context["transactions"] = tx_resp.get("transactions")
+
+    return create_success_response({
+        "context": context,
+        "league_id": league_id,
+        "week": effective_week,
+        "auto_week_inferred": auto_inferred
+    })
