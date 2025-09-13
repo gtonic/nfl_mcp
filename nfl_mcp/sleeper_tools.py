@@ -10,7 +10,7 @@ import httpx
 import logging
 from typing import Optional
 
-from .config import get_http_headers, create_http_client, validate_limit, LIMITS
+from .config import get_http_headers, create_http_client, validate_limit, LIMITS, LONG_TIMEOUT
 from .errors import (
     create_error_response, create_success_response, ErrorType,
     handle_http_errors, handle_validation_error
@@ -281,92 +281,94 @@ async def get_matchups(league_id: str, week: int) -> dict:
 
 
 @handle_http_errors(
-    default_data={"playoff_bracket": None},
+    default_data={"playoff_bracket": None, "bracket_type": None},
     operation_name="fetching playoff bracket"
 )
-async def get_playoff_bracket(league_id: str) -> dict:
-    """
-    Get playoff bracket information for a fantasy league from Sleeper API.
-    
-    This tool fetches the playoff bracket structure including matchups,
-    advancement, and bracket progression for the specified league.
-    
+async def get_playoff_bracket(league_id: str, bracket_type: str = "winners") -> dict:
+    """Get playoff bracket information (winners or losers) for a Sleeper league.
+
+    Sleeper exposes two brackets: winners_bracket and losers_bracket. This function
+    allows selecting which one to retrieve while keeping backward compatibility
+    (defaulting to the winners bracket if not specified).
+
     Args:
-        league_id: The unique identifier for the league
-        
+        league_id: League identifier
+        bracket_type: Which bracket to fetch ("winners" | "losers"), defaults to "winners"
+
     Returns:
-        A dictionary containing:
-        - playoff_bracket: Playoff bracket data and structure
-        - success: Whether the request was successful
-        - error: Error message (if any)
-        - error_type: Type of error (if any)
+        success response with keys:
+        - playoff_bracket: list bracket structure
+        - bracket_type: which bracket was fetched
     """
+    bracket_type_normalized = bracket_type.lower().strip()
+    if bracket_type_normalized not in {"winners", "losers"}:
+        return handle_validation_error(
+            "bracket_type must be one of: winners, losers",
+            {"playoff_bracket": None, "bracket_type": bracket_type}
+        )
+
     headers = get_http_headers("sleeper_playoffs")
-    
-    # Sleeper API endpoint for league playoff bracket
-    url = f"https://api.sleeper.app/v1/league/{league_id}/winners_bracket"
-    
+    path = "winners_bracket" if bracket_type_normalized == "winners" else "losers_bracket"
+    url = f"https://api.sleeper.app/v1/league/{league_id}/{path}"
+
     async with create_http_client() as client:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
-        
-        # Parse JSON response
         bracket_data = response.json()
-        
         return create_success_response({
-            "playoff_bracket": bracket_data
+            "playoff_bracket": bracket_data,
+            "bracket_type": bracket_type_normalized
         })
 
 
 @handle_http_errors(
-    default_data={"transactions": [], "round": None, "count": 0},
+    default_data={"transactions": [], "week": None, "count": 0},
     operation_name="fetching transactions"
 )
-async def get_transactions(league_id: str, round: Optional[int] = None) -> dict:
-    """
-    Get transactions for a fantasy league from Sleeper API.
-    
-    This tool fetches transaction history including trades, waiver pickups,
-    and free agent additions for the specified league and round.
-    
+async def get_transactions(league_id: str, round: Optional[int] = None, week: Optional[int] = None) -> dict:
+    """Get transactions for a specific week (round) of a Sleeper league.
+
+    The official Sleeper API requires a week (round) path segment. Previous
+    implementation allowed calling without a round which is not documented; now
+    a week/round is required. For backward compatibility both parameter names
+    are accepted; if both are provided they must match.
+
     Args:
-        league_id: The unique identifier for the league
-        round: Optional round number (1-18, if not provided gets all transactions)
-        
-    Returns:
-        A dictionary containing:
-        - transactions: List of transactions
-        - round: The round number (if specified)
-        - count: Number of transactions found
-        - success: Whether the request was successful
-        - error: Error message (if any)
-        - error_type: Type of error (if any)
+        league_id: League identifier
+        round: (Deprecated) alias for week
+        week: Week number (1-18 typical). Required.
     """
-    # Validate round parameter if provided
-    if round is not None and (round < LIMITS["round_min"] or round > LIMITS["round_max"]):
+    # Normalize parameters
+    if week is None and round is not None:
+        week = round
+    elif week is not None and round is not None and week != round:
         return handle_validation_error(
-            f"Round must be between {LIMITS['round_min']} and {LIMITS['round_max']}",
-            {"transactions": [], "round": round, "count": 0}
+            "Conflicting values provided for week and round; they must match",
+            {"transactions": [], "week": week, "count": 0}
         )
     
+    if week is None:
+        return handle_validation_error(
+            "A week (round) parameter is required by Sleeper: provide week= or round=",
+            {"transactions": [], "week": None, "count": 0}
+        )
+    
+    if week < LIMITS["round_min"] or week > LIMITS["round_max"]:
+        return handle_validation_error(
+            f"Week must be between {LIMITS['round_min']} and {LIMITS['round_max']}",
+            {"transactions": [], "week": week, "count": 0}
+        )
+
     headers = get_http_headers("sleeper_transactions")
-    
-    # Sleeper API endpoint for league transactions
-    if round is not None:
-        url = f"https://api.sleeper.app/v1/league/{league_id}/transactions/{round}"
-    else:
-        url = f"https://api.sleeper.app/v1/league/{league_id}/transactions"
-    
+    url = f"https://api.sleeper.app/v1/league/{league_id}/transactions/{week}"
+
     async with create_http_client() as client:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
-        
-        # Parse JSON response
         transactions_data = response.json()
-        
         return create_success_response({
             "transactions": transactions_data,
-            "round": round,
+            "week": week,
             "count": len(transactions_data)
         })
 
@@ -511,72 +513,59 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
     async with create_http_client() as client:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
-        
-        # Parse JSON response - trending API returns a list of player IDs
-        trending_player_ids = response.json()
-        
-        if not trending_player_ids:
+        raw_items = response.json()  # May be list[dict] or list[str]
+
+        if not raw_items:
             return create_success_response({
                 "trending_players": [],
                 "trend_type": trend_type,
                 "lookback_hours": lookback_hours,
                 "count": 0
             })
-        
-        # Use provided database or create new one
+
         if nfl_db is None:
-            # Need to import database here to avoid circular imports
             from .database import NFLDatabase
             nfl_db = NFLDatabase()
-        
-        # Check if database has athletes, if not try to fetch them
-        # First do a quick check to see if we have any athletes
+
         try:
-            # Query a small sample to check if database is populated
             sample_athletes = nfl_db.search_athletes_by_name("", limit=1)
             if not sample_athletes:
-                # Database appears empty, try to fetch athletes
                 from . import athlete_tools
                 try:
                     logger.info("Database appears empty, attempting to fetch athletes for trending players lookup")
                     await athlete_tools.fetch_athletes(nfl_db)
                 except Exception as fetch_error:
                     logger.warning(f"Failed to automatically fetch athletes: {fetch_error}")
-                    # Continue anyway - we'll just return basic data without enrichment
         except Exception as db_error:
             logger.warning(f"Could not check database status: {db_error}")
-            # Continue anyway
-        
-        # Look up each trending player in our database for enriched data
+
         enriched_players = []
-        for player_item in trending_player_ids:
-            # Handle both string IDs and dict objects from the API
-            if isinstance(player_item, dict):
-                # Extract player_id from dict object
-                player_id = player_item.get('player_id') or player_item.get('id')
+        for item in raw_items:
+            if isinstance(item, dict):
+                player_id = item.get("player_id") or item.get("id")
+                count = item.get("count")  # Sleeper trending provides count
                 if not player_id:
-                    # Skip if we can't find a valid ID
                     continue
             else:
-                # Assume it's a string ID
-                player_id = player_item
-            
-            player_info = nfl_db.get_athlete_by_id(player_id)
-            if player_info:
-                enriched_players.append(player_info)
-            else:
-                # Include basic info even if not in our database
-                enriched_players.append({
-                    "player_id": player_id,
-                    "full_name": None,
-                    "first_name": None,
-                    "last_name": None,
-                    "position": None,
-                    "team": None,
-                    "age": None,
-                    "jersey": None
-                })
-        
+                player_id = item
+                count = None
+
+            base_info = nfl_db.get_athlete_by_id(player_id) or {
+                "player_id": player_id,
+                "full_name": None,
+                "first_name": None,
+                "last_name": None,
+                "position": None,
+                "team": None,
+                "age": None,
+                "jersey": None
+            }
+            enriched_players.append({
+                "player_id": player_id,
+                "count": count,
+                "enriched": base_info
+            })
+
         return create_success_response({
             "trending_players": enriched_players,
             "trend_type": trend_type,
@@ -1212,3 +1201,136 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
         "league_id": league_id,
         "readiness_score": readiness_score
     })
+
+
+# -------------------------------------------------------------
+# NEW: Additional Sleeper endpoints (Users, Drafts, Players)
+# -------------------------------------------------------------
+
+@handle_http_errors(
+    default_data={"user": None},
+    operation_name="fetching user"
+)
+async def get_user(user_id_or_username: str) -> dict:
+    """Fetch a Sleeper user by user_id or username."""
+    headers = get_http_headers("sleeper_users")
+    url = f"https://api.sleeper.app/v1/user/{user_id_or_username}"
+    async with create_http_client() as client:
+        response = await client.get(url, headers=headers, follow_redirects=True)
+        response.raise_for_status()
+        return create_success_response({"user": response.json()})
+
+
+@handle_http_errors(
+    default_data={"leagues": [], "count": 0, "season": None},
+    operation_name="fetching user leagues"
+)
+async def get_user_leagues(user_id: str, season: int) -> dict:
+    """Fetch all leagues for a user for a season."""
+    headers = get_http_headers("sleeper_league")
+    url = f"https://api.sleeper.app/v1/user/{user_id}/leagues/nfl/{season}"
+    async with create_http_client() as client:
+        response = await client.get(url, headers=headers, follow_redirects=True)
+        response.raise_for_status()
+        data = response.json()
+        return create_success_response({"leagues": data, "count": len(data), "season": season})
+
+
+@handle_http_errors(
+    default_data={"drafts": [], "count": 0},
+    operation_name="fetching league drafts"
+)
+async def get_league_drafts(league_id: str) -> dict:
+    """Fetch all drafts for a league."""
+    headers = get_http_headers("sleeper_league")
+    url = f"https://api.sleeper.app/v1/league/{league_id}/drafts"
+    async with create_http_client() as client:
+        response = await client.get(url, headers=headers, follow_redirects=True)
+        response.raise_for_status()
+        data = response.json()
+        return create_success_response({"drafts": data, "count": len(data)})
+
+
+@handle_http_errors(
+    default_data={"draft": None},
+    operation_name="fetching draft"
+)
+async def get_draft(draft_id: str) -> dict:
+    """Fetch a specific draft."""
+    headers = get_http_headers("sleeper_league")
+    url = f"https://api.sleeper.app/v1/draft/{draft_id}"
+    async with create_http_client() as client:
+        response = await client.get(url, headers=headers, follow_redirects=True)
+        response.raise_for_status()
+        return create_success_response({"draft": response.json()})
+
+
+@handle_http_errors(
+    default_data={"picks": [], "count": 0},
+    operation_name="fetching draft picks"
+)
+async def get_draft_picks(draft_id: str) -> dict:
+    """Fetch all picks in a draft."""
+    headers = get_http_headers("sleeper_league")
+    url = f"https://api.sleeper.app/v1/draft/{draft_id}/picks"
+    async with create_http_client() as client:
+        response = await client.get(url, headers=headers, follow_redirects=True)
+        response.raise_for_status()
+        data = response.json()
+        return create_success_response({"picks": data, "count": len(data)})
+
+
+@handle_http_errors(
+    default_data={"traded_picks": [], "count": 0},
+    operation_name="fetching draft traded picks"
+)
+async def get_draft_traded_picks(draft_id: str) -> dict:
+    """Fetch traded picks for a draft."""
+    headers = get_http_headers("sleeper_league")
+    url = f"https://api.sleeper.app/v1/draft/{draft_id}/traded_picks"
+    async with create_http_client() as client:
+        response = await client.get(url, headers=headers, follow_redirects=True)
+        response.raise_for_status()
+        data = response.json()
+        return create_success_response({"traded_picks": data, "count": len(data)})
+
+
+# Player dump caching (large ~5MB) - cache in memory to reduce calls.
+_PLAYERS_CACHE = {"data": None, "fetched_at": 0}
+_PLAYERS_CACHE_TTL = 60 * 60 * 12  # 12 hours
+
+@handle_http_errors(
+    default_data={"players": {}, "cached": False},
+    operation_name="fetching all players"
+)
+async def fetch_all_players(force_refresh: bool = False) -> dict:
+    """Fetch the full players map from Sleeper (cached; heavy endpoint).
+
+    Args:
+        force_refresh: Ignore cache and refetch.
+    """
+    import time as _time
+    now = _time.time()
+    if (
+        not force_refresh and _PLAYERS_CACHE["data"] is not None and
+        now - _PLAYERS_CACHE["fetched_at"] < _PLAYERS_CACHE_TTL
+    ):
+        return create_success_response({
+            "players": {},  # not returning the large blob again intentionally
+            "cached": True,
+            "ttl_remaining": int(_PLAYERS_CACHE_TTL - (now - _PLAYERS_CACHE["fetched_at"]))
+        })
+
+    headers = get_http_headers("sleeper_league")
+    url = "https://api.sleeper.app/v1/players/nfl"
+    async with create_http_client(timeout=LONG_TIMEOUT) as client:  # longer timeout
+        response = await client.get(url, headers=headers, follow_redirects=True)
+        response.raise_for_status()
+        data = response.json()
+        _PLAYERS_CACHE["data"] = data
+        _PLAYERS_CACHE["fetched_at"] = now
+        return create_success_response({
+            "players": {},  # avoid huge payload downstream; signal success
+            "cached": False,
+            "player_count": len(data)
+        })

@@ -236,22 +236,22 @@ class TestRosterAccessPermissions:
         assert "Week must be between" in result["error"]
         assert result["error_type"] == "validation_error"  # Test new field
     
-    @pytest.mark.asyncio 
+    @pytest.mark.asyncio
     async def test_get_transactions_parameter_validation(self):
-        """Test that get_transactions validates round parameter correctly."""
+        """Test that get_transactions validates required week (round) parameter bounds."""
         func = getattr(sleeper_tools, 'get_transactions')
-        
-        # Test invalid round (too low)
+
+        # Too low
         result = await func("test_league", 0)
         assert result["success"] is False
-        assert "Round must be between" in result["error"]
-        assert result["error_type"] == "validation_error"  # Test new field
-        
-        # Test invalid round (too high)  
+        assert "Week must be between" in result["error"]
+        assert result["error_type"] == "validation_error"
+
+        # Too high
         result = await func("test_league", 20)
         assert result["success"] is False
-        assert "Round must be between" in result["error"]
-        assert result["error_type"] == "validation_error"  # Test new field
+        assert "Week must be between" in result["error"]
+        assert result["error_type"] == "validation_error"
     
     @pytest.mark.asyncio
     async def test_get_trending_players_parameter_validation(self):
