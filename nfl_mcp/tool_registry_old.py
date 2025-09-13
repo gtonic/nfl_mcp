@@ -102,111 +102,6 @@ async def fetch_teams() -> dict:
         return {"teams_count": 0, "last_updated": None, "success": False, "error": "Database not initialized"}
     return await nfl_tools.fetch_teams(_nfl_db)
 
-
-async def get_depth_chart(team_id: str) -> dict:
-    """Fetch a team's depth chart from ESPN HTML page.
-
-    Parameters:
-        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
-    Returns: {team_id, team_name, depth_chart:[{position, players[]}], success, error?}
-    Example: get_depth_chart(team_id="KC")
-    """
-    try:
-        team_id = validate_string_input(team_id, 'team_id', max_length=4, required=True)
-    except ValueError as e:
-        return {"team_id": team_id, "team_name": None, "depth_chart": [], "success": False, "error": f"Invalid team_id: {e}"}
-    
-    try:
-        timeout = httpx.Timeout(30.0, connect=10.0)
-        headers = {"User-Agent": "NFL-MCP-Server/0.1.0 (NFL Depth Chart Fetcher)"}
-        url = f"https://www.espn.com/nfl/team/depth/_/name/{team_id.upper()}"
-        
-        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
-            response = await client.get(url, follow_redirects=True)
-            response.raise_for_status()
-            
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text, 'html.parser')
-            team_name = soup.find('h1').get_text(strip=True) if soup.find('h1') else None
-            depth_chart = []
-            
-            # Parse depth chart data
-            depth_sections = soup.find_all(['table', 'div'], class_=lambda x: x and 'depth' in x.lower() if x else False) or soup.find_all('table')
-            for section in depth_sections[:10]:  # Limit to first 10 sections
-                rows = section.find_all('tr')
-                for row in rows[:5]:  # Limit to first 5 rows per section
-                    cells = row.find_all(['td', 'th'])
-                    if len(cells) >= 2:
-                        position = cells[0].get_text(strip=True)
-                        players = [cell.get_text(strip=True) for cell in cells[1:6]]  # Max 5 players
-                        if position and any(players):
-                            players = [p for p in players if p and len(p) > 1][:5]
-                            if players:
-                                depth_chart.append({"position": position, "players": players})
-            
-            return {
-                "team_id": team_id,
-                "team_name": team_name,
-                "depth_chart": depth_chart,
-                "success": True,
-                "error": None
-            }
-    except Exception as e:
-        return {
-            "team_id": team_id,
-            "team_name": None,
-            "depth_chart": [],
-            "success": False,
-            "error": f"Error fetching depth chart: {str(e)}"
-        }
-
-
-async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
-    """Get injury report for specific NFL team.
-
-    Parameters:
-        team_id (str, required): Team abbreviation (e.g., 'KC').
-        limit (int, default 50, range 1-50): Max injuries to return.
-    Returns: {team_id, injuries: [...], total_injuries, success, error?}
-    Example: get_team_injuries(team_id="KC", limit=10)
-    """
-    return await nfl_tools.get_team_injuries(team_id, limit)
-
-
-async def get_team_player_stats(team_id: str, limit: Optional[int] = 50) -> dict:
-    """Get player statistics for a specific NFL team.
-
-    Parameters:
-        team_id (str, required): Team abbreviation (e.g., 'KC').
-        limit (int, default 50, range 1-50): Max players to return.
-    Returns: {team_id, players: [...], total_players, success, error?}
-    Example: get_team_player_stats(team_id="KC", limit=20)
-    """
-    return await nfl_tools.get_team_player_stats(team_id, limit)
-
-
-async def get_nfl_standings() -> dict:
-    """Get current NFL standings with playoff implications.
-
-    Returns: {standings: {afc: [...], nfc: [...]}, success, error?}
-    Example: get_nfl_standings()
-    """
-    return await nfl_tools.get_nfl_standings()
-
-
-async def get_team_schedule(team_id: str, weeks: Optional[int] = 17) -> dict:
-    """Get team schedule with fantasy implications.
-
-    Parameters:
-        team_id (str, required): Team abbreviation (e.g., 'KC').
-        weeks (int, default 17, range 1-18): Number of weeks to include.
-    Returns: {team_id, schedule: [...], success, error?}
-    Example: get_team_schedule(team_id="KC", weeks=4)
-    """
-    return await nfl_tools.get_team_schedule(team_id, weeks)
-
-
-# Feature-flagged league leaders tool
 if FEATURE_LEAGUE_LEADERS:
     @timing_decorator("get_league_leaders", tool_type="nfl")
     async def get_league_leaders(category: str, season: Optional[int] = 2025, season_type: Optional[int] = 2, week: Optional[int] = None) -> dict:  # pragma: no cover - conditional
@@ -239,17 +134,124 @@ if FEATURE_LEAGUE_LEADERS:
             week = None
         return await nfl_tools.get_league_leaders(category=category, season=season or 2025, season_type=season_type or 2, week=week)
 
+@_dummy.tool
+@timing_decorator("get_teams", tool_type="nfl")
+async def get_teams() -> dict:
+    """List current NFL teams (ESPN) with metadata.
 
-# =============================================================================
-# WEB TOOLS
-# =============================================================================
+    Returns: {teams: [...], total_teams, success, error?}
+    Example: get_teams()
+    """
+    return await nfl_tools.get_teams()
 
-async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
-    """Crawl URL and extract LLM-friendly text content.
+@_dummy.tool
+@timing_decorator("fetch_teams", tool_type="nfl")
+async def fetch_teams() -> dict:
+    """Fetch & upsert NFL teams into local DB.
+
+    Returns: {teams_count, last_updated, success, error?}
+    Example: fetch_teams()
+    """
+    return await nfl_tools.fetch_teams(_nfl_db)  # type: ignore[arg-type]
+
+@_dummy.tool
+async def get_depth_chart(team_id: str) -> dict:
+    """Fetch a team's depth chart from ESPN HTML page.
 
     Parameters:
-        url (str, required): URL to crawl (HTTP/HTTPS only).
-        max_length (int, default 10000, range 100-50000): Max content length.
+        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
+    Returns: {team_id, team_name, depth_chart:[{position, players[]}], success, error?}
+    Example: get_depth_chart(team_id="KC")
+    """
+    try:
+        team_id = validate_string_input(team_id, 'team_id', max_length=4, required=True)
+    except ValueError as e:
+        return {"team_id": team_id, "team_name": None, "depth_chart": [], "success": False, "error": f"Invalid team_id: {e}"}
+    try:
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        headers = {"User-Agent": "NFL-MCP-Server/0.1.0 (NFL Depth Chart Fetcher)"}
+        url = f"https://www.espn.com/nfl/team/depth/_/name/{team_id.upper()}"
+        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+            response = await client.get(url, follow_redirects=True); response.raise_for_status()
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            team_name = soup.find('h1').get_text(strip=True) if soup.find('h1') else None
+            depth_chart = []
+            depth_sections = soup.find_all(['table', 'div'], class_=lambda x: x and 'depth' in x.lower() if x else False) or soup.find_all('table')
+            for section in depth_sections:
+                for row in section.find_all('tr'):
+                    cells = row.find_all(['td','th'])
+                    if len(cells) >= 2:
+                        position = cells[0].get_text(strip=True)
+                        players = [c.get_text(strip=True) for c in cells[1:] if c.get_text(strip=True) and c.get_text(strip=True) != position]
+                        if position and players:
+                            depth_chart.append({"position": position, "players": players})
+            return {"team_id": team_id.upper(), "team_name": team_name, "depth_chart": depth_chart, "success": True, "error": None}
+    except httpx.TimeoutException:
+        return {"team_id": team_id, "team_name": None, "depth_chart": [], "success": False, "error": "Request timed out while fetching depth chart"}
+    except httpx.HTTPStatusError as e:
+        return {"team_id": team_id, "team_name": None, "depth_chart": [], "success": False, "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"}
+    except Exception as e:
+        return {"team_id": team_id, "team_name": None, "depth_chart": [], "success": False, "error": f"Unexpected error fetching depth chart: {e}"}
+
+@_dummy.tool
+async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
+    """Get current injury report for an NFL team from ESPN Core API.
+
+    Parameters:
+        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
+        limit (int, default 50, range 1-100): Max number of injuries to return.
+    Returns: {team_id, team_name, injuries:[{player_name, position, status, severity}], count, success, error?}
+    Example: get_team_injuries(team_id="KC", limit=20)
+    """
+    return await nfl_tools.get_team_injuries(team_id, limit)
+
+@_dummy.tool
+async def get_team_player_stats(team_id: str, season: Optional[int] = 2025, season_type: Optional[int] = 2, limit: Optional[int] = 50) -> dict:
+    """Get player statistics for an NFL team from ESPN Core API.
+
+    Parameters:
+        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
+        season (int, default 2025): Season year.
+        season_type (int, default 2): 1=Pre, 2=Regular, 3=Post, 4=Off.
+        limit (int, default 50, range 1-100): Max number of players to return.
+    Returns: {team_id, team_name, season, season_type, player_stats:[{player_name, position, fantasy_relevant}], count, success, error?}
+    Example: get_team_player_stats(team_id="KC", season=2025, limit=25)
+    """
+    return await nfl_tools.get_team_player_stats(team_id, season, season_type, limit)
+
+@_dummy.tool
+async def get_nfl_standings(season: Optional[int] = 2025, season_type: Optional[int] = 2, group: Optional[int] = None) -> dict:
+    """Get current NFL standings from ESPN Core API with fantasy context.
+
+    Parameters:
+        season (int, default 2025): Season year.
+        season_type (int, default 2): 1=Pre, 2=Regular, 3=Post, 4=Off.
+        group (int, optional): Conference group (1=AFC, 2=NFC, None=both).
+    Returns: {standings:[{team_name, wins, losses, fantasy_context, motivation_level}], season, season_type, count, success, error?}
+    Example: get_nfl_standings(season=2025, season_type=2)
+    """
+    return await nfl_tools.get_nfl_standings(season, season_type, group)
+
+@_dummy.tool
+async def get_team_schedule(team_id: str, season: Optional[int] = 2025) -> dict:
+    """Get team schedule from ESPN Site API with fantasy implications.
+
+    Parameters:
+        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
+        season (int, default 2025): Season year.
+    Returns: {team_id, team_name, season, schedule:[{date, week, opponent, is_home, fantasy_implications}], count, success, error?}
+    Example: get_team_schedule(team_id="KC", season=2025)
+    """
+    return await nfl_tools.get_team_schedule(team_id, season)
+
+@_dummy.tool
+async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
+    """Retrieve and sanitize page text content.
+
+    Parameters:
+        url (str, required): HTTP/HTTPS URL.
+        max_length (int, default 10000, range 100-50000): Truncate content.
     Returns: {url, title, content, content_length, success, error?}
     Example: crawl_url(url="https://example.com", max_length=4000)
     """
@@ -257,33 +259,22 @@ async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
         url = validate_string_input(url, 'general', max_length=2000, required=True)
     except ValueError as e:
         return {"url": url, "title": None, "content": "", "content_length": 0, "success": False, "error": f"Invalid URL: {e}"}
-    
     if not validate_url_enhanced(url):
         return {"url": url, "title": None, "content": "", "content_length": 0, "success": False, "error": "URL validation failed - potentially unsafe URL"}
-    
     try:
         max_length = validate_numeric_input(max_length, min_val=100, max_val=50000, default=10000, required=False)
     except ValueError:
         max_length = 10000
-    
     try:
         headers = get_http_headers("web_crawler")
         async with create_http_client() as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            
+            response = await client.get(url, headers=headers); response.raise_for_status()
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(response.text, 'lxml')
-            title_tag = soup.find('title')
-            title = sanitize_content(title_tag.get_text().strip()) if title_tag else None
-            
-            # Remove unwanted elements
-            for tag in soup(["script","style","nav","footer","aside","form"]):
-                tag.extract()
-            
+            title_tag = soup.find('title'); title = sanitize_content(title_tag.get_text().strip()) if title_tag else None
+            for tag in soup(["script","style","nav","footer","aside","form"]): tag.extract()
             text = sanitize_content(soup.get_text(), max_length=max_length)
             return {"url": url, "title": title, "content": text, "content_length": len(text), "success": True, "error": None}
-    
     except httpx.TimeoutException:
         return {"url": url, "title": None, "content": "", "content_length": 0, "success": False, "error": "Request timed out"}
     except httpx.HTTPStatusError as e:
@@ -291,11 +282,7 @@ async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
     except Exception as e:
         return {"url": url, "title": None, "content": "", "content_length": 0, "success": False, "error": f"Unexpected error: {e}"}
 
-
-# =============================================================================
-# ATHLETE TOOLS
-# =============================================================================
-
+@_dummy.tool
 @timing_decorator("fetch_athletes", tool_type="athlete")
 async def fetch_athletes() -> dict:
     """Bulk import Sleeper NFL player dataset into local DB.
@@ -304,26 +291,19 @@ async def fetch_athletes() -> dict:
     Warning: Large payload (tens of MB) – use sparingly.
     Example: fetch_athletes()
     """
-    if not _nfl_db:
-        return {"athletes_count": 0, "last_updated": None, "success": False, "error": "Database not initialized"}
-    
     try:
         timeout = httpx.Timeout(60.0, connect=15.0)
         headers = {"User-Agent": "NFL-MCP-Server/0.1.0 (NFL Athletes Fetcher)"}
         url = "https://api.sleeper.app/v1/players/nfl"
-        
         async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
-            response = await client.get(url, follow_redirects=True)
-            response.raise_for_status()
-            data = response.json()
-        
-        count = _nfl_db.upsert_athletes(data)
-        last_updated = _nfl_db.get_last_updated()
+            response = await client.get(url, follow_redirects=True); response.raise_for_status(); data = response.json()
+        count = _nfl_db.upsert_athletes(data)  # type: ignore[union-attr]
+        last_updated = _nfl_db.get_last_updated()  # type: ignore[union-attr]
         return {"athletes_count": count, "last_updated": last_updated, "success": True, "error": None}
     except Exception as e:
         return {"athletes_count": 0, "last_updated": None, "success": False, "error": str(e)}
 
-
+@_dummy.tool
 def lookup_athlete(athlete_id: str) -> dict:
     """Lookup a single athlete by ID (Sleeper player id key).
 
@@ -332,21 +312,17 @@ def lookup_athlete(athlete_id: str) -> dict:
     Returns: {athlete, found (bool), error?}
     Example: lookup_athlete(athlete_id="1234")
     """
-    if not _nfl_db:
-        return {"athlete": None, "found": False, "error": "Database not initialized"}
-    
     try:
         athlete_id = validate_string_input(athlete_id, 'alphanumeric_id', max_length=50, required=True)
     except ValueError as e:
         return {"athlete": None, "found": False, "error": f"Invalid athlete_id: {e}"}
-    
     try:
-        athlete = _nfl_db.get_athlete_by_id(athlete_id)
+        athlete = _nfl_db.get_athlete_by_id(athlete_id)  # type: ignore[union-attr]
         return {"athlete": athlete, "found": bool(athlete), "error": None if athlete else f"Athlete with ID '{athlete_id}' not found"}
     except Exception as e:
         return {"athlete": None, "found": False, "error": f"Error looking up athlete: {e}"}
 
-
+@_dummy.tool
 def search_athletes(name: str, limit: Optional[int] = 10) -> dict:
     """Search athletes by (case-insensitive) name substring.
 
@@ -356,23 +332,18 @@ def search_athletes(name: str, limit: Optional[int] = 10) -> dict:
     Returns: {athletes: [...], count, search_term, error?}
     Example: search_athletes(name="Mahomes", limit=5)
     """
-    if not _nfl_db:
-        return {"athletes": [], "count": 0, "search_term": name, "error": "Database not initialized"}
-    
     try:
         name = validate_string_input(name, 'athlete_name', max_length=100, required=True)
     except ValueError as e:
         return {"athletes": [], "count": 0, "search_term": name, "error": f"Invalid name: {e}"}
-    
     limit = validate_limit(limit, LIMITS["athletes_search_min"], LIMITS["athletes_search_max"], LIMITS["athletes_search_default"])
-    
     try:
-        athletes = _nfl_db.search_athletes_by_name(name, limit)
+        athletes = _nfl_db.search_athletes_by_name(name, limit)  # type: ignore[union-attr]
         return {"athletes": athletes, "count": len(athletes), "search_term": name, "error": None}
     except Exception as e:
         return {"athletes": [], "count": 0, "search_term": name, "error": f"Error searching athletes: {e}"}
 
-
+@_dummy.tool
 def get_athletes_by_team(team_id: str) -> dict:
     """List athletes (local DB) for a team abbreviation.
 
@@ -381,113 +352,121 @@ def get_athletes_by_team(team_id: str) -> dict:
     Returns: {athletes: [...], count, team_id, error?}
     Example: get_athletes_by_team(team_id="KC")
     """
-    if not _nfl_db:
-        return {"athletes": [], "count": 0, "team_id": team_id, "error": "Database not initialized"}
-    
     try:
         team_id = validate_string_input(team_id, 'team_id', max_length=4, required=True)
     except ValueError as e:
         return {"athletes": [], "count": 0, "team_id": team_id, "error": f"Invalid team_id: {e}"}
-    
     try:
-        athletes = _nfl_db.get_athletes_by_team(team_id)
+        athletes = _nfl_db.get_athletes_by_team(team_id)  # type: ignore[union-attr]
         return {"athletes": athletes, "count": len(athletes), "team_id": team_id, "error": None}
     except Exception as e:
         return {"athletes": [], "count": 0, "team_id": team_id, "error": f"Error getting athletes for team: {e}"}
 
-
-# =============================================================================
-# SLEEPER API TOOLS
-# =============================================================================
-
+# Sleeper tools
+@_dummy.tool
 async def get_league(league_id: str) -> dict:
-    """Get league information with input validation.
-    
+    """Fetch Sleeper league metadata.
+
     Parameters:
-        league_id (str, required): Sleeper league ID.
+        league_id (str, required)
     Returns: {league, success, error?}
-    Example: get_league(league_id="123456789")
+    Example: get_league(league_id="123456789012345678")
     """
-    return await sleeper_tools.get_league(league_id)
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        return await sleeper_tools.get_league(league_id)
+    except ValueError as e:
+        return {"league": None, "success": False, "error": f"Invalid league_id: {e}"}
 
-
+@_dummy.tool
 async def get_rosters(league_id: str) -> dict:
-    """Get league rosters with input validation.
-    
+    """Fetch rosters for a Sleeper league.
+
     Parameters:
-        league_id (str, required): Sleeper league ID.
-    Returns: {rosters: [...], success, error?}
-    Example: get_rosters(league_id="123456789")
+        league_id (str, required)
+    Returns: {rosters:[...], count, success, error?}
+    Example: get_rosters(league_id="123456789012345678")
     """
-    return await sleeper_tools.get_rosters(league_id)
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        return await sleeper_tools.get_rosters(league_id)
+    except ValueError as e:
+        return {"rosters": [], "count": 0, "success": False, "error": f"Invalid league_id: {e}"}
 
-
+@_dummy.tool
 async def get_league_users(league_id: str) -> dict:
-    """Get league users with input validation.
-    
+    """List users in a Sleeper league.
+
     Parameters:
-        league_id (str, required): Sleeper league ID.
-    Returns: {users: [...], success, error?}
-    Example: get_league_users(league_id="123456789")
+        league_id (str, required)
+    Returns: {users:[...], count, success, error?}
+    Example: get_league_users(league_id="123456789012345678")
     """
-    return await sleeper_tools.get_league_users(league_id)
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        return await sleeper_tools.get_league_users(league_id)
+    except ValueError as e:
+        return {"users": [], "count": 0, "success": False, "error": f"Invalid league_id: {e}"}
 
-
+@_dummy.tool
 async def get_matchups(league_id: str, week: int) -> dict:
-    """Get league matchups with input validation.
-    
+    """Fetch matchups for a given week.
+
     Parameters:
-        league_id (str, required): Sleeper league ID.
-        week (int, required): Week number (1-18).
-    Returns: {matchups: [...], success, error?}
-    Example: get_matchups(league_id="123456789", week=1)
+        league_id (str, required)
+        week (int, required, range config week_min-week_max)
+    Returns: {matchups:[...], week, count, success, error?}
+    Example: get_matchups(league_id="123456789012345678", week=3)
     """
-    return await sleeper_tools.get_matchups(league_id, week)
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        week = validate_numeric_input(week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
+        return await sleeper_tools.get_matchups(league_id, week)
+    except ValueError as e:
+        return {"matchups": [], "week": week, "count": 0, "success": False, "error": f"Invalid input: {e}"}
 
-
+@_dummy.tool
 async def get_playoff_bracket(league_id: str) -> dict:
-    """Get playoff bracket with input validation.
-    
+    """Fetch playoff bracket for a league (if available)."""
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        return await sleeper_tools.get_playoff_bracket(league_id)
+    except ValueError as e:
+        return {"playoff_bracket": None, "success": False, "error": f"Invalid league_id: {e}"}
+
+@_dummy.tool
+async def get_transactions(league_id: str, round: Optional[int] = None) -> dict:
+    """List transactions for a league (optionally filter by round).
+
     Parameters:
-        league_id (str, required): Sleeper league ID.
-    Returns: {bracket: [...], success, error?}
-    Example: get_playoff_bracket(league_id="123456789")
+        league_id (str, required)
+        round (int|None, optional): Draft round filter.
+    Returns: {transactions:[...], round, count, success, error?}
+    Example: get_transactions(league_id="123", round=2)
     """
-    return await sleeper_tools.get_playoff_bracket(league_id)
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        if round is not None:
+            round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
+        return await sleeper_tools.get_transactions(league_id, round)
+    except ValueError as e:
+        return {"transactions": [], "round": round, "count": 0, "success": False, "error": f"Invalid input: {e}"}
 
-
-async def get_transactions(league_id: str, week: Optional[int] = None) -> dict:
-    """Get league transactions with input validation.
-    
-    Parameters:
-        league_id (str, required): Sleeper league ID.
-        week (int, optional): Specific week (default: all).
-    Returns: {transactions: [...], success, error?}
-    Example: get_transactions(league_id="123456789", week=5)
-    """
-    return await sleeper_tools.get_transactions(league_id, week)
-
-
+@_dummy.tool
 async def get_traded_picks(league_id: str) -> dict:
-    """Get traded picks with input validation.
-    
-    Parameters:
-        league_id (str, required): Sleeper league ID.
-    Returns: {traded_picks: [...], success, error?}
-    Example: get_traded_picks(league_id="123456789")
-    """
-    return await sleeper_tools.get_traded_picks(league_id)
+    """List traded picks for a league."""
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        return await sleeper_tools.get_traded_picks(league_id)
+    except ValueError as e:
+        return {"traded_picks": [], "count": 0, "success": False, "error": f"Invalid league_id: {e}"}
 
-
+@_dummy.tool
 async def get_nfl_state() -> dict:
-    """Get current NFL state information.
-    
-    Returns: {nfl_state, success, error?}
-    Example: get_nfl_state()
-    """
+    """Return current Sleeper NFL state (week, season type, etc)."""
     return await sleeper_tools.get_nfl_state()
 
-
+@_dummy.tool
 async def get_trending_players(trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
     """Fetch trending add/drop players.
 
@@ -505,3 +484,5 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
         return await sleeper_tools.get_trending_players(trend_type, lookback_hours, limit)
     except ValueError as e:
         return {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0, "success": False, "error": f"Invalid input: {e}"}
+
+    return result
