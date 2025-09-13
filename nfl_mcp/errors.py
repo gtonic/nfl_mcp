@@ -23,6 +23,8 @@ class ErrorType:
     DATABASE = "database_error"
     NETWORK = "network_error"
     UNEXPECTED = "unexpected_error"
+    ACCESS_DENIED = "access_denied_error"
+    ROSTER_PRIVATE = "roster_private_error"
 
 
 def create_error_response(

@@ -360,6 +360,74 @@ league = await client.call_tool("get_league", {"league_id": "123456789"})
 
 ---
 
+#### get_rosters
+**Purpose:** Get all team rosters in a Sleeper fantasy league
+
+**Parameters:**
+- `league_id` (str, required): Sleeper league ID
+
+**Returns:**
+```json
+{
+  "rosters": [
+    {
+      "roster_id": "Number - Roster/team ID",
+      "owner_id": "String - User ID of team owner",
+      "players": ["Array of player IDs on roster"],
+      "starters": ["Array of player IDs in starting lineup"],
+      "settings": {
+        "wins": "Number - Season wins",
+        "losses": "Number - Season losses",
+        "fpts": "Number - Fantasy points scored"
+      }
+    }
+  ],
+  "count": "Number - Number of rosters returned",
+  "success": "Boolean - Success status",
+  "error": "String|null - Error message if failed",
+  "error_type": "String|null - Type of error",
+  "access_help": "String|null - Guidance for resolving access issues",
+  "warning": "String|null - Warning about potential access restrictions"
+}
+```
+
+**Access Requirements:**
+- Public leagues: No restrictions
+- Private leagues: May require roster access permissions
+- League owners can enable/disable public roster access in settings
+
+**Common Error Types:**
+- `access_denied_error`: Roster information is private
+- `http_error`: League not found or rate limited
+- `network_error`: Connection issues
+
+**Troubleshooting Roster Access Issues:**
+1. **"Access denied" (403)**: League owner needs to enable public roster access
+2. **"Authentication required" (401)**: Private league requiring login
+3. **"League not found" (404)**: Verify league ID is correct
+4. **Empty rosters but league exists**: Privacy settings may hide roster details
+
+**Use Cases:**
+- Analyzing team rosters and lineups
+- Identifying available players
+- League management and oversight
+- Roster optimization analysis
+
+**Example:**
+```python
+# Get league rosters
+rosters = await client.call_tool("get_rosters", {"league_id": "123456789"})
+
+# Check for access issues
+if not rosters["success"]:
+    if rosters["error_type"] == "access_denied_error":
+        print(f"Access denied: {rosters['access_help']}")
+    else:
+        print(f"Error: {rosters['error']}")
+```
+
+---
+
 #### get_trending_players
 **Purpose:** Get players trending on waiver wire (adds/drops)
 

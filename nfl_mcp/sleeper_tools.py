@@ -57,16 +57,16 @@ async def get_league(league_id: str) -> dict:
         })
 
 
-@handle_http_errors(
-    default_data={"rosters": [], "count": 0},
-    operation_name="fetching rosters"
-)
 async def get_rosters(league_id: str) -> dict:
     """
     Get all rosters in a fantasy league from Sleeper API.
     
     This tool fetches all team rosters including player IDs, starters,
     bench players, and other roster information for the specified league.
+    
+    Note: Some leagues may have roster privacy settings that restrict access.
+    If you encounter access issues, the league owner needs to make rosters public
+    or grant appropriate permissions in the league settings.
     
     Args:
         league_id: The unique identifier for the league
@@ -78,23 +78,116 @@ async def get_rosters(league_id: str) -> dict:
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
+        - access_help: Guidance for resolving access issues (if applicable)
     """
     headers = get_http_headers("sleeper_rosters")
     
     # Sleeper API endpoint for league rosters
     url = f"https://api.sleeper.app/v1/league/{league_id}/rosters"
     
-    async with create_http_client() as client:
-        response = await client.get(url, headers=headers, follow_redirects=True)
-        response.raise_for_status()
+    try:
+        async with create_http_client() as client:
+            response = await client.get(url, headers=headers, follow_redirects=True)
+            
+            # Handle specific Sleeper API roster access scenarios
+            if response.status_code == 404:
+                return create_error_response(
+                    f"League with ID '{league_id}' not found or does not exist",
+                    ErrorType.HTTP,
+                    {
+                        "rosters": [],
+                        "count": 0,
+                        "access_help": "Please verify the league ID is correct and the league exists"
+                    }
+                )
+            elif response.status_code == 403:
+                return create_error_response(
+                    "Access denied: Roster information is private for this league",
+                    ErrorType.ACCESS_DENIED,
+                    {
+                        "rosters": [],
+                        "count": 0,
+                        "access_help": "The league owner needs to enable public roster access in league settings or you need appropriate permissions to view rosters"
+                    }
+                )
+            elif response.status_code == 401:
+                return create_error_response(
+                    "Authentication required: This league requires login to view rosters",
+                    ErrorType.ACCESS_DENIED,
+                    {
+                        "rosters": [],
+                        "count": 0,
+                        "access_help": "This is a private league requiring authentication. Contact the league owner for access"
+                    }
+                )
+                
+            response.raise_for_status()
+            
+            # Parse JSON response
+            rosters_data = response.json()
+            
+            # Check if rosters are empty (could indicate access restrictions)
+            if isinstance(rosters_data, list) and len(rosters_data) == 0:
+                # Try to get league info to see if the league exists but rosters are restricted
+                try:
+                    league_response = await client.get(f"https://api.sleeper.app/v1/league/{league_id}", headers=headers)
+                    if league_response.status_code == 200:
+                        league_data = league_response.json()
+                        if league_data:
+                            return create_success_response({
+                                "rosters": rosters_data,
+                                "count": len(rosters_data),
+                                "warning": "League found but no rosters returned - this may indicate roster privacy settings are enabled",
+                                "access_help": "If this league should have rosters, ask the league owner to check roster privacy settings"
+                            })
+                except:
+                    # If league check fails, just continue with empty rosters
+                    pass
+            
+            return create_success_response({
+                "rosters": rosters_data,
+                "count": len(rosters_data)
+            })
+            
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out while fetching rosters",
+            ErrorType.TIMEOUT,
+            {"rosters": [], "count": 0}
+        )
         
-        # Parse JSON response
-        rosters_data = response.json()
+    except httpx.HTTPStatusError as e:
+        # Handle any other HTTP errors not caught above
+        if e.response.status_code == 429:
+            return create_error_response(
+                "Rate limit exceeded for Sleeper API - please try again in a few minutes",
+                ErrorType.HTTP,
+                {
+                    "rosters": [],
+                    "count": 0,
+                    "access_help": "Sleeper API has rate limits. Wait a few minutes before trying again"
+                }
+            )
+        else:
+            return create_error_response(
+                f"HTTP {e.response.status_code}: {e.response.reason_phrase}",
+                ErrorType.HTTP,
+                {"rosters": [], "count": 0}
+            )
+            
+    except httpx.NetworkError as e:
+        return create_error_response(
+            f"Network error while fetching rosters: {str(e)}",
+            ErrorType.NETWORK,
+            {"rosters": [], "count": 0}
+        )
         
-        return create_success_response({
-            "rosters": rosters_data,
-            "count": len(rosters_data)
-        })
+    except Exception as e:
+        return create_error_response(
+            f"Unexpected error during fetching rosters: {str(e)}",
+            ErrorType.UNEXPECTED,
+            {"rosters": [], "count": 0}
+        )
 
 
 @handle_http_errors(
