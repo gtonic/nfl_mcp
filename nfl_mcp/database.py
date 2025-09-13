@@ -191,7 +191,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 5
+    CURRENT_SCHEMA_VERSION = 7
     
     def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
         """
@@ -235,6 +235,8 @@ class NFLDatabase:
             3: self._migration_v3_roster_snapshots,
             4: self._migration_v4_transaction_snapshots,
             5: self._migration_v5_matchup_snapshots,
+            6: self._migration_v6_player_week_stats,
+            7: self._migration_v7_schedule_games,
         }
         
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -364,6 +366,47 @@ class NFLDatabase:
             CREATE INDEX IF NOT EXISTS idx_matchup_snapshots_league_week_time
             ON matchup_snapshots (league_id, week, fetched_at DESC)
             """
+        )
+
+    def _migration_v6_player_week_stats(self, conn: sqlite3.Connection) -> None:
+        """Migration v6: Table for caching per-player weekly snap statistics."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_week_stats (
+                player_id TEXT NOT NULL,
+                season INTEGER NOT NULL,
+                week INTEGER NOT NULL,
+                snaps_offense INTEGER,
+                snaps_team_offense INTEGER,
+                snap_pct REAL,
+                updated_at TEXT NOT NULL,
+                raw JSON,
+                PRIMARY KEY (player_id, season, week)
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_pws_lookup ON player_week_stats (player_id, season, week)"""
+        )
+
+    def _migration_v7_schedule_games(self, conn: sqlite3.Connection) -> None:
+        """Migration v7: Table for caching schedule to derive opponent for a team/DEF."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedule_games (
+                season INTEGER NOT NULL,
+                week INTEGER NOT NULL,
+                team TEXT NOT NULL,
+                opponent TEXT NOT NULL,
+                is_home INTEGER NOT NULL,
+                kickoff TEXT,
+                raw JSON,
+                PRIMARY KEY (season, week, team)
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_sched_week ON schedule_games (season, week)"""
         )
     
     @contextmanager
@@ -534,6 +577,147 @@ class NFLDatabase:
                 return {"matchups": json.loads(payload_json), "stale": stale, "fetched_at": fetched_at, "age_seconds": age_seconds}
         except Exception as e:
             logger.debug(f"load_matchup_snapshot failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Player weekly snap stats helpers
+    # ------------------------------------------------------------------
+    def upsert_player_week_stats(self, stats: List[Dict]) -> int:
+        """Insert or update player weekly snap stats.
+
+        Expected dict keys per item: player_id, season, week, snaps_offense, snaps_team_offense, snap_pct (optional), raw (optional)
+        If snap_pct is missing but snaps_offense and snaps_team_offense are present and >0, it's computed.
+        """
+        if not stats:
+            return 0
+        now = datetime.now(UTC).isoformat()
+        processed = 0
+        with self._pool.get_connection() as conn:
+            try:
+                for s in stats:
+                    player_id = s.get("player_id")
+                    season = s.get("season")
+                    week = s.get("week")
+                    if player_id is None or season is None or week is None:
+                        continue  # skip invalid rows silently
+                    snaps_off = s.get("snaps_offense")
+                    snaps_team = s.get("snaps_team_offense")
+                    snap_pct = s.get("snap_pct")
+                    if snap_pct is None and snaps_off is not None and snaps_team not in (None, 0):
+                        try:
+                            snap_pct = round((snaps_off / snaps_team) * 100, 1)
+                        except Exception:
+                            snap_pct = None
+                    raw = s.get("raw", {})
+                    conn.execute(
+                        """
+                        INSERT INTO player_week_stats(
+                            player_id, season, week, snaps_offense, snaps_team_offense, snap_pct, updated_at, raw
+                        ) VALUES(?,?,?,?,?,?,?, json(?))
+                        ON CONFLICT(player_id, season, week) DO UPDATE SET
+                            snaps_offense=excluded.snaps_offense,
+                            snaps_team_offense=excluded.snaps_team_offense,
+                            snap_pct=excluded.snap_pct,
+                            updated_at=excluded.updated_at,
+                            raw=excluded.raw
+                        """,
+                        (
+                            player_id,
+                            season,
+                            week,
+                            snaps_off,
+                            snaps_team,
+                            snap_pct,
+                            now,
+                            json.dumps(raw),
+                        ),
+                    )
+                    processed += 1
+                conn.commit()
+                return processed
+            except Exception as e:
+                logger.error(f"upsert_player_week_stats failed: {e}")
+                conn.rollback()
+                return processed
+
+    def get_player_snap_pct(self, player_id: str, season: int, week: int) -> Optional[Dict]:
+        """Fetch cached snap percentage info for a player/week."""
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT snap_pct, snaps_offense, snaps_team_offense, updated_at
+                    FROM player_week_stats
+                    WHERE player_id=? AND season=? AND week=?
+                    """,
+                    (player_id, season, week),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+        except Exception as e:
+            logger.debug(f"get_player_snap_pct failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Schedule / opponent helpers
+    # ------------------------------------------------------------------
+    def upsert_schedule_games(self, games: List[Dict]) -> int:
+        """Insert or update schedule games for opponent lookup.
+
+        Each dict requires: season, week, team, opponent, is_home (bool/int), kickoff (optional), raw(optional)
+        Caller should provide both directions (team/opponent swapped) if desired.
+        """
+        if not games:
+            return 0
+        processed = 0
+        with self._pool.get_connection() as conn:
+            try:
+                for g in games:
+                    season = g.get("season")
+                    week = g.get("week")
+                    team = g.get("team")
+                    opponent = g.get("opponent")
+                    if None in (season, week, team, opponent):
+                        continue
+                    is_home = 1 if g.get("is_home") else 0
+                    kickoff = g.get("kickoff")
+                    raw = g.get("raw", {})
+                    conn.execute(
+                        """
+                        INSERT INTO schedule_games(season, week, team, opponent, is_home, kickoff, raw)
+                        VALUES(?,?,?,?,?,?, json(?))
+                        ON CONFLICT(season, week, team) DO UPDATE SET
+                            opponent=excluded.opponent,
+                            is_home=excluded.is_home,
+                            kickoff=excluded.kickoff,
+                            raw=excluded.raw
+                        """,
+                        (season, week, team, opponent, is_home, kickoff, json.dumps(raw)),
+                    )
+                    processed += 1
+                conn.commit()
+                return processed
+            except Exception as e:
+                logger.error(f"upsert_schedule_games failed: {e}")
+                conn.rollback()
+                return processed
+
+    def get_opponent(self, season: int, week: int, team: str) -> Optional[str]:
+        """Return opponent abbreviation for team in given season/week if cached."""
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT opponent FROM schedule_games WHERE season=? AND week=? AND team=?",
+                    (season, week, team),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return row[0]
+        except Exception as e:
+            logger.debug(f"get_opponent failed: {e}")
             return None
     
     # Async Database Operations

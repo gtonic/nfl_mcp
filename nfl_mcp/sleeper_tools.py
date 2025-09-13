@@ -8,7 +8,9 @@ matchups, transactions, and more.
 
 import httpx
 import logging
-from typing import Optional
+import os
+from typing import Optional, Dict, List, Tuple
+from datetime import datetime, UTC
 
 from .config import get_http_headers, create_http_client, validate_limit, LIMITS, LONG_TIMEOUT, DEFAULT_TIMEOUT
 from .errors import (
@@ -175,25 +177,110 @@ async def get_rosters(league_id: str) -> dict:
 
                 # Enrichment (best-effort)
                 try:
-                    cache = {}
-                    def enrich_players(player_ids):
-                        enriched = []
+                    cache: Dict[str, Dict] = {}
+                    # Lazy schedule & stats fetch flags
+                    schedule_fetched: Dict[Tuple[int,int], bool] = {}
+                    stats_fetched: Dict[Tuple[int,int], bool] = {}
+
+                    async def fetch_schedule_if_needed(season: int, week_guess: int):
+                        key = (season, week_guess)
+                        if schedule_fetched.get(key):
+                            return
+                        try:
+                            sched = await _fetch_week_schedule(season, week_guess)
+                            if sched:
+                                nfl_db.upsert_schedule_games(sched)
+                        except Exception as e:
+                            logger.debug(f"schedule fetch failed season={season} week={week_guess}: {e}")
+                        schedule_fetched[key] = True
+
+                    async def fetch_stats_if_needed(season: int, week_guess: int):
+                        key = (season, week_guess)
+                        if stats_fetched.get(key):
+                            return
+                        try:
+                            stats = await _fetch_week_player_snaps(season, week_guess)
+                            if stats:
+                                nfl_db.upsert_player_week_stats(stats)
+                        except Exception as e:
+                            logger.debug(f"snap stats fetch failed season={season} week={week_guess}: {e}")
+                        stats_fetched[key] = True
+
+                    # Attempt to derive current season & week (best-effort)
+                    season = None; current_week = None
+                    try:
+                        state = await get_nfl_state()
+                        if state.get("success") and state.get("nfl_state"):
+                            st = state["nfl_state"]
+                            season = st.get("season") or st.get("league_season")
+                            current_week = st.get("week") or st.get("display_week")
+                    except Exception:
+                        pass
+
+                    def estimate_snap_pct_from_depth(position: Optional[str], depth_rank: Optional[int]):
+                        if depth_rank is None:
+                            return None
+                        if depth_rank == 1:
+                            return 70.0
+                        if depth_rank == 2:
+                            return 45.0
+                        return 15.0
+
+                    async def enrich_players(player_ids):
+                        enriched: List[Dict] = []
                         for pid in player_ids or []:
                             if pid in cache:
                                 enriched.append(cache[pid]); continue
                             athlete = nfl_db.get_athlete_by_id(pid) or {}
                             obj = {"player_id": pid, "full_name": athlete.get("full_name"), "position": athlete.get("position")}
+
+                            # Snap pct enrichment
+                            snap_source = None
+                            if season and current_week and athlete.get("position") not in (None, "DEF"):
+                                snap_row = nfl_db.get_player_snap_pct(pid, season, current_week)
+                                if not snap_row:
+                                    await fetch_stats_if_needed(season, current_week)
+                                    snap_row = nfl_db.get_player_snap_pct(pid, season, current_week)
+                                if snap_row and snap_row.get("snap_pct") is not None:
+                                    obj["snap_pct"] = snap_row.get("snap_pct")
+                                    snap_source = "cached"
+                            if "snap_pct" not in obj:
+                                depth_rank = athlete.get("raw") and athlete.get("raw").get("depth_chart_order") if isinstance(athlete.get("raw"), dict) else None
+                                est = estimate_snap_pct_from_depth(athlete.get("position"), depth_rank)
+                                if est is not None:
+                                    obj["snap_pct"] = est
+                                    snap_source = "estimated"
+                            if snap_source:
+                                obj["snap_pct_source"] = snap_source
+
+                            # Opponent enrichment for DEF
+                            if athlete.get("position") == "DEF" and season and current_week:
+                                opponent = nfl_db.get_opponent(season, current_week, athlete.get("team_id")) if hasattr(nfl_db, 'get_opponent') else None
+                                opponent_source = None
+                                if not opponent:
+                                    await fetch_schedule_if_needed(season, current_week)
+                                    opponent = nfl_db.get_opponent(season, current_week, athlete.get("team_id")) if hasattr(nfl_db, 'get_opponent') else None
+                                    if opponent:
+                                        opponent_source = "fetched"
+                                else:
+                                    opponent_source = "cached"
+                                if opponent:
+                                    obj["opponent"] = opponent
+                                    obj["opponent_source"] = opponent_source or "cached"
+
                             cache[pid] = obj; enriched.append(obj)
                         return enriched
+
                     if isinstance(rosters_data, list):
+                        # Because we need async inside enrichment, gather sequentially
                         for roster in rosters_data:
                             if isinstance(roster, dict):
                                 if isinstance(roster.get("players"), list):
-                                    roster["players_enriched"] = enrich_players(roster["players"])
+                                    roster["players_enriched"] = await enrich_players(roster["players"])
                                 if isinstance(roster.get("starters"), list):
-                                    roster["starters_enriched"] = enrich_players(roster["starters"])
+                                    roster["starters_enriched"] = await enrich_players(roster["starters"])
                 except Exception as enrich_error:
-                    logger.debug(f"Roster enrichment skipped: {enrich_error}")
+                    logger.debug(f"Roster enrichment (extended) skipped: {enrich_error}")
 
                 # Save snapshot
                 nfl_db.save_roster_snapshot(league_id, rosters_data)
@@ -236,9 +323,9 @@ async def get_rosters(league_id: str) -> dict:
                 "count": len(snap["rosters"]),
                 "retries_used": attempts,
                 "stale": snap.get("stale", True),
-        "failure_reason": last_error or "unknown",
-        "snapshot_fetched_at": snap.get("fetched_at"),
-        "snapshot_age_seconds": snap.get("age_seconds")
+                "failure_reason": last_error or "unknown",
+                "snapshot_fetched_at": snap.get("fetched_at"),
+                "snapshot_age_seconds": snap.get("age_seconds")
             }
         )
     return create_error_response(
@@ -356,17 +443,57 @@ async def get_matchups(league_id: str, week: int) -> dict:
 
                 # Enrichment
                 try:
-                    cache = {}
+                    cache: Dict[str, Dict] = {}
+                    state = None
+                    season = None
+                    try:
+                        state = await get_nfl_state()
+                        if state.get("success") and state.get("nfl_state"):
+                            st = state["nfl_state"]
+                            season = st.get("season") or st.get("league_season")
+                    except Exception:
+                        pass
+
+                    def estimate_snap(depth_rank: Optional[int]):
+                        if depth_rank == 1: return 70.0
+                        if depth_rank == 2: return 45.0
+                        if depth_rank is not None: return 15.0
+                        return None
+
                     if isinstance(matchups_data, list):
                         for m in matchups_data:
                             if not isinstance(m, dict):
                                 continue
-                            if isinstance(m.get("players"), list):
-                                m["players_enriched"] = [_enrich_single(nfl_db, pid, cache) for pid in m["players"]]
-                            if isinstance(m.get("starters"), list):
-                                m["starters_enriched"] = [_enrich_single(nfl_db, pid, cache) for pid in m["starters"]]
+                            enriched_players = []
+                            enriched_starters = []
+                            for key, target_list in [("players", enriched_players), ("starters", enriched_starters)]:
+                                ids = m.get(key)
+                                if not isinstance(ids, list):
+                                    continue
+                                for pid in ids:
+                                    if pid in cache:
+                                        target_list.append(cache[pid]); continue
+                                    athlete = nfl_db.get_athlete_by_id(pid) or {}
+                                    obj = {"player_id": pid, "full_name": athlete.get("full_name"), "position": athlete.get("position")}
+                                    # Snap pct (only if season known)
+                                    if season and athlete.get("position") not in (None, "DEF"):
+                                        row = nfl_db.get_player_snap_pct(pid, season, week) if hasattr(nfl_db,'get_player_snap_pct') else None
+                                        if row and row.get("snap_pct") is not None:
+                                            obj["snap_pct"] = row.get("snap_pct")
+                                            obj["snap_pct_source"] = "cached"
+                                        else:
+                                            est = estimate_snap(athlete.get("raw", {}).get("depth_chart_order") if isinstance(athlete.get("raw"), dict) else None)
+                                            if est is not None:
+                                                obj["snap_pct"] = est
+                                                obj["snap_pct_source"] = "estimated"
+                                    cache[pid] = obj
+                                    target_list.append(obj)
+                            if enriched_players:
+                                m["players_enriched"] = enriched_players
+                            if enriched_starters:
+                                m["starters_enriched"] = enriched_starters
                 except Exception as e:
-                    logger.debug(f"Matchup enrichment skipped: {e}")
+                    logger.debug(f"Matchup enrichment (extended) skipped: {e}")
 
                 nfl_db.save_matchup_snapshot(league_id, week, matchups_data)
                 return create_success_response({
@@ -591,11 +718,28 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
                 # Enrichment
                 try:
                     cache = {}
+                    # Determine season for usage/opponent enrichment
+                    season = None
+                    if ADVANCED_ENRICH_ENABLED:
+                        try:
+                            state = await get_nfl_state()
+                            if state.get("success") and state.get("nfl_state"):
+                                st = state["nfl_state"]
+                                season = st.get("season") or st.get("league_season")
+                        except Exception:
+                            pass
+
                     def enrich_player(pid):
                         if pid in cache:
                             return cache[pid]
                         athlete = nfl_db.get_athlete_by_id(pid) or {}
                         obj = {"player_id": pid, "full_name": athlete.get("full_name"), "position": athlete.get("position")}
+                        if ADVANCED_ENRICH_ENABLED and season:
+                            try:
+                                extra = _enrich_usage_and_opponent(nfl_db, athlete, season, week)
+                                obj.update(extra)
+                            except Exception:
+                                pass
                         cache[pid] = obj; return obj
                     if isinstance(tx_data, list):
                         for tx in tx_data:
@@ -1539,14 +1683,13 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
             "deadline": f"Week {playoff_start - 1}"
         })
     
-    if current_week <= 13:  # Before typical trade deadline
+    if current_week <= 13: # Before typical trade deadline
         playoff_plan["recommendations"].append({
             "category": "Trading Strategy", 
             "action": "Target players with strong playoff schedules",
             "priority": "High",
             "deadline": "Trade deadline"
         })
-    
     playoff_plan["recommendations"].append({
         "category": "Waiver Wire",
         "action": "Prioritize high-floor players over boom-bust options",
@@ -1808,3 +1951,125 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
         "week": effective_week,
         "auto_week_inferred": auto_inferred
     })
+
+
+ADVANCED_ENRICH_ENABLED = os.getenv("NFL_MCP_ADVANCED_ENRICH") == "1"
+
+async def _fetch_week_player_snaps(season: int, week: int):
+    """Fetch player snap stats (best-effort) from Sleeper weekly stats endpoint.
+
+    Returns list of dicts for upsert_player_week_stats. If advanced enrichment disabled
+    or network/API issues occur, returns empty list.
+    """
+    if not ADVANCED_ENRICH_ENABLED:
+        return []
+    headers = get_http_headers("sleeper_week_stats")
+    # Sleeper weekly stats endpoint pattern (regular season)
+    # Using documented style: /v1/stats/nfl/regular/{season}/{week}
+    url = f"https://api.sleeper.app/v1/stats/nfl/regular/{season}/{week}"
+    try:
+        async with create_http_client() as client:
+            resp = await client.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+            if resp.status_code != 200:
+                return []
+            data = resp.json() or {}
+            # Data format: mapping of player_id -> stat dict (varies by Sleeper)
+            if not isinstance(data, dict):
+                return []
+            rows = []
+            for pid, stats in list(data.items())[:5000]:  # cap for safety
+                if not isinstance(stats, dict):
+                    continue
+                # Attempt to extract snaps & snap_pct fields (naming may vary)
+                snaps = stats.get("snaps") or stats.get("off_snaps") or stats.get("offense_snaps")
+                team_snaps = stats.get("team_snaps") or stats.get("off_team_snaps")
+                snap_pct = stats.get("snap_pct") or stats.get("off_snap_pct")
+                rows.append({
+                    "player_id": str(pid),
+                    "season": season,
+                    "week": week,
+                    "snaps_offense": snaps,
+                    "snaps_team_offense": team_snaps,
+                    "snap_pct": snap_pct,
+                    "raw": stats
+                })
+            return rows
+    except Exception as e:
+        logger.debug(f"week player snaps fetch failed: {e}")
+        return []
+
+async def _fetch_week_schedule(season: int, week: int):
+    """Fetch weekly schedule from ESPN scoreboard API (best-effort).
+
+    Returns list of bidirectional game rows for upsert_schedule_games.
+    If advanced enrichment disabled or failure occurs, returns empty list.
+    """
+    if not ADVANCED_ENRICH_ENABLED:
+        return []
+    # Regular season scoreboard: seasontype=2
+    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?week={week}&year={season}&seasontype=2"
+    try:
+        async with create_http_client() as client:
+            resp = await client.get(url, timeout=DEFAULT_TIMEOUT)
+            if resp.status_code != 200:
+                return []
+            data = resp.json() or {}
+            events = data.get("events") or []
+            games = []
+            for ev in events:
+                comps = ev.get("competitions") or []
+                kickoff = ev.get("date")
+                for comp in comps:
+                    competitors = comp.get("competitors") or []
+                    if len(competitors) != 2:
+                        continue
+                    home = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
+                    away = next((c for c in competitors if c.get("homeAway") == "away"), competitors[-1])
+                    h_abbr = (home.get("team") or {}).get("abbreviation")
+                    a_abbr = (away.get("team") or {}).get("abbreviation")
+                    if not h_abbr or not a_abbr:
+                        continue
+                    games.append({"season": season, "week": week, "team": h_abbr, "opponent": a_abbr, "is_home": 1, "kickoff": kickoff, "raw": ev})
+                    games.append({"season": season, "week": week, "team": a_abbr, "opponent": h_abbr, "is_home": 0, "kickoff": kickoff, "raw": ev})
+            return games
+    except Exception as e:
+        logger.debug(f"week schedule fetch failed: {e}")
+        return []
+
+def _estimate_snap_pct(depth_rank: Optional[int]) -> Optional[float]:
+    if depth_rank is None:
+        return None
+    if depth_rank == 1:
+        return 70.0
+    if depth_rank == 2:
+        return 45.0
+    return 15.0
+
+def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], week: Optional[int]) -> Dict:
+    """Add snap_pct/opponent fields to a base enrichment object (mutates and returns)."""
+    if not athlete:
+        return {}
+    enriched_additions: Dict = {}
+    position = athlete.get("position")
+    # Snap pct (non-DEF)
+    if season and week and position not in (None, "DEF") and hasattr(nfl_db, 'get_player_snap_pct'):
+        row = nfl_db.get_player_snap_pct(athlete.get("id") or athlete.get("player_id") or athlete.get("id"), season, week)
+        if row and row.get("snap_pct") is not None:
+            enriched_additions["snap_pct"] = row.get("snap_pct")
+            enriched_additions["snap_pct_source"] = "cached"
+        else:
+            depth_rank = None
+            raw_field = athlete.get("raw")
+            if isinstance(raw_field, dict):
+                depth_rank = raw_field.get("depth_chart_order")
+            est = _estimate_snap_pct(depth_rank)
+            if est is not None:
+                enriched_additions["snap_pct"] = est
+                enriched_additions["snap_pct_source"] = "estimated"
+    # Opponent for DEF
+    if season and week and position == "DEF" and hasattr(nfl_db, 'get_opponent'):
+        opponent = nfl_db.get_opponent(season, week, athlete.get("team_id"))
+        if opponent:
+            enriched_additions["opponent"] = opponent
+            enriched_additions["opponent_source"] = "cached"
+    return enriched_additions

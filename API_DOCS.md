@@ -121,6 +121,18 @@ Viele Sleeper-spezifische Antworten enthalten jetzt zusätzliche *_enriched Feld
 
 Nutze diese zuerst – sie sparen zusätzliche Lookups.
 
+### Erweiterte Enrichment Felder (Schema v7)
+Zusätzliche optionale Felder für angereicherte Spielerobjekte:
+
+| Feld | Beschreibung | Quelle | Werte |
+|------|--------------|--------|-------|
+| snap_pct | Offensive Snap-Quote der aktuellen Woche (eine Dezimalstelle) | player_week_stats Cache oder Heuristik | 0.0–100.0 |
+| snap_pct_source | Herkunft von snap_pct | statisch | cached, estimated |
+| opponent | Gegner Team Kürzel für DEF | schedule_games Cache | e.g. KC, BUF |
+| opponent_source | Herkunft von opponent | statisch | cached, fetched |
+
+Heuristik: depth_chart_order 1≈70%, 2≈45%, sonst≈15%. Alle Felder sind additiv und fehlen einfach, wenn keine Daten vorliegen.
+
 ---
 ## 🛑 Abbruch-Kriterien (Früh stoppen!)
 

@@ -192,6 +192,21 @@ Recent upgrades to Sleeper tooling:
    - `failure_reason`: last encountered failure code/category
    - `snapshot_fetched_at`, `snapshot_age_seconds`: present when snapshot used (or null on fresh)
 
+#### Additional Enrichment (Schema v7)
+New optional fields may appear within `players_enriched`, `starters_enriched`, and transaction add/drop enrichment objects:
+
+| Field | Description | Source Values |
+|-------|-------------|---------------|
+| `snap_pct` | Offensive snap percentage for the current week (float, one decimal) | Derived or cached |
+| `snap_pct_source` | Provenance for `snap_pct` | `cached`, `estimated` |
+| `opponent` | Opponent team abbreviation (for DEF entries) | Schedule cache |
+| `opponent_source` | Provenance for `opponent` | `cached`, `fetched` |
+
+Notes:
+- Estimated snap% uses depth-chart heuristics (starter≈70, #2≈45, others≈15) when real stats absent.
+- All fields are additive and may be absent without breaking existing consumers.
+
+
 #### Robustness & Snapshot Behavior
 Each robust endpoint attempts multiple fetches with backoff. If all fail, the server returns the most recent cached snapshot **with `success=false`** but still provides usable data so LLM workflows can continue gracefully. Always check:
 
