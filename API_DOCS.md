@@ -2,6 +2,133 @@
 
 This document provides comprehensive tool documentation optimized for Large Language Model understanding and decision-making.
 
+> NEU (LLM-Optimiert): Dieser Leitfaden priorisiert reale Nutzerszenarien und gibt dir konkrete Aufruf-Sequenzen. Das wichtigste Ziel ist IMMER: Aktuellen Roster (Kader) eines bestimmten Sleeper Users ermitteln und darauf alle weiteren Analysen aufbauen.
+
+---
+## 🚦 Strategische Schnellübersicht (Prioritäten für das LLM)
+
+Reihenfolge der Informationsgewinnung (nur so viel wie nötig laden):
+1. (Optional, falls Username gegeben) `get_user` → user_id ermitteln
+2. `get_user_leagues` → relevante Liga pro Saison auswählen (falls mehrere)
+3. `get_league` → Metadaten (Scoring / Settings) NUR falls benötigt
+4. `get_rosters` → Kernschritt: Spieler des Users (owner_id == user_id) extrahieren
+5. Kontext verfeinern (on demand):
+  - Wöchentliche Planung: `get_matchups` (aktueller week) & `get_nfl_state`
+  - Aktuelle Marktbewegungen: `get_transactions` (week erforderlich), `get_trending_players`
+  - Draft / Historie (nur bei Bedarf): `get_league_drafts`, `get_draft_picks`
+  - Playoff-Situation: `get_playoff_bracket` (winners | losers)
+6. Spieler-Marktanalyse / Waiver Entscheidungen: Roster-Spieler + Trending vergleichen
+7. Tiefergehende NFL-Kontextdaten (ESPN): Verletzungen, Stats, Schedules, Standings nur bei erklärungsbedürftigen Antworten laden
+
+Minimaler Pipeline-Kern für schnelle Antworten (Roster-basiert):
+```
+get_user (optional) → get_user_leagues → get_rosters → (filter owner roster) → (optional Zusatz)
+```
+
+---
+## 🧠 Entscheidungsbaum (Kurzform)
+
+| Frage | Tools in empfohlener Reihenfolge | Stoppen sobald… |
+|-------|----------------------------------|------------------|
+| "Welche Spieler habe ich?" | get_user_leagues → get_rosters | Roster gefunden |
+| "Wie sieht mein Matchup diese Woche aus?" | get_nfl_state → get_matchups | Matchups geladen |
+| "Was sind Waiver Targets?" | get_trending_players → search_athletes (nur falls Name unklar) | Liste erzeugt |
+| "Lohnt sich ein Spieler X?" | lookup_athlete → (optional) get_team_player_stats / get_team_injuries | Kontext ausreichend |
+| "Playoff-Chancen / Bracket?" | get_playoff_bracket | Bracket vorliegt |
+| "Draft Historie?" | get_league_drafts → get_draft_picks | Relevante Picks vorhanden |
+
+---
+## 🏎️ Performance & Kosten (Heuristik für dich als LLM)
+
+| Kategorie | Günstig | Mittel | Teuer |
+|-----------|---------|--------|-------|
+| Kern Roster | get_user_leagues, get_rosters | — | — |
+| Waiver & Aktivität | get_trending_players | get_transactions (pro Woche) | fetch_all_players (groß, nur Metadaten) |
+| Draft | get_league_drafts | get_draft_picks | get_draft_traded_picks (selten nötig) |
+| NFL Kontext | get_nfl_state | get_team_injuries / get_team_player_stats | fetch_athletes (Initial-Seed) |
+
+Vermeide mehrfaches Laden derselben Woche. Nutze vorhandene Felder `*_enriched` statt selbst erneut anzufragen.
+
+---
+## 🔑 Roster-Ermittlung Schritt für Schritt
+
+1. Falls nur Username vorhanden: `get_user` → `user.user_id`
+2. `get_user_leagues(user_id, season)` → wähle Liga (Heuristik: aktive Saison, gewünschte Scoring- oder Name-Muster)
+3. `get_rosters(league_id)` → finde Objekt mit `owner_id == user_id`
+4. Nutze Felder:
+  - `players` (Original-IDs)
+  - `players_enriched` (bereits angereichert: player_id, full_name, position)
+  - `starters_enriched` für Startaufstellung
+5. OPTIONAL: `get_matchups(league_id, current_week)` zur Gegneranalyse
+6. OPTIONAL: `get_transactions(league_id, week)` → prüfe Adds/Drops des Gegners
+
+Code-orientierte Pseudosequenz:
+```python
+# 1. user_id beschaffen (falls nötig)
+u = await call('get_user', {"username": "myName"})
+user_id = u['user']['user_id']
+
+# 2. Ligen der Saison
+leagues = await call('get_user_leagues', {"user_id": user_id, "season": 2025})
+league_id = leagues['leagues'][0]['league_id']  # einfache Wahlstrategie
+
+# 3. Roster laden
+rosters = await call('get_rosters', {"league_id": league_id})
+my_roster = next(r for r in rosters['rosters'] if r['owner_id'] == user_id)
+players = my_roster['players_enriched']  # bevorzugt statt raw IDs
+```
+
+---
+## 🧩 Enrichment Felder (Automatisch hinzugefügt)
+
+Viele Sleeper-spezifische Antworten enthalten jetzt zusätzliche *_enriched Felder:
+
+| Endpoint | Neue Felder | Beschreibung |
+|----------|-------------|--------------|
+| get_rosters | players_enriched, starters_enriched | Spieler mit Name & Position |
+| get_matchups | players_enriched, starters_enriched | Für matchup-spezifische Auflistungen |
+| get_transactions | adds_enriched, drops_enriched | Bewegte Spieler angereichert |
+| get_trending_players | trending_players[i].enriched | Waiver-Relevanz + Basisdaten |
+| get_draft_picks | player_enriched | Draft Pick Spielerinfo |
+| get_traded_picks / get_draft_traded_picks | player_enriched | Falls player_id vorhanden |
+
+Nutze diese zuerst – sie sparen zusätzliche Lookups.
+
+---
+## 🛑 Abbruch-Kriterien (Früh stoppen!)
+
+Beende weitere Datenerhebung sobald:
+- Roster + positions + aktuelle Woche bekannt → Basisanalyse möglich
+- Kein Draft-Kontext angefragt → Draft-Endpunkte überspringen
+- Keine Playoff-Frage → `get_playoff_bracket` vermeiden
+- Keine Waiver-Frage → `get_trending_players` nur bei Bedarf
+
+---
+## ❗ Häufige Fehler / Validation Handling
+
+| Problem | Ursache | Lösung |
+|---------|---------|-------|
+| Missing week in get_transactions | Woche Pflicht | Übergib `week` oder alias `round` |
+| Falscher bracket_type | Tippfehler | Nur `winners` oder `losers` |
+| Leere rosters | Privat / falsche Liga | user_id & league_id prüfen, Access-Hinweis beachten |
+| Wenig enrichment | Athleten-Datenbank leer | Vorher einmal `fetch_athletes` (teuer) nur falls wirklich nötig |
+
+---
+## 🧪 Empfehlung für Analyse-Antworten
+
+Wenn du eine textuelle Analyse erzeugst:
+1. Liste erst die Starter (starters_enriched)
+2. Hebe Positionsknappheit hervor (z.B. TE, QB Tiefe)
+3. Prüfe Waiver-Hebel (trending vs. schwächste Bench-Spieler)
+4. Optional: Verletzungen via `get_team_injuries` NUR für relevante Teams der Roster-Spieler
+
+---
+## 📦 Zusammenfassung der Kern-Pipeline (Merksatz)
+
+"User → Ligen → Roster → (Matchup / Waiver / Playoffs / Draft) nur wenn gefragt."
+
+---
+
 ## Quick Reference - Tool Categories
 
 ### 🏈 NFL Information Tools
