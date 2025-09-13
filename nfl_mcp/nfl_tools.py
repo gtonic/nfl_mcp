@@ -5,7 +5,8 @@ This module contains MCP tools for fetching NFL news, teams data, and depth char
 """
 
 import httpx
-from typing import Optional
+from typing import Optional, Dict, Any, List
+import asyncio
 from bs4 import BeautifulSoup
 
 from .config import get_http_headers, create_http_client, validate_limit, LIMITS
@@ -384,26 +385,83 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
             )
 
         # Build players per matched token
-        def extract_players(cat_obj):
-            players_local = []
-            for leader_group in cat_obj.get('leaders', []):
-                for entry in (leader_group.get('leaders') or []):
-                    athlete = entry.get('athlete', {})
-                    team = entry.get('team', {})
-                    players_local.append({
-                        "rank": entry.get('rank'),
-                        "value": entry.get('value'),
-                        "athlete_id": athlete.get('id'),
-                        "athlete_name": athlete.get('displayName') or athlete.get('shortName'),
-                        "team_id": team.get('id'),
-                        "team_abbr": team.get('abbreviation'),
-                    })
+        async def _fetch_json(url: str, client, headers, cache: Dict[str, Any]) -> Any:
+            if not url:
+                return None
+            if url in cache:
+                return cache[url]
+            try:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                cache[url] = data
+                return data
+            except Exception:
+                return None
+
+        async def extract_players(cat_obj, client, headers) -> List[Dict[str, Any]]:
+            players_local: List[Dict[str, Any]] = []
+            cache: Dict[str, Any] = {}
+
+            # Collect leader groups (dereference group if needed)
+            leader_groups = cat_obj.get('leaders', []) or []
+
+            async def expand_group(group):
+                # If no inline leaders but has ref/href, dereference
+                if not group.get('leaders'):
+                    for ref_key in ('$ref', 'href'):
+                        if ref_key in group and isinstance(group[ref_key], str):
+                            fetched = await _fetch_json(group[ref_key], client, headers, cache)
+                            if fetched:
+                                return fetched.get('leaders') or fetched.get('items') or []
+                return group.get('leaders') or []
+
+            expanded_lists = []
+            for grp in leader_groups:
+                expanded_lists.append(expand_group(grp))
+            expanded = await asyncio.gather(*expanded_lists)
+
+            # Flatten entries
+            entries: List[Dict[str, Any]] = []
+            for lst in expanded:
+                entries.extend(lst)
+
+            async def enrich_entry(entry):
+                athlete = entry.get('athlete', {}) or {}
+                team = entry.get('team', {}) or {}
+                # Deref athlete/team if only reference
+                for key_obj, label in ((athlete, 'athlete'), (team, 'team')):
+                    if isinstance(key_obj, dict) and ('$ref' in key_obj or 'href' in key_obj):
+                        ref_url = key_obj.get('$ref') or key_obj.get('href')
+                        data = await _fetch_json(ref_url, client, headers, cache)
+                        if data:
+                            if label == 'athlete':
+                                athlete.update(data)
+                            else:
+                                team.update(data)
+                players_local.append({
+                    "rank": entry.get('rank'),
+                    "value": entry.get('value'),
+                    "athlete_id": athlete.get('id'),
+                    "athlete_name": athlete.get('displayName') or athlete.get('shortName'),
+                    "team_id": team.get('id'),
+                    "team_abbr": team.get('abbreviation'),
+                })
+
+            tasks = [enrich_entry(e) for e in entries]
+            # Limit concurrency to avoid burst hitting API
+            if tasks:
+                semaphore = asyncio.Semaphore(10)
+                async def sem_task(coro):
+                    async with semaphore:
+                        return await coro
+                await asyncio.gather(*(sem_task(t) for t in tasks))
             return players_local
 
         if not multi:
             tok = requested_tokens[0]
             cat_obj, disp = matches.get(tok, (None, None))  # type: ignore
-            players = extract_players(cat_obj) if cat_obj else []
+            players = await extract_players(cat_obj, client, headers) if cat_obj else []
             return create_success_response({
                 "season": season,
                 "season_type": season_type,
@@ -417,7 +475,7 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
             for tok in requested_tokens:
                 if tok in matches:
                     cat_obj, disp = matches[tok]
-                    players = extract_players(cat_obj)
+                    players = await extract_players(cat_obj, client, headers)
                     categories_payload.append({
                         "category": tok,
                         "stat_category_name": disp,
