@@ -307,15 +307,27 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
           - stat_category_name (resolved underlying ESPN category identifier)
           - players: list[{rank, value, athlete_id, athlete_name, team_id, team_abbr}]
     """
-    # Normalize & validate inputs
-    raw_category = (category or "").strip().lower()
+    # Normalize & validate inputs (support multiple categories separated by comma or whitespace)
     allowed = {"pass", "rush", "receiving", "tackles", "sacks"}
-    if raw_category not in allowed:
+    if not category:
         return create_error_response(
-            error_message=f"Invalid category '{category}'. Must be one of: pass, rush, receiving, tackles, sacks",
+            error_message="Category parameter required (one or multiple of: pass, rush, receiving, tackles, sacks)",
             error_type=ErrorType.VALIDATION,
-            data={"players": [], "season": season, "category": raw_category}
+            data={"players": [], "season": season, "category": None}
         )
+    # Split on commas or whitespace
+    requested_tokens = []
+    for tok in [t.strip().lower() for part in category.split(',') for t in part.split()]:
+        if tok and tok not in requested_tokens:
+            requested_tokens.append(tok)
+    invalid = [t for t in requested_tokens if t not in allowed]
+    if invalid:
+        return create_error_response(
+            error_message=f"Invalid category token(s): {', '.join(invalid)}. Allowed: pass, rush, receiving, tackles, sacks",
+            error_type=ErrorType.VALIDATION,
+            data={"players": [], "season": season, "category": invalid}
+        )
+    multi = len(requested_tokens) > 1
 
     if season < 2000 or season > 2100:
         season = 2025
@@ -347,41 +359,75 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
         # Select best matching category
         chosen = None
         chosen_display = None
-        fragments = target_fragments[raw_category]
+        # Build map token -> fragments list
+        token_frag_map = {tok: target_fragments[tok] for tok in requested_tokens}
+        # Iterate categories once, fill matches
+        matches = {}
         for cat in categories:
             cat_name = cat.get('name') or cat.get('displayName') or cat.get('shortName') or ''
             norm = normalize_name(cat_name)
-            if any(frag in norm for frag in fragments):
-                chosen = cat
-                chosen_display = cat.get('displayName') or cat_name
-                break
-
-        if not chosen:
+            for tok, fragments in token_frag_map.items():
+                if tok in matches:
+                    continue  # already matched
+                if any(frag in norm for frag in fragments):
+                    matches[tok] = (cat, cat.get('displayName') or cat_name)
+        # Determine missing
+        missing = [tok for tok in requested_tokens if tok not in matches]
+        if len(requested_tokens) == 1 and missing:
+            # Single-category failure retains previous error shape
+            single = requested_tokens[0]
             return create_error_response(
-                error_message=f"No matching stat category found for '{raw_category}'",
+                error_message=f"No matching stat category found for '{single}'",
                 error_type=ErrorType.NOT_FOUND,
-                data={"players": [], "season": season, "category": raw_category}
+                data={"players": [], "season": season, "category": single}
             )
 
-        players = []
-        for leader_group in chosen.get('leaders', []):
-            for entry in (leader_group.get('leaders') or []):
-                athlete = entry.get('athlete', {})
-                team = entry.get('team', {})
-                players.append({
-                    "rank": entry.get('rank'),
-                    "value": entry.get('value'),
-                    "athlete_id": athlete.get('id'),
-                    "athlete_name": athlete.get('displayName') or athlete.get('shortName'),
-                    "team_id": team.get('id'),
-                    "team_abbr": team.get('abbreviation'),
-                })
+        # Build players per matched token
+        def extract_players(cat_obj):
+            players_local = []
+            for leader_group in cat_obj.get('leaders', []):
+                for entry in (leader_group.get('leaders') or []):
+                    athlete = entry.get('athlete', {})
+                    team = entry.get('team', {})
+                    players_local.append({
+                        "rank": entry.get('rank'),
+                        "value": entry.get('value'),
+                        "athlete_id": athlete.get('id'),
+                        "athlete_name": athlete.get('displayName') or athlete.get('shortName'),
+                        "team_id": team.get('id'),
+                        "team_abbr": team.get('abbreviation'),
+                    })
+            return players_local
 
-        return create_success_response({
-            "season": season,
-            "season_type": season_type,
-            "category": raw_category,
-            "stat_category_name": chosen_display,
-            "players": players,
-            "players_count": len(players)
-        })
+        if not multi:
+            tok = requested_tokens[0]
+            cat_obj, disp = matches.get(tok, (None, None))  # type: ignore
+            players = extract_players(cat_obj) if cat_obj else []
+            return create_success_response({
+                "season": season,
+                "season_type": season_type,
+                "category": tok,
+                "stat_category_name": disp,
+                "players": players,
+                "players_count": len(players)
+            })
+        else:
+            categories_payload = []
+            for tok in requested_tokens:
+                if tok in matches:
+                    cat_obj, disp = matches[tok]
+                    players = extract_players(cat_obj)
+                    categories_payload.append({
+                        "category": tok,
+                        "stat_category_name": disp,
+                        "players": players,
+                        "players_count": len(players)
+                    })
+            return create_success_response({
+                "season": season,
+                "season_type": season_type,
+                "categories_requested": requested_tokens,
+                "categories_found": len(categories_payload),
+                "categories_missing": missing,
+                "categories": categories_payload
+            })
