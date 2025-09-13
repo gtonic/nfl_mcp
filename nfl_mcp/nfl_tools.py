@@ -284,7 +284,7 @@ async def get_depth_chart(team_id: str) -> dict:
     default_data={"players": [], "season": None, "category": None},
     operation_name="fetching league leaders"
 )
-async def get_league_leaders(category: str, season: int = 2025, season_type: int = 2) -> dict:
+async def get_league_leaders(category: str, season: int = 2025, season_type: int = 2, week: Optional[int] = None) -> dict:
     """Fetch current NFL statistical leaders for a single category.
 
     Instead of returning all categories, this focuses on one requested category.
@@ -346,7 +346,8 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
     }
 
     headers = get_http_headers("nfl_news")  # reuse a generic UA header config
-    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/leaders"
+    base = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}"
+    url = f"{base}/weeks/{week}/leaders" if (week is not None and isinstance(week, int) and 1 <= week <= 25) else f"{base}/leaders"
 
     async with create_http_client() as client:
         response = await client.get(url, headers=headers)
@@ -385,16 +386,20 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
             )
 
         # Build players per matched token
+        cache_stats = {"hits": 0, "misses": 0}
+
         async def _fetch_json(url: str, client, headers, cache: Dict[str, Any]) -> Any:
             if not url:
                 return None
             if url in cache:
+                cache_stats["hits"] += 1
                 return cache[url]
             try:
                 resp = await client.get(url, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
                 cache[url] = data
+                cache_stats["misses"] += 1
                 return data
             except Exception:
                 return None
@@ -416,10 +421,8 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
                                 return fetched.get('leaders') or fetched.get('items') or []
                 return group.get('leaders') or []
 
-            expanded_lists = []
-            for grp in leader_groups:
-                expanded_lists.append(expand_group(grp))
-            expanded = await asyncio.gather(*expanded_lists)
+            expanded_lists = [expand_group(grp) for grp in leader_groups]
+            expanded = await asyncio.gather(*expanded_lists) if expanded_lists else []
 
             # Flatten entries
             entries: List[Dict[str, Any]] = []
@@ -449,7 +452,6 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
                 })
 
             tasks = [enrich_entry(e) for e in entries]
-            # Limit concurrency to avoid burst hitting API
             if tasks:
                 semaphore = asyncio.Semaphore(10)
                 async def sem_task(coro):
@@ -468,7 +470,8 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
                 "category": tok,
                 "stat_category_name": disp,
                 "players": players,
-                "players_count": len(players)
+                "players_count": len(players),
+                "cache": cache_stats
             })
         else:
             categories_payload = []
@@ -488,5 +491,6 @@ async def get_league_leaders(category: str, season: int = 2025, season_type: int
                 "categories_requested": requested_tokens,
                 "categories_found": len(categories_payload),
                 "categories_missing": missing,
-                "categories": categories_payload
+                "categories": categories_payload,
+                "cache": cache_stats
             })

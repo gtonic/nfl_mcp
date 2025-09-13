@@ -81,38 +81,26 @@ def create_app() -> FastMCP:
         """
         return await nfl_tools.get_nfl_news(limit)
 
-    # MCP Tool: Get NFL league leaders
-    @mcp.tool
-    async def get_league_leaders(category: str, season: Optional[int] = 2025, season_type: Optional[int] = 2) -> dict:
-        """Get current NFL statistical leaders for one or multiple categories.
-
-        Supported input tokens (case-insensitive) map to ESPN stat categories:
-          - pass      → passingYards
-          - rush      → rushingYards
-          - receiving → receivingYards
-          - tackles   → totalTackles
-          - sacks     → sacks
-
-        Multiple categories can be requested by separating tokens with commas or whitespace
-        (e.g. "pass, rush receiving"). Single category returns a flat players list.
-
-        Args:
-            category: One or more tokens from: pass, rush, receiving, tackles, sacks
-            season: Season year (e.g. 2025)
-            season_type: 1=Preseason, 2=Regular, 3=Postseason
-        """
-        # Lightweight numeric validation with fallbacks
+    # League leaders tool now centrally defined in tool_registry (feature-flagged)
+    from .config import FEATURE_LEAGUE_LEADERS
+    if FEATURE_LEAGUE_LEADERS:
         try:
-            if season is not None:
-                season = int(season)
+            # Import the function (not already wrapped FunctionTool). If tool_registry returns a FunctionTool,
+            # access its underlying callable via .fn attribute; otherwise pass directly.
+            from . import tool_registry as _tr  # type: ignore
+            gl = getattr(_tr, 'get_league_leaders', None)
+            if gl is not None:
+                # FastMCP .tool expects a function; detect FunctionTool instance
+                if hasattr(gl, '__call__') and not hasattr(gl, 'fn'):
+                    mcp.tool(gl)
+                else:
+                    # If it's a FunctionTool (registry decoration), add directly via add_tool to avoid re-wrapping
+                    try:
+                        mcp.add_tool(gl)  # type: ignore[arg-type]
+                    except Exception:
+                        pass
         except Exception:
-            season = 2025
-        try:
-            if season_type is not None:
-                season_type = int(season_type)
-        except Exception:
-            season_type = 2
-        return await nfl_tools.get_league_leaders(category=category, season=season or 2025, season_type=season_type or 2)
+            pass
 
     # MCP Tool: Get NFL teams
     @mcp.tool

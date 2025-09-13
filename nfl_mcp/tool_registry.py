@@ -10,10 +10,11 @@ import json
 import httpx
 from fastmcp import FastMCP
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_history
+from . import nfl_tools, sleeper_tools
 from .config import (
-    validate_string_input, validate_limit, LIMITS, validate_numeric_input, 
-    validate_url_enhanced, get_http_headers, create_http_client, sanitize_content
+    validate_string_input, validate_limit, LIMITS, validate_numeric_input,
+    validate_url_enhanced, get_http_headers, create_http_client, sanitize_content,
+    FEATURE_LEAGUE_LEADERS
 )
 from .database import NFLDatabase
 
@@ -29,43 +30,83 @@ _nfl_db: NFLDatabase | None = None
 _waiver_store = None
 
 def initialize_shared(db: NFLDatabase):
-    global _nfl_db, _waiver_store
+    global _nfl_db
     _nfl_db = db
-    _waiver_store = waiver_history.get_waiver_store(db)
 
 @_dummy.tool
 @timing_decorator("get_nfl_news", tool_type="nfl")
 async def get_nfl_news(limit: Optional[int] = 50) -> dict:
+    """Fetch latest NFL news headlines from ESPN.
+
+    Parameters:
+        limit (int, default 50, range 1-50): Max number of articles.
+    Returns: {articles: [...], total_articles, success, error?}
+    Example: get_nfl_news(limit=10)
+    """
     return await nfl_tools.get_nfl_news(limit)
 
-@_dummy.tool
-@timing_decorator("get_league_leaders", tool_type="nfl")
-async def get_league_leaders(category: str, season: Optional[int] = 2025, season_type: Optional[int] = 2) -> dict:
-    # Basic numeric coercion
-    try:
-        if season is not None:
-            season = int(season)
-    except Exception:
-        season = 2025
-    try:
-        if season_type is not None:
-            season_type = int(season_type)
-    except Exception:
-        season_type = 2
-    return await nfl_tools.get_league_leaders(category=category, season=season or 2025, season_type=season_type or 2)
+if FEATURE_LEAGUE_LEADERS:
+    @_dummy.tool
+    @timing_decorator("get_league_leaders", tool_type="nfl")
+    async def get_league_leaders(category: str, season: Optional[int] = 2025, season_type: Optional[int] = 2, week: Optional[int] = None) -> dict:  # pragma: no cover - conditional
+        """Get NFL stat leaders for one or multiple categories (feature-flagged).
+
+        Categories tokens (comma/space separated): pass, rush, receiving, tackles, sacks.
+        Parameters:
+            category (str, required): One or many tokens (e.g. "pass, rush").
+            season (int, default 2025): Season year.
+            season_type (int, default 2): 1=Pre,2=Regular,3=Post.
+            week (int|None, optional): Reserved for future filtering (currently ignored if provided).
+        Returns: Single category => players list; Multi => categories array.
+        Example: get_league_leaders(category="pass, rush", season=2025)
+        """
+        # Basic numeric coercion
+        try:
+            if season is not None:
+                season = int(season)
+        except Exception:
+            season = 2025
+        try:
+            if season_type is not None:
+                season_type = int(season_type)
+        except Exception:
+            season_type = 2
+        try:
+            if week is not None:
+                week = int(week)
+        except Exception:
+            week = None
+        return await nfl_tools.get_league_leaders(category=category, season=season or 2025, season_type=season_type or 2, week=week)
 
 @_dummy.tool
 @timing_decorator("get_teams", tool_type="nfl")
 async def get_teams() -> dict:
+    """List current NFL teams (ESPN) with metadata.
+
+    Returns: {teams: [...], total_teams, success, error?}
+    Example: get_teams()
+    """
     return await nfl_tools.get_teams()
 
 @_dummy.tool
 @timing_decorator("fetch_teams", tool_type="nfl")
 async def fetch_teams() -> dict:
+    """Fetch & upsert NFL teams into local DB.
+
+    Returns: {teams_count, last_updated, success, error?}
+    Example: fetch_teams()
+    """
     return await nfl_tools.fetch_teams(_nfl_db)  # type: ignore[arg-type]
 
 @_dummy.tool
 async def get_depth_chart(team_id: str) -> dict:
+    """Fetch a team's depth chart from ESPN HTML page.
+
+    Parameters:
+        team_id (str, required): Team abbreviation (e.g. 'KC','NE','DAL').
+    Returns: {team_id, team_name, depth_chart:[{position, players[]}], success, error?}
+    Example: get_depth_chart(team_id="KC")
+    """
     try:
         team_id = validate_string_input(team_id, 'team_id', max_length=4, required=True)
     except ValueError as e:
@@ -99,6 +140,14 @@ async def get_depth_chart(team_id: str) -> dict:
 
 @_dummy.tool
 async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
+    """Retrieve and sanitize page text content.
+
+    Parameters:
+        url (str, required): HTTP/HTTPS URL.
+        max_length (int, default 10000, range 100-50000): Truncate content.
+    Returns: {url, title, content, content_length, success, error?}
+    Example: crawl_url(url="https://example.com", max_length=4000)
+    """
     try:
         url = validate_string_input(url, 'general', max_length=2000, required=True)
     except ValueError as e:
@@ -129,6 +178,12 @@ async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
 @_dummy.tool
 @timing_decorator("fetch_athletes", tool_type="athlete")
 async def fetch_athletes() -> dict:
+    """Bulk import Sleeper NFL player dataset into local DB.
+
+    Returns: {athletes_count, last_updated, success, error?}
+    Warning: Large payload (tens of MB) – use sparingly.
+    Example: fetch_athletes()
+    """
     try:
         timeout = httpx.Timeout(60.0, connect=15.0)
         headers = {"User-Agent": "NFL-MCP-Server/0.1.0 (NFL Athletes Fetcher)"}
@@ -143,6 +198,13 @@ async def fetch_athletes() -> dict:
 
 @_dummy.tool
 def lookup_athlete(athlete_id: str) -> dict:
+    """Lookup a single athlete by ID (Sleeper player id key).
+
+    Parameters:
+        athlete_id (str, required): Player identifier.
+    Returns: {athlete, found (bool), error?}
+    Example: lookup_athlete(athlete_id="1234")
+    """
     try:
         athlete_id = validate_string_input(athlete_id, 'alphanumeric_id', max_length=50, required=True)
     except ValueError as e:
@@ -155,6 +217,14 @@ def lookup_athlete(athlete_id: str) -> dict:
 
 @_dummy.tool
 def search_athletes(name: str, limit: Optional[int] = 10) -> dict:
+    """Search athletes by (case-insensitive) name substring.
+
+    Parameters:
+        name (str, required): Partial or full name.
+        limit (int, default 10, range 1-100): Max results.
+    Returns: {athletes: [...], count, search_term, error?}
+    Example: search_athletes(name="Mahomes", limit=5)
+    """
     try:
         name = validate_string_input(name, 'athlete_name', max_length=100, required=True)
     except ValueError as e:
@@ -168,6 +238,13 @@ def search_athletes(name: str, limit: Optional[int] = 10) -> dict:
 
 @_dummy.tool
 def get_athletes_by_team(team_id: str) -> dict:
+    """List athletes (local DB) for a team abbreviation.
+
+    Parameters:
+        team_id (str, required): Abbrev (e.g. 'KC').
+    Returns: {athletes: [...], count, team_id, error?}
+    Example: get_athletes_by_team(team_id="KC")
+    """
     try:
         team_id = validate_string_input(team_id, 'team_id', max_length=4, required=True)
     except ValueError as e:
@@ -181,6 +258,13 @@ def get_athletes_by_team(team_id: str) -> dict:
 # Sleeper tools
 @_dummy.tool
 async def get_league(league_id: str) -> dict:
+    """Fetch Sleeper league metadata.
+
+    Parameters:
+        league_id (str, required)
+    Returns: {league, success, error?}
+    Example: get_league(league_id="123456789012345678")
+    """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_league(league_id)
@@ -189,6 +273,13 @@ async def get_league(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_rosters(league_id: str) -> dict:
+    """Fetch rosters for a Sleeper league.
+
+    Parameters:
+        league_id (str, required)
+    Returns: {rosters:[...], count, success, error?}
+    Example: get_rosters(league_id="123456789012345678")
+    """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_rosters(league_id)
@@ -197,6 +288,13 @@ async def get_rosters(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_league_users(league_id: str) -> dict:
+    """List users in a Sleeper league.
+
+    Parameters:
+        league_id (str, required)
+    Returns: {users:[...], count, success, error?}
+    Example: get_league_users(league_id="123456789012345678")
+    """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_league_users(league_id)
@@ -205,6 +303,14 @@ async def get_league_users(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_matchups(league_id: str, week: int) -> dict:
+    """Fetch matchups for a given week.
+
+    Parameters:
+        league_id (str, required)
+        week (int, required, range config week_min-week_max)
+    Returns: {matchups:[...], week, count, success, error?}
+    Example: get_matchups(league_id="123456789012345678", week=3)
+    """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         week = validate_numeric_input(week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
@@ -214,6 +320,7 @@ async def get_matchups(league_id: str, week: int) -> dict:
 
 @_dummy.tool
 async def get_playoff_bracket(league_id: str) -> dict:
+    """Fetch playoff bracket for a league (if available)."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_playoff_bracket(league_id)
@@ -222,6 +329,14 @@ async def get_playoff_bracket(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_transactions(league_id: str, round: Optional[int] = None) -> dict:
+    """List transactions for a league (optionally filter by round).
+
+    Parameters:
+        league_id (str, required)
+        round (int|None, optional): Draft round filter.
+    Returns: {transactions:[...], round, count, success, error?}
+    Example: get_transactions(league_id="123", round=2)
+    """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         if round is not None:
@@ -232,6 +347,7 @@ async def get_transactions(league_id: str, round: Optional[int] = None) -> dict:
 
 @_dummy.tool
 async def get_traded_picks(league_id: str) -> dict:
+    """List traded picks for a league."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_traded_picks(league_id)
@@ -240,10 +356,20 @@ async def get_traded_picks(league_id: str) -> dict:
 
 @_dummy.tool
 async def get_nfl_state() -> dict:
+    """Return current Sleeper NFL state (week, season type, etc)."""
     return await sleeper_tools.get_nfl_state()
 
 @_dummy.tool
 async def get_trending_players(trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
+    """Fetch trending add/drop players.
+
+    Parameters:
+        trend_type (str, default 'add'): 'add' or 'drop'.
+        lookback_hours (int, default 24): Window size.
+        limit (int, default 25): Max players.
+    Returns: {trending_players:[...], count, success, error?}
+    Example: get_trending_players(trend_type='drop', lookback_hours=48, limit=15)
+    """
     try:
         trend_type = validate_string_input(trend_type, 'trend_type', max_length=10, required=True)
         lookback_hours = validate_numeric_input(lookback_hours, min_val=LIMITS["trending_lookback_min"], max_val=LIMITS["trending_lookback_max"], default=24, required=False)
@@ -252,54 +378,4 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
     except ValueError as e:
         return {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0, "success": False, "error": f"Invalid input: {e}"}
 
-# Waiver history tools
-@_dummy.tool(description="Record a waiver recommendation with duplicate suppression")
-def record_waiver_recommendation(player_id: str, league_id: str, recommendation_type: str, rationale: str, context_json: Optional[str] = None, ttl_days: Optional[int] = 7, proj_points_delta_pct: Optional[float] = 20.0, snap_pct_delta_abs: Optional[float] = 10.0) -> dict:
-    try:
-        player_id_valid = validate_string_input(player_id, 'alphanumeric_id', max_length=50, required=True)
-        league_id_valid = validate_string_input(league_id, 'league_id', max_length=20, required=True)
-        recommendation_type_valid = validate_string_input(recommendation_type, 'general', max_length=30, required=True)
-        rationale_valid = validate_string_input(rationale, 'general', max_length=5000, required=True)
-    except ValueError as e:
-        return {"success": False, "error": f"Validation error: {e}"}
-    ctx = {}
-    if context_json:
-        try: ctx = json.loads(context_json)
-        except Exception: ctx = {}
-    rec = waiver_history.WaiverRecommendation(player_id=player_id_valid, league_id=league_id_valid, recommendation_type=recommendation_type_valid, rationale_full=rationale_valid, context=ctx)
-    thresholds = {'proj_points_delta_pct': float(proj_points_delta_pct) if proj_points_delta_pct is not None else 20.0, 'snap_pct_delta_abs': float(snap_pct_delta_abs) if snap_pct_delta_abs is not None else 10.0}
-    result = _waiver_store.record(rec, ttl_days=ttl_days or 7, thresholds=thresholds)  # type: ignore[union-attr]
-    result.update({'player_id': player_id_valid, 'league_id': league_id_valid, 'recommendation_type': recommendation_type_valid})
-    return result
-
-@_dummy.tool(description="Check recent waiver recommendation status for a player")
-def check_waiver_recommendation(player_id: str, league_id: str, recommendation_type: Optional[str] = None, ttl_days: Optional[int] = 7) -> dict:
-    try:
-        player_id_valid = validate_string_input(player_id, 'alphanumeric_id', max_length=50, required=True)
-        league_id_valid = validate_string_input(league_id, 'league_id', max_length=20, required=True)
-        recommendation_type_valid = validate_string_input(recommendation_type, 'general', max_length=30, required=True) if recommendation_type else None
-    except ValueError as e:
-        return {"success": False, "error": f"Validation error: {e}"}
-    status = _waiver_store.check_player(player_id_valid, league_id_valid, recommendation_type_valid, ttl_days or 7)  # type: ignore[union-attr]
-    status.update({'player_id': player_id_valid, 'league_id': league_id_valid})
-    return status
-
-@_dummy.tool(description="Get recent waiver recommendations for a league")
-def get_recent_waiver_recommendations(league_id: str, limit: Optional[int] = 25, ttl_days: Optional[int] = 7) -> dict:
-    try:
-        league_id_valid = validate_string_input(league_id, 'league_id', max_length=20, required=True)
-    except ValueError as e:
-        return {"success": False, "error": f"Validation error: {e}"}
-    limit = min(max(int(limit or 25), 1), 100)
-    rows = _waiver_store.get_recent(league_id_valid, limit=limit, ttl_days=ttl_days or 7)  # type: ignore[union-attr]
-    return {"league_id": league_id_valid, "count": len(rows), "recommendations": rows}
-
-@_dummy.tool(description="Purge old waiver recommendations (admin)")
-def purge_waiver_history(ttl_days: Optional[int] = 30, max_rows: Optional[int] = 10000) -> dict:
-    try:
-        ttl = int(ttl_days or 30); mr = int(max_rows or 10000)
-    except ValueError:
-        ttl, mr = 30, 10000
-    result = _waiver_store.purge_old(ttl_days=ttl, max_rows=mr)  # type: ignore[union-attr]
-    result.update({'ttl_days': ttl, 'max_rows': mr})
     return result

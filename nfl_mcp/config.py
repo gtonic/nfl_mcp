@@ -15,6 +15,7 @@ import time
 from collections import defaultdict, deque
 import httpx
 from typing import Dict, Any, Optional, Union
+import os
 
 # Import the new configuration manager
 from .config_manager import get_config_manager
@@ -246,6 +247,17 @@ def _get_limits():
         }
 
 LIMITS = _get_limits()
+
+# Feature flags (environment-variable driven for simplicity). Use ConfigManager later if desired.
+def is_feature_enabled(flag_name: str, default: bool = False) -> bool:
+    env_key = f"MCP_FEATURE_{flag_name.upper()}"
+    val = os.getenv(env_key)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+# Specific flags
+FEATURE_LEAGUE_LEADERS = is_feature_enabled("league_leaders", default=False)
 
 
 # Input Validation Security Patterns
