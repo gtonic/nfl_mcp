@@ -28,11 +28,16 @@ This document provides comprehensive tool documentation optimized for Large Lang
 - **get_rosters** - Get league rosters
 - **get_league_users** - Get league members
 - **get_matchups** - Get weekly matchups
-- **get_playoff_bracket** - Get playoff bracket
-- **get_transactions** - Get league transactions
+- **get_playoff_bracket** - Get winners or losers playoff bracket (bracket_type)
+- **get_transactions** - Get league transactions (week required)
 - **get_traded_picks** - Get traded draft picks
+- **get_league_drafts** - List drafts for league
+- **get_draft** - Draft metadata
+- **get_draft_picks** - All picks for draft
+- **get_draft_traded_picks** - Traded picks within draft
+- **fetch_all_players** - Cached full players dataset metadata
 - **get_nfl_state** - Get current NFL week/season state
-- **get_trending_players** - Get trending waiver wire players
+- **get_trending_players** - Get trending waiver wire players with counts & enrichment
 
 ---
 
@@ -429,32 +434,87 @@ if not rosters["success"]:
 ---
 
 #### get_trending_players
-**Purpose:** Get players trending on waiver wire (adds/drops)
+**Purpose:** Get players trending on waiver wire (adds/drops) with Sleeper counts and optional enrichment
 
 **Parameters:**
 - `trend_type` (str, optional): "add" or "drop" (default: "add")
 - `lookback_hours` (int, optional): Hours to look back (1-168, default: 24)
-- `limit` (int, optional): Max players (1-50, default: 25)
+- `limit` (int, optional): Max players (1-100, default: 25)
 
 **Returns:**
 ```json
 {
   "trending_players": [
     {
-      "player_id": "String - Player ID",
-      "full_name": "String - Player name",
-      "team": "String - Team abbreviation", 
-      "position": "String - Position",
-      "count": "Number - Number of adds/drops"
+      "player_id": "String",
+      "count": "Number - Sleeper adds/drops in window",
+      "enriched": {
+        "player_id": "String",
+        "full_name": "String|null",
+        "team": "String|null",
+        "position": "String|null"
+      }
     }
   ],
-  "trend_type": "String - Type of trend requested",
-  "lookback_hours": "Number - Hours analyzed",
-  "count": "Number - Number of players returned",
-  "success": "Boolean - Success status",
-  "error": "String|null - Error message if failed"
+  "trend_type": "add|drop",
+  "lookback_hours": 24,
+  "count": 25,
+  "success": true,
+  "error": null
 }
 ```
+#### get_playoff_bracket
+**Purpose:** Fetch either winners or losers playoff bracket.
+
+**Parameters:**
+- `league_id` (str, required)
+- `bracket_type` (str, optional): "winners" (default) or "losers"
+
+**Returns:**
+```json
+{
+  "playoff_bracket": [ { "r": 1, "m": 3, "t1": 5, "t2": 8 } ],
+  "bracket_type": "winners",
+  "success": true,
+  "error": null
+}
+```
+
+**Notes:** Previously only winners bracket was retrievable; losers bracket now supported. Validation enforces accepted values.
+
+#### get_transactions
+**Change:** Week (or alias `round`) is now required. The undocumented all-weeks call was removed for correctness with official API.
+
+**Parameters:**
+- `league_id` (str, required)
+- `week` (int, required, 1-18 typical) OR `round` (deprecated alias). If both provided must match.
+
+**Validation Errors:**
+- Missing week → "A week (round) parameter is required..."
+- Mismatch week vs round → conflict validation error
+
+#### Draft & Players Dataset Endpoints
+
+| Tool | Purpose | Notes |
+|------|---------|-------|
+| `get_league_drafts` | List drafts attached to a league | Useful for multi-year leagues |
+| `get_draft` | Draft metadata | Basic settings & status |
+| `get_draft_picks` | All picks | Potentially large list |
+| `get_draft_traded_picks` | Traded picks in draft | Combine with league traded picks |
+| `fetch_all_players` | Metadata for full Sleeper players map | Uses in-memory 12h TTL cache; returns counts only to avoid huge payload |
+
+**fetch_all_players Return Example:**
+```json
+{
+  "player_count": 12187,
+  "cached": true,
+  "cached_age_seconds": 42,
+  "players": {},
+  "success": true
+}
+```
+
+Call with `force_refresh=true` to bypass cache; large network request (multi‑MB) so avoid frequent refreshes.
 
 **Use Cases:**
 - Finding waiver wire targets

@@ -138,11 +138,12 @@ The NFL MCP Server provides **26+ MCP tools** organized into these categories:
 #### 🌐 Web Scraping (1 tool)
 - `crawl_url` - Extract text from any webpage
 
-#### 🏆 Fantasy League - Sleeper API (12 tools)
-- `get_league`, `get_rosters`, `get_league_users` - League management
-- `get_matchups`, `get_playoff_bracket` - Competition info
-- `get_transactions`, `get_traded_picks` - Trade analysis
-- `get_nfl_state`, `get_trending_players` - Season/waiver info
+#### 🏆 Fantasy League - Sleeper API (Expanded)
+- Core League: `get_league`, `get_rosters`, `get_league_users`
+- Match / Brackets: `get_matchups`, `get_playoff_bracket` (now supports winners|losers via bracket_type)
+- Activity & Assets: `get_transactions` (week required), `get_traded_picks`
+- Draft Data: `get_league_drafts`, `get_draft`, `get_draft_picks`, `get_draft_traded_picks`
+- Global / Meta: `get_nfl_state`, `get_trending_players`, `fetch_all_players` (large players map w/ caching)
 
 #### ❤️ Health Endpoint (REST)
 - **GET** `/health` - Server status monitoring
@@ -171,6 +172,15 @@ async with Client("http://localhost:9000/mcp/") as client:
     # Get team depth chart
     depth = await client.call_tool("get_depth_chart", {"team_id": "KC"})
 ```
+
+### Sleeper Enhancements (Recent)
+
+Recent upgrades to Sleeper tooling:
+- Added losers bracket support: `get_playoff_bracket(league_id, bracket_type="losers")`
+- Enforced explicit week for `get_transactions` (or alias round) to match official API
+- Trending players now preserves Sleeper-provided `count` and enriches with local athlete data under `enriched`
+- Added draft suite (`get_league_drafts`, `get_draft`, `get_draft_picks`, `get_draft_traded_picks`)
+- Added full players dataset endpoint `fetch_all_players` with 12h in-memory TTL (returns metadata, not massive map)
 
 ### Architecture Improvements
 
