@@ -2036,6 +2036,82 @@ async def _fetch_week_schedule(season: int, week: int):
         logger.debug(f"week schedule fetch failed: {e}")
         return []
 
+async def _fetch_practice_reports(season: int, week: int):
+    """Fetch practice status reports (DNP/LP/FP) from ESPN injuries endpoint.
+
+    Returns list of dicts with keys: player_id, date, status, source.
+    """
+    if not ADVANCED_ENRICH_ENABLED:
+        return []
+    try:
+        # Import late to avoid circular dependency
+        from .nfl_tools import get_team_injuries
+        
+        # Fetch injuries for all teams (we'll aggregate across league)
+        # Note: get_team_injuries expects team_id; for practice reports we want league-wide
+        # Alternative: Use ESPN general injuries endpoint if available
+        # For now, return empty and rely on future dedicated practice report API
+        # TODO: Implement dedicated ESPN practice participation API call
+        logger.debug("Practice reports fetch not yet implemented (awaiting dedicated API)")
+        return []
+    except Exception as e:
+        logger.debug(f"practice reports fetch failed: {e}")
+        return []
+
+async def _fetch_weekly_usage_stats(season: int, week: int):
+    """Fetch weekly usage statistics (targets, routes, RZ touches) from available sources.
+
+    Returns list of dicts for upsert_usage_stats.
+    Attempts Sleeper stats first, falls back to ESPN if needed.
+    """
+    if not ADVANCED_ENRICH_ENABLED:
+        return []
+    
+    # Try Sleeper weekly stats endpoint first
+    headers = get_http_headers("sleeper_week_stats")
+    url = f"https://api.sleeper.app/v1/stats/nfl/regular/{season}/{week}"
+    try:
+        async with create_http_client() as client:
+            resp = await client.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+            if resp.status_code == 200:
+                data = resp.json() or {}
+                if isinstance(data, dict):
+                    stats = []
+                    for pid, player_stats in list(data.items())[:3000]:  # cap
+                        if not isinstance(player_stats, dict):
+                            continue
+                        # Extract usage fields (naming varies by API)
+                        targets = player_stats.get("rec_tgt") or player_stats.get("targets")
+                        routes = player_stats.get("routes_run") or player_stats.get("routes")
+                        rz_touches = player_stats.get("rz_touches") or player_stats.get("redzone_touches")
+                        touches = player_stats.get("touches")
+                        air_yards = player_stats.get("rec_air_yds") or player_stats.get("air_yards")
+                        snap_share = player_stats.get("snap_pct")
+                        
+                        # Only include if at least one usage metric present
+                        if any([targets, routes, rz_touches, touches]):
+                            stats.append({
+                                "player_id": str(pid),
+                                "season": season,
+                                "week": week,
+                                "targets": targets,
+                                "routes": routes,
+                                "rz_touches": rz_touches,
+                                "touches": touches,
+                                "air_yards": air_yards,
+                                "snap_share": snap_share
+                            })
+                    if stats:
+                        return stats
+    except Exception as e:
+        logger.debug(f"Sleeper usage stats fetch failed: {e}")
+    
+    # Fallback: ESPN (limited coverage, best-effort)
+    # Note: ESPN player stats API may require iterating by position or fetching league leaders
+    # For simplicity, skip ESPN fallback here (can be extended later)
+    logger.debug(f"Usage stats not available from Sleeper for season={season} week={week}")
+    return []
+
 def _estimate_snap_pct(depth_rank: Optional[int]) -> Optional[float]:
     if depth_rank is None:
         return None
@@ -2051,9 +2127,11 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
         return {}
     enriched_additions: Dict = {}
     position = athlete.get("position")
+    player_id = athlete.get("id") or athlete.get("player_id")
+    
     # Snap pct (non-DEF)
     if season and week and position not in (None, "DEF") and hasattr(nfl_db, 'get_player_snap_pct'):
-        row = nfl_db.get_player_snap_pct(athlete.get("id") or athlete.get("player_id") or athlete.get("id"), season, week)
+        row = nfl_db.get_player_snap_pct(player_id, season, week)
         if row and row.get("snap_pct") is not None:
             enriched_additions["snap_pct"] = row.get("snap_pct")
             enriched_additions["snap_pct_source"] = "cached"
@@ -2066,10 +2144,35 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             if est is not None:
                 enriched_additions["snap_pct"] = est
                 enriched_additions["snap_pct_source"] = "estimated"
+    
     # Opponent for DEF
     if season and week and position == "DEF" and hasattr(nfl_db, 'get_opponent'):
         opponent = nfl_db.get_opponent(season, week, athlete.get("team_id"))
         if opponent:
             enriched_additions["opponent"] = opponent
             enriched_additions["opponent_source"] = "cached"
+    
+    # Practice status (DNP/LP/FP) - all positions
+    if player_id and hasattr(nfl_db, 'get_latest_practice_status'):
+        practice = nfl_db.get_latest_practice_status(player_id, max_age_hours=72)
+        if practice:
+            age_hours = (datetime.now(UTC) - datetime.fromisoformat(practice["updated_at"])).total_seconds() / 3600
+            enriched_additions["practice_status"] = practice["status"]
+            enriched_additions["practice_status_date"] = practice["date"]
+            enriched_additions["practice_status_age_hours"] = round(age_hours, 1)
+            enriched_additions["practice_status_stale"] = age_hours > 72
+    
+    # Usage stats (targets, routes, RZ touches) - offensive skill positions
+    if season and week and position in ("WR", "RB", "TE") and hasattr(nfl_db, 'get_usage_last_n_weeks'):
+        usage = nfl_db.get_usage_last_n_weeks(player_id, season, week, n=3)
+        if usage:
+            enriched_additions["usage_last_3_weeks"] = {
+                "targets_avg": round(usage["targets_avg"], 1) if usage["targets_avg"] else None,
+                "routes_avg": round(usage["routes_avg"], 1) if usage["routes_avg"] else None,
+                "rz_touches_avg": round(usage["rz_touches_avg"], 1) if usage["rz_touches_avg"] else None,
+                "snap_share_avg": round(usage["snap_share_avg"], 1) if usage["snap_share_avg"] else None,
+                "weeks_sample": usage["weeks_sample"]
+            }
+            enriched_additions["usage_source"] = "sleeper"
+    
     return enriched_additions

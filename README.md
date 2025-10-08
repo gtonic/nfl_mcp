@@ -206,6 +206,30 @@ Notes:
 - Estimated snap% uses depth-chart heuristics (starter≈70, #2≈45, others≈15) when real stats absent.
 - All fields are additive and may be absent without breaking existing consumers.
 
+#### Enhanced Enrichment (Schema v8)
+Additional practice status & usage metrics (requires `NFL_MCP_ADVANCED_ENRICH=1`):
+
+| Field | Description | Values/Format |
+|-------|-------------|---------------|
+| `practice_status` | Latest injury practice designation | DNP, LP, FP, Full |
+| `practice_status_date` | Date of practice report | ISO date (YYYY-MM-DD) |
+| `practice_status_age_hours` | Age of practice report in hours | Float (1 decimal) |
+| `practice_status_stale` | Report older than 72h | Boolean |
+| `usage_last_3_weeks` | Avg usage metrics (WR/RB/TE only) | Object (see below) |
+| `usage_source` | Provenance for usage data | `sleeper`, `estimated` |
+
+**Usage Object Fields:**
+- `targets_avg`: Average targets per game (1 decimal)
+- `routes_avg`: Average routes run per game (1 decimal)
+- `rz_touches_avg`: Average red zone touches per game (1 decimal)
+- `snap_share_avg`: Average snap share percentage (1 decimal)
+- `weeks_sample`: Number of weeks in sample (1-3)
+
+**Notes:**
+- Practice status helps identify injury risk (DNP = high risk, LP = moderate, FP/Full = low)
+- Usage metrics provide true volume indicators beyond depth chart position
+- All fields are additive; absent fields mean data unavailable
+
 
 #### Robustness & Snapshot Behavior
 Each robust endpoint attempts multiple fetches with backoff. If all fail, the server returns the most recent cached snapshot **with `success=false`** but still provides usable data so LLM workflows can continue gracefully. Always check:

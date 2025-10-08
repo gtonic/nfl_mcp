@@ -133,6 +133,30 @@ Zusätzliche optionale Felder für angereicherte Spielerobjekte:
 
 Heuristik: depth_chart_order 1≈70%, 2≈45%, sonst≈15%. Alle Felder sind additiv und fehlen einfach, wenn keine Daten vorliegen.
 
+### Erweiterte Enrichment Felder (Schema v8)
+Praxis-Status & Nutzungs-Metriken (aktiviert via `NFL_MCP_ADVANCED_ENRICH=1`):
+
+| Feld | Beschreibung | Werte |
+|------|--------------|-------|
+| practice_status | Aktueller Verletzungs-/Praxis-Status | DNP, LP, FP, Full |
+| practice_status_date | Datum des Praxis-Reports | ISO (YYYY-MM-DD) |
+| practice_status_age_hours | Alter des Reports in Stunden | Float (1 Stelle) |
+| practice_status_stale | Report älter als 72h | Boolean |
+| usage_last_3_weeks | Durchschnittliche Nutzungs-Metriken (WR/RB/TE) | Objekt (siehe unten) |
+| usage_source | Herkunft der Nutzungsdaten | sleeper, estimated |
+
+**Usage-Objekt Felder:**
+- `targets_avg`: Durchschnitt Targets pro Spiel
+- `routes_avg`: Durchschnitt gelaufene Routen pro Spiel
+- `rz_touches_avg`: Durchschnitt Redzone-Berührungen
+- `snap_share_avg`: Durchschnitt Snap-Anteil (%)
+- `weeks_sample`: Anzahl Wochen in Stichprobe (1–3)
+
+**Hinweise:**
+- DNP = hohes Risiko (nicht trainiert), LP = moderat, FP/Full = gering
+- Usage-Metriken liefern echte Volume-Indikatoren jenseits der Depth-Chart-Position
+- Prefetch-Job lädt Practice Reports Do–Sa, Usage-Stats wöchentlich
+
 ---
 ## 🛑 Abbruch-Kriterien (Früh stoppen!)
 

@@ -191,7 +191,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 7
+    CURRENT_SCHEMA_VERSION = 8
     
     def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
         """
@@ -237,6 +237,7 @@ class NFLDatabase:
             5: self._migration_v5_matchup_snapshots,
             6: self._migration_v6_player_week_stats,
             7: self._migration_v7_schedule_games,
+            8: self._migration_v8_practice_and_usage,
         }
         
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -407,6 +408,47 @@ class NFLDatabase:
         )
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_sched_week ON schedule_games (season, week)"""
+        )
+
+    def _migration_v8_practice_and_usage(self, conn: sqlite3.Connection) -> None:
+        """Migration v8: Tables for practice status (DNP/LP/FP) and usage stats (targets, routes, RZ touches)."""
+        # Practice Status table
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_practice_status (
+                player_id TEXT NOT NULL,
+                date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(player_id, date)
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_practice_status_date ON player_practice_status(player_id, updated_at DESC)"""
+        )
+        
+        # Usage Stats table
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_usage_stats (
+                player_id TEXT NOT NULL,
+                season INTEGER NOT NULL,
+                week INTEGER NOT NULL,
+                targets INTEGER,
+                routes INTEGER,
+                rz_touches INTEGER,
+                touches INTEGER,
+                air_yards REAL,
+                snap_share REAL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(player_id, season, week)
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_usage_lookup ON player_usage_stats(player_id, season, week DESC)"""
         )
     
     @contextmanager
@@ -718,6 +760,151 @@ class NFLDatabase:
                 return row[0]
         except Exception as e:
             logger.debug(f"get_opponent failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Practice status helpers (DNP/LP/FP)
+    # ------------------------------------------------------------------
+    def upsert_practice_status(self, reports: List[Dict]) -> int:
+        """Insert or update player practice status reports.
+
+        Expected dict keys: player_id, date (ISO YYYY-MM-DD), status (DNP/LP/FP/Full), source (optional).
+        """
+        if not reports:
+            return 0
+        now = datetime.now(UTC).isoformat()
+        processed = 0
+        with self._pool.get_connection() as conn:
+            try:
+                for r in reports:
+                    player_id = r.get("player_id")
+                    date_str = r.get("date")
+                    status = r.get("status")
+                    if not all([player_id, date_str, status]):
+                        continue
+                    source = r.get("source", "unknown")
+                    conn.execute(
+                        """
+                        INSERT INTO player_practice_status(player_id, date, status, source, updated_at)
+                        VALUES(?,?,?,?,?)
+                        ON CONFLICT(player_id, date) DO UPDATE SET
+                            status=excluded.status,
+                            source=excluded.source,
+                            updated_at=excluded.updated_at
+                        """,
+                        (player_id, date_str, status, source, now),
+                    )
+                    processed += 1
+                conn.commit()
+                return processed
+            except Exception as e:
+                logger.error(f"upsert_practice_status failed: {e}")
+                conn.rollback()
+                return processed
+
+    def get_latest_practice_status(self, player_id: str, max_age_hours: int = 72) -> Optional[Dict]:
+        """Fetch most recent practice status for a player within max_age_hours."""
+        try:
+            from datetime import timedelta
+            cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT status, date, updated_at, source
+                    FROM player_practice_status
+                    WHERE player_id=? AND updated_at >= ?
+                    ORDER BY date DESC, updated_at DESC
+                    LIMIT 1
+                    """,
+                    (player_id, cutoff),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+        except Exception as e:
+            logger.debug(f"get_latest_practice_status failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Usage stats helpers (targets, routes, RZ touches)
+    # ------------------------------------------------------------------
+    def upsert_usage_stats(self, stats: List[Dict]) -> int:
+        """Insert or update player weekly usage stats.
+
+        Expected dict keys: player_id, season, week, targets, routes, rz_touches, touches, air_yards, snap_share (all optional except player_id/season/week).
+        """
+        if not stats:
+            return 0
+        now = datetime.now(UTC).isoformat()
+        processed = 0
+        with self._pool.get_connection() as conn:
+            try:
+                for s in stats:
+                    player_id = s.get("player_id")
+                    season = s.get("season")
+                    week = s.get("week")
+                    if None in (player_id, season, week):
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO player_usage_stats(
+                            player_id, season, week, targets, routes, rz_touches, touches, air_yards, snap_share, updated_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(player_id, season, week) DO UPDATE SET
+                            targets=excluded.targets,
+                            routes=excluded.routes,
+                            rz_touches=excluded.rz_touches,
+                            touches=excluded.touches,
+                            air_yards=excluded.air_yards,
+                            snap_share=excluded.snap_share,
+                            updated_at=excluded.updated_at
+                        """,
+                        (
+                            player_id,
+                            season,
+                            week,
+                            s.get("targets"),
+                            s.get("routes"),
+                            s.get("rz_touches"),
+                            s.get("touches"),
+                            s.get("air_yards"),
+                            s.get("snap_share"),
+                            now,
+                        ),
+                    )
+                    processed += 1
+                conn.commit()
+                return processed
+            except Exception as e:
+                logger.error(f"upsert_usage_stats failed: {e}")
+                conn.rollback()
+                return processed
+
+    def get_usage_last_n_weeks(self, player_id: str, season: int, current_week: int, n: int = 3) -> Optional[Dict]:
+        """Calculate average usage stats for a player over the last n weeks (excluding current_week)."""
+        try:
+            start_week = max(1, current_week - n)
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT 
+                        AVG(targets) as targets_avg,
+                        AVG(routes) as routes_avg,
+                        AVG(rz_touches) as rz_touches_avg,
+                        AVG(snap_share) as snap_share_avg,
+                        COUNT(*) as weeks_sample
+                    FROM player_usage_stats
+                    WHERE player_id=? AND season=? AND week BETWEEN ? AND ?
+                    """,
+                    (player_id, season, start_week, current_week - 1),
+                )
+                row = cur.fetchone()
+                if not row or row["weeks_sample"] == 0:
+                    return None
+                return dict(row)
+        except Exception as e:
+            logger.debug(f"get_usage_last_n_weeks failed: {e}")
             return None
     
     # Async Database Operations

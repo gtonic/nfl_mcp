@@ -41,7 +41,14 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
     if not PREFETCH_ENABLED:
         return
     # Import late to avoid circular
-    from .sleeper_tools import get_nfl_state, _fetch_week_schedule, _fetch_week_player_snaps, ADVANCED_ENRICH_ENABLED
+    from .sleeper_tools import (
+        get_nfl_state, 
+        _fetch_week_schedule, 
+        _fetch_week_player_snaps, 
+        _fetch_practice_reports,
+        _fetch_weekly_usage_stats,
+        ADVANCED_ENRICH_ENABLED
+    )
     if not ADVANCED_ENRICH_ENABLED:
         logger.info("Prefetch loop disabled: advanced enrichment not enabled (set NFL_MCP_ADVANCED_ENRICH=1)")
         return
@@ -72,6 +79,27 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                             logger.debug(f"Prefetch snaps: {inserted} rows (season={season} week={week})")
                     except Exception as e:
                         logger.debug(f"Prefetch snaps failed: {e}")
+                    
+                    # Practice reports (Thu-Sat only to capture weekly injury reports)
+                    weekday = datetime.now(UTC).weekday()
+                    if weekday in [3, 4, 5]:  # Thu=3, Fri=4, Sat=5
+                        try:
+                            practice_reports = await _fetch_practice_reports(season, week)
+                            if practice_reports:
+                                inserted = nfl_db.upsert_practice_status(practice_reports)
+                                logger.debug(f"Prefetch practice reports: {inserted} rows (season={season} week={week})")
+                        except Exception as e:
+                            logger.debug(f"Prefetch practice reports failed: {e}")
+                    
+                    # Usage stats (fetch previous week for rolling averages)
+                    if week > 1:
+                        try:
+                            usage_stats = await _fetch_weekly_usage_stats(season, week - 1)
+                            if usage_stats:
+                                inserted = nfl_db.upsert_usage_stats(usage_stats)
+                                logger.debug(f"Prefetch usage stats: {inserted} rows (season={season} week={week-1})")
+                        except Exception as e:
+                            logger.debug(f"Prefetch usage stats failed: {e}")
             else:
                 logger.debug("Prefetch: nfl_state unavailable this cycle")
         except Exception as e:
