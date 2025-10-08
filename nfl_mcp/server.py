@@ -270,9 +270,35 @@ def create_lifespan(nfl_db: NFLDatabase):
         
         if PREFETCH_ENABLED:
             # Import late to avoid circular
-            from .sleeper_tools import ADVANCED_ENRICH_ENABLED
+            from .sleeper_tools import ADVANCED_ENRICH_ENABLED, _fetch_all_team_schedules, get_nfl_state
             
             if ADVANCED_ENRICH_ENABLED:
+                # Run initial startup prefetch (schedules for all 32 teams)
+                logger.info("[Startup Prefetch] Running initial cache warm-up...")
+                try:
+                    # Get current season
+                    state = await get_nfl_state()
+                    season = 2025  # Default
+                    if state.get("success") and state.get("nfl_state"):
+                        season_raw = state["nfl_state"].get("season") or state["nfl_state"].get("league_season")
+                        try:
+                            season = int(season_raw) if season_raw is not None else 2025
+                        except (ValueError, TypeError):
+                            season = 2025
+                    
+                    logger.info(f"[Startup Prefetch] Fetching schedules for all 32 teams (season={season})...")
+                    schedules = await _fetch_all_team_schedules(season)
+                    
+                    if schedules:
+                        inserted = nfl_db.upsert_schedule_games(schedules)
+                        logger.info(f"[Startup Prefetch] ✅ Inserted {inserted} schedule records for {season} season")
+                    else:
+                        logger.warning(f"[Startup Prefetch] ⚠️ No schedule data fetched for season {season}")
+                        
+                except Exception as e:
+                    logger.error(f"[Startup Prefetch] ❌ Failed to fetch team schedules: {e}", exc_info=True)
+                
+                # Start background prefetch loop
                 _shutdown_event = asyncio.Event()
                 _prefetch_task = asyncio.create_task(_prefetch_loop(nfl_db, _shutdown_event))
                 logger.info("Background prefetch task started")

@@ -2053,6 +2053,120 @@ async def _fetch_week_schedule(season: int, week: int):
         logger.error(f"[Fetch Schedule] Failed for season={season}, week={week}: {e}", exc_info=True)
         return []
 
+async def _fetch_all_team_schedules(season: int):
+    """Fetch full season schedules for all 32 NFL teams from ESPN Team Schedule API.
+    
+    This prefetches complete schedules (all weeks) for every team to warm the cache.
+    Useful for startup/initial cache population.
+    
+    Args:
+        season: Season year (e.g., 2025)
+        
+    Returns:
+        List of game dicts for upsert_schedule_games (bidirectional rows)
+    """
+    if not ADVANCED_ENRICH_ENABLED:
+        logger.debug(f"[Fetch All Schedules] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+        return []
+    
+    # All 32 NFL team abbreviations
+    nfl_teams = [
+        "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
+        "DAL", "DEN", "DET", "GB", "HOU", "IND", "JAX", "KC",
+        "LAC", "LAR", "LV", "MIA", "MIN", "NE", "NO", "NYG",
+        "NYJ", "PHI", "PIT", "SEA", "SF", "TB", "TEN", "WSH"
+    ]
+    
+    logger.info(f"[Fetch All Schedules] Starting fetch for {len(nfl_teams)} teams (season={season})")
+    
+    all_games = []
+    successful_teams = 0
+    failed_teams = []
+    
+    async with create_http_client() as client:
+        for team_abbr in nfl_teams:
+            try:
+                url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_abbr}/schedule?season={season}"
+                resp = await client.get(url, timeout=DEFAULT_TIMEOUT)
+                
+                if resp.status_code != 200:
+                    logger.warning(f"[Fetch All Schedules] Team {team_abbr}: ESPN API returned status {resp.status_code}")
+                    failed_teams.append(team_abbr)
+                    continue
+                
+                data = resp.json() or {}
+                events = data.get("events", [])
+                
+                team_games = []
+                for event in events:
+                    # Extract week and kickoff
+                    week_info = event.get("week", {})
+                    week = week_info.get("number") if week_info else None
+                    kickoff = event.get("date")
+                    
+                    # Extract competitions
+                    competitions = event.get("competitions", [])
+                    if not competitions:
+                        continue
+                    
+                    competition = competitions[0]
+                    competitors = competition.get("competitors", [])
+                    
+                    if len(competitors) != 2:
+                        continue
+                    
+                    # Find home and away teams
+                    home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                    away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                    
+                    if not home or not away:
+                        continue
+                    
+                    h_abbr = (home.get("team") or {}).get("abbreviation")
+                    a_abbr = (away.get("team") or {}).get("abbreviation")
+                    
+                    if not h_abbr or not a_abbr or not week:
+                        continue
+                    
+                    # Create bidirectional game records
+                    team_games.append({
+                        "season": season,
+                        "week": week,
+                        "team": h_abbr,
+                        "opponent": a_abbr,
+                        "is_home": 1,
+                        "kickoff": kickoff,
+                        "raw": event
+                    })
+                    team_games.append({
+                        "season": season,
+                        "week": week,
+                        "team": a_abbr,
+                        "opponent": h_abbr,
+                        "is_home": 0,
+                        "kickoff": kickoff,
+                        "raw": event
+                    })
+                
+                all_games.extend(team_games)
+                successful_teams += 1
+                logger.debug(f"[Fetch All Schedules] Team {team_abbr}: {len(team_games)} game records ({len(events)} events)")
+                
+            except Exception as e:
+                logger.warning(f"[Fetch All Schedules] Team {team_abbr}: Failed - {e}")
+                failed_teams.append(team_abbr)
+    
+    logger.info(
+        f"[Fetch All Schedules] Completed: {successful_teams}/{len(nfl_teams)} teams successful, "
+        f"{len(all_games)} total game records fetched"
+    )
+    
+    if failed_teams:
+        logger.warning(f"[Fetch All Schedules] Failed teams: {', '.join(failed_teams)}")
+    
+    return all_games
+
+
 async def _fetch_injuries():
     """Fetch injury reports from ESPN for all NFL teams.
     
