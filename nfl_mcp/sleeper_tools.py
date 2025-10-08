@@ -2053,30 +2053,125 @@ async def _fetch_week_schedule(season: int, week: int):
         logger.error(f"[Fetch Schedule] Failed for season={season}, week={week}: {e}", exc_info=True)
         return []
 
+async def _fetch_injuries():
+    """Fetch injury reports from ESPN for all NFL teams.
+    
+    Returns list of dicts with keys: player_id, player_name, team_id, position,
+    injury_status, injury_type, injury_description, date_reported.
+    """
+    if not ADVANCED_ENRICH_ENABLED:
+        logger.debug(f"[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+        return []
+    
+    logger.info(f"[Fetch Injuries] Starting fetch for all teams")
+    
+    # NFL team abbreviations
+    teams = [
+        "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
+        "DAL", "DEN", "DET", "GB", "HOU", "IND", "JAX", "KC",
+        "LAC", "LAR", "LV", "MIA", "MIN", "NE", "NO", "NYG",
+        "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WAS"
+    ]
+    
+    all_injuries = []
+    
+    try:
+        import httpx
+        from .config import get_http_headers, create_http_client
+        
+        headers = get_http_headers("nfl_teams")
+        
+        async with create_http_client() as client:
+            for team in teams:
+                try:
+                    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit=50"
+                    resp = await client.get(url, headers=headers)
+                    
+                    if resp.status_code != 200:
+                        logger.debug(f"[Fetch Injuries] Team {team}: status {resp.status_code}")
+                        continue
+                    
+                    data = resp.json()
+                    injuries_data = data.get('items', [])
+                    
+                    for injury_item in injuries_data:
+                        # Extract athlete info
+                        athlete_ref = injury_item.get('athlete', {})
+                        if not athlete_ref:
+                            continue
+                        
+                        injury = {
+                            'player_id': str(athlete_ref.get('id', '')),
+                            'player_name': athlete_ref.get('displayName', 'Unknown'),
+                            'team_id': team,
+                            'position': athlete_ref.get('position', {}).get('abbreviation'),
+                            'injury_status': injury_item.get('status', {}).get('name', 'Unknown'),
+                            'injury_type': injury_item.get('type', {}).get('name'),
+                            'injury_description': injury_item.get('description'),
+                            'date_reported': injury_item.get('date')
+                        }
+                        all_injuries.append(injury)
+                
+                except Exception as e:
+                    logger.debug(f"[Fetch Injuries] Team {team} failed: {e}")
+                    continue
+        
+        logger.info(f"[Fetch Injuries] Successfully fetched {len(all_injuries)} injury records across {len(teams)} teams")
+        return all_injuries
+        
+    except Exception as e:
+        logger.error(f"[Fetch Injuries] Failed: {e}", exc_info=True)
+        return []
+
 async def _fetch_practice_reports(season: int, week: int):
     """Fetch practice status reports (DNP/LP/FP) from ESPN injuries endpoint.
 
     Returns list of dicts with keys: player_id, date, status, source.
+    
+    Note: This now uses the injuries endpoint which includes practice participation status.
     """
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug(f"[Fetch Practice] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
     
     logger.info(f"[Fetch Practice] Starting fetch for season={season}, week={week}")
-    try:
-        # Import late to avoid circular dependency
-        from .nfl_tools import get_team_injuries
+    
+    # Use injury reports as source for practice status
+    # Practice status is often reflected in injury reports (DNP/Limited/Full)
+    injuries = await _fetch_injuries()
+    
+    if not injuries:
+        logger.warning(f"[Fetch Practice] No injury data available to extract practice status")
+        return []
+    
+    # Convert injury status to practice status format
+    practice_reports = []
+    now = datetime.now(UTC).isoformat()
+    
+    for inj in injuries:
+        status = inj.get('injury_status', '').upper()
         
-        # Fetch injuries for all teams (we'll aggregate across league)
-        # Note: get_team_injuries expects team_id; for practice reports we want league-wide
-        # Alternative: Use ESPN general injuries endpoint if available
-        # For now, return empty and rely on future dedicated practice report API
-        # TODO: Implement dedicated ESPN practice participation API call
-        logger.warning("[Fetch Practice] Practice reports fetch not yet implemented (awaiting dedicated API)")
-        return []
-    except Exception as e:
-        logger.error(f"[Fetch Practice] Failed for season={season}, week={week}: {e}", exc_info=True)
-        return []
+        # Map injury status to practice participation
+        practice_status = None
+        if 'OUT' in status or 'IR' in status or 'PUP' in status:
+            practice_status = 'DNP'  # Did Not Participate
+        elif 'DOUBTFUL' in status or 'LIMITED' in status:
+            practice_status = 'LP'   # Limited Participation
+        elif 'QUESTIONABLE' in status:
+            practice_status = 'LP'   # Usually limited
+        elif 'PROBABLE' in status or 'FULL' in status:
+            practice_status = 'FP'   # Full Participation
+        
+        if practice_status:
+            practice_reports.append({
+                'player_id': inj.get('player_id'),
+                'date': inj.get('date_reported', now[:10]),  # YYYY-MM-DD
+                'status': practice_status,
+                'source': 'espn_injuries'
+            })
+    
+    logger.info(f"[Fetch Practice] Extracted {len(practice_reports)} practice status records from {len(injuries)} injuries")
+    return practice_reports
 
 async def _fetch_weekly_usage_stats(season: int, week: int):
     """Fetch weekly usage statistics (targets, routes, RZ touches) from available sources.
@@ -2162,13 +2257,22 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
     
     logger.debug(f"[Enrichment] Processing {player_name} (id={player_id}, pos={position}, season={season}, week={week})")
     
-    # Snap pct (non-DEF)
+    # Snap pct (non-DEF) - try current week, fallback to previous week
     if season and week and position not in (None, "DEF") and hasattr(nfl_db, 'get_player_snap_pct'):
         row = nfl_db.get_player_snap_pct(player_id, season, week)
+        snap_week_used = week
+        
+        # If current week has no data, try previous week (games may not have been played yet)
+        if (not row or row.get("snap_pct") is None) and week > 1:
+            row = nfl_db.get_player_snap_pct(player_id, season, week - 1)
+            snap_week_used = week - 1
+            logger.debug(f"[Enrichment] {player_name}: Current week {week} has no snaps, trying week {week - 1}")
+        
         if row and row.get("snap_pct") is not None:
             enriched_additions["snap_pct"] = row.get("snap_pct")
             enriched_additions["snap_pct_source"] = "cached"
-            logger.debug(f"[Enrichment] {player_name}: snap_pct={row.get('snap_pct')}% (cached)")
+            enriched_additions["snap_pct_week"] = snap_week_used  # Track which week was used
+            logger.debug(f"[Enrichment] {player_name}: snap_pct={row.get('snap_pct')}% (cached from week {snap_week_used})")
         else:
             depth_rank = None
             raw_field = athlete.get("raw")

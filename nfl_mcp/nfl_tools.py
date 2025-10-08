@@ -7,6 +7,7 @@ This module contains MCP tools for fetching NFL news, teams data, and depth char
 import httpx
 from typing import Optional, Dict, Any, List
 import asyncio
+import logging
 from bs4 import BeautifulSoup
 
 from .config import get_http_headers, create_http_client, validate_limit, LIMITS
@@ -14,6 +15,8 @@ from .errors import (
     create_error_response, create_success_response, ErrorType,
     handle_http_errors, handle_validation_error
 )
+
+logger = logging.getLogger(__name__)
 
 
 @handle_http_errors(
@@ -291,6 +294,8 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
     This tool fetches injury information from ESPN's Core API for the specified team,
     providing critical information for fantasy lineup decisions.
     
+    Cache-first strategy: Checks database cache (12h TTL) before fetching from ESPN API.
+    
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE') or ESPN team ID
         limit: Maximum number of injuries to return (1-100, defaults to 50)
@@ -301,6 +306,7 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
         - team_name: The team's full name  
         - injuries: List of injured players with status and details
         - count: Number of injuries returned
+        - cache_source: 'database' or 'api' to indicate data source
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
@@ -314,12 +320,61 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
     
     # Validate limit
     limit = validate_limit(limit or 50, 1, 100, 50)
+    team_id_upper = team_id.upper()
+    
+    # Try cache first (if advanced enrichment is enabled)
+    from .sleeper_tools import ADVANCED_ENRICH_ENABLED
+    if ADVANCED_ENRICH_ENABLED:
+        try:
+            from .database import get_nfl_database
+            nfl_db = get_nfl_database()
+            cached_injuries = nfl_db.get_team_injuries_from_cache(team_id_upper, max_age_hours=12)
+            
+            if cached_injuries:
+                logger.info(f"[Cache Hit] Team injuries for {team_id_upper}: {len(cached_injuries)} injuries from cache")
+                
+                # Convert cached format to API response format
+                processed_injuries = []
+                for inj in cached_injuries[:limit]:  # Respect limit
+                    injury = {
+                        'player_id': inj.get('player_id'),
+                        'player_name': inj.get('player_name'),
+                        'position': inj.get('position', 'N/A'),
+                        'status': inj.get('injury_status', 'Unknown'),
+                        'description': inj.get('injury_description', 'No description'),
+                        'type': inj.get('injury_type', 'Unknown'),
+                        'date': inj.get('date_reported', 'Unknown'),
+                        'severity': 'Unknown'
+                    }
+                    
+                    # Calculate severity
+                    status_lower = injury['status'].lower()
+                    if 'out' in status_lower or 'ir' in status_lower:
+                        injury['severity'] = 'High'
+                    elif 'doubtful' in status_lower or 'questionable' in status_lower:
+                        injury['severity'] = 'Medium'
+                    elif 'probable' in status_lower or 'limited' in status_lower or 'dnp' in status_lower:
+                        injury['severity'] = 'Low'
+                    
+                    processed_injuries.append(injury)
+                
+                return create_success_response({
+                    "team_id": team_id_upper,
+                    "team_name": f"{team_id_upper} (from cache)",
+                    "injuries": processed_injuries,
+                    "count": len(processed_injuries),
+                    "cache_source": "database"
+                })
+        except Exception as e:
+            logger.debug(f"[Cache Miss] Failed to get team injuries from cache: {e}")
+    
+    # Cache miss or disabled - fetch from ESPN API
+    logger.info(f"[API Fetch] Team injuries for {team_id_upper}: fetching from ESPN")
     
     headers = get_http_headers("nfl_teams")  # Reuse existing config
     
     # ESPN Core API endpoint for team injuries
-    # Use team abbreviation to construct URL - ESPN Core API uses team IDs but we'll try both formats
-    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team_id.upper()}/injuries?limit={limit}"
+    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team_id_upper}/injuries?limit={limit}"
     
     async with create_http_client() as client:
         try:
@@ -385,10 +440,11 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
             processed_injuries.append(injury)
         
         return create_success_response({
-            "team_id": team_id.upper(),
+            "team_id": team_id_upper,
             "team_name": team_name,
             "injuries": processed_injuries,
-            "count": len(processed_injuries)
+            "count": len(processed_injuries),
+            "cache_source": "api"
         })
 
 
@@ -635,6 +691,8 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2025) -> dict:
     This tool fetches the team's schedule which provides critical context for fantasy
     decisions, including upcoming matchups, strength of schedule, and bye weeks.
     
+    Cache-first strategy: Checks database cache before fetching from ESPN API.
+    
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE') or ESPN team ID
         season: Season year (defaults to 2025)
@@ -646,6 +704,7 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2025) -> dict:
         - season: Season year requested
         - schedule: List of games with matchup details and fantasy implications
         - count: Number of games in schedule
+        - cache_source: 'database' or 'api' to indicate data source
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
@@ -659,11 +718,62 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2025) -> dict:
     
     # Validate season
     season = season or 2025
+    team_id_upper = team_id.upper()
+    
+    # Try cache first (if advanced enrichment is enabled)
+    from .sleeper_tools import ADVANCED_ENRICH_ENABLED
+    if ADVANCED_ENRICH_ENABLED:
+        try:
+            from .database import get_nfl_database
+            nfl_db = get_nfl_database()
+            cached_schedule = nfl_db.get_team_schedule_from_cache(team_id_upper, season)
+            
+            if cached_schedule and len(cached_schedule) > 0:
+                logger.info(f"[Cache Hit] Team schedule for {team_id_upper} season {season}: {len(cached_schedule)} games from cache")
+                
+                # Convert cached format to API response format
+                processed_schedule = []
+                for game in cached_schedule:
+                    processed_game = {
+                        'week': game.get('week'),
+                        'opponent': {
+                            'abbreviation': game.get('opponent'),
+                            'name': game.get('opponent'),  # Abbreviated, could enhance later
+                        },
+                        'is_home': bool(game.get('is_home')),
+                        'date': game.get('kickoff'),
+                        'season_type': 'Regular Season',  # Could parse from raw if needed
+                        'result': 'scheduled',  # Cache doesn't track results yet
+                        'fantasy_implications': []
+                    }
+                    
+                    # Add basic fantasy implications
+                    opp_abbr = game.get('opponent', 'UNK')
+                    if processed_game['is_home']:
+                        processed_game['fantasy_implications'].append(f"Home game vs {opp_abbr}")
+                    else:
+                        processed_game['fantasy_implications'].append(f"Away game at {opp_abbr}")
+                    
+                    processed_schedule.append(processed_game)
+                
+                return create_success_response({
+                    "team_id": team_id_upper,
+                    "team_name": f"{team_id_upper} (from cache)",
+                    "season": season,
+                    "schedule": processed_schedule,
+                    "count": len(processed_schedule),
+                    "cache_source": "database"
+                })
+        except Exception as e:
+            logger.debug(f"[Cache Miss] Failed to get team schedule from cache: {e}")
+    
+    # Cache miss or disabled - fetch from ESPN API
+    logger.info(f"[API Fetch] Team schedule for {team_id_upper} season {season}: fetching from ESPN")
     
     headers = get_http_headers("nfl_teams")  # Reuse existing config
     
     # ESPN Site API endpoint for team schedule
-    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id.upper()}/schedule?season={season}"
+    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id_upper}/schedule?season={season}"
     
     async with create_http_client() as client:
         try:
@@ -779,11 +889,12 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2025) -> dict:
             processed_schedule.append(game)
         
         return create_success_response({
-            "team_id": team_id.upper(),
+            "team_id": team_id_upper,
             "team_name": team_name,
             "season": season,
             "schedule": processed_schedule,
-            "count": len(processed_schedule)
+            "count": len(processed_schedule),
+            "cache_source": "api"
         })
 
 

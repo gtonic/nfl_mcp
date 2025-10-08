@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 import asyncio
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Union, AsyncContextManager
 from contextlib import contextmanager, asynccontextmanager
@@ -191,7 +191,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 8
+    CURRENT_SCHEMA_VERSION = 9
     
     def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
         """
@@ -238,6 +238,7 @@ class NFLDatabase:
             6: self._migration_v6_player_week_stats,
             7: self._migration_v7_schedule_games,
             8: self._migration_v8_practice_and_usage,
+            9: self._migration_v9_injuries,
         }
         
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -449,6 +450,31 @@ class NFLDatabase:
         )
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_usage_lookup ON player_usage_stats(player_id, season, week DESC)"""
+        )
+    
+    def _migration_v9_injuries(self, conn: sqlite3.Connection) -> None:
+        """Migration v9: Table for player injury reports (DNP/Questionable/Out/Doubtful/etc)."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_injuries (
+                player_id TEXT NOT NULL,
+                player_name TEXT NOT NULL,
+                team_id TEXT NOT NULL,
+                position TEXT,
+                injury_status TEXT NOT NULL,
+                injury_type TEXT,
+                injury_description TEXT,
+                date_reported TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(player_id, team_id, updated_at)
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_injury_player ON player_injuries(player_id, updated_at DESC)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_injury_team ON player_injuries(team_id, updated_at DESC)"""
         )
     
     @contextmanager
@@ -762,6 +788,28 @@ class NFLDatabase:
             logger.debug(f"get_opponent failed: {e}")
             return None
 
+    def get_team_schedule_from_cache(self, team: str, season: int) -> List[Dict]:
+        """Fetch team's full schedule from cache (all weeks for given season).
+        
+        Returns list of games with: week, opponent, is_home, kickoff, raw
+        """
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT week, opponent, is_home, kickoff, raw
+                    FROM schedule_games 
+                    WHERE season=? AND team=?
+                    ORDER BY week ASC
+                    """,
+                    (season, team),
+                )
+                rows = cur.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.debug(f"get_team_schedule_from_cache failed: {e}")
+            return []
+
     # ------------------------------------------------------------------
     # Practice status helpers (DNP/LP/FP)
     # ------------------------------------------------------------------
@@ -905,6 +953,135 @@ class NFLDatabase:
                 return dict(row)
         except Exception as e:
             logger.debug(f"get_usage_last_n_weeks failed: {e}")
+            return None
+    
+    # ------------------------------------------------------------------
+    # Injury reports helpers
+    # ------------------------------------------------------------------
+    def upsert_injuries(self, injuries: List[Dict]) -> int:
+        """Insert or update player injury reports.
+        
+        Args:
+            injuries: List of injury dicts with keys:
+                - player_id: Player identifier
+                - player_name: Player full name
+                - team_id: Team abbreviation
+                - position: Position (optional)
+                - injury_status: Status (Out/Questionable/Doubtful/DNP/etc)
+                - injury_type: Body part/type (optional)
+                - injury_description: Full description (optional)
+                - date_reported: Date of injury report (optional)
+                
+        Returns:
+            Number of rows inserted/updated
+        """
+        if not injuries:
+            return 0
+        
+        try:
+            now = datetime.now(UTC).isoformat()
+            with self._pool.get_connection() as conn:
+                processed = 0
+                for inj in injuries:
+                    player_id = inj.get("player_id")
+                    if not player_id:
+                        continue
+                    
+                    conn.execute(
+                        """
+                        INSERT INTO player_injuries(
+                            player_id, player_name, team_id, position, 
+                            injury_status, injury_type, injury_description, 
+                            date_reported, updated_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(player_id, team_id, updated_at) DO UPDATE SET
+                            player_name=excluded.player_name,
+                            position=excluded.position,
+                            injury_status=excluded.injury_status,
+                            injury_type=excluded.injury_type,
+                            injury_description=excluded.injury_description,
+                            date_reported=excluded.date_reported
+                        """,
+                        (
+                            player_id,
+                            inj.get("player_name", ""),
+                            inj.get("team_id", ""),
+                            inj.get("position"),
+                            inj.get("injury_status", "Unknown"),
+                            inj.get("injury_type"),
+                            inj.get("injury_description"),
+                            inj.get("date_reported"),
+                            now
+                        )
+                    )
+                    processed += 1
+                conn.commit()
+                return processed
+        except Exception as e:
+            logger.error(f"upsert_injuries failed: {e}")
+            return 0
+    
+    def get_team_injuries_from_cache(self, team_id: str, max_age_hours: int = 12) -> List[Dict]:
+        """Get cached injury reports for a team.
+        
+        Args:
+            team_id: Team abbreviation
+            max_age_hours: Maximum age of cached data in hours
+            
+        Returns:
+            List of injury dicts
+        """
+        try:
+            cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT player_id, player_name, team_id, position,
+                           injury_status, injury_type, injury_description,
+                           date_reported, updated_at
+                    FROM player_injuries
+                    WHERE team_id=? AND updated_at >= ?
+                    ORDER BY updated_at DESC
+                    """,
+                    (team_id, cutoff),
+                )
+                rows = cur.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.debug(f"get_team_injuries_from_cache failed: {e}")
+            return []
+    
+    def get_player_injury_from_cache(self, player_id: str, max_age_hours: int = 12) -> Optional[Dict]:
+        """Get cached injury report for a specific player.
+        
+        Args:
+            player_id: Player identifier
+            max_age_hours: Maximum age of cached data in hours
+            
+        Returns:
+            Injury dict or None
+        """
+        try:
+            cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT player_id, player_name, team_id, position,
+                           injury_status, injury_type, injury_description,
+                           date_reported, updated_at
+                    FROM player_injuries
+                    WHERE player_id=? AND updated_at >= ?
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (player_id, cutoff),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+        except Exception as e:
+            logger.debug(f"get_player_injury_from_cache failed: {e}")
             return None
     
     # Async Database Operations

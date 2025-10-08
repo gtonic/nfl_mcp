@@ -60,6 +60,7 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
         get_nfl_state, 
         _fetch_week_schedule, 
         _fetch_week_player_snaps, 
+        _fetch_injuries,
         _fetch_practice_reports,
         _fetch_weekly_usage_stats,
         ADVANCED_ENRICH_ENABLED
@@ -79,10 +80,12 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
         stats = {
             "schedule_inserted": 0,
             "snaps_inserted": 0,
+            "injuries_inserted": 0,
             "practice_inserted": 0,
             "usage_inserted": 0,
             "schedule_error": None,
             "snaps_error": None,
+            "injuries_error": None,
             "practice_error": None,
             "usage_error": None
         }
@@ -147,6 +150,20 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                     if total_snap_rows_inserted > 0:
                         logger.info(f"[Prefetch Cycle #{cycle_count}] Snaps total: {total_snap_rows_inserted} rows inserted across {len(snap_weeks_to_fetch)} weeks")
                     
+                    # Injuries prefetch (once per cycle, covers all teams)
+                    try:
+                        logger.debug(f"[Prefetch Cycle #{cycle_count}] Fetching injury reports for all teams")
+                        injuries = await _fetch_injuries()
+                        if injuries:
+                            inserted = nfl_db.upsert_injuries(injuries)
+                            stats["injuries_inserted"] = inserted
+                            logger.info(f"[Prefetch Cycle #{cycle_count}] Injuries: {inserted} rows inserted from {len(injuries)} fetched")
+                        else:
+                            logger.info(f"[Prefetch Cycle #{cycle_count}] Injuries: No rows returned")
+                    except Exception as e:
+                        stats["injuries_error"] = str(e)
+                        logger.error(f"[Prefetch Cycle #{cycle_count}] Injuries fetch failed: {e}", exc_info=True)
+                    
                     # Practice reports (Thu-Sat only to capture weekly injury reports)
                     weekday = datetime.now(UTC).weekday()
                     logger.debug(f"[Prefetch Cycle #{cycle_count}] Current weekday: {weekday} ({'Thu' if weekday == 3 else 'Fri' if weekday == 4 else 'Sat' if weekday == 5 else 'Other'})")
@@ -200,15 +217,17 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
             f"[Prefetch Cycle #{cycle_count}] Completed in {cycle_duration:.2f}s - "
             f"Schedule: {stats['schedule_inserted']} rows, "
             f"Snaps: {stats['snaps_inserted']} rows, "
+            f"Injuries: {stats['injuries_inserted']} rows, "
             f"Practice: {stats['practice_inserted']} rows, "
             f"Usage: {stats['usage_inserted']} rows"
         )
         
-        if any([stats['schedule_error'], stats['snaps_error'], stats['practice_error'], stats['usage_error']]):
+        if any([stats['schedule_error'], stats['snaps_error'], stats['injuries_error'], stats['practice_error'], stats['usage_error']]):
             logger.warning(
                 f"[Prefetch Cycle #{cycle_count}] Errors occurred - "
                 f"Schedule: {stats['schedule_error'] or 'OK'}, "
                 f"Snaps: {stats['snaps_error'] or 'OK'}, "
+                f"Injuries: {stats['injuries_error'] or 'OK'}, "
                 f"Practice: {stats['practice_error'] or 'OK'}, "
                 f"Usage: {stats['usage_error'] or 'OK'}"
             )
