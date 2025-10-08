@@ -1962,7 +1962,10 @@ async def _fetch_week_player_snaps(season: int, week: int):
     or network/API issues occur, returns empty list.
     """
     if not ADVANCED_ENRICH_ENABLED:
+        logger.debug(f"[Fetch Snaps] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
+    
+    logger.info(f"[Fetch Snaps] Starting fetch for season={season}, week={week}")
     headers = get_http_headers("sleeper_week_stats")
     # Sleeper weekly stats endpoint pattern (regular season)
     # Using documented style: /v1/stats/nfl/regular/{season}/{week}
@@ -1971,11 +1974,15 @@ async def _fetch_week_player_snaps(season: int, week: int):
         async with create_http_client() as client:
             resp = await client.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
             if resp.status_code != 200:
+                logger.warning(f"[Fetch Snaps] API returned status {resp.status_code}")
                 return []
             data = resp.json() or {}
             # Data format: mapping of player_id -> stat dict (varies by Sleeper)
             if not isinstance(data, dict):
+                logger.warning(f"[Fetch Snaps] Invalid data format (not dict)")
                 return []
+            
+            logger.debug(f"[Fetch Snaps] Received data for {len(data)} players")
             rows = []
             for pid, stats in list(data.items())[:5000]:  # cap for safety
                 if not isinstance(stats, dict):
@@ -1993,9 +2000,11 @@ async def _fetch_week_player_snaps(season: int, week: int):
                     "snap_pct": snap_pct,
                     "raw": stats
                 })
+            
+            logger.info(f"[Fetch Snaps] Successfully fetched {len(rows)} snap records (season={season}, week={week})")
             return rows
     except Exception as e:
-        logger.debug(f"week player snaps fetch failed: {e}")
+        logger.error(f"[Fetch Snaps] Failed for season={season}, week={week}: {e}", exc_info=True)
         return []
 
 async def _fetch_week_schedule(season: int, week: int):
@@ -2005,16 +2014,22 @@ async def _fetch_week_schedule(season: int, week: int):
     If advanced enrichment disabled or failure occurs, returns empty list.
     """
     if not ADVANCED_ENRICH_ENABLED:
+        logger.debug(f"[Fetch Schedule] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
+    
+    logger.info(f"[Fetch Schedule] Starting fetch for season={season}, week={week}")
     # Regular season scoreboard: seasontype=2
     url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?week={week}&year={season}&seasontype=2"
     try:
         async with create_http_client() as client:
             resp = await client.get(url, timeout=DEFAULT_TIMEOUT)
             if resp.status_code != 200:
+                logger.warning(f"[Fetch Schedule] ESPN API returned status {resp.status_code}")
                 return []
             data = resp.json() or {}
             events = data.get("events") or []
+            
+            logger.debug(f"[Fetch Schedule] Received {len(events)} events from ESPN")
             games = []
             for ev in events:
                 comps = ev.get("competitions") or []
@@ -2031,9 +2046,11 @@ async def _fetch_week_schedule(season: int, week: int):
                         continue
                     games.append({"season": season, "week": week, "team": h_abbr, "opponent": a_abbr, "is_home": 1, "kickoff": kickoff, "raw": ev})
                     games.append({"season": season, "week": week, "team": a_abbr, "opponent": h_abbr, "is_home": 0, "kickoff": kickoff, "raw": ev})
+            
+            logger.info(f"[Fetch Schedule] Successfully fetched {len(games)} game records ({len(events)} events, season={season}, week={week})")
             return games
     except Exception as e:
-        logger.debug(f"week schedule fetch failed: {e}")
+        logger.error(f"[Fetch Schedule] Failed for season={season}, week={week}: {e}", exc_info=True)
         return []
 
 async def _fetch_practice_reports(season: int, week: int):
@@ -2042,7 +2059,10 @@ async def _fetch_practice_reports(season: int, week: int):
     Returns list of dicts with keys: player_id, date, status, source.
     """
     if not ADVANCED_ENRICH_ENABLED:
+        logger.debug(f"[Fetch Practice] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
+    
+    logger.info(f"[Fetch Practice] Starting fetch for season={season}, week={week}")
     try:
         # Import late to avoid circular dependency
         from .nfl_tools import get_team_injuries
@@ -2052,10 +2072,10 @@ async def _fetch_practice_reports(season: int, week: int):
         # Alternative: Use ESPN general injuries endpoint if available
         # For now, return empty and rely on future dedicated practice report API
         # TODO: Implement dedicated ESPN practice participation API call
-        logger.debug("Practice reports fetch not yet implemented (awaiting dedicated API)")
+        logger.warning("[Fetch Practice] Practice reports fetch not yet implemented (awaiting dedicated API)")
         return []
     except Exception as e:
-        logger.debug(f"practice reports fetch failed: {e}")
+        logger.error(f"[Fetch Practice] Failed for season={season}, week={week}: {e}", exc_info=True)
         return []
 
 async def _fetch_weekly_usage_stats(season: int, week: int):
@@ -2065,7 +2085,10 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
     Attempts Sleeper stats first, falls back to ESPN if needed.
     """
     if not ADVANCED_ENRICH_ENABLED:
+        logger.debug(f"[Fetch Usage] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
+    
+    logger.info(f"[Fetch Usage] Starting fetch for season={season}, week={week}")
     
     # Try Sleeper weekly stats endpoint first
     headers = get_http_headers("sleeper_week_stats")
@@ -2076,6 +2099,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
             if resp.status_code == 200:
                 data = resp.json() or {}
                 if isinstance(data, dict):
+                    logger.debug(f"[Fetch Usage] Received data for {len(data)} players")
                     stats = []
                     for pid, player_stats in list(data.items())[:3000]:  # cap
                         if not isinstance(player_stats, dict):
@@ -2102,14 +2126,19 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                                 "snap_share": snap_share
                             })
                     if stats:
+                        logger.info(f"[Fetch Usage] Successfully fetched {len(stats)} usage records (season={season}, week={week})")
                         return stats
+                    else:
+                        logger.warning(f"[Fetch Usage] No valid usage stats found in response")
+            else:
+                logger.warning(f"[Fetch Usage] Sleeper API returned status {resp.status_code}")
     except Exception as e:
-        logger.debug(f"Sleeper usage stats fetch failed: {e}")
+        logger.error(f"[Fetch Usage] Sleeper API failed: {e}", exc_info=True)
     
     # Fallback: ESPN (limited coverage, best-effort)
     # Note: ESPN player stats API may require iterating by position or fetching league leaders
     # For simplicity, skip ESPN fallback here (can be extended later)
-    logger.debug(f"Usage stats not available from Sleeper for season={season} week={week}")
+    logger.warning(f"[Fetch Usage] No usage stats available from any source for season={season}, week={week}")
     return []
 
 def _estimate_snap_pct(depth_rank: Optional[int]) -> Optional[float]:
@@ -2125,9 +2154,13 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
     """Add snap_pct/opponent fields to a base enrichment object (mutates and returns)."""
     if not athlete:
         return {}
+    
     enriched_additions: Dict = {}
     position = athlete.get("position")
     player_id = athlete.get("id") or athlete.get("player_id")
+    player_name = athlete.get("full_name") or athlete.get("name") or f"Player-{player_id}"
+    
+    logger.debug(f"[Enrichment] Processing {player_name} (id={player_id}, pos={position}, season={season}, week={week})")
     
     # Snap pct (non-DEF)
     if season and week and position not in (None, "DEF") and hasattr(nfl_db, 'get_player_snap_pct'):
@@ -2135,6 +2168,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
         if row and row.get("snap_pct") is not None:
             enriched_additions["snap_pct"] = row.get("snap_pct")
             enriched_additions["snap_pct_source"] = "cached"
+            logger.debug(f"[Enrichment] {player_name}: snap_pct={row.get('snap_pct')}% (cached)")
         else:
             depth_rank = None
             raw_field = athlete.get("raw")
@@ -2144,6 +2178,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             if est is not None:
                 enriched_additions["snap_pct"] = est
                 enriched_additions["snap_pct_source"] = "estimated"
+                logger.debug(f"[Enrichment] {player_name}: snap_pct={est}% (estimated from depth={depth_rank})")
     
     # Opponent for DEF
     if season and week and position == "DEF" and hasattr(nfl_db, 'get_opponent'):
@@ -2151,6 +2186,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
         if opponent:
             enriched_additions["opponent"] = opponent
             enriched_additions["opponent_source"] = "cached"
+            logger.debug(f"[Enrichment] {player_name} (DEF): opponent={opponent} (cached)")
     
     # Practice status (DNP/LP/FP) - all positions
     if player_id and hasattr(nfl_db, 'get_latest_practice_status'):
@@ -2161,6 +2197,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             enriched_additions["practice_status_date"] = practice["date"]
             enriched_additions["practice_status_age_hours"] = round(age_hours, 1)
             enriched_additions["practice_status_stale"] = age_hours > 72
+            logger.debug(f"[Enrichment] {player_name}: practice_status={practice['status']} (age={round(age_hours, 1)}h)")
     
     # Usage stats (targets, routes, RZ touches) - offensive skill positions
     if season and week and position in ("WR", "RB", "TE") and hasattr(nfl_db, 'get_usage_last_n_weeks'):
@@ -2174,5 +2211,13 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                 "weeks_sample": usage["weeks_sample"]
             }
             enriched_additions["usage_source"] = "sleeper"
+            logger.debug(
+                f"[Enrichment] {player_name}: usage_last_3wks="
+                f"tgt={usage['targets_avg']:.1f}, routes={usage['routes_avg']:.1f}, "
+                f"rz={usage['rz_touches_avg']:.1f} (n={usage['weeks_sample']})"
+            )
+    
+    if enriched_additions:
+        logger.info(f"[Enrichment] {player_name}: Added {len(enriched_additions)} enrichment fields")
     
     return enriched_additions

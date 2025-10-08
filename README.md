@@ -81,9 +81,20 @@ export NFL_MCP_TIMEOUT_TOTAL=45.0
 export NFL_MCP_NFL_NEWS_MAX=75
 export NFL_MCP_SERVER_VERSION="1.0.0"
 
+# Advanced enrichment and prefetch (optional)
+export NFL_MCP_ADVANCED_ENRICH=1        # Enable snap%, opponent, practice status, usage metrics
+export NFL_MCP_PREFETCH=1               # Enable background data prefetch
+export NFL_MCP_PREFETCH_INTERVAL=900    # Prefetch interval in seconds (default: 900 = 15 min)
+export NFL_MCP_PREFETCH_SNAPS_TTL=1800  # Snap data TTL in seconds (default: 1800 = 30 min)
+
+# Logging configuration (optional)
+export NFL_MCP_LOG_LEVEL=INFO           # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
+
 # Run the server
 python -m nfl_mcp.server
 ```
+
+**Note:** Logging is enabled at INFO level by default, providing comprehensive tracking of prefetch operations, enrichment activity, and API calls. See [LOGGING_GUIDE.md](LOGGING_GUIDE.md) for detailed logging documentation.
 
 #### Configuration File (config.yml)
 ```yaml
@@ -107,6 +118,9 @@ security:
 docker run --rm -p 9000:9000 \
   -e NFL_MCP_TIMEOUT_TOTAL=45.0 \
   -e NFL_MCP_RATE_LIMIT_DEFAULT=120 \
+  -e NFL_MCP_ADVANCED_ENRICH=1 \
+  -e NFL_MCP_PREFETCH=1 \
+  -e NFL_MCP_LOG_LEVEL=INFO \
   nfl-mcp-server
 ```
 
