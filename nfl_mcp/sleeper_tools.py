@@ -238,11 +238,23 @@ async def get_rosters(league_id: str) -> dict:
                             snap_source = None
                             if season and current_week and athlete.get("position") not in (None, "DEF"):
                                 snap_row = nfl_db.get_player_snap_pct(pid, season, current_week)
+                                snap_week_used = current_week
+                                
                                 if not snap_row:
                                     await fetch_stats_if_needed(season, current_week)
                                     snap_row = nfl_db.get_player_snap_pct(pid, season, current_week)
+                                
+                                # Fallback to previous week if current week has no data
+                                if (not snap_row or snap_row.get("snap_pct") is None) and current_week > 1:
+                                    snap_row = nfl_db.get_player_snap_pct(pid, season, current_week - 1)
+                                    snap_week_used = current_week - 1
+                                    if not snap_row:
+                                        await fetch_stats_if_needed(season, current_week - 1)
+                                        snap_row = nfl_db.get_player_snap_pct(pid, season, current_week - 1)
+                                
                                 if snap_row and snap_row.get("snap_pct") is not None:
                                     obj["snap_pct"] = snap_row.get("snap_pct")
+                                    obj["snap_pct_week"] = snap_week_used  # Track which week was used
                                     snap_source = "cached"
                             if "snap_pct" not in obj:
                                 depth_rank = athlete.get("raw") and athlete.get("raw").get("depth_chart_order") if isinstance(athlete.get("raw"), dict) else None
