@@ -21,12 +21,17 @@ from .database import NFLDatabase
 from . import tool_registry
 import asyncio, os, logging
 from datetime import datetime, UTC
+from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
 PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
 PREFETCH_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900"))  # default 15m
 PREFETCH_SNAPS_TTL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_SNAPS_TTL", "900"))  # refetch snaps after 15m by default
+
+# Global state for prefetch task
+_prefetch_task = None
+_shutdown_event = None
 
 async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
     """Background loop to prefetch weekly schedule and player snaps to warm caches.
@@ -138,30 +143,58 @@ def create_app() -> FastMCP:
     for tool_func in tool_registry.get_all_tools():
         mcp.tool(tool_func)
     
-    # Background prefetch
-    if PREFETCH_ENABLED:
-        shutdown_event = asyncio.Event()
-        prefetch_task = None
-
-        @mcp.on_startup
-        async def _start_prefetch():
-            nonlocal prefetch_task
-            prefetch_task = asyncio.create_task(_prefetch_loop(nfl_db, shutdown_event))
-
-        @mcp.on_shutdown
-        async def _stop_prefetch():
-            shutdown_event.set()
-            if prefetch_task:
-                await prefetch_task
     return mcp
+
+
+@asynccontextmanager
+async def app_lifespan(app):
+    """Lifespan context manager for background tasks."""
+    global _prefetch_task, _shutdown_event
+    
+    if PREFETCH_ENABLED:
+        # Import late to avoid circular
+        from .sleeper_tools import ADVANCED_ENRICH_ENABLED
+        
+        if ADVANCED_ENRICH_ENABLED:
+            _shutdown_event = asyncio.Event()
+            nfl_db = tool_registry._shared_nfl_db  # Access shared DB instance
+            _prefetch_task = asyncio.create_task(_prefetch_loop(nfl_db, _shutdown_event))
+            logger.info("Background prefetch task started")
+        else:
+            logger.info("Prefetch disabled: NFL_MCP_ADVANCED_ENRICH not enabled")
+    
+    yield  # Server running
+    
+    # Shutdown
+    if _prefetch_task and _shutdown_event:
+        logger.info("Stopping prefetch task...")
+        _shutdown_event.set()
+        await _prefetch_task
+        logger.info("Prefetch task stopped")
 
 
 def main():
     """Main entry point for the server."""
     app = create_app()
     
-    # Run the server with HTTP transport on port 9000
-    app.run(transport="http", port=9000, host="0.0.0.0")
+    # Combine MCP lifespan with our app lifespan
+    @asynccontextmanager
+    async def combined_lifespan(app_instance):
+        async with app_lifespan(app_instance):
+            async with app.lifespan(app_instance):
+                yield
+    
+    # Create HTTP app with combined lifespan
+    from starlette.applications import Starlette
+    http_app = Starlette(lifespan=combined_lifespan)
+    
+    # Mount MCP
+    mcp_http = app.http_app(path="/mcp")
+    http_app.mount("/mcp", mcp_http)
+    
+    # Run with uvicorn
+    import uvicorn
+    uvicorn.run(http_app, host="0.0.0.0", port=9000)
 
 
 if __name__ == "__main__":
