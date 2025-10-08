@@ -188,19 +188,21 @@ def main():
     # Create lifespan with DB access
     app_lifespan_fn = create_lifespan(nfl_db)
     
-    # Combine MCP lifespan with our app lifespan
+    # Create MCP HTTP app (this has its own lifespan)
+    mcp_http = app.http_app(path="/mcp")
+    
+    # Combine our app lifespan with MCP's lifespan
     @asynccontextmanager
     async def combined_lifespan(app_instance):
         async with app_lifespan_fn(app_instance):
-            async with app.lifespan(app_instance):
+            async with mcp_http.lifespan(app_instance):
                 yield
     
-    # Create HTTP app with combined lifespan
+    # Create root Starlette app with combined lifespan
     from starlette.applications import Starlette
     http_app = Starlette(lifespan=combined_lifespan)
     
     # Mount MCP
-    mcp_http = app.http_app(path="/mcp")
     http_app.mount("/mcp", mcp_http)
     
     # Run with uvicorn
