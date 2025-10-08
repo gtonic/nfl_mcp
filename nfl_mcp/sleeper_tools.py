@@ -2292,6 +2292,19 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             enriched_additions["opponent_source"] = "cached"
             logger.debug(f"[Enrichment] {player_name} (DEF): opponent={opponent} (cached)")
     
+    # Injury status - all positions
+    if player_id and hasattr(nfl_db, 'get_player_injury_from_cache'):
+        injury = nfl_db.get_player_injury_from_cache(player_id, max_age_hours=12)
+        if injury:
+            age_hours = (datetime.now(UTC) - datetime.fromisoformat(injury["updated_at"])).total_seconds() / 3600
+            enriched_additions["injury_status"] = injury["injury_status"]
+            enriched_additions["injury_type"] = injury.get("injury_type")
+            enriched_additions["injury_description"] = injury.get("injury_description")
+            enriched_additions["injury_date"] = injury.get("date_reported")
+            enriched_additions["injury_age_hours"] = round(age_hours, 1)
+            enriched_additions["injury_stale"] = age_hours > 12
+            logger.debug(f"[Enrichment] {player_name}: injury_status={injury['injury_status']} (age={round(age_hours, 1)}h)")
+    
     # Practice status (DNP/LP/FP) - all positions
     if player_id and hasattr(nfl_db, 'get_latest_practice_status'):
         practice = nfl_db.get_latest_practice_status(player_id, max_age_hours=72)
