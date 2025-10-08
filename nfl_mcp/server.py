@@ -146,41 +146,52 @@ def create_app() -> FastMCP:
     return mcp
 
 
-@asynccontextmanager
-async def app_lifespan(app):
-    """Lifespan context manager for background tasks."""
-    global _prefetch_task, _shutdown_event
-    
-    if PREFETCH_ENABLED:
-        # Import late to avoid circular
-        from .sleeper_tools import ADVANCED_ENRICH_ENABLED
+def create_lifespan(nfl_db: NFLDatabase):
+    """Factory function to create lifespan with access to nfl_db instance."""
+    @asynccontextmanager
+    async def app_lifespan(app):
+        """Lifespan context manager for background tasks."""
+        global _prefetch_task, _shutdown_event
         
-        if ADVANCED_ENRICH_ENABLED:
-            _shutdown_event = asyncio.Event()
-            nfl_db = tool_registry._shared_nfl_db  # Access shared DB instance
-            _prefetch_task = asyncio.create_task(_prefetch_loop(nfl_db, _shutdown_event))
-            logger.info("Background prefetch task started")
-        else:
-            logger.info("Prefetch disabled: NFL_MCP_ADVANCED_ENRICH not enabled")
+        if PREFETCH_ENABLED:
+            # Import late to avoid circular
+            from .sleeper_tools import ADVANCED_ENRICH_ENABLED
+            
+            if ADVANCED_ENRICH_ENABLED:
+                _shutdown_event = asyncio.Event()
+                _prefetch_task = asyncio.create_task(_prefetch_loop(nfl_db, _shutdown_event))
+                logger.info("Background prefetch task started")
+            else:
+                logger.info("Prefetch disabled: NFL_MCP_ADVANCED_ENRICH not enabled")
+        
+        yield  # Server running
+        
+        # Shutdown
+        if _prefetch_task and _shutdown_event:
+            logger.info("Stopping prefetch task...")
+            _shutdown_event.set()
+            await _prefetch_task
+            logger.info("Prefetch task stopped")
     
-    yield  # Server running
-    
-    # Shutdown
-    if _prefetch_task and _shutdown_event:
-        logger.info("Stopping prefetch task...")
-        _shutdown_event.set()
-        await _prefetch_task
-        logger.info("Prefetch task stopped")
+    return app_lifespan
 
 
 def main():
     """Main entry point for the server."""
     app = create_app()
     
+    # Get DB instance for lifespan
+    nfl_db = tool_registry._nfl_db
+    if not nfl_db:
+        raise RuntimeError("NFLDatabase not initialized in tool_registry")
+    
+    # Create lifespan with DB access
+    app_lifespan_fn = create_lifespan(nfl_db)
+    
     # Combine MCP lifespan with our app lifespan
     @asynccontextmanager
     async def combined_lifespan(app_instance):
-        async with app_lifespan(app_instance):
+        async with app_lifespan_fn(app_instance):
             async with app.lifespan(app_instance):
                 yield
     
