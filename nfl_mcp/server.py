@@ -129,16 +129,6 @@ def create_app() -> FastMCP:
     # Initialize shared resources in tool registry
     tool_registry.initialize_shared(nfl_db)
     
-    # Health endpoint (non-MCP, directly exposed REST endpoint)
-    @mcp.custom_route(path="/health", methods=["GET"])
-    async def health_check(request):
-        """Health check endpoint for monitoring server status."""
-        return JSONResponse({
-            "status": "healthy",
-            "service": "NFL MCP Server",
-            "version": "0.1.0"
-        })
-    
     # Register all tools from the tool registry
     for tool_func in tool_registry.get_all_tools():
         mcp.tool(tool_func)
@@ -200,7 +190,23 @@ def main():
     
     # Create root Starlette app with combined lifespan
     from starlette.applications import Starlette
-    http_app = Starlette(lifespan=combined_lifespan)
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    
+    async def health_check(request):
+        """Health check endpoint for monitoring server status."""
+        return JSONResponse({
+            "status": "healthy",
+            "service": "NFL MCP Server",
+            "version": "0.4.1"
+        })
+    
+    http_app = Starlette(
+        lifespan=combined_lifespan,
+        routes=[
+            Route("/health", health_check, methods=["GET"])
+        ]
+    )
     
     # Mount MCP
     http_app.mount("/mcp", mcp_http)
