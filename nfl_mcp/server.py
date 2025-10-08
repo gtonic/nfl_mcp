@@ -170,6 +170,18 @@ def main():
     """Main entry point for the server."""
     app = create_app()
     
+    # Add health endpoint using FastMCP's custom_route
+    from starlette.responses import JSONResponse
+    
+    @app.custom_route("/health", methods=["GET"])
+    async def health_check(request):
+        """Health check endpoint for monitoring server status."""
+        return JSONResponse({
+            "status": "healthy",
+            "service": "NFL MCP Server",
+            "version": "0.4.4"
+        })
+    
     # Get DB instance for lifespan
     nfl_db = tool_registry._nfl_db
     if not nfl_db:
@@ -178,42 +190,27 @@ def main():
     # Create lifespan with DB access
     app_lifespan_fn = create_lifespan(nfl_db)
     
-    # Create MCP HTTP app (this has its own lifespan)
+    # Get MCP HTTP app with /mcp path prefix
     mcp_http = app.http_app(path="/mcp")
     
-    # Combine our app lifespan with MCP's lifespan
+    # Save original MCP lifespan BEFORE replacing it
+    original_mcp_lifespan = mcp_http.router.lifespan_context
+    
+    # Combine lifespans
     @asynccontextmanager
     async def combined_lifespan(app_instance):
+        # Start our custom lifespan (prefetch, etc.)
         async with app_lifespan_fn(app_instance):
-            async with mcp_http.lifespan(app_instance):
+            # Start MCP's ORIGINAL lifespan
+            async with original_mcp_lifespan(app_instance):
                 yield
     
-    # Create root Starlette app with combined lifespan
-    from starlette.applications import Starlette
-    from starlette.responses import JSONResponse
-    from starlette.routing import Route
-    
-    async def health_check(request):
-        """Health check endpoint for monitoring server status."""
-        return JSONResponse({
-            "status": "healthy",
-            "service": "NFL MCP Server",
-            "version": "0.4.1"
-        })
-    
-    http_app = Starlette(
-        lifespan=combined_lifespan,
-        routes=[
-            Route("/health", health_check, methods=["GET"])
-        ]
-    )
-    
-    # Mount MCP
-    http_app.mount("/mcp", mcp_http)
+    # Replace the lifespan with combined version
+    mcp_http.router.lifespan_context = combined_lifespan
     
     # Run with uvicorn
     import uvicorn
-    uvicorn.run(http_app, host="0.0.0.0", port=9000)
+    uvicorn.run(mcp_http, host="0.0.0.0", port=9000)
 
 
 if __name__ == "__main__":
