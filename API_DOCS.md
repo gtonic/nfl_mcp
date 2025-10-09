@@ -144,6 +144,8 @@ Praxis-Status & Nutzungs-Metriken (aktiviert via `NFL_MCP_ADVANCED_ENRICH=1`):
 | practice_status_stale | Report älter als 72h | Boolean |
 | usage_last_3_weeks | Durchschnittliche Nutzungs-Metriken (WR/RB/TE) | Objekt (siehe unten) |
 | usage_source | Herkunft der Nutzungsdaten | sleeper, estimated |
+| usage_trend | Trend-Analyse für einzelne Metriken | Objekt (siehe unten) |
+| usage_trend_overall | Gesamttrend basierend auf Hauptmetriken | up, down, flat |
 
 **Usage-Objekt Felder:**
 - `targets_avg`: Durchschnitt Targets pro Spiel
@@ -152,9 +154,16 @@ Praxis-Status & Nutzungs-Metriken (aktiviert via `NFL_MCP_ADVANCED_ENRICH=1`):
 - `snap_share_avg`: Durchschnitt Snap-Anteil (%)
 - `weeks_sample`: Anzahl Wochen in Stichprobe (1–3)
 
+**Usage-Trend Objekt Felder:**
+- `targets`: Trend für Targets (up/down/flat)
+- `routes`: Trend für Routes (up/down/flat)
+- `snap_share`: Trend für Snap-Anteil (up/down/flat)
+
 **Hinweise:**
 - DNP = hohes Risiko (nicht trainiert), LP = moderat, FP/Full = gering
 - Usage-Metriken liefern echte Volume-Indikatoren jenseits der Depth-Chart-Position
+- Trend-Berechnung: Vergleicht letzte Woche mit Durchschnitt der vorherigen Wochen (Schwellenwert: 15%)
+- Trend "up" = steigende Nutzung (↑), "down" = fallende Nutzung (↓), "flat" = stabile Nutzung (→)
 - Prefetch-Job lädt Practice Reports Do–Sa, Usage-Stats wöchentlich
 
 ---
