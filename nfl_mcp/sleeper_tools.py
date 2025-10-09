@@ -2279,7 +2279,7 @@ async def _fetch_practice_reports(season: int, week: int):
         
         # Map injury status to practice participation
         practice_status = None
-        if 'OUT' in status or 'IR' in status or 'PUP' in status:
+        if 'OUT' in status or 'RESERVE' in status or 'PUP' in status:
             practice_status = 'DNP'  # Did Not Participate
         elif 'DOUBTFUL' in status or 'LIMITED' in status:
             practice_status = 'LP'   # Limited Participation
@@ -2483,6 +2483,30 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             enriched_additions["practice_status_age_hours"] = round(age_hours, 1)
             enriched_additions["practice_status_stale"] = age_hours > 72
             logger.debug(f"[Enrichment] {player_name}: practice_status={practice['status']} (age={round(age_hours, 1)}h)")
+        else:
+            # If no explicit practice status, derive from injury status or default to FP
+            injury_status = enriched_additions.get("injury_status", "").upper()
+            if injury_status:
+                # Derive practice status from injury status
+                if 'OUT' in injury_status or 'RESERVE' in injury_status or 'PUP' in injury_status:
+                    derived_status = 'DNP'  # Did Not Participate
+                elif 'DOUBTFUL' in injury_status or 'LIMITED' in injury_status:
+                    derived_status = 'LP'   # Limited Participation
+                elif 'QUESTIONABLE' in injury_status:
+                    derived_status = 'LP'   # Usually limited
+                elif 'PROBABLE' in injury_status or 'FULL' in injury_status:
+                    derived_status = 'FP'   # Full Participation
+                else:
+                    derived_status = 'FP'   # Default to full if injury status is unclear
+                
+                enriched_additions["practice_status"] = derived_status
+                enriched_additions["practice_status_source"] = "derived_from_injury"
+                logger.debug(f"[Enrichment] {player_name}: practice_status={derived_status} (derived from injury_status={injury_status})")
+            else:
+                # No injury, no practice status -> assume healthy and fully practicing
+                enriched_additions["practice_status"] = "FP"
+                enriched_additions["practice_status_source"] = "default_healthy"
+                logger.debug(f"[Enrichment] {player_name}: practice_status=FP (default - no injury)")
     
     # Usage stats (targets, routes, RZ touches) - offensive skill positions
     if season and week and position in ("WR", "RB", "TE") and hasattr(nfl_db, 'get_usage_last_n_weeks'):
