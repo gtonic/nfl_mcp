@@ -212,18 +212,20 @@ docker logs -f nfl-mcp | grep "Prefetch Cycle"
 
 2. **targets_avg**:
    - Not a pass-catching position (non-WR/RB/TE)
-   - Player hasn't received targets in last 3 weeks
+   - Player hasn't been in any games in last 3 weeks (no data available)
    - Rookie with limited data
+   - **Note**: Zero targets will show as `0.0`, not "Unklar"
 
 3. **routes_avg**:
    - Not a receiver (RB may have NULL routes)
    - Sleeper API doesn't track for this player
-   - Usage too low to register
+   - Player hasn't been in any games in last 3 weeks
+   - **Note**: Zero routes will show as `0.0`, not "Unklar"
 
 4. **rz_touches_avg**:
-   - No red zone opportunities in last 3 weeks
+   - No red zone opportunities in last 3 weeks (will show as `0.0`)
    - Defense-focused player
-   - Limited usage
+   - Player hasn't been in any games in last 3 weeks
 
 5. **practice_status**:
    - **Now always provided**: The system now provides practice_status for all players
