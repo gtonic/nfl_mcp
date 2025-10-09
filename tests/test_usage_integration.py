@@ -228,3 +228,72 @@ class TestUsageStatsIntegration:
         
         # Trend should not be present with insufficient data
         # (or if present, should handle gracefully)
+    
+    def test_enrichment_with_zero_values(self, db):
+        """Test that enrichment properly handles zero values (not treats them as None)."""
+        athlete = {
+            "id": "test_player3",
+            "player_id": "test_player3",
+            "full_name": "Test Player 3",
+            "position": "RB"
+        }
+        
+        # Insert athlete (expects dict with player_id as key)
+        db.upsert_athletes({
+            "test_player3": {
+                "full_name": "Test Player 3",
+                "first_name": "Test",
+                "last_name": "Player3",
+                "position": "RB",
+                "team": "SF",
+                "age": 23
+            }
+        })
+        
+        # Insert usage stats where some metrics are zero (e.g., RB with no targets/routes)
+        usage_stats = [
+            {
+                "player_id": "test_player3",
+                "season": 2024,
+                "week": 3,
+                "targets": 0,
+                "routes": 0,
+                "rz_touches": 2,
+                "touches": 15,
+                "snap_share": 60.0
+            },
+            {
+                "player_id": "test_player3",
+                "season": 2024,
+                "week": 4,
+                "targets": 0,
+                "routes": 0,
+                "rz_touches": 1,
+                "touches": 18,
+                "snap_share": 65.0
+            },
+            {
+                "player_id": "test_player3",
+                "season": 2024,
+                "week": 5,
+                "targets": 0,
+                "routes": 0,
+                "rz_touches": 3,
+                "touches": 20,
+                "snap_share": 70.0
+            }
+        ]
+        db.upsert_usage_stats(usage_stats)
+        
+        # Call enrichment
+        enrichment = _enrich_usage_and_opponent(db, athlete, 2024, 6)
+        
+        # Check that usage stats are present
+        assert "usage_last_3_weeks" in enrichment, "Should have usage_last_3_weeks"
+        usage = enrichment["usage_last_3_weeks"]
+        
+        # Critical: Zero values should be 0.0, not None
+        assert usage["targets_avg"] == 0.0, "Zero targets should be 0.0, not None"
+        assert usage["routes_avg"] == 0.0, "Zero routes should be 0.0, not None"
+        assert usage["rz_touches_avg"] == 2.0, "RZ touches average should be 2.0"
+        assert usage["snap_share_avg"] == 65.0, "Snap share average should be 65.0"

@@ -2513,10 +2513,10 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
         usage = nfl_db.get_usage_last_n_weeks(player_id, season, week, n=3)
         if usage:
             enriched_additions["usage_last_3_weeks"] = {
-                "targets_avg": round(usage["targets_avg"], 1) if usage["targets_avg"] else None,
-                "routes_avg": round(usage["routes_avg"], 1) if usage["routes_avg"] else None,
-                "rz_touches_avg": round(usage["rz_touches_avg"], 1) if usage["rz_touches_avg"] else None,
-                "snap_share_avg": round(usage["snap_share_avg"], 1) if usage["snap_share_avg"] else None,
+                "targets_avg": round(usage["targets_avg"], 1) if usage["targets_avg"] is not None else None,
+                "routes_avg": round(usage["routes_avg"], 1) if usage["routes_avg"] is not None else None,
+                "rz_touches_avg": round(usage["rz_touches_avg"], 1) if usage["rz_touches_avg"] is not None else None,
+                "snap_share_avg": round(usage["snap_share_avg"], 1) if usage["snap_share_avg"] is not None else None,
                 "weeks_sample": usage["weeks_sample"]
             }
             enriched_additions["usage_source"] = "sleeper"
