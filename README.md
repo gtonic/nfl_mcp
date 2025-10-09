@@ -231,6 +231,8 @@ Additional practice status & usage metrics (requires `NFL_MCP_ADVANCED_ENRICH=1`
 | `practice_status_stale` | Report older than 72h | Boolean |
 | `usage_last_3_weeks` | Avg usage metrics (WR/RB/TE only) | Object (see below) |
 | `usage_source` | Provenance for usage data | `sleeper`, `estimated` |
+| `usage_trend` | Trend analysis per metric (WR/RB/TE) | Object (see below) |
+| `usage_trend_overall` | Overall usage trend direction | `up`, `down`, `flat` |
 
 **Usage Object Fields:**
 - `targets_avg`: Average targets per game (1 decimal)
@@ -239,10 +241,18 @@ Additional practice status & usage metrics (requires `NFL_MCP_ADVANCED_ENRICH=1`
 - `snap_share_avg`: Average snap share percentage (1 decimal)
 - `weeks_sample`: Number of weeks in sample (1-3)
 
+**Usage Trend Object Fields:**
+- `targets`: Trend for targets (`up`/`down`/`flat`)
+- `routes`: Trend for routes run (`up`/`down`/`flat`)
+- `snap_share`: Trend for snap percentage (`up`/`down`/`flat`)
+
 **Notes:**
 - Practice status helps identify injury risk (DNP = high risk, LP = moderate, FP/Full = low)
 - Usage metrics provide true volume indicators beyond depth chart position
+- Trend calculation compares most recent week vs prior weeks (15% threshold)
+- Trend "up" (↑) = rising usage, "down" (↓) = declining usage, "flat" (→) = stable usage
 - All fields are additive; absent fields mean data unavailable
+- See [USAGE_TREND_ANALYSIS.md](USAGE_TREND_ANALYSIS.md) for detailed trend documentation
 
 
 #### Robustness & Snapshot Behavior

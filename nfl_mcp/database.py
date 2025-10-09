@@ -955,6 +955,38 @@ class NFLDatabase:
             logger.debug(f"get_usage_last_n_weeks failed: {e}")
             return None
     
+    def get_usage_weekly_breakdown(self, player_id: str, season: int, current_week: int, n: int = 3) -> Optional[List[Dict]]:
+        """Get individual week usage stats for trend calculation.
+        
+        Returns list of dicts with week and stats, ordered by week DESC.
+        Used to calculate if usage is trending up/down/flat.
+        """
+        try:
+            start_week = max(1, current_week - n)
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT 
+                        week,
+                        targets,
+                        routes,
+                        rz_touches,
+                        snap_share,
+                        touches
+                    FROM player_usage_stats
+                    WHERE player_id=? AND season=? AND week BETWEEN ? AND ?
+                    ORDER BY week DESC
+                    """,
+                    (player_id, season, start_week, current_week - 1),
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    return None
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.debug(f"get_usage_weekly_breakdown failed: {e}")
+            return None
+    
     # ------------------------------------------------------------------
     # Injury reports helpers
     # ------------------------------------------------------------------

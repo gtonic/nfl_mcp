@@ -2371,6 +2371,48 @@ def _estimate_snap_pct(depth_rank: Optional[int]) -> Optional[float]:
         return 45.0
     return 15.0
 
+def _calculate_usage_trend(weekly_data: List[Dict], metric: str) -> Optional[str]:
+    """Calculate trend direction for a usage metric over recent weeks.
+    
+    Args:
+        weekly_data: List of week dicts ordered by week DESC (most recent first)
+        metric: Name of the metric to analyze (targets, routes, rz_touches, snap_share)
+    
+    Returns:
+        "up" if trending upward, "down" if trending downward, "flat" if stable, None if insufficient data
+    """
+    if not weekly_data or len(weekly_data) < 2:
+        return None
+    
+    # Extract values for the metric (ignore None values)
+    values = []
+    for week_data in weekly_data:
+        val = week_data.get(metric)
+        if val is not None:
+            values.append(float(val))
+    
+    if len(values) < 2:
+        return None
+    
+    # Compare most recent week vs average of prior weeks
+    most_recent = values[0]
+    prior_avg = sum(values[1:]) / len(values[1:])
+    
+    # Calculate percentage change
+    if prior_avg == 0:
+        # If prior average is 0, any positive value is "up"
+        return "up" if most_recent > 0 else "flat"
+    
+    pct_change = ((most_recent - prior_avg) / prior_avg) * 100
+    
+    # Threshold for significant change: 15%
+    if pct_change > 15:
+        return "up"
+    elif pct_change < -15:
+        return "down"
+    else:
+        return "flat"
+
 def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], week: Optional[int]) -> Dict:
     """Add snap_pct/opponent fields to a base enrichment object (mutates and returns)."""
     if not athlete:
@@ -2456,9 +2498,31 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             enriched_additions["usage_source"] = "sleeper"
             logger.debug(
                 f"[Enrichment] {player_name}: usage_last_3wks="
-                f"tgt={usage['targets_avg']:.1f}, routes={usage['routes_avg']:.1f}, "
-                f"rz={usage['rz_touches_avg']:.1f} (n={usage['weeks_sample']})"
+                f"tgt={usage['targets_avg'] or 0:.1f}, routes={usage['routes_avg'] or 0:.1f}, "
+                f"rz={usage['rz_touches_avg'] or 0:.1f} (n={usage['weeks_sample']})"
             )
+            
+            # Add trend calculation if we have weekly breakdown
+            if hasattr(nfl_db, 'get_usage_weekly_breakdown'):
+                weekly_breakdown = nfl_db.get_usage_weekly_breakdown(player_id, season, week, n=3)
+                if weekly_breakdown and len(weekly_breakdown) >= 2:
+                    # Calculate trends for key metrics
+                    targets_trend = _calculate_usage_trend(weekly_breakdown, "targets")
+                    routes_trend = _calculate_usage_trend(weekly_breakdown, "routes")
+                    snap_trend = _calculate_usage_trend(weekly_breakdown, "snap_share")
+                    
+                    # Add trend to enrichment if at least one metric has a trend
+                    if targets_trend or routes_trend or snap_trend:
+                        enriched_additions["usage_trend"] = {
+                            "targets": targets_trend,
+                            "routes": routes_trend,
+                            "snap_share": snap_trend
+                        }
+                        # Overall trend (prioritize targets for skill positions)
+                        overall_trend = targets_trend or snap_trend or routes_trend
+                        if overall_trend:
+                            enriched_additions["usage_trend_overall"] = overall_trend
+                            logger.debug(f"[Enrichment] {player_name}: usage_trend={overall_trend}")
     
     if enriched_additions:
         logger.info(f"[Enrichment] {player_name}: Added {len(enriched_additions)} enrichment fields")
