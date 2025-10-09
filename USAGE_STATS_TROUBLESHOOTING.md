@@ -41,6 +41,8 @@ NFL_MCP_PREFETCH=1         # Enables background data fetching
      "snap_pct": 92.3,
      "snap_pct_source": "cached",
      "snap_pct_week": 5,
+     "practice_status": "FP",
+     "practice_status_source": "default_healthy",
      "usage_last_3_weeks": {
        "targets_avg": 11.3,
        "routes_avg": 35.7,
@@ -56,6 +58,12 @@ NFL_MCP_PREFETCH=1         # Enables background data fetching
      "usage_trend_overall": "up"
    }
    ```
+   
+   **practice_status_source** values:
+   - `"cached"`: From explicit practice report in database
+   - `"derived_from_injury"`: Derived from current injury status
+   - `"default_healthy"`: No injury, defaulted to FP (healthy)
+
 
 ## Troubleshooting Steps
 
@@ -216,6 +224,16 @@ docker logs -f nfl-mcp | grep "Prefetch Cycle"
    - No red zone opportunities in last 3 weeks
    - Defense-focused player
    - Limited usage
+
+5. **practice_status**:
+   - **Now always provided**: The system now provides practice_status for all players
+   - **Default to "FP"**: Healthy players (no injury) default to "FP" (Full Participation)
+   - **Derived from injury**: If no explicit practice report, status is derived from injury status:
+     - Out/Reserve/PUP → DNP (Did Not Participate)
+     - Doubtful/Limited → LP (Limited Participation)  
+     - Questionable → LP (Usually limited)
+     - Probable/Full → FP (Full Participation)
+   - **Explicit reports**: When available from ESPN injury reports (Thu-Sat)
 
 ## Best Practices
 
