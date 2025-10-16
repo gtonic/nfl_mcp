@@ -1974,6 +1974,7 @@ async def _fetch_week_player_snaps(season: int, week: int):
     or network/API issues occur, returns empty list.
     
     Uses retry logic with exponential backoff and circuit breaker pattern.
+    Includes response validation to ensure data quality.
     """
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug(f"[Fetch Snaps] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
@@ -1993,6 +1994,12 @@ async def _fetch_week_player_snaps(season: int, week: int):
             data = resp.json() or {}
             if not isinstance(data, dict):
                 logger.warning(f"[Fetch Snaps] Invalid data format (not dict)")
+                return []
+            
+            # Validate response
+            from .response_validation import validate_response_and_log, validate_snap_count_response
+            if not validate_response_and_log(data, validate_snap_count_response, "Snaps", allow_partial=True):
+                logger.error(f"[Fetch Snaps] Response validation failed, returning empty list")
                 return []
             
             logger.debug(f"[Fetch Snaps] Received data for {len(data)} players")
@@ -2038,6 +2045,7 @@ async def _fetch_week_schedule(season: int, week: int):
     If advanced enrichment disabled or failure occurs, returns empty list.
     
     Uses retry logic with exponential backoff and circuit breaker pattern.
+    Includes response validation to ensure data quality.
     """
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug(f"[Fetch Schedule] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
@@ -2074,6 +2082,12 @@ async def _fetch_week_schedule(season: int, week: int):
                         continue
                     games.append({"season": season, "week": week, "team": h_abbr, "opponent": a_abbr, "is_home": 1, "kickoff": kickoff, "raw": ev})
                     games.append({"season": season, "week": week, "team": a_abbr, "opponent": h_abbr, "is_home": 0, "kickoff": kickoff, "raw": ev})
+            
+            # Validate response
+            from .response_validation import validate_response_and_log, validate_schedule_response
+            if not validate_response_and_log(games, validate_schedule_response, "Schedule", allow_partial=True):
+                logger.error(f"[Fetch Schedule] Response validation failed, returning empty list")
+                return []
             
             logger.info(f"[Fetch Schedule] Successfully fetched {len(games)} game records ({len(events)} events, season={season}, week={week})")
             return games
@@ -2283,6 +2297,7 @@ async def _fetch_practice_reports(season: int, week: int):
     
     Note: This uses the injuries endpoint which includes practice participation status.
     Uses retry logic with exponential backoff and circuit breaker pattern.
+    Includes response validation to ensure data quality.
     """
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug(f"[Fetch Practice] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
@@ -2325,6 +2340,12 @@ async def _fetch_practice_reports(season: int, week: int):
                     'source': 'espn_injuries'
                 })
         
+        # Validate response
+        from .response_validation import validate_response_and_log, validate_practice_report_response
+        if not validate_response_and_log(practice_reports, validate_practice_report_response, "Practice", allow_partial=True):
+            logger.error(f"[Fetch Practice] Response validation failed, returning empty list")
+            return []
+        
         logger.info(f"[Fetch Practice] Extracted {len(practice_reports)} practice status records from {len(injuries)} injuries")
         return practice_reports
     
@@ -2348,6 +2369,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
     Returns list of dicts for upsert_usage_stats.
     Attempts Sleeper stats first, falls back to ESPN if needed.
     Uses retry logic with exponential backoff and circuit breaker pattern.
+    Includes response validation to ensure data quality.
     """
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug(f"[Fetch Usage] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
@@ -2391,7 +2413,14 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                                 "air_yards": air_yards,
                                 "snap_share": snap_share
                             })
+                    
                     if stats:
+                        # Validate response
+                        from .response_validation import validate_response_and_log, validate_usage_stats_response
+                        if not validate_response_and_log(stats, validate_usage_stats_response, "Usage", allow_partial=True):
+                            logger.error(f"[Fetch Usage] Response validation failed, returning empty list")
+                            return []
+                        
                         logger.info(f"[Fetch Usage] Successfully fetched {len(stats)} usage records (season={season}, week={week})")
                         return stats
                     else:
