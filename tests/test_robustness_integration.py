@@ -5,10 +5,12 @@ Tests the retry, circuit breaker, and validation features working together.
 """
 
 import pytest
+import time
 from unittest.mock import AsyncMock, patch
 from nfl_mcp.retry_utils import (
     CircuitBreaker,
     CircuitState,
+    CircuitBreakerError,
     retry_with_backoff,
     get_circuit_breaker,
 )
@@ -129,7 +131,8 @@ class TestCircuitBreakerIntegration:
         """Test circuit breaker prevents calls when open."""
         cb = get_circuit_breaker("test_prevent")
         cb.state = CircuitState.OPEN
-        cb.last_failure_time = 999999999999  # Far future
+        # Set last_failure_time to far future so circuit stays open
+        cb.last_failure_time = time.time() + 86400  # 24 hours in future
         
         call_count = [0]
         
@@ -138,7 +141,6 @@ class TestCircuitBreakerIntegration:
             return "success"
         
         # Should fail immediately without calling function
-        from nfl_mcp.retry_utils import CircuitBreakerError
         with pytest.raises(CircuitBreakerError):
             await retry_with_backoff(
                 mock_fetch,
@@ -216,7 +218,7 @@ class TestEndToEndScenarios:
                     max_retries=0,
                     circuit_breaker_name="persistent_test"
                 )
-            except (ConnectionError, Exception):
+            except (ConnectionError, CircuitBreakerError):
                 pass
         
         # Circuit should be open
