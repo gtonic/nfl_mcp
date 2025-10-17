@@ -83,18 +83,30 @@ def get_rate_limit_status(identifier: str, limit: int, window_seconds: int = 60)
     }
 
 
-# HTTP Client Configuration - now loaded from ConfigManager
+# HTTP Client Configuration - now loaded from ConfigManager with env var support
 def _get_timeout_config():
-    """Get timeout configuration from ConfigManager."""
+    """Get timeout configuration from ConfigManager and environment variables."""
     try:
+        # Check for environment variable override first
+        timeout_seconds = os.getenv("NFL_MCP_API_TIMEOUT")
+        if timeout_seconds:
+            timeout_val = float(timeout_seconds)
+            return httpx.Timeout(timeout_val, connect=timeout_val / 3)
+        # Fall back to ConfigManager
         return get_config_manager().get_http_timeout()
     except Exception:
         # Fallback to hardcoded values if ConfigManager fails
         return httpx.Timeout(30.0, connect=10.0)
 
 def _get_long_timeout_config():
-    """Get long timeout configuration from ConfigManager."""
+    """Get long timeout configuration from ConfigManager and environment variables."""
     try:
+        # Check for environment variable override first
+        timeout_seconds = os.getenv("NFL_MCP_API_LONG_TIMEOUT")
+        if timeout_seconds:
+            timeout_val = float(timeout_seconds)
+            return httpx.Timeout(timeout_val, connect=timeout_val / 4)
+        # Fall back to ConfigManager
         return get_config_manager().get_long_http_timeout()
     except Exception:
         # Fallback to hardcoded values if ConfigManager fails
