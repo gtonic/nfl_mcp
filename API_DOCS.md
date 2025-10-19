@@ -220,6 +220,9 @@ Wenn du eine textuelle Analyse erzeugst:
 - **search_athletes** - Search players by name
 - **get_athletes_by_team** - Get all players for a team
 
+### 🔄 Trade Analysis Tools
+- **analyze_trade** - Analyze fantasy football trade fairness and fit
+
 ### 🌐 Web Scraping Tools
 - **crawl_url** - Extract text content from any webpage
 
@@ -261,7 +264,131 @@ Wenn du eine textuelle Analyse erzeugst:
 - **League management** → `get_league`, `get_rosters`, `get_league_users`
 - **Weekly planning** → `get_matchups`, `get_nfl_state`
 - **Waiver wire** → `get_trending_players`
-- **Trade analysis** → `get_transactions`, `get_traded_picks`
+- **Trade analysis** → `analyze_trade` (evaluate trade fairness), `get_transactions`, `get_traded_picks`
 
 #### For Web Content:
 - **Extract article text** → `crawl_url`
+
+---
+
+## 🔄 Trade Analyzer Tool - Detailed Documentation
+
+### analyze_trade
+
+**Purpose**: Analyze fantasy football trades for fairness and strategic fit between two teams.
+
+**When to Use**:
+- Evaluating a proposed trade before accepting/rejecting
+- Assessing if a trade is fair or lopsided
+- Understanding how a trade affects positional depth
+- Getting objective recommendations on trade value
+
+**Parameters**:
+```
+league_id (str, required): Unique league identifier
+team1_roster_id (int, required): Roster ID for team 1
+team2_roster_id (int, required): Roster ID for team 2
+team1_gives (list[str], required): Player IDs team 1 is trading away
+team2_gives (list[str], required): Player IDs team 2 is trading away
+include_trending (bool, optional, default=True): Include trending data in analysis
+```
+
+**Returns**:
+```json
+{
+  "success": true,
+  "recommendation": "fair" | "slightly_favors_team_1" | "slightly_favors_team_2" | "needs_adjustment" | "unfair",
+  "fairness_score": 85.5,
+  "team1_analysis": {
+    "roster_id": 1,
+    "gives": [{"player_id": "4034", "name": "Patrick Mahomes", "position": "QB", "value": 70.5}],
+    "receives": [{"player_id": "4036", "name": "Justin Jefferson", "position": "WR", "value": 75.0}],
+    "positional_needs": {"QB": 5, "RB": 8, "WR": 3, "TE": 6}
+  },
+  "team2_analysis": {
+    "roster_id": 2,
+    "gives": [{"player_id": "4036", "name": "Justin Jefferson", "position": "WR", "value": 75.0}],
+    "receives": [{"player_id": "4034", "name": "Patrick Mahomes", "position": "QB", "value": 70.5}],
+    "positional_needs": {"QB": 8, "RB": 4, "WR": 6, "TE": 5}
+  },
+  "trade_details": {
+    "team1_gives_value": 70.5,
+    "team2_gives_value": 75.0,
+    "team1_receives_adjusted_value": 81.0,
+    "team2_receives_adjusted_value": 86.5,
+    "team1_need_bonus": 6.0,
+    "team2_need_bonus": 16.0,
+    "value_difference": 5.5
+  },
+  "warnings": [
+    "Player X has DNP status (injury concern)"
+  ],
+  "league_id": "12345"
+}
+```
+
+**Fairness Score Interpretation**:
+- **90-100**: Perfectly balanced trade, both teams benefit equally
+- **75-89**: Fair trade with slight advantage to one team
+- **60-74**: Trade needs adjustment, moderate imbalance
+- **Below 60**: Significantly unfair trade
+
+**Value Calculation Factors**:
+1. **Position Scarcity**: RBs valued higher (1.3x), TEs (1.2x), WRs (1.1x), QBs (1.0x)
+2. **Practice Status**: DNP (-30%), LP (-15%), Full Practice (+5%)
+3. **Usage Trends**: Upward trend (+15%), Downward trend (-15%)
+4. **Snap Percentage**: >80% (+10%), <30% (-20%)
+5. **Trending Status**: Each add count worth +2 value (capped at +20)
+6. **Positional Needs**: Adds bonus value for positions of high need
+
+**Example Usage**:
+
+Simple 1-for-1 trade:
+```python
+analyze_trade(
+    league_id="123456789",
+    team1_roster_id=1,
+    team2_roster_id=3,
+    team1_gives=["4034"],      # Patrick Mahomes
+    team2_gives=["4036"],      # Justin Jefferson
+    include_trending=True
+)
+```
+
+Multi-player trade (2-for-2):
+```python
+analyze_trade(
+    league_id="123456789",
+    team1_roster_id=1,
+    team2_roster_id=5,
+    team1_gives=["4034", "4035"],  # Mahomes + McCaffrey
+    team2_gives=["4036", "4037"],  # Jefferson + Kelce
+    include_trending=True
+)
+```
+
+**Common Use Cases**:
+
+1. **Pre-Trade Evaluation**: Check fairness before proposing
+2. **Trade Review**: Validate if counter-offer is reasonable
+3. **League Commissioner**: Verify trades aren't collusion
+4. **Strategic Planning**: Understand positional impact of trades
+
+**Best Practices**:
+- Always run analysis before accepting trades
+- Consider warnings (injuries, depth issues) seriously
+- Compare fairness_score across multiple trade scenarios
+- Check positional_needs to ensure trade improves roster balance
+- Use with `include_trending=True` for most accurate current values
+
+**Limitations**:
+- Values are estimates based on available data, not guarantees
+- Does not account for schedule strength or playoff matchups
+- Player values may not reflect league-specific scoring settings
+- Historical performance may not predict future outcomes
+
+**Related Tools**:
+- `get_rosters` - View current team rosters
+- `get_trending_players` - See hot waiver pickups
+- `get_transactions` - Review past trades in league
+- `get_traded_picks` - Check draft pick trades
