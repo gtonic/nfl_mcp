@@ -63,7 +63,7 @@ class TradeAnalyzer:
             trending_players = trending_data.get("trending_players", [])
             for trending in trending_players:
                 if trending.get("player_id") == player_id:
-                    # Trending adds mean higher value
+                    # Trending status means higher value
                     add_count = trending.get("count", 0)
                     value += min(add_count * 2, 20)  # Cap at +20 for trending
                     break

@@ -581,8 +581,8 @@ async def analyze_trade(
     league_id: str,
     team1_roster_id: int,
     team2_roster_id: int,
-    team1_gives: List[str],
-    team2_gives: List[str],
+    team1_gives: list[str],
+    team2_gives: list[str],
     include_trending: bool = True
 ) -> dict:
     """Analyze a fantasy football trade for fairness and fit.
