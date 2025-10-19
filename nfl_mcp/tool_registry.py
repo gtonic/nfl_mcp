@@ -8,7 +8,7 @@ from typing import Optional, List, Callable, Any
 import json
 import httpx
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools
+from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools
 from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
 from .database import NFLDatabase
 
@@ -73,6 +73,9 @@ def get_all_tools() -> List[Callable]:
         get_waiver_log,
         check_re_entry_status,
         get_waiver_wire_dashboard,
+        
+        # Trade Analyzer Tools
+        analyze_trade,
     ]
     
     # Add feature-flagged tools
@@ -567,6 +570,81 @@ async def get_waiver_wire_dashboard(league_id: str, round: Optional[int] = None)
         return await waiver_tools.get_waiver_wire_dashboard(league_id, round)
     except ValueError as e:
         return {"dashboard": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {str(e)}"}
+
+
+# =============================================================================
+# TRADE ANALYZER TOOLS
+# =============================================================================
+
+@timing_decorator("analyze_trade", tool_type="trade")
+async def analyze_trade(
+    league_id: str,
+    team1_roster_id: int,
+    team2_roster_id: int,
+    team1_gives: List[str],
+    team2_gives: List[str],
+    include_trending: bool = True
+) -> dict:
+    """Analyze a fantasy football trade for fairness and fit.
+    
+    This tool evaluates proposed trades between two teams by calculating player
+    values, assessing positional needs, and providing fairness scores with
+    actionable recommendations.
+    
+    Parameters:
+        league_id (str, required): The unique identifier for the fantasy league.
+        team1_roster_id (int, required): Roster ID for team 1.
+        team2_roster_id (int, required): Roster ID for team 2.
+        team1_gives (list[str], required): List of player IDs team 1 is giving up.
+        team2_gives (list[str], required): List of player IDs team 2 is giving up.
+        include_trending (bool, default True): Include trending player data in analysis.
+    
+    Returns: {
+        recommendation: str (fair, needs_adjustment, unfair, etc.),
+        fairness_score: float (0-100, higher = more fair),
+        team1_analysis: {...},
+        team2_analysis: {...},
+        trade_details: {...},
+        warnings: [...],
+        success: bool,
+        error?: str
+    }
+    
+    Example: analyze_trade(
+        league_id="12345",
+        team1_roster_id=1,
+        team2_roster_id=2,
+        team1_gives=["4034", "4035"],
+        team2_gives=["4036"]
+    )
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        team1_roster_id = validate_numeric_input(team1_roster_id, min_val=1, max_val=20, required=True)
+        team2_roster_id = validate_numeric_input(team2_roster_id, min_val=1, max_val=20, required=True)
+        
+        if not isinstance(team1_gives, list) or not isinstance(team2_gives, list):
+            raise ValueError("team1_gives and team2_gives must be lists of player IDs")
+        
+        if not team1_gives or not team2_gives:
+            raise ValueError("team1_gives and team2_gives must not be empty")
+        
+        return await trade_analyzer_tools.analyze_trade(
+            league_id=league_id,
+            team1_roster_id=team1_roster_id,
+            team2_roster_id=team2_roster_id,
+            team1_gives=team1_gives,
+            team2_gives=team2_gives,
+            nfl_db=_nfl_db,
+            include_trending=include_trending
+        )
+    except ValueError as e:
+        return {
+            "recommendation": None,
+            "fairness_score": 0,
+            "success": False,
+            "error": f"Invalid input: {str(e)}"
+        }
 
 
 # =============================================================================
