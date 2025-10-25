@@ -2259,6 +2259,19 @@ async def _fetch_injuries():
                         continue
                     
                     data = resp.json()
+                    
+                    # DEBUG: Log first team's response to understand structure
+                    if team == teams[0]:  # Log first team only
+                        logger.info(f"[DEBUG Injuries] {team} response keys: {list(data.keys())}")
+                        logger.info(f"[DEBUG Injuries] {team} count: {data.get('count', 'N/A')}")
+                        logger.info(f"[DEBUG Injuries] {team} pageCount: {data.get('pageCount', 'N/A')}")
+                        logger.info(f"[DEBUG Injuries] {team} items length: {len(data.get('items', []))}")
+                        if not data.get('items'):
+                            # Log full response if empty (truncated to 500 chars)
+                            import json
+                            full_resp = json.dumps(data, indent=2, default=str)
+                            logger.info(f"[DEBUG Injuries] {team} empty response sample: {full_resp[:500]}")
+                    
                     injuries_data = data.get('items', [])
                     
                     for injury_item in injuries_data:
