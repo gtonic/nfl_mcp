@@ -1019,6 +1019,16 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
         except Exception as db_error:
             logger.warning(f"Could not check database status: {db_error}")
 
+        # Get current season and week for enrichment
+        season, week = None, None
+        if ADVANCED_ENRICH_ENABLED:
+            try:
+                from .nfl_tools import get_current_season_and_week
+                season, week = await get_current_season_and_week()
+                logger.debug(f"[Trending Players] Using season={season}, week={week} for enrichment")
+            except Exception as e:
+                logger.warning(f"[Trending Players] Could not get current season/week: {e}")
+
         enriched_players = []
         for item in raw_items:
             if isinstance(item, dict):
@@ -1040,6 +1050,25 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
                 "age": None,
                 "jersey": None
             }
+            
+            # Add advanced enrichment (snap%, opponent, usage stats)
+            if ADVANCED_ENRICH_ENABLED and season:
+                try:
+                    athlete_for_enrichment = {
+                        "id": player_id,
+                        "player_id": player_id,
+                        "full_name": base_info.get("full_name"),
+                        "name": base_info.get("full_name"),
+                        "position": base_info.get("position"),
+                        "team": base_info.get("team"),
+                        "team_id": base_info.get("team")
+                    }
+                    extra = _enrich_usage_and_opponent(nfl_db, athlete_for_enrichment, season, week)
+                    base_info.update(extra)
+                    logger.debug(f"[Trending Players] Enriched {base_info.get('full_name')} with {len(extra)} fields")
+                except Exception as e:
+                    logger.warning(f"[Trending Players] Failed to enrich player {player_id}: {e}")
+            
             enriched_players.append({
                 "player_id": player_id,
                 "count": count,
