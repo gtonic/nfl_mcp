@@ -2394,11 +2394,66 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             continue
                         # Extract usage fields (naming varies by API)
                         targets = player_stats.get("rec_tgt") or player_stats.get("targets")
-                        routes = player_stats.get("routes_run") or player_stats.get("routes")
-                        rz_touches = player_stats.get("rz_touches") or player_stats.get("redzone_touches")
-                        touches = player_stats.get("touches")
+                        routes = player_stats.get("routes_run") or player_stats.get("routes") or player_stats.get("off_snp")
+                        
+                        # Calculate RZ touches from multiple sources
+                        # Try multiple field names for better API compatibility
+                        rz_tgt = (
+                            player_stats.get("rec_tgt_rz") or 
+                            player_stats.get("rec_targets_rz") or 
+                            player_stats.get("redzone_targets") or
+                            0
+                        )
+                        rz_rush = (
+                            player_stats.get("rush_att_rz") or 
+                            player_stats.get("rush_attempts_rz") or 
+                            player_stats.get("redzone_rushes") or 
+                            player_stats.get("redzone_rush_attempts") or
+                            0
+                        )
+                        rz_touches = rz_tgt + rz_rush
+                        rz_touches_source = "api" if rz_touches > 0 else None
+                        
+                        # If no explicit RZ data, estimate from TDs (TDs often happen in RZ)
+                        if rz_touches == 0:
+                            rec_td = player_stats.get("rec_td", 0) or 0
+                            rush_td = player_stats.get("rush_td", 0) or 0
+                            td_total = rec_td + rush_td
+                            
+                            if td_total > 0:
+                                rz_touches = td_total
+                                rz_touches_source = "estimated_from_tds"
+                            else:
+                                # Truly 0 or data missing
+                                rz_touches_source = "zero_or_missing"
+                        
+                        # Calculate total touches
+                        rush_att = player_stats.get("rush_att", 0) or 0
+                        receptions = player_stats.get("rec", 0) or 0
+                        touches = rush_att + receptions
+                        
                         air_yards = player_stats.get("rec_air_yds") or player_stats.get("air_yards")
-                        snap_share = player_stats.get("snap_pct")
+                        
+                        # Get snap percentage - try multiple field names and calculation methods
+                        snap_share = (
+                            player_stats.get("snap_pct") or 
+                            player_stats.get("off_snp_pct") or 
+                            player_stats.get("snap_share") or
+                            player_stats.get("snap_percentage") or
+                            player_stats.get("snaps_pct")
+                        )
+                        snap_share_source = "api" if snap_share else None
+                        
+                        # Calculate from absolute snaps if percentage not provided
+                        if not snap_share:
+                            off_snp = player_stats.get("off_snp")
+                            team_snp = player_stats.get("team_snp") or player_stats.get("tm_off_snp")
+                            
+                            if off_snp is not None and team_snp is not None and team_snp > 0:
+                                snap_share = round((off_snp / team_snp) * 100, 1)
+                                snap_share_source = "calculated_from_snaps"
+                            else:
+                                snap_share_source = "zero_or_missing"
                         
                         # Only include if at least one usage metric present
                         if any([targets, routes, rz_touches, touches]):
@@ -2448,14 +2503,48 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
         logger.error(f"[Fetch Usage] Failed for season={season}, week={week}: {e}", exc_info=True)
         return []
 
-def _estimate_snap_pct(depth_rank: Optional[int]) -> Optional[float]:
+def _estimate_snap_pct(depth_rank: Optional[int], position: Optional[str] = None) -> Optional[float]:
+    """Estimate snap percentage based on depth chart and position.
+    
+    Different positions have different snap count patterns:
+    - QBs: Starters play 95%+, backups rarely play
+    - RBs: Heavy rotation/committees, starters ~55%
+    - WRs: Top receivers play 85%+, backups 50%
+    - TEs: Varies by blocking role, starters ~65%
+    
+    Args:
+        depth_rank: Depth chart position (1=starter, 2=backup, 3=third string, etc.)
+        position: Player position (QB, RB, WR, TE, etc.)
+    
+    Returns:
+        Estimated snap percentage or None if cannot estimate
+    """
     if depth_rank is None:
         return None
+    
+    # Position-specific estimates for starters
     if depth_rank == 1:
-        return 70.0
-    if depth_rank == 2:
-        return 45.0
-    return 15.0
+        position_estimates = {
+            "QB": 95.0,  # QBs rarely rotate unless blowout
+            "RB": 55.0,  # RBs often in committees
+            "WR": 85.0,  # #1 WRs play most snaps
+            "TE": 65.0,  # TEs vary by blocking role
+        }
+        return position_estimates.get(position, 70.0)  # Default 70% for unknown positions
+    
+    # Backups (depth 2)
+    elif depth_rank == 2:
+        position_estimates = {
+            "QB": 5.0,   # Backup QBs rarely see the field
+            "RB": 35.0,  # Backup RBs get carries in rotation
+            "WR": 50.0,  # #2 WRs get decent playing time
+            "TE": 40.0,  # Backup TEs mostly situational
+        }
+        return position_estimates.get(position, 45.0)
+    
+    # Third string or lower
+    else:
+        return 15.0  # Limited snaps for depth pieces regardless of position
 
 def _calculate_usage_trend(weekly_data: List[Dict], metric: str) -> Optional[str]:
     """Calculate trend direction for a usage metric over recent weeks.
@@ -2532,11 +2621,11 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             raw_field = athlete.get("raw")
             if isinstance(raw_field, dict):
                 depth_rank = raw_field.get("depth_chart_order")
-            est = _estimate_snap_pct(depth_rank)
+            est = _estimate_snap_pct(depth_rank, position)  # Pass position for better estimates
             if est is not None:
                 enriched_additions["snap_pct"] = est
                 enriched_additions["snap_pct_source"] = "estimated"
-                logger.debug(f"[Enrichment] {player_name}: snap_pct={est}% (estimated from depth={depth_rank})")
+                logger.debug(f"[Enrichment] {player_name}: snap_pct={est}% (estimated from depth={depth_rank}, pos={position})")
     
     # Opponent for DEF
     if season and week and position == "DEF" and hasattr(nfl_db, 'get_opponent'):
@@ -2560,6 +2649,9 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             logger.debug(f"[Enrichment] {player_name}: injury_status={injury['injury_status']} (age={round(age_hours, 1)}h)")
     
     # Practice status (DNP/LP/FP) - all positions
+    # Always try to provide a practice_status value
+    practice_status_set = False
+    
     if player_id and hasattr(nfl_db, 'get_latest_practice_status'):
         practice = nfl_db.get_latest_practice_status(player_id, max_age_hours=72)
         if practice:
@@ -2568,31 +2660,34 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             enriched_additions["practice_status_date"] = practice["date"]
             enriched_additions["practice_status_age_hours"] = round(age_hours, 1)
             enriched_additions["practice_status_stale"] = age_hours > 72
+            enriched_additions["practice_status_source"] = "cached"
             logger.debug(f"[Enrichment] {player_name}: practice_status={practice['status']} (age={round(age_hours, 1)}h)")
-        else:
-            # If no explicit practice status, derive from injury status or default to FP
-            injury_status = enriched_additions.get("injury_status", "").upper()
-            if injury_status:
-                # Derive practice status from injury status
-                if 'OUT' in injury_status or 'RESERVE' in injury_status or 'PUP' in injury_status:
-                    derived_status = 'DNP'  # Did Not Participate
-                elif 'DOUBTFUL' in injury_status or 'LIMITED' in injury_status:
-                    derived_status = 'LP'   # Limited Participation
-                elif 'QUESTIONABLE' in injury_status:
-                    derived_status = 'LP'   # Usually limited
-                elif 'PROBABLE' in injury_status or 'FULL' in injury_status:
-                    derived_status = 'FP'   # Full Participation
-                else:
-                    derived_status = 'FP'   # Default to full if injury status is unclear
-                
-                enriched_additions["practice_status"] = derived_status
-                enriched_additions["practice_status_source"] = "derived_from_injury"
-                logger.debug(f"[Enrichment] {player_name}: practice_status={derived_status} (derived from injury_status={injury_status})")
+            practice_status_set = True
+    
+    # If no cached practice status, derive from injury or default to FP
+    if not practice_status_set:
+        injury_status = enriched_additions.get("injury_status", "").upper()
+        if injury_status:
+            # Derive practice status from injury status
+            if 'OUT' in injury_status or 'RESERVE' in injury_status or 'PUP' in injury_status:
+                derived_status = 'DNP'  # Did Not Participate
+            elif 'DOUBTFUL' in injury_status or 'LIMITED' in injury_status:
+                derived_status = 'LP'   # Limited Participation
+            elif 'QUESTIONABLE' in injury_status:
+                derived_status = 'LP'   # Usually limited
+            elif 'PROBABLE' in injury_status or 'FULL' in injury_status:
+                derived_status = 'FP'   # Full Participation
             else:
-                # No injury, no practice status -> assume healthy and fully practicing
-                enriched_additions["practice_status"] = "FP"
-                enriched_additions["practice_status_source"] = "default_healthy"
-                logger.debug(f"[Enrichment] {player_name}: practice_status=FP (default - no injury)")
+                derived_status = 'FP'   # Default to full if injury status is unclear
+            
+            enriched_additions["practice_status"] = derived_status
+            enriched_additions["practice_status_source"] = "derived_from_injury"
+            logger.debug(f"[Enrichment] {player_name}: practice_status={derived_status} (derived from injury_status={injury_status})")
+        else:
+            # No injury, no practice status -> assume healthy and fully practicing
+            enriched_additions["practice_status"] = "FP"
+            enriched_additions["practice_status_source"] = "default_healthy"
+            logger.debug(f"[Enrichment] {player_name}: practice_status=FP (default - no injury)")
     
     # Usage stats (targets, routes, RZ touches) - offensive skill positions
     if season and week and position in ("WR", "RB", "TE") and hasattr(nfl_db, 'get_usage_last_n_weeks'):
