@@ -84,9 +84,9 @@ def validate_snap_count_response(data: Dict[str, Any]) -> ValidationResult:
             result.add_error(f"Player {player_id} stats must be a dictionary")
             continue
         
-        # Check for snap data
-        has_snaps = any(key in stats for key in ['snaps', 'off_snaps', 'offense_snaps'])
-        has_snap_pct = any(key in stats for key in ['snap_pct', 'off_snap_pct'])
+        # Check for snap data (Sleeper API uses off_snp, team_snp, def_snp, st_snp)
+        has_snaps = any(key in stats for key in ['snaps', 'off_snaps', 'offense_snaps', 'off_snp', 'team_snp', 'def_snp', 'st_snp'])
+        has_snap_pct = any(key in stats for key in ['snap_pct', 'off_snap_pct', 'off_snp_pct', 'snap_share', 'snap_pct_formatted'])
         
         if has_snaps:
             players_with_snaps += 1
