@@ -2237,7 +2237,7 @@ async def _fetch_injuries():
         "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
         "DAL", "DEN", "DET", "GB", "HOU", "IND", "JAX", "KC",
         "LAC", "LAR", "LV", "MIA", "MIN", "NE", "NO", "NYG",
-        "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WAS"
+        "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WSH"  # WSH (not WAS) for Washington
     ]
     
     all_injuries = []
