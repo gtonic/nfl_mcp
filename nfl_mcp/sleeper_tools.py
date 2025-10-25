@@ -2251,47 +2251,74 @@ async def _fetch_injuries():
         async with create_http_client() as client:
             for team in teams:
                 try:
-                    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit=50"
-                    resp = await client.get(url, headers=headers)
+                    page = 1
+                    page_count = 1  # Will be updated from first response
+                    team_injuries = []
                     
-                    if resp.status_code != 200:
-                        logger.debug(f"[Fetch Injuries] Team {team}: status {resp.status_code}")
-                        continue
-                    
-                    data = resp.json()
-                    
-                    # DEBUG: Log first team's response to understand structure
-                    if team == teams[0]:  # Log first team only
-                        logger.info(f"[DEBUG Injuries] {team} response keys: {list(data.keys())}")
-                        logger.info(f"[DEBUG Injuries] {team} count: {data.get('count', 'N/A')}")
-                        logger.info(f"[DEBUG Injuries] {team} pageCount: {data.get('pageCount', 'N/A')}")
-                        logger.info(f"[DEBUG Injuries] {team} items length: {len(data.get('items', []))}")
-                        if not data.get('items'):
-                            # Log full response if empty (truncated to 500 chars)
-                            import json
-                            full_resp = json.dumps(data, indent=2, default=str)
-                            logger.info(f"[DEBUG Injuries] {team} empty response sample: {full_resp[:500]}")
-                    
-                    injuries_data = data.get('items', [])
-                    
-                    for injury_item in injuries_data:
-                        # Extract athlete info
-                        athlete_ref = injury_item.get('athlete', {})
-                        if not athlete_ref:
-                            continue
+                    # Fetch all pages for this team
+                    while page <= page_count:
+                        url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit=50&page={page}"
+                        resp = await client.get(url, headers=headers)
                         
-                        injury = {
-                            'player_id': str(athlete_ref.get('id', '')),
-                            'player_name': athlete_ref.get('displayName', 'Unknown'),
-                            'team_id': team,
-                            'position': athlete_ref.get('position', {}).get('abbreviation'),
-                            'injury_status': injury_item.get('status', {}).get('name', 'Unknown'),
-                            'injury_type': injury_item.get('type', {}).get('name'),
-                            'injury_description': injury_item.get('description'),
-                            'date_reported': injury_item.get('date')
-                        }
-                        all_injuries.append(injury)
-                
+                        if resp.status_code != 200:
+                            logger.debug(f"[Fetch Injuries] Team {team} page {page}: status {resp.status_code}")
+                            break
+                        
+                        data = resp.json()
+                        
+                        # Update page count from first response
+                        if page == 1:
+                            page_count = data.get('pageCount', 1)
+                            
+                            # DEBUG: Log first team's response to understand structure
+                            if team == teams[0]:
+                                logger.info(f"[DEBUG Injuries] {team} response keys: {list(data.keys())}")
+                                logger.info(f"[DEBUG Injuries] {team} count: {data.get('count', 'N/A')}")
+                                logger.info(f"[DEBUG Injuries] {team} pageCount: {page_count}")
+                                logger.info(f"[DEBUG Injuries] {team} page 1 items length: {len(data.get('items', []))}")
+                        
+                        injuries_data = data.get('items', [])
+                        
+                        for injury_item in injuries_data:
+                            # Extract athlete info - ESPN v2 uses URL references
+                            athlete_ref = injury_item.get('athlete', {})
+                            if not athlete_ref:
+                                continue
+                            
+                            # ESPN returns athlete as: {"$ref": "url", "id": "123", "displayName": "Name"}
+                            player_id = athlete_ref.get('id')
+                            player_name = athlete_ref.get('displayName', 'Unknown')
+                            
+                            # Skip if no player ID
+                            if not player_id:
+                                continue
+                            
+                            # Position might be nested or at athlete level
+                            position_data = athlete_ref.get('position', {})
+                            position = position_data.get('abbreviation') if isinstance(position_data, dict) else None
+                            
+                            # Status and type are nested objects
+                            status_data = injury_item.get('status', {})
+                            type_data = injury_item.get('type', {})
+                            
+                            injury = {
+                                'player_id': str(player_id),
+                                'player_name': player_name,
+                                'team_id': team,
+                                'position': position,
+                                'injury_status': status_data.get('name', 'Unknown') if isinstance(status_data, dict) else 'Unknown',
+                                'injury_type': type_data.get('name') if isinstance(type_data, dict) else None,
+                                'injury_description': injury_item.get('description'),
+                                'date_reported': injury_item.get('date')
+                            }
+                            team_injuries.append(injury)
+                        
+                        # Move to next page
+                        page += 1
+                    
+                    # Add all injuries from this team
+                    all_injuries.extend(team_injuries)
+                    
                 except Exception as e:
                     logger.debug(f"[Fetch Injuries] Team {team} failed: {e}")
                     continue

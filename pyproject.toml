@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nfl-mcp"
-version = "0.5.3"
-description = "NFL MCP Server - A FastMCP server providing health endpoints and arithmetic tools"
+name = "nfl_mcp"
+version = "0.5.6"
+description = "NFL MCP Server - Fantasy Football Analysis via Model Context Protocol"
 authors = [{name = "NFL MCP Team", email = "nfl@example.com"}]
 license = {text = "MIT"}
 readme = "README.md"
