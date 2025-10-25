@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nfl-mcp"
-version = "0.1.0"
+version = "0.5.3"
 description = "NFL MCP Server - A FastMCP server providing health endpoints and arithmetic tools"
 authors = [{name = "NFL MCP Team", email = "nfl@example.com"}]
 license = {text = "MIT"}

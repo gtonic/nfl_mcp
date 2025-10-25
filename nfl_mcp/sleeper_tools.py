@@ -2627,13 +2627,17 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                 enriched_additions["snap_pct_source"] = "estimated"
                 logger.debug(f"[Enrichment] {player_name}: snap_pct={est}% (estimated from depth={depth_rank}, pos={position})")
     
-    # Opponent for DEF
-    if season and week and position == "DEF" and hasattr(nfl_db, 'get_opponent'):
-        opponent = nfl_db.get_opponent(season, week, athlete.get("team_id"))
-        if opponent:
-            enriched_additions["opponent"] = opponent
-            enriched_additions["opponent_source"] = "cached"
-            logger.debug(f"[Enrichment] {player_name} (DEF): opponent={opponent} (cached)")
+    # Opponent for ALL positions (DEF uses team_id, others use team)
+    if season and week and hasattr(nfl_db, 'get_opponent'):
+        # DEF entries use team_id, offensive players use team
+        team_key = athlete.get("team_id") if position == "DEF" else athlete.get("team")
+        
+        if team_key:
+            opponent = nfl_db.get_opponent(season, week, team_key)
+            if opponent:
+                enriched_additions["opponent"] = opponent
+                enriched_additions["opponent_source"] = "cached"
+                logger.debug(f"[Enrichment] {player_name} ({position}): opponent={opponent} (cached)")
     
     # Injury status - all positions
     if player_id and hasattr(nfl_db, 'get_player_injury_from_cache'):
