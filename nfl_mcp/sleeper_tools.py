@@ -2244,6 +2244,7 @@ async def _fetch_injuries():
     
     try:
         import httpx
+        import re
         from .config import get_http_headers, create_http_client
         
         headers = get_http_headers("nfl_teams")
@@ -2256,7 +2257,12 @@ async def _fetch_injuries():
                     team_injuries = []
                     
                     # Fetch all pages for this team
-                    while page <= page_count:
+                    # Note: ESPN Core API returns items as $ref URLs only
+                    # We limit to first 10 injuries per team to avoid excessive API calls
+                    max_injuries_per_team = 10
+                    injuries_fetched = 0
+                    
+                    while page <= page_count and injuries_fetched < max_injuries_per_team:
                         url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit=50&page={page}"
                         resp = await client.get(url, headers=headers)
                         
@@ -2279,39 +2285,74 @@ async def _fetch_injuries():
                         
                         injuries_data = data.get('items', [])
                         
-                        for injury_item in injuries_data:
-                            # Extract athlete info - ESPN v2 uses URL references
-                            athlete_ref = injury_item.get('athlete', {})
-                            if not athlete_ref:
+                        # ESPN Core API v2 returns items as $ref URLs only
+                        # We need to fetch each injury detail separately
+                        for injury_ref in injuries_data:
+                            try:
+                                # Each item is just {"$ref": "url"}
+                                injury_url = injury_ref.get('$ref')
+                                if not injury_url:
+                                    continue
+                                
+                                # Fetch the actual injury details
+                                injury_resp = await client.get(injury_url, headers=headers)
+                                if injury_resp.status_code != 200:
+                                    continue
+                                
+                                injury_item = injury_resp.json()
+                                
+                                # Extract athlete info from the injury details
+                                athlete_ref = injury_item.get('athlete', {})
+                                if not athlete_ref:
+                                    continue
+                                
+                                # Athlete is also a $ref, so we need to extract from URL or fetch it
+                                athlete_url = athlete_ref.get('$ref', '')
+                                # Extract athlete ID from URL: .../athletes/4428633/...
+                                athlete_id_match = re.search(r'/athletes/(\d+)/', athlete_url)
+                                if not athlete_id_match:
+                                    continue
+                                
+                                player_id = athlete_id_match.group(1)
+                                
+                                # Get player name - might need to fetch athlete details
+                                player_name = athlete_ref.get('displayName')
+                                if not player_name:
+                                    # Try fetching athlete details
+                                    try:
+                                        athlete_detail_resp = await client.get(athlete_url, headers=headers)
+                                        if athlete_detail_resp.status_code == 200:
+                                            athlete_detail = athlete_detail_resp.json()
+                                            player_name = athlete_detail.get('displayName', 'Unknown')
+                                        else:
+                                            player_name = 'Unknown'
+                                    except:
+                                        player_name = 'Unknown'
+                                
+                                # Status and type are nested objects
+                                status_data = injury_item.get('status', {})
+                                type_data = injury_item.get('type', {})
+                                
+                                injury = {
+                                    'player_id': str(player_id),
+                                    'player_name': player_name,
+                                    'team_id': team,
+                                    'position': None,  # Not available in injury endpoint
+                                    'injury_status': status_data if isinstance(status_data, str) else status_data.get('description', 'Unknown'),
+                                    'injury_type': type_data.get('name') if isinstance(type_data, dict) else None,
+                                    'injury_description': injury_item.get('shortComment') or injury_item.get('longComment'),
+                                    'date_reported': injury_item.get('date')
+                                }
+                                team_injuries.append(injury)
+                                injuries_fetched += 1
+                                
+                                # Stop if we've reached the limit per team
+                                if injuries_fetched >= max_injuries_per_team:
+                                    break
+                                
+                            except Exception as e:
+                                logger.debug(f"[Fetch Injuries] Failed to fetch injury detail: {e}")
                                 continue
-                            
-                            # ESPN returns athlete as: {"$ref": "url", "id": "123", "displayName": "Name"}
-                            player_id = athlete_ref.get('id')
-                            player_name = athlete_ref.get('displayName', 'Unknown')
-                            
-                            # Skip if no player ID
-                            if not player_id:
-                                continue
-                            
-                            # Position might be nested or at athlete level
-                            position_data = athlete_ref.get('position', {})
-                            position = position_data.get('abbreviation') if isinstance(position_data, dict) else None
-                            
-                            # Status and type are nested objects
-                            status_data = injury_item.get('status', {})
-                            type_data = injury_item.get('type', {})
-                            
-                            injury = {
-                                'player_id': str(player_id),
-                                'player_name': player_name,
-                                'team_id': team,
-                                'position': position,
-                                'injury_status': status_data.get('name', 'Unknown') if isinstance(status_data, dict) else 'Unknown',
-                                'injury_type': type_data.get('name') if isinstance(type_data, dict) else None,
-                                'injury_description': injury_item.get('description'),
-                                'date_reported': injury_item.get('date')
-                            }
-                            team_injuries.append(injury)
                         
                         # Move to next page
                         page += 1
