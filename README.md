@@ -126,7 +126,7 @@ docker run --rm -p 9000:9000 \
 
 ## API Documentation
 
-📋 **[AI/LLM Integration Guide](./AI_LLM_GUIDE.md)** - Comprehensive MCP tool reference and integration guide optimized for LLM understanding
+📋 **[AI/LLM Integration Guide](./AGENT.md)** - Comprehensive MCP tool reference and integration guide optimized for LLM understanding
 
 ### Quick Overview
 
