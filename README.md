@@ -70,7 +70,7 @@ task all          # Complete pipeline
 
 ## Configuration
 
-The NFL MCP Server supports flexible configuration through environment variables and configuration files. See [CONFIGURATION.md](CONFIGURATION.md) for detailed documentation.
+The NFL MCP Server supports flexible configuration through environment variables and configuration files.
 
 ### Quick Configuration Examples
 
@@ -94,7 +94,7 @@ export NFL_MCP_LOG_LEVEL=INFO           # Log level: DEBUG, INFO, WARNING, ERROR
 python -m nfl_mcp.server
 ```
 
-**Note:** Logging is enabled at INFO level by default, providing comprehensive tracking of prefetch operations, enrichment activity, and API calls. See [LOGGING_GUIDE.md](LOGGING_GUIDE.md) for detailed logging documentation.
+**Note:** Logging is enabled at INFO level by default, providing comprehensive tracking of prefetch operations, enrichment activity, and API calls.
 
 #### Configuration File (config.yml)
 ```yaml
@@ -126,7 +126,7 @@ docker run --rm -p 9000:9000 \
 
 ## API Documentation
 
-📋 **[Complete API Documentation](./API_DOCS.md)** - Comprehensive tool reference optimized for LLM understanding
+📋 **[AI/LLM Integration Guide](./AI_LLM_GUIDE.md)** - Comprehensive MCP tool reference and integration guide optimized for LLM understanding
 
 ### Quick Overview
 
@@ -164,7 +164,7 @@ The NFL MCP Server provides **26+ MCP tools** organized into these categories:
 
 ### Tool Selection Guide
 
-**For LLMs:** The [detailed API documentation](./API_DOCS.md) includes:
+**For LLMs:** The [AI/LLM Integration Guide](./AI_LLM_GUIDE.md) includes:
 - 🎯 **When to use each tool** - Decision matrix for tool selection
 - 📊 **Parameter validation** - Input constraints and validation rules
 - 💡 **Usage patterns** - Common workflows and examples  
@@ -252,7 +252,6 @@ Additional practice status & usage metrics (requires `NFL_MCP_ADVANCED_ENRICH=1`
 - Trend calculation compares most recent week vs prior weeks (15% threshold)
 - Trend "up" (↑) = rising usage, "down" (↓) = declining usage, "flat" (→) = stable usage
 - All fields are additive; absent fields mean data unavailable
-- See [USAGE_TREND_ANALYSIS.md](USAGE_TREND_ANALYSIS.md) for detailed trend documentation
 
 
 #### Robustness & Snapshot Behavior
