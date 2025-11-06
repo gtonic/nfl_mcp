@@ -1004,13 +1004,12 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
 
         # Get current season and week for enrichment
         season, week = None, None
-        if ADVANCED_ENRICH_ENABLED:
-            try:
-                from .nfl_tools import get_current_season_and_week
-                season, week = await get_current_season_and_week()
-                logger.debug(f"[Trending Players] Using season={season}, week={week} for enrichment")
-            except Exception as e:
-                logger.warning(f"[Trending Players] Could not get current season/week: {e}")
+        try:
+            from .nfl_tools import get_current_season_and_week
+            season, week = await get_current_season_and_week()
+            logger.debug(f"[Trending Players] Using season={season}, week={week} for enrichment")
+        except Exception as e:
+            logger.warning(f"[Trending Players] Could not get current season/week: {e}")
 
         enriched_players = []
         for item in raw_items:
