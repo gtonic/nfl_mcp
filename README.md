@@ -86,6 +86,7 @@ export NFL_MCP_ADVANCED_ENRICH=1        # Enable snap%, opponent, practice statu
 export NFL_MCP_PREFETCH=1               # Enable background data prefetch
 export NFL_MCP_PREFETCH_INTERVAL=900    # Prefetch interval in seconds (default: 900 = 15 min)
 export NFL_MCP_PREFETCH_SNAPS_TTL=1800  # Snap data TTL in seconds (default: 1800 = 30 min)
+export NFL_MCP_PREFETCH_SCHEDULE_WEEKS=4 # Number of weeks to prefetch schedules for (default: 4)
 
 # Logging configuration (optional)
 export NFL_MCP_LOG_LEVEL=INFO           # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
