@@ -37,7 +37,7 @@ logger.info(f"Logging initialized at {LOG_LEVEL} level")
 PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
 PREFETCH_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900"))  # default 15m
 PREFETCH_SNAPS_TTL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_SNAPS_TTL", "900"))  # refetch snaps after 15m by default
-PREFETCH_SCHEDULE_WEEKS = int(os.getenv("NFL_MCP_PREFETCH_SCHEDULE_WEEKS", "4"))  # default 4 weeks (current + 3 ahead)
+PREFETCH_SCHEDULE_WEEKS = int(os.getenv("NFL_MCP_PREFETCH_SCHEDULE_WEEKS", "4"))  # default 4 weeks total (current week + 3 upcoming)
 
 # Global state for prefetch task
 _prefetch_task = None
