@@ -82,7 +82,7 @@ def test_practice_status_integration_scenario():
     assert "practice_status" in result3, "Player with report should have practice_status"
     assert result3["practice_status"] == "LP", "Should use explicit practice report"
     assert "practice_status_date" in result3
-    assert "practice_status_source" not in result3, "Cached status doesn't add source field"
+    assert result3["practice_status_source"] == "cached", "Cached status should have source field"
     print(f"✓ {ferguson['full_name']}: practice_status={result3['practice_status']} (from database, date: {result3['practice_status_date']})")
     
     # Scenario 4: Player Out with injury
