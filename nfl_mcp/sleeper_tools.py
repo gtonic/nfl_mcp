@@ -2037,9 +2037,10 @@ async def _fetch_week_player_snaps(season: int, week: int):
                 if not isinstance(stats, dict):
                     continue
                 # Attempt to extract snaps & snap_pct fields (naming may vary)
-                snaps = stats.get("snaps") or stats.get("off_snaps") or stats.get("offense_snaps")
-                team_snaps = stats.get("team_snaps") or stats.get("off_team_snaps")
-                snap_pct = stats.get("snap_pct") or stats.get("off_snap_pct")
+                # Sleeper uses 'off_snp' (not 'off_snaps'), so check both variations
+                snaps = stats.get("snaps") or stats.get("off_snp") or stats.get("off_snaps") or stats.get("offense_snaps")
+                team_snaps = stats.get("team_snaps") or stats.get("tm_off_snp") or stats.get("off_team_snaps") or stats.get("team_snp")
+                snap_pct = stats.get("snap_pct") or stats.get("off_snp_pct") or stats.get("off_snap_pct")
                 rows.append({
                     "player_id": str(pid),
                     "season": season,
@@ -2504,7 +2505,8 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             continue
                         # Extract usage fields (naming varies by API)
                         targets = player_stats.get("rec_tgt") or player_stats.get("targets")
-                        routes = player_stats.get("routes_run") or player_stats.get("routes") or player_stats.get("off_snp")
+                        # Routes should only be actual routes run, not snap count
+                        routes = player_stats.get("routes_run") or player_stats.get("routes")
                         
                         # Calculate RZ touches from multiple sources
                         # Try multiple field names for better API compatibility
