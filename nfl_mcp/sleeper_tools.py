@@ -2487,9 +2487,22 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         if not isinstance(player_stats, dict):
                             continue
                         # Extract usage fields (naming varies by API)
-                        targets = player_stats.get("rec_tgt") or player_stats.get("targets")
+                        # Use explicit None checks to handle 0 values correctly
+                        targets = player_stats.get("rec_tgt")
+                        if targets is None:
+                            targets = player_stats.get("targets")
+                        
                         # Routes should only be actual routes run, not snap count
-                        routes = player_stats.get("routes_run") or player_stats.get("routes")
+                        # Try multiple possible field names for routes data
+                        routes = player_stats.get("routes_run")
+                        if routes is None:
+                            routes = player_stats.get("routes")
+                        if routes is None:
+                            routes = player_stats.get("rec_routes")
+                        if routes is None:
+                            routes = player_stats.get("pass_routes")
+                        if routes is None:
+                            routes = player_stats.get("receiving_routes")
                         
                         # Calculate RZ touches from multiple sources
                         # Try multiple field names for better API compatibility
