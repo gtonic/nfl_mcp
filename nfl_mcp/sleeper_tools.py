@@ -2495,14 +2495,26 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         # Routes should only be actual routes run, not snap count
                         # Try multiple possible field names for routes data
                         routes = player_stats.get("routes_run")
-                        if routes is None:
-                            routes = player_stats.get("routes")
-                        if routes is None:
-                            routes = player_stats.get("rec_routes")
-                        if routes is None:
-                            routes = player_stats.get("pass_routes")
-                        if routes is None:
-                            routes = player_stats.get("receiving_routes")
+                        routes_field_used = None
+                        if routes is not None:
+                            routes_field_used = "routes_run"
+                        elif (routes := player_stats.get("routes")) is not None:
+                            routes_field_used = "routes"
+                        elif (routes := player_stats.get("rec_routes")) is not None:
+                            routes_field_used = "rec_routes"
+                        elif (routes := player_stats.get("pass_routes")) is not None:
+                            routes_field_used = "pass_routes"
+                        elif (routes := player_stats.get("receiving_routes")) is not None:
+                            routes_field_used = "receiving_routes"
+                        
+                        # Log diagnostic info for routes field detection (sample first 5 players)
+                        if len(stats) < 5:
+                            if routes is not None:
+                                logger.debug(f"[Fetch Usage] Player {pid}: routes={routes} from field '{routes_field_used}'")
+                            else:
+                                # Check what fields ARE available for this player
+                                available_fields = list(player_stats.keys())[:10]  # Sample fields
+                                logger.debug(f"[Fetch Usage] Player {pid}: routes=None, available fields: {available_fields}")
                         
                         # Calculate RZ touches from multiple sources
                         # Try multiple field names for better API compatibility
@@ -2584,7 +2596,16 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             logger.error(f"[Fetch Usage] Response validation failed, returning empty list")
                             return []
                         
-                        logger.info(f"[Fetch Usage] Successfully fetched {len(stats)} usage records (season={season}, week={week})")
+                        # Log diagnostic summary about routes data availability
+                        routes_available = sum(1 for s in stats if s.get("routes") is not None)
+                        routes_zero = sum(1 for s in stats if s.get("routes") == 0)
+                        routes_none = sum(1 for s in stats if s.get("routes") is None)
+                        logger.info(
+                            f"[Fetch Usage] Successfully fetched {len(stats)} usage records "
+                            f"(season={season}, week={week}). "
+                            f"Routes data: {routes_available} with data "
+                            f"({routes_zero} with 0, {routes_none} with None)"
+                        )
                         return stats
                     else:
                         logger.warning(f"[Fetch Usage] No valid usage stats found in response")
