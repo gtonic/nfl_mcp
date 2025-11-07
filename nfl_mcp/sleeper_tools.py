@@ -2487,32 +2487,63 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         if not isinstance(player_stats, dict):
                             continue
                         # Extract usage fields (naming varies by API)
-                        targets = player_stats.get("rec_tgt") or player_stats.get("targets")
+                        # Use explicit None checks to handle 0 values correctly
+                        targets = player_stats.get("rec_tgt")
+                        if targets is None:
+                            targets = player_stats.get("targets")
+                        
                         # Routes should only be actual routes run, not snap count
-                        routes = player_stats.get("routes_run") or player_stats.get("routes")
+                        # Try multiple possible field names for routes data
+                        routes = player_stats.get("routes_run")
+                        routes_field_used = None
+                        if routes is not None:
+                            routes_field_used = "routes_run"
+                        elif (routes := player_stats.get("routes")) is not None:
+                            routes_field_used = "routes"
+                        elif (routes := player_stats.get("rec_routes")) is not None:
+                            routes_field_used = "rec_routes"
+                        elif (routes := player_stats.get("pass_routes")) is not None:
+                            routes_field_used = "pass_routes"
+                        elif (routes := player_stats.get("receiving_routes")) is not None:
+                            routes_field_used = "receiving_routes"
+                        
+                        # Log diagnostic info for routes field detection (sample first 5 players)
+                        if len(stats) < 5:
+                            if routes is not None:
+                                logger.debug(f"[Fetch Usage] Player {pid}: routes={routes} from field '{routes_field_used}'")
+                            else:
+                                # Check what fields ARE available for this player
+                                available_fields = list(player_stats.keys())[:10]  # Sample fields
+                                logger.debug(f"[Fetch Usage] Player {pid}: routes=None, available fields: {available_fields}")
                         
                         # Calculate RZ touches from multiple sources
                         # Try multiple field names for better API compatibility
-                        rz_tgt = (
-                            player_stats.get("rec_tgt_rz") or 
-                            player_stats.get("rec_targets_rz") or 
-                            player_stats.get("redzone_targets") or
-                            0
-                        )
-                        rz_rush = (
-                            player_stats.get("rush_att_rz") or 
-                            player_stats.get("rush_attempts_rz") or 
-                            player_stats.get("redzone_rushes") or 
-                            player_stats.get("redzone_rush_attempts") or
-                            0
-                        )
+                        # Use explicit None checks to preserve 0 values
+                        rz_tgt = player_stats.get("rec_tgt_rz")
+                        if rz_tgt is None:
+                            rz_tgt = player_stats.get("rec_targets_rz")
+                        if rz_tgt is None:
+                            rz_tgt = player_stats.get("redzone_targets")
+                        if rz_tgt is None:
+                            rz_tgt = 0
+                        
+                        rz_rush = player_stats.get("rush_att_rz")
+                        if rz_rush is None:
+                            rz_rush = player_stats.get("rush_attempts_rz")
+                        if rz_rush is None:
+                            rz_rush = player_stats.get("redzone_rushes")
+                        if rz_rush is None:
+                            rz_rush = player_stats.get("redzone_rush_attempts")
+                        if rz_rush is None:
+                            rz_rush = 0
+                        
                         rz_touches = rz_tgt + rz_rush
                         rz_touches_source = "api" if rz_touches > 0 else None
                         
                         # If no explicit RZ data, estimate from TDs (TDs often happen in RZ)
                         if rz_touches == 0:
-                            rec_td = player_stats.get("rec_td", 0) or 0
-                            rush_td = player_stats.get("rush_td", 0) or 0
+                            rec_td = player_stats.get("rec_td", 0)
+                            rush_td = player_stats.get("rush_td", 0)
                             td_total = rec_td + rush_td
                             
                             if td_total > 0:
@@ -2523,26 +2554,34 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                                 rz_touches_source = "zero_or_missing"
                         
                         # Calculate total touches
-                        rush_att = player_stats.get("rush_att", 0) or 0
-                        receptions = player_stats.get("rec", 0) or 0
+                        rush_att = player_stats.get("rush_att", 0)
+                        receptions = player_stats.get("rec", 0)
                         touches = rush_att + receptions
                         
-                        air_yards = player_stats.get("rec_air_yds") or player_stats.get("air_yards")
+                        # Air yards - preserve 0 values
+                        air_yards = player_stats.get("rec_air_yds")
+                        if air_yards is None:
+                            air_yards = player_stats.get("air_yards")
                         
                         # Get snap percentage - try multiple field names and calculation methods
-                        snap_share = (
-                            player_stats.get("snap_pct") or 
-                            player_stats.get("off_snp_pct") or 
-                            player_stats.get("snap_share") or
-                            player_stats.get("snap_percentage") or
-                            player_stats.get("snaps_pct")
-                        )
-                        snap_share_source = "api" if snap_share else None
+                        # Use explicit None checks to preserve 0 values
+                        snap_share = player_stats.get("snap_pct")
+                        if snap_share is None:
+                            snap_share = player_stats.get("off_snp_pct")
+                        if snap_share is None:
+                            snap_share = player_stats.get("snap_share")
+                        if snap_share is None:
+                            snap_share = player_stats.get("snap_percentage")
+                        if snap_share is None:
+                            snap_share = player_stats.get("snaps_pct")
+                        snap_share_source = "api" if snap_share is not None else None
                         
                         # Calculate from absolute snaps if percentage not provided
-                        if not snap_share:
+                        if snap_share is None:
                             off_snp = player_stats.get("off_snp")
-                            team_snp = player_stats.get("team_snp") or player_stats.get("tm_off_snp")
+                            team_snp = player_stats.get("team_snp")
+                            if team_snp is None:
+                                team_snp = player_stats.get("tm_off_snp")
                             
                             if off_snp is not None and team_snp is not None and team_snp > 0:
                                 snap_share = round((off_snp / team_snp) * 100, 1)
@@ -2571,7 +2610,16 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             logger.error(f"[Fetch Usage] Response validation failed, returning empty list")
                             return []
                         
-                        logger.info(f"[Fetch Usage] Successfully fetched {len(stats)} usage records (season={season}, week={week})")
+                        # Log diagnostic summary about routes data availability
+                        routes_available = sum(1 for s in stats if s.get("routes") is not None)
+                        routes_zero = sum(1 for s in stats if s.get("routes") == 0)
+                        routes_none = sum(1 for s in stats if s.get("routes") is None)
+                        logger.info(
+                            f"[Fetch Usage] Successfully fetched {len(stats)} usage records "
+                            f"(season={season}, week={week}). "
+                            f"Routes data: {routes_available} with data "
+                            f"({routes_zero} with 0, {routes_none} with None)"
+                        )
                         return stats
                     else:
                         logger.warning(f"[Fetch Usage] No valid usage stats found in response")
