@@ -2518,26 +2518,32 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         
                         # Calculate RZ touches from multiple sources
                         # Try multiple field names for better API compatibility
-                        rz_tgt = (
-                            player_stats.get("rec_tgt_rz") or 
-                            player_stats.get("rec_targets_rz") or 
-                            player_stats.get("redzone_targets") or
-                            0
-                        )
-                        rz_rush = (
-                            player_stats.get("rush_att_rz") or 
-                            player_stats.get("rush_attempts_rz") or 
-                            player_stats.get("redzone_rushes") or 
-                            player_stats.get("redzone_rush_attempts") or
-                            0
-                        )
+                        # Use explicit None checks to preserve 0 values
+                        rz_tgt = player_stats.get("rec_tgt_rz")
+                        if rz_tgt is None:
+                            rz_tgt = player_stats.get("rec_targets_rz")
+                        if rz_tgt is None:
+                            rz_tgt = player_stats.get("redzone_targets")
+                        if rz_tgt is None:
+                            rz_tgt = 0
+                        
+                        rz_rush = player_stats.get("rush_att_rz")
+                        if rz_rush is None:
+                            rz_rush = player_stats.get("rush_attempts_rz")
+                        if rz_rush is None:
+                            rz_rush = player_stats.get("redzone_rushes")
+                        if rz_rush is None:
+                            rz_rush = player_stats.get("redzone_rush_attempts")
+                        if rz_rush is None:
+                            rz_rush = 0
+                        
                         rz_touches = rz_tgt + rz_rush
                         rz_touches_source = "api" if rz_touches > 0 else None
                         
                         # If no explicit RZ data, estimate from TDs (TDs often happen in RZ)
                         if rz_touches == 0:
-                            rec_td = player_stats.get("rec_td", 0) or 0
-                            rush_td = player_stats.get("rush_td", 0) or 0
+                            rec_td = player_stats.get("rec_td", 0)
+                            rush_td = player_stats.get("rush_td", 0)
                             td_total = rec_td + rush_td
                             
                             if td_total > 0:
@@ -2548,26 +2554,34 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                                 rz_touches_source = "zero_or_missing"
                         
                         # Calculate total touches
-                        rush_att = player_stats.get("rush_att", 0) or 0
-                        receptions = player_stats.get("rec", 0) or 0
+                        rush_att = player_stats.get("rush_att", 0)
+                        receptions = player_stats.get("rec", 0)
                         touches = rush_att + receptions
                         
-                        air_yards = player_stats.get("rec_air_yds") or player_stats.get("air_yards")
+                        # Air yards - preserve 0 values
+                        air_yards = player_stats.get("rec_air_yds")
+                        if air_yards is None:
+                            air_yards = player_stats.get("air_yards")
                         
                         # Get snap percentage - try multiple field names and calculation methods
-                        snap_share = (
-                            player_stats.get("snap_pct") or 
-                            player_stats.get("off_snp_pct") or 
-                            player_stats.get("snap_share") or
-                            player_stats.get("snap_percentage") or
-                            player_stats.get("snaps_pct")
-                        )
-                        snap_share_source = "api" if snap_share else None
+                        # Use explicit None checks to preserve 0 values
+                        snap_share = player_stats.get("snap_pct")
+                        if snap_share is None:
+                            snap_share = player_stats.get("off_snp_pct")
+                        if snap_share is None:
+                            snap_share = player_stats.get("snap_share")
+                        if snap_share is None:
+                            snap_share = player_stats.get("snap_percentage")
+                        if snap_share is None:
+                            snap_share = player_stats.get("snaps_pct")
+                        snap_share_source = "api" if snap_share is not None else None
                         
                         # Calculate from absolute snaps if percentage not provided
-                        if not snap_share:
+                        if snap_share is None:
                             off_snp = player_stats.get("off_snp")
-                            team_snp = player_stats.get("team_snp") or player_stats.get("tm_off_snp")
+                            team_snp = player_stats.get("team_snp")
+                            if team_snp is None:
+                                team_snp = player_stats.get("tm_off_snp")
                             
                             if off_snp is not None and team_snp is not None and team_snp > 0:
                                 snap_share = round((off_snp / team_snp) * 100, 1)
