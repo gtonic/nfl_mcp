@@ -1043,7 +1043,7 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
                     "name": base_info.get("full_name"),
                     "position": base_info.get("position"),
                     "team": base_info.get("team"),
-                    "team_id": base_info.get("team"),
+                    "team_id": base_info.get("team_id"),
                     "raw": base_info.get("raw")
                 }
                 extra = _enrich_usage_and_opponent(nfl_db, athlete_for_enrichment, season, week)
@@ -2770,10 +2770,10 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                 enriched_additions["snap_pct_source"] = "estimated"
                 logger.debug(f"[Enrichment] {player_name}: snap_pct={est}% (estimated from depth={depth_rank}, pos={position})")
     
-    # Opponent for ALL positions (DEF uses team_id, others use team)
+    # Opponent for ALL positions (all positions use team_id)
     if season and week and hasattr(nfl_db, 'get_opponent'):
-        # DEF entries use team_id, offensive players use team
-        team_key = athlete.get("team_id") if position == "DEF" else athlete.get("team")
+        # All positions use team_id (database only stores team_id, not team)
+        team_key = athlete.get("team_id")
         
         if team_key:
             opponent = nfl_db.get_opponent(season, week, team_key)
