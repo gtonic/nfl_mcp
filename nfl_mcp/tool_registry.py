@@ -8,7 +8,7 @@ from typing import Optional, List, Callable, Any
 import json
 import httpx
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools
+from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools
 from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
 from .database import NFLDatabase
 
@@ -32,6 +32,11 @@ def get_all_tools() -> List[Callable]:
         get_team_player_stats,
         get_nfl_standings,
         get_team_schedule,
+        
+        # CBS Fantasy Tools
+        get_cbs_player_news,
+        get_cbs_projections,
+        get_cbs_expert_picks,
         
         # Web Tools
         crawl_url,
@@ -220,6 +225,69 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2025) -> dict:
     except Exception:
         season_i = 2025
     return await nfl_tools.get_team_schedule(team_id=team_id, season=season_i)
+
+
+# =============================================================================
+# CBS FANTASY TOOLS
+# =============================================================================
+
+@timing_decorator("get_cbs_player_news", tool_type="cbs_fantasy")
+async def get_cbs_player_news(limit: Optional[int] = 50) -> dict:
+    """Fetch latest fantasy football player news from CBS Sports.
+
+    Parameters:
+        limit (int, default 50, range 1-100): Max number of news items.
+    Returns: {news: [...], total_news, success, error?}
+    Example: get_cbs_player_news(limit=25)
+    """
+    return await cbs_fantasy_tools.get_cbs_player_news(limit)
+
+
+@timing_decorator("get_cbs_projections", tool_type="cbs_fantasy")
+async def get_cbs_projections(
+    position: str = "QB",
+    week: Optional[int] = None,
+    season: Optional[int] = 2025,
+    scoring: str = "ppr"
+) -> dict:
+    """Fetch fantasy football projections from CBS Sports for a specific position and week.
+
+    Parameters:
+        position (str, default "QB"): Player position (QB, RB, WR, TE, K, DST).
+        week (int, required): NFL week number (1-18).
+        season (int, default 2025): Season year.
+        scoring (str, default "ppr"): Scoring format (ppr, half-ppr, standard).
+    Returns: {projections: [...], total_projections, week, position, success, error?}
+    Example: get_cbs_projections(position="RB", week=11, season=2025, scoring="ppr")
+    """
+    try:
+        week_i = int(week) if week is not None else None
+        season_i = int(season) if season is not None else 2025
+    except Exception:
+        week_i = None
+        season_i = 2025
+    return await cbs_fantasy_tools.get_cbs_projections(
+        position=position,
+        week=week_i,
+        season=season_i,
+        scoring=scoring
+    )
+
+
+@timing_decorator("get_cbs_expert_picks", tool_type="cbs_fantasy")
+async def get_cbs_expert_picks(week: Optional[int] = None) -> dict:
+    """Fetch NFL expert picks against the spread from CBS Sports for a specific week.
+
+    Parameters:
+        week (int, required): NFL week number (1-18).
+    Returns: {picks: [...], total_picks, week, success, error?}
+    Example: get_cbs_expert_picks(week=10)
+    """
+    try:
+        week_i = int(week) if week is not None else None
+    except Exception:
+        week_i = None
+    return await cbs_fantasy_tools.get_cbs_expert_picks(week=week_i)
 
 
 # =============================================================================

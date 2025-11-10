@@ -15,6 +15,10 @@ A FastMCP server that provides health monitoring, web content extraction, NFL ne
   - **Player Performance Stats**: Team player statistics and fantasy relevance indicators  
   - **NFL Standings**: League standings with playoff implications and team motivation context
   - **Team Schedules**: Matchup analysis with fantasy implications and strength of schedule
+- **CBS Fantasy Football Tools**: MCP tools for fetching CBS Sports fantasy content:
+  - **Player News**: Latest fantasy football player news and updates
+  - **Projections**: Weekly player projections by position with customizable scoring formats
+  - **Expert Picks**: NFL expert picks against the spread for informed betting and fantasy decisions
 - **Athlete Tools**: MCP tools for fetching, caching, and looking up NFL athletes from Sleeper API with SQLite persistence
 - **Sleeper API Tools**: Comprehensive MCP tools for fantasy league management including:
   - League information, rosters, users, matchups, playoff brackets
@@ -131,7 +135,7 @@ docker run --rm -p 9000:9000 \
 
 ### Quick Overview
 
-The NFL MCP Server provides **26+ MCP tools** organized into these categories:
+The NFL MCP Server provides **29+ MCP tools** organized into these categories:
 
 #### 🏈 NFL Information (9 tools)
 - `get_nfl_news` - Latest NFL news from ESPN
@@ -143,6 +147,11 @@ The NFL MCP Server provides **26+ MCP tools** organized into these categories:
 - `get_nfl_standings` - Current NFL standings
 - `get_team_schedule` - Team schedules with fantasy context
 - `get_league_leaders` - NFL statistical leaders by category
+
+#### 📰 CBS Fantasy Football (3 tools)
+- `get_cbs_player_news` - Latest fantasy football player news from CBS Sports
+- `get_cbs_projections` - Fantasy projections by position and week from CBS Sports
+- `get_cbs_expert_picks` - NFL expert picks against the spread from CBS Sports
 
 #### 👥 Player/Athlete (4 tools)
 - `fetch_athletes` - Import all NFL players (expensive, use sparingly)
@@ -637,6 +646,119 @@ async with Client("http://localhost:9000/mcp/") as client:
 - Configurable content length limiting
 - Follows redirects automatically
 - Sets appropriate User-Agent header
+
+### CBS Fantasy Football Tools (MCP)
+
+**Tools:** `get_cbs_player_news`, `get_cbs_projections`, `get_cbs_expert_picks`
+
+These tools provide access to CBS Sports Fantasy Football content including player news, weekly projections, and expert picks.
+
+#### get_cbs_player_news
+
+Fetch the latest fantasy football player news from CBS Sports.
+
+**Parameters:**
+- `limit` (integer, optional): Maximum number of news items to retrieve (default: 50, max: 100)
+
+**Returns:** Dictionary with the following fields:
+- `news`: List of player news items with headlines, players, descriptions
+- `total_news`: Number of news items returned
+- `source`: Data source identifier
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+**News Item Structure:**
+Each news item in the `news` list may contain:
+- `player`: Player name
+- `headline`: News headline
+- `description`: Detailed news description
+- `published`: Publication timestamp
+- `position`: Player position (QB, RB, WR, etc.)
+- `team`: Team abbreviation
+
+#### get_cbs_projections
+
+Fetch fantasy football projections from CBS Sports for a specific position and week.
+
+**Parameters:**
+- `position` (string, required): Player position - QB, RB, WR, TE, K, or DST (default: QB)
+- `week` (integer, required): NFL week number (1-18)
+- `season` (integer, optional): Season year (default: 2025)
+- `scoring` (string, optional): Scoring format - ppr, half-ppr, or standard (default: ppr)
+
+**Returns:** Dictionary with the following fields:
+- `projections`: List of player projections with statistical predictions
+- `total_projections`: Number of projections returned
+- `week`: Week number requested
+- `position`: Position filtered
+- `season`: Season year
+- `scoring`: Scoring format used
+- `source`: Data source identifier
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+**Projection Structure:**
+Each projection in the `projections` list contains:
+- `player_name`: Player's full name
+- `player_url`: Link to player page (if available)
+- Additional statistical fields varying by position (passing yards, touchdowns, receptions, etc.)
+
+#### get_cbs_expert_picks
+
+Fetch NFL expert picks against the spread from CBS Sports for a specific week.
+
+**Parameters:**
+- `week` (integer, required): NFL week number (1-18)
+
+**Returns:** Dictionary with the following fields:
+- `picks`: List of expert picks with game matchups and predictions
+- `total_picks`: Number of picks returned
+- `week`: Week number requested
+- `source`: Data source identifier
+- `success`: Whether the request was successful
+- `error`: Error message (if any)
+
+**Pick Structure:**
+Each pick in the `picks` list contains:
+- `matchup`: Game matchup description
+- `away_team`: Away team name (if available)
+- `home_team`: Home team name (if available)
+- `experts`: List of expert predictions
+- `expert`: Individual expert name (alternative format)
+- `prediction`: Expert's prediction (alternative format)
+
+**Example Usage with MCP Client:**
+```python
+from fastmcp import Client
+
+async with Client("http://localhost:9000/mcp/") as client:
+    # Get latest CBS player news
+    result = await client.call_tool("get_cbs_player_news", {"limit": 20})
+    if result.data["success"]:
+        print(f"Found {result.data['total_news']} news items")
+        for news in result.data["news"]:
+            if news.get('headline'):
+                print(f"- {news.get('player', 'Unknown')}: {news['headline']}")
+    
+    # Get QB projections for week 11
+    result = await client.call_tool("get_cbs_projections", {
+        "position": "QB",
+        "week": 11,
+        "season": 2025,
+        "scoring": "ppr"
+    })
+    if result.data["success"]:
+        print(f"Found {result.data['total_projections']} QB projections for week 11")
+        for proj in result.data["projections"][:5]:
+            print(f"- {proj.get('player_name', 'Unknown')}")
+    
+    # Get expert picks for week 10
+    result = await client.call_tool("get_cbs_expert_picks", {"week": 10})
+    if result.data["success"]:
+        print(f"Found {result.data['total_picks']} expert picks for week 10")
+        for pick in result.data["picks"][:3]:
+            print(f"- {pick.get('matchup', 'Unknown matchup')}")
+```
 
 ### Sleeper API Tools (MCP)
 
