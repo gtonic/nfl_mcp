@@ -8,7 +8,7 @@ from typing import Optional, List, Callable, Any
 import json
 import httpx
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools
+from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools
 from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
 from .database import NFLDatabase
 
@@ -81,6 +81,9 @@ def get_all_tools() -> List[Callable]:
         
         # Trade Analyzer Tools
         analyze_trade,
+        
+        # Opponent Analysis Tools
+        analyze_opponent,
     ]
     
     # Add feature-flagged tools
@@ -710,6 +713,61 @@ async def analyze_trade(
         return {
             "recommendation": None,
             "fairness_score": 0,
+            "success": False,
+            "error": f"Invalid input: {str(e)}"
+        }
+
+
+@timing_decorator("analyze_opponent", tool_type="opponent_analysis")
+async def analyze_opponent(
+    league_id: str,
+    opponent_roster_id: int,
+    current_week: Optional[int] = None
+) -> dict:
+    """Analyze an opponent's roster to identify weaknesses and exploitation opportunities.
+    
+    This tool provides comprehensive analysis of an opponent's fantasy roster including
+    position-by-position strength assessment, starter vulnerability identification,
+    depth chart weakness analysis, and strategic exploitation recommendations.
+    
+    Parameters:
+        league_id (str, required): The unique identifier for the fantasy league.
+        opponent_roster_id (int, required): Roster ID of the opponent to analyze.
+        current_week (int, optional): Current NFL week for matchup context.
+    
+    Returns: {
+        vulnerability_score: float (0-100, higher = more vulnerable),
+        vulnerability_level: str (high, moderate, low),
+        position_assessments: {...},
+        starter_weaknesses: [...],
+        exploitation_strategies: [...],
+        matchup_context: {...} (if current_week provided),
+        opponent_name: str,
+        success: bool,
+        error?: str
+    }
+    
+    Example: analyze_opponent(
+        league_id="12345",
+        opponent_roster_id=2,
+        current_week=10
+    )
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        opponent_roster_id = validate_numeric_input(opponent_roster_id, min_val=1, max_val=20, required=True)
+        
+        if current_week is not None:
+            current_week = validate_numeric_input(current_week, min_val=1, max_val=22, required=False)
+        
+        return await opponent_analysis_tools.analyze_opponent(
+            league_id=league_id,
+            opponent_roster_id=opponent_roster_id,
+            current_week=current_week
+        )
+    except ValueError as e:
+        return {
+            "vulnerability_score": 0,
             "success": False,
             "error": f"Invalid input: {str(e)}"
         }
