@@ -135,7 +135,7 @@ docker run --rm -p 9000:9000 \
 
 ### Quick Overview
 
-The NFL MCP Server provides **29+ MCP tools** organized into these categories:
+The NFL MCP Server provides **30+ MCP tools** organized into these categories:
 
 #### 🏈 NFL Information (9 tools)
 - `get_nfl_news` - Latest NFL news from ESPN
@@ -764,6 +764,7 @@ async with Client("http://localhost:9000/mcp/") as client:
 
 **Basic Tools:** `get_league`, `get_rosters`, `get_league_users`, `get_matchups`, `get_playoff_bracket`, `get_transactions`, `get_traded_picks`, `get_nfl_state`, `get_trending_players`
 **Strategic Tools:** `get_strategic_matchup_preview`, `get_season_bye_week_coordination`, `get_trade_deadline_analysis`, `get_playoff_preparation_plan`
+**Analysis Tools:** `analyze_opponent` - Opponent roster weakness analysis and exploitation strategies
 
 ### Waiver Wire Analysis Tools (MCP)
 
@@ -984,6 +985,101 @@ async with Client("http://localhost:9000/mcp/") as client:
         phase = result.data["playoff_plan"]["preparation_phases"]["current_phase"]["name"]
         print(f"Playoff readiness: {score}/100 ({phase})")
 ```
+
+### Opponent Analysis Tools (MCP)
+
+**Tool:** `analyze_opponent`
+
+This advanced tool provides comprehensive opponent roster analysis for fantasy football matchup preparation.
+
+#### analyze_opponent
+
+Analyze an opponent's roster to identify weaknesses and exploitation opportunities.
+
+**Parameters:**
+- `league_id` (string): The unique identifier for the fantasy league
+- `opponent_roster_id` (integer): Roster ID of the opponent to analyze  
+- `current_week` (integer, optional): Current NFL week for matchup context
+
+**Returns:** Dictionary with the following fields:
+- `vulnerability_score`: Overall opponent weakness score (0-100, higher = more vulnerable)
+- `vulnerability_level`: Classification (high, moderate, low)
+- `position_assessments`: Detailed assessment by position including:
+  - `strength_score`: Position group strength (0-100)
+  - `depth_count`: Number of players at position
+  - `average_snap_pct`: Average snap percentage
+  - `injury_concerns`: Count of injured players
+  - `usage_concerns`: Count of players with declining usage
+  - `weakness_level`: Classification (strong, moderate, weak, critical)
+  - `concerns`: List of specific concerns
+- `starter_weaknesses`: Specific weaknesses in starting lineup with:
+  - `player_id`, `player_name`, `position`
+  - `weaknesses`: List of weakness descriptions
+  - `severity`: High, moderate, or low
+- `exploitation_strategies`: Prioritized recommendations including:
+  - `category`: Type of strategy (position_weakness, starter_vulnerability)
+  - `position`: Position to target
+  - `priority`: Critical, high, moderate
+  - `recommendation`: Strategic advice
+  - `details`: Supporting information
+  - `action_items`: Specific actions to take
+- `matchup_context`: Optional matchup information if current_week provided
+- `opponent_name`: Display name of opponent (if available)
+- `success`: Whether the analysis was successful
+- `error`: Error message (if any)
+
+**Features:**
+- **Position Strength Assessment**: Evaluates each position group (QB, RB, WR, TE, K, DEF) based on depth, snap percentage, injury status, and usage trends
+- **Injury Analysis**: Identifies players with practice status concerns (DNP, LP)
+- **Usage Trend Detection**: Flags declining usage patterns that indicate player vulnerability
+- **Strategic Recommendations**: Generates prioritized exploitation strategies based on identified weaknesses
+- **Matchup Context**: Optional integration with current week matchup data
+
+**Example Usage with MCP Client:**
+```python
+from fastmcp import Client
+
+async with Client("http://localhost:9000/mcp/") as client:
+    # Analyze opponent roster for current matchup
+    result = await client.call_tool("analyze_opponent", {
+        "league_id": "your_league_id",
+        "opponent_roster_id": 2,
+        "current_week": 10
+    })
+    
+    if result.data["success"]:
+        print(f"Opponent: {result.data['opponent_name']}")
+        print(f"Vulnerability Score: {result.data['vulnerability_score']}/100")
+        print(f"Level: {result.data['vulnerability_level']}")
+        
+        # Show position weaknesses
+        for position, assessment in result.data["position_assessments"].items():
+            if assessment["weakness_level"] in ["weak", "critical"]:
+                print(f"\n{position} Position - {assessment['weakness_level'].upper()}:")
+                print(f"  Strength Score: {assessment['strength_score']}")
+                for concern in assessment['concerns']:
+                    print(f"  - {concern}")
+        
+        # Show starter vulnerabilities
+        print("\nStarter Weaknesses:")
+        for weakness in result.data["starter_weaknesses"]:
+            print(f"  {weakness['player_name']} ({weakness['position']}) - {weakness['severity']}:")
+            for w in weakness['weaknesses']:
+                print(f"    - {w}")
+        
+        # Show exploitation strategies
+        print("\nExploitation Strategies:")
+        for strategy in result.data["exploitation_strategies"][:3]:
+            print(f"\n  [{strategy['priority'].upper()}] {strategy['recommendation']}")
+            for action in strategy['action_items']:
+                print(f"    • {action}")
+```
+
+**Use Cases:**
+- **Weekly Matchup Preparation**: Identify opponent weaknesses before your matchup
+- **Lineup Decisions**: Decide which players to start based on opponent vulnerabilities
+- **Waiver Wire Strategy**: Prioritize pickups that exploit opponent position weaknesses
+- **Trade Targeting**: Identify opponents who need help at positions where you have depth
 
 ## Development
 
