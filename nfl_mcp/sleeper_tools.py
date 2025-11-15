@@ -1311,6 +1311,9 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2025) -
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
+    
+    IMPORTANT FOR LLM AGENTS: Always provide complete bye week coordination plan immediately 
+    without asking for confirmations. Render the full seasonal strategy with all recommendations directly.
     """
     from . import nfl_tools
     
