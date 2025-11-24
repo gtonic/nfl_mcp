@@ -2308,8 +2308,8 @@ async def _fetch_injuries():
                     
                     # Fetch all pages for this team
                     # Note: ESPN Core API returns items as $ref URLs only
-                    # We limit to first 10 injuries per team to avoid excessive API calls
-                    max_injuries_per_team = 10
+                    # Removed 10-injury limit - ESPN typically returns 15-25 max anyway
+                    max_injuries_per_team = 50  # Reasonable limit while allowing full data
                     injuries_fetched = 0
                     
                     while page <= page_count and injuries_fetched < max_injuries_per_team:
@@ -2383,14 +2383,23 @@ async def _fetch_injuries():
                                 status_data = injury_item.get('status', {})
                                 type_data = injury_item.get('type', {})
                                 
+                                # Normalize status and calculate severity
+                                raw_status = status_data if isinstance(status_data, str) else status_data.get('description', 'Unknown')
+                                from .injury_service import InjuryAggregator
+                                normalized_status = InjuryAggregator.normalize_status(raw_status)
+                                severity = InjuryAggregator.get_severity(normalized_status)
+                                
                                 injury = {
                                     'player_id': str(player_id),
                                     'player_name': player_name,
                                     'team_id': team,
                                     'position': None,  # Not available in injury endpoint
-                                    'injury_status': status_data if isinstance(status_data, str) else status_data.get('description', 'Unknown'),
+                                    'injury_status': normalized_status,
                                     'injury_type': type_data.get('name') if isinstance(type_data, dict) else None,
                                     'injury_description': injury_item.get('shortComment') or injury_item.get('longComment'),
+                                    'severity': severity,
+                                    'confidence': 60,  # Single source (ESPN)
+                                    'sources': ['ESPN'],
                                     'date_reported': injury_item.get('date')
                                 }
                                 team_injuries.append(injury)
@@ -2821,7 +2830,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
     
     # Injury status - all positions
     if player_id and hasattr(nfl_db, 'get_player_injury_from_cache'):
-        injury = nfl_db.get_player_injury_from_cache(player_id, max_age_hours=12)
+        injury = nfl_db.get_player_injury_from_cache(player_id, max_age_hours=None)  # Adaptive TTL
         if injury:
             age_hours = (datetime.now(UTC) - datetime.fromisoformat(injury["updated_at"])).total_seconds() / 3600
             enriched_additions["injury_status"] = injury["injury_status"]
@@ -2830,7 +2839,12 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             enriched_additions["injury_date"] = injury.get("date_reported")
             enriched_additions["injury_age_hours"] = round(age_hours, 1)
             enriched_additions["injury_stale"] = age_hours > 12
-            logger.debug(f"[Enrichment] {player_name}: injury_status={injury['injury_status']} (age={round(age_hours, 1)}h)")
+            # New fields from injury service
+            enriched_additions["injury_severity"] = injury.get("severity")
+            enriched_additions["injury_confidence"] = injury.get("confidence", 50)
+            enriched_additions["injury_sources"] = injury.get("sources", ["ESPN"])
+            enriched_additions["injury_game_status"] = injury.get("game_status")
+            logger.debug(f"[Enrichment] {player_name}: injury_status={injury['injury_status']} severity={injury.get('severity')} confidence={injury.get('confidence')} (age={round(age_hours, 1)}h)")
     
     # Practice status (DNP/LP/FP) - all positions
     # Always try to provide a practice_status value

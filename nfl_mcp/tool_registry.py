@@ -101,6 +101,11 @@ def get_all_tools() -> List[Callable]:
         get_game_environment,
         analyze_roster_vegas,
         get_stack_opportunities,
+        
+        # Injury Report Tools (Multi-source with confidence scoring)
+        get_injury_report,
+        get_high_confidence_injuries,
+        get_gameday_inactives,
     ]
     
     # Add feature-flagged tools
@@ -1350,6 +1355,220 @@ async def get_stack_opportunities(
         min_total_val = 48.0
     
     return await vegas_tools.get_stack_opportunities(min_total=min_total_val)
+
+
+# =============================================================================
+# INJURY REPORT TOOLS (Multi-source aggregation with confidence scoring)
+# =============================================================================
+
+@timing_decorator("get_injury_report", tool_type="injury")
+async def get_injury_report(
+    player_ids: Optional[List[str]] = None,
+    team_ids: Optional[List[str]] = None,
+    use_cache: Optional[bool] = True
+) -> dict:
+    """Get detailed injury reports with confidence scoring.
+    
+    Fetches injury data from multiple sources (ESPN, CBS) and provides
+    confidence scores based on source agreement. Includes severity scoring
+    and game-day status.
+    
+    Parameters:
+        player_ids (list[str], optional): List of player IDs to lookup
+        team_ids (list[str], optional): List of team abbreviations (e.g., ['KC', 'PHI'])
+        use_cache (bool, default True): Whether to use cached data with adaptive TTL
+    
+    Returns: {
+        injuries: [{
+            player_id, player_name, team_id, position,
+            injury_status, injury_type, injury_description,
+            game_status, severity (1-5), confidence (0-100),
+            sources, date_reported
+        }],
+        total_injuries, cache_used,
+        success, error?
+    }
+    
+    Example: get_injury_report(team_ids=["KC", "PHI"])
+    Example: get_injury_report(player_ids=["4428633", "4241479"])
+    """
+    from .injury_service import InjuryAggregator, get_injury_reports, get_player_injury_report
+    
+    try:
+        use_cache_val = bool(use_cache) if use_cache is not None else True
+        results = []
+        
+        # If player_ids provided, look up individual players
+        if player_ids:
+            async with InjuryAggregator(db=_nfl_db) as aggregator:
+                for pid in player_ids[:50]:  # Limit to 50 players
+                    injury = await aggregator.get_player_injury(str(pid))
+                    if injury:
+                        results.append(injury.to_dict())
+        
+        # If team_ids provided, get team injuries
+        elif team_ids:
+            # Validate team IDs
+            valid_teams = [t.upper() for t in team_ids[:10] if isinstance(t, str) and len(t) <= 5]
+            if valid_teams:
+                injuries = await get_injury_reports(teams=valid_teams, db=_nfl_db, use_cache=use_cache_val)
+                results = injuries
+        else:
+            # Default: get all team injuries
+            injuries = await get_injury_reports(db=_nfl_db, use_cache=use_cache_val)
+            results = injuries
+        
+        return {
+            "injuries": results,
+            "total_injuries": len(results),
+            "cache_used": use_cache_val,
+            "success": True
+        }
+        
+    except Exception as e:
+        return {
+            "injuries": [],
+            "total_injuries": 0,
+            "cache_used": False,
+            "success": False,
+            "error": str(e)
+        }
+
+
+@timing_decorator("get_high_confidence_injuries", tool_type="injury")
+async def get_high_confidence_injuries(
+    min_confidence: Optional[int] = 70,
+    teams: Optional[List[str]] = None
+) -> dict:
+    """Get injuries with high confidence scores (multi-source verified).
+    
+    Filters injury reports to only include those with confidence scores
+    above a threshold. Higher confidence means multiple sources agree
+    on the injury status.
+    
+    Parameters:
+        min_confidence (int, default 70): Minimum confidence score (0-100)
+        teams (list[str], optional): Team abbreviations to filter
+    
+    Returns: {
+        injuries: [...], total_injuries, min_confidence_filter,
+        success, error?
+    }
+    
+    Example: get_high_confidence_injuries()
+    Example: get_high_confidence_injuries(min_confidence=80, teams=["KC"])
+    """
+    from .injury_service import get_injury_reports
+    
+    try:
+        min_conf = int(min_confidence) if min_confidence else 70
+        min_conf = max(0, min(100, min_conf))
+        
+        teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
+        injuries = await get_injury_reports(
+            teams=teams_list if teams_list else None,
+            db=_nfl_db,
+            use_cache=True
+        )
+        
+        # Filter by confidence
+        high_conf = [inj for inj in injuries if inj.get("confidence", 0) >= min_conf]
+        
+        return {
+            "injuries": high_conf,
+            "total_injuries": len(high_conf),
+            "min_confidence_filter": min_conf,
+            "success": True
+        }
+        
+    except Exception as e:
+        return {
+            "injuries": [],
+            "total_injuries": 0,
+            "min_confidence_filter": min_confidence,
+            "success": False,
+            "error": str(e)
+        }
+
+
+@timing_decorator("get_gameday_inactives", tool_type="injury")
+async def get_gameday_inactives(
+    teams: Optional[List[str]] = None,
+    severity_threshold: Optional[int] = 3
+) -> dict:
+    """Get likely inactive players for upcoming games.
+    
+    Filters injuries by severity to identify players who are likely
+    to be inactive. Useful for last-minute lineup decisions.
+    
+    Severity scale:
+    - 1: Minor (day-to-day)
+    - 2: Questionable (game-time decision)
+    - 3: Moderate (expected to miss 1-2 weeks)
+    - 4: Significant (multi-week absence)
+    - 5: Severe (IR/season-ending)
+    
+    Parameters:
+        teams (list[str], optional): Team abbreviations to filter
+        severity_threshold (int, default 3): Min severity to include (3+ = likely out)
+    
+    Returns: {
+        inactives: [{player_name, team_id, injury_status, severity, confidence}],
+        total_inactives, severity_threshold_used,
+        success, error?
+    }
+    
+    Example: get_gameday_inactives()
+    Example: get_gameday_inactives(teams=["KC", "SF"], severity_threshold=4)
+    """
+    from .injury_service import get_injury_reports
+    
+    try:
+        threshold = int(severity_threshold) if severity_threshold else 3
+        threshold = max(1, min(5, threshold))
+        
+        teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
+        injuries = await get_injury_reports(
+            teams=teams_list if teams_list else None,
+            db=_nfl_db,
+            use_cache=True
+        )
+        
+        # Filter by severity
+        inactives = []
+        for inj in injuries:
+            severity = inj.get("severity")
+            if severity and severity >= threshold:
+                inactives.append({
+                    "player_id": inj.get("player_id"),
+                    "player_name": inj.get("player_name"),
+                    "team_id": inj.get("team_id"),
+                    "position": inj.get("position"),
+                    "injury_status": inj.get("injury_status"),
+                    "injury_type": inj.get("injury_type"),
+                    "game_status": inj.get("game_status"),
+                    "severity": severity,
+                    "confidence": inj.get("confidence", 50)
+                })
+        
+        # Sort by severity (highest first), then confidence
+        inactives.sort(key=lambda x: (-x["severity"], -x["confidence"]))
+        
+        return {
+            "inactives": inactives,
+            "total_inactives": len(inactives),
+            "severity_threshold_used": threshold,
+            "success": True
+        }
+        
+    except Exception as e:
+        return {
+            "inactives": [],
+            "total_inactives": 0,
+            "severity_threshold_used": severity_threshold,
+            "success": False,
+            "error": str(e)
+        }
 
 
 # =============================================================================

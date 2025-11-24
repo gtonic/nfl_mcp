@@ -1,10 +1,10 @@
 """
 NFL MCP Server Package
 
-A FastMCP server providing health endpoints and arithmetic tools.
+A FastMCP server providing NFL fantasy football data, analysis, and lineup optimization.
 """
 
 from .server import create_app, main
 
-__version__ = "0.1.0"
+__version__ = "0.5.14"
 __all__ = ["create_app", "main"]

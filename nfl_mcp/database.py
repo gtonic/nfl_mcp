@@ -191,7 +191,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 10
+    CURRENT_SCHEMA_VERSION = 11
     
     def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
         """
@@ -240,6 +240,7 @@ class NFLDatabase:
             8: self._migration_v8_practice_and_usage,
             9: self._migration_v9_injuries,
             10: self._migration_v10_defense_rankings,
+            11: self._migration_v11_injuries_v2,
         }
         
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -503,6 +504,93 @@ class NFLDatabase:
             """CREATE INDEX IF NOT EXISTS idx_defense_rankings_team 
                ON defense_rankings(team, season, position)"""
         )
+    
+    def _migration_v11_injuries_v2(self, conn: sqlite3.Connection) -> None:
+        """Migration v11: Improved injuries table with proper PK and multi-source support.
+        
+        Changes:
+        - New table with (player_id, team_id) as PK (enables true upserts)
+        - Added: severity (1-5 scale), confidence (0-100), sources JSON
+        - Added: game_status for game-day designations (Active/Inactive/IR/PUP)
+        - Migrates existing data from old table
+        """
+        # Create new injuries table with improved schema
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_injuries_v2 (
+                player_id TEXT NOT NULL,
+                player_name TEXT NOT NULL,
+                team_id TEXT NOT NULL,
+                position TEXT,
+                injury_status TEXT NOT NULL,
+                injury_type TEXT,
+                injury_description TEXT,
+                game_status TEXT,
+                severity INTEGER,
+                confidence INTEGER DEFAULT 50,
+                sources TEXT,
+                date_reported TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(player_id, team_id)
+            )
+            """
+        )
+        
+        # Create optimized indexes
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_injuries_v2_team 
+               ON player_injuries_v2(team_id)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_injuries_v2_status 
+               ON player_injuries_v2(injury_status)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_injuries_v2_updated 
+               ON player_injuries_v2(updated_at DESC)"""
+        )
+        
+        # Migrate data from old table (most recent entry per player)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO player_injuries_v2 (
+                player_id, player_name, team_id, position,
+                injury_status, injury_type, injury_description,
+                game_status, severity, confidence, sources,
+                date_reported, updated_at
+            )
+            SELECT 
+                player_id, player_name, team_id, position,
+                injury_status, injury_type, injury_description,
+                NULL, NULL, 50, '["ESPN"]',
+                date_reported, MAX(updated_at)
+            FROM player_injuries
+            GROUP BY player_id, team_id
+            """
+        )
+        
+        # Drop old table and rename new one
+        conn.execute("DROP TABLE IF EXISTS player_injuries")
+        conn.execute("ALTER TABLE player_injuries_v2 RENAME TO player_injuries")
+        
+        # Create injury history table for trend analysis
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS injury_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id TEXT NOT NULL,
+                team_id TEXT NOT NULL,
+                injury_status TEXT NOT NULL,
+                injury_type TEXT,
+                recorded_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_injury_history_player 
+               ON injury_history(player_id, recorded_at DESC)"""
+        )
+
     @contextmanager
     def _get_connection(self):
         """Get a database connection with proper cleanup. (Legacy method for compatibility)"""
@@ -1079,6 +1167,10 @@ class NFLDatabase:
                 - injury_status: Status (Out/Questionable/Doubtful/DNP/etc)
                 - injury_type: Body part/type (optional)
                 - injury_description: Full description (optional)
+                - game_status: Game-day designation (Active/Inactive/IR/PUP)
+                - severity: 1-5 scale (optional)
+                - confidence: 0-100 confidence score (optional)
+                - sources: List of source names (optional)
                 - date_reported: Date of injury report (optional)
                 
         Returns:
@@ -1096,20 +1188,31 @@ class NFLDatabase:
                     if not player_id:
                         continue
                     
+                    # Handle sources as JSON array
+                    sources = inj.get("sources", ["ESPN"])
+                    if isinstance(sources, list):
+                        sources = json.dumps(sources)
+                    
                     conn.execute(
                         """
                         INSERT INTO player_injuries(
                             player_id, player_name, team_id, position, 
-                            injury_status, injury_type, injury_description, 
+                            injury_status, injury_type, injury_description,
+                            game_status, severity, confidence, sources,
                             date_reported, updated_at
-                        ) VALUES(?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(player_id, team_id, updated_at) DO UPDATE SET
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(player_id, team_id) DO UPDATE SET
                             player_name=excluded.player_name,
                             position=excluded.position,
                             injury_status=excluded.injury_status,
                             injury_type=excluded.injury_type,
                             injury_description=excluded.injury_description,
-                            date_reported=excluded.date_reported
+                            game_status=excluded.game_status,
+                            severity=excluded.severity,
+                            confidence=excluded.confidence,
+                            sources=excluded.sources,
+                            date_reported=excluded.date_reported,
+                            updated_at=excluded.updated_at
                         """,
                         (
                             player_id,
@@ -1119,6 +1222,10 @@ class NFLDatabase:
                             inj.get("injury_status", "Unknown"),
                             inj.get("injury_type"),
                             inj.get("injury_description"),
+                            inj.get("game_status"),
+                            inj.get("severity"),
+                            inj.get("confidence", 50),
+                            sources,
                             inj.get("date_reported"),
                             now
                         )
@@ -1130,23 +1237,38 @@ class NFLDatabase:
             logger.error(f"upsert_injuries failed: {e}")
             return 0
     
-    def get_team_injuries_from_cache(self, team_id: str, max_age_hours: int = 12) -> List[Dict]:
-        """Get cached injury reports for a team.
+    def get_team_injuries_from_cache(
+        self, 
+        team_id: str, 
+        max_age_hours: int = None
+    ) -> List[Dict]:
+        """Get cached injury reports for a team with adaptive TTL.
         
         Args:
             team_id: Team abbreviation
             max_age_hours: Maximum age of cached data in hours
+                          If None, uses adaptive TTL based on day of week
             
         Returns:
             List of injury dicts
         """
         try:
+            # Adaptive TTL: 2h during game windows (Thu-Mon), 12h for off-days
+            if max_age_hours is None:
+                day_of_week = datetime.now(UTC).weekday()
+                # Thu=3, Fri=4, Sat=5, Sun=6, Mon=0
+                if day_of_week in (0, 3, 4, 5, 6):
+                    max_age_hours = 2  # Game window - fresher data
+                else:
+                    max_age_hours = 12  # Off-day - longer cache
+            
             cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
             with self._pool.get_connection() as conn:
                 cur = conn.execute(
                     """
                     SELECT player_id, player_name, team_id, position,
                            injury_status, injury_type, injury_description,
+                           game_status, severity, confidence, sources,
                            date_reported, updated_at
                     FROM player_injuries
                     WHERE team_id=? AND updated_at >= ?
@@ -1155,28 +1277,52 @@ class NFLDatabase:
                     (team_id, cutoff),
                 )
                 rows = cur.fetchall()
-                return [dict(row) for row in rows]
+                result = []
+                for row in rows:
+                    d = dict(row)
+                    # Parse sources JSON
+                    if d.get("sources"):
+                        try:
+                            d["sources"] = json.loads(d["sources"])
+                        except:
+                            d["sources"] = ["ESPN"]
+                    result.append(d)
+                return result
         except Exception as e:
             logger.debug(f"get_team_injuries_from_cache failed: {e}")
             return []
     
-    def get_player_injury_from_cache(self, player_id: str, max_age_hours: int = 12) -> Optional[Dict]:
-        """Get cached injury report for a specific player.
+    def get_player_injury_from_cache(
+        self, 
+        player_id: str, 
+        max_age_hours: int = None
+    ) -> Optional[Dict]:
+        """Get cached injury report for a specific player with adaptive TTL.
         
         Args:
             player_id: Player identifier
             max_age_hours: Maximum age of cached data in hours
+                          If None, uses adaptive TTL based on day of week
             
         Returns:
             Injury dict or None
         """
         try:
+            # Adaptive TTL: 2h during game windows (Thu-Mon), 12h for off-days
+            if max_age_hours is None:
+                day_of_week = datetime.now(UTC).weekday()
+                if day_of_week in (0, 3, 4, 5, 6):
+                    max_age_hours = 2
+                else:
+                    max_age_hours = 12
+            
             cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
             with self._pool.get_connection() as conn:
                 cur = conn.execute(
                     """
                     SELECT player_id, player_name, team_id, position,
                            injury_status, injury_type, injury_description,
+                           game_status, severity, confidence, sources,
                            date_reported, updated_at
                     FROM player_injuries
                     WHERE player_id=? AND updated_at >= ?
@@ -1188,10 +1334,73 @@ class NFLDatabase:
                 row = cur.fetchone()
                 if not row:
                     return None
-                return dict(row)
+                d = dict(row)
+                # Parse sources JSON
+                if d.get("sources"):
+                    try:
+                        d["sources"] = json.loads(d["sources"])
+                    except:
+                        d["sources"] = ["ESPN"]
+                return d
         except Exception as e:
             logger.debug(f"get_player_injury_from_cache failed: {e}")
             return None
+    
+    def add_injury_history(self, player_id: str, team_id: str, status: str, injury_type: str = None) -> bool:
+        """Add entry to injury history for trend analysis.
+        
+        Args:
+            player_id: Player identifier
+            team_id: Team abbreviation
+            status: Injury status
+            injury_type: Type of injury (optional)
+            
+        Returns:
+            True if successful
+        """
+        try:
+            now = datetime.now(UTC).isoformat()
+            with self._pool.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO injury_history(player_id, team_id, injury_status, injury_type, recorded_at)
+                    VALUES(?,?,?,?,?)
+                    """,
+                    (player_id, team_id, status, injury_type, now)
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.debug(f"add_injury_history failed: {e}")
+            return False
+    
+    def get_injury_history(self, player_id: str, limit: int = 10) -> List[Dict]:
+        """Get injury history for a player.
+        
+        Args:
+            player_id: Player identifier
+            limit: Max number of history entries
+            
+        Returns:
+            List of historical injury entries
+        """
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT player_id, team_id, injury_status, injury_type, recorded_at
+                    FROM injury_history
+                    WHERE player_id=?
+                    ORDER BY recorded_at DESC
+                    LIMIT ?
+                    """,
+                    (player_id, limit)
+                )
+                rows = cur.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.debug(f"get_injury_history failed: {e}")
+            return []
     
     # ------------------------------------------------------------------
     # Defense rankings helpers (for lineup optimization)
