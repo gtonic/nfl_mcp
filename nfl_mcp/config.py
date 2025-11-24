@@ -12,6 +12,7 @@ import re
 import html
 import urllib.parse
 import time
+import asyncio
 from collections import defaultdict, deque
 import httpx
 from typing import Dict, Any, Optional, Union
@@ -23,6 +24,139 @@ from .config_manager import get_config_manager
 
 # Rate limiting storage (in production, use Redis or similar)
 _rate_limit_storage = defaultdict(lambda: deque())
+
+
+class OutboundRateLimiter:
+    """
+    Token bucket rate limiter for outbound API calls.
+    
+    Prevents hitting external API rate limits by controlling request rate.
+    Thread-safe and async-compatible.
+    """
+    
+    def __init__(self, calls_per_minute: int = 60, burst_capacity: int = None):
+        """
+        Initialize the rate limiter.
+        
+        Args:
+            calls_per_minute: Maximum sustained calls per minute
+            burst_capacity: Maximum burst size (defaults to calls_per_minute)
+        """
+        self.rate = calls_per_minute / 60.0  # tokens per second
+        self.capacity = burst_capacity or calls_per_minute
+        self.tokens = float(self.capacity)
+        self.last_update = time.monotonic()
+        self._lock = asyncio.Lock()
+    
+    async def acquire(self, tokens: int = 1) -> float:
+        """
+        Acquire tokens, waiting if necessary.
+        
+        Args:
+            tokens: Number of tokens to acquire (default 1)
+            
+        Returns:
+            Time waited in seconds
+        """
+        async with self._lock:
+            waited = 0.0
+            while True:
+                now = time.monotonic()
+                # Replenish tokens based on elapsed time
+                elapsed = now - self.last_update
+                self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+                self.last_update = now
+                
+                if self.tokens >= tokens:
+                    self.tokens -= tokens
+                    return waited
+                
+                # Calculate wait time needed
+                tokens_needed = tokens - self.tokens
+                wait_time = tokens_needed / self.rate
+                await asyncio.sleep(min(wait_time, 1.0))  # Cap at 1 second chunks
+                waited += min(wait_time, 1.0)
+    
+    def try_acquire(self, tokens: int = 1) -> bool:
+        """
+        Try to acquire tokens without waiting.
+        
+        Args:
+            tokens: Number of tokens to acquire
+            
+        Returns:
+            True if acquired, False if would need to wait
+        """
+        now = time.monotonic()
+        elapsed = now - self.last_update
+        current_tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+        
+        if current_tokens >= tokens:
+            self.tokens = current_tokens - tokens
+            self.last_update = now
+            return True
+        return False
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get current rate limiter status."""
+        now = time.monotonic()
+        elapsed = now - self.last_update
+        current_tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+        
+        return {
+            "available_tokens": round(current_tokens, 2),
+            "capacity": self.capacity,
+            "rate_per_second": round(self.rate, 2),
+            "rate_per_minute": round(self.rate * 60, 1)
+        }
+
+
+# Global rate limiters for external APIs
+_rate_limiters: Dict[str, OutboundRateLimiter] = {}
+
+def get_rate_limiter(api_name: str) -> OutboundRateLimiter:
+    """
+    Get or create a rate limiter for an API.
+    
+    Default limits:
+    - sleeper: 100 calls/minute (generous, no published limit)
+    - espn: 60 calls/minute (conservative)
+    - default: 60 calls/minute
+    
+    Can be overridden via environment variables:
+    - NFL_MCP_SLEEPER_RATE_LIMIT
+    - NFL_MCP_ESPN_RATE_LIMIT
+    """
+    if api_name not in _rate_limiters:
+        # Check for env var override
+        env_key = f"NFL_MCP_{api_name.upper()}_RATE_LIMIT"
+        env_value = os.getenv(env_key)
+        
+        if env_value:
+            try:
+                limit = int(env_value)
+            except ValueError:
+                limit = 60
+        else:
+            # Default limits per API
+            default_limits = {
+                "sleeper": 100,
+                "espn": 60,
+                "cbs": 30,
+            }
+            limit = default_limits.get(api_name, 60)
+        
+        _rate_limiters[api_name] = OutboundRateLimiter(
+            calls_per_minute=limit,
+            burst_capacity=min(limit * 2, 200)  # Allow burst up to 2x, max 200
+        )
+    
+    return _rate_limiters[api_name]
+
+
+def get_all_rate_limiter_status() -> Dict[str, Dict[str, Any]]:
+    """Get status of all rate limiters."""
+    return {name: limiter.get_status() for name, limiter in _rate_limiters.items()}
 
 
 def check_rate_limit(identifier: str, limit: int, window_seconds: int = 60) -> bool:

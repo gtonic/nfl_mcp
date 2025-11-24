@@ -308,3 +308,92 @@ def get_configurable_long_timeout() -> float:
         Timeout in seconds
     """
     return float(os.getenv("NFL_MCP_API_LONG_TIMEOUT", "60.0"))
+
+
+def get_all_circuit_breaker_status() -> Dict[str, Dict[str, Any]]:
+    """
+    Get status of all circuit breakers for monitoring.
+    
+    Returns:
+        Dictionary mapping breaker name to status dict
+    """
+    return {
+        name: {
+            "state": breaker.state.value,
+            "failure_count": breaker.failure_count,
+            "success_count": breaker.success_count,
+            "failure_threshold": breaker.failure_threshold,
+            "timeout_seconds": breaker.timeout,
+            "last_failure": datetime.fromtimestamp(breaker.last_failure_time, UTC).isoformat() 
+                if breaker.last_failure_time else None
+        }
+        for name, breaker in _circuit_breakers.items()
+    }
+
+
+async def with_circuit_breaker(
+    func: Callable,
+    breaker_name: str,
+    *args,
+    fallback: Any = None,
+    fallback_func: Optional[Callable] = None,
+    **kwargs
+) -> Any:
+    """
+    Execute function with circuit breaker protection.
+    
+    Simple wrapper that:
+    - Checks circuit breaker state before calling
+    - Updates circuit breaker on success/failure
+    - Returns fallback on circuit breaker open
+    
+    Args:
+        func: Async function to execute
+        breaker_name: Name of circuit breaker to use
+        *args: Positional arguments for func
+        fallback: Value to return if circuit is open (default: None)
+        fallback_func: Async function to call for fallback (e.g., load from cache)
+        **kwargs: Keyword arguments for func
+        
+    Returns:
+        Function result or fallback
+    """
+    breaker = get_circuit_breaker(breaker_name)
+    
+    # If circuit is open, try fallback
+    if breaker.state == CircuitState.OPEN:
+        if not breaker._should_attempt_reset():
+            logger.warning(f"[Circuit Breaker {breaker_name}] Open, using fallback")
+            if fallback_func:
+                try:
+                    return await fallback_func(*args, **kwargs) if asyncio.iscoroutinefunction(fallback_func) else fallback_func(*args, **kwargs)
+                except Exception as e:
+                    logger.warning(f"[Circuit Breaker {breaker_name}] Fallback failed: {e}")
+            return fallback
+        
+        # Attempting reset
+        logger.info(f"[Circuit Breaker {breaker_name}] Attempting reset (HALF_OPEN)")
+        breaker.state = CircuitState.HALF_OPEN
+    
+    try:
+        # Execute function
+        if asyncio.iscoroutinefunction(func):
+            result = await func(*args, **kwargs)
+        else:
+            result = func(*args, **kwargs)
+        
+        breaker._on_success()
+        return result
+        
+    except Exception as e:
+        breaker._on_failure()
+        
+        # Try fallback on failure
+        if fallback_func:
+            try:
+                logger.info(f"[Circuit Breaker {breaker_name}] Primary failed, trying fallback")
+                return await fallback_func(*args, **kwargs) if asyncio.iscoroutinefunction(fallback_func) else fallback_func(*args, **kwargs)
+            except Exception as fallback_error:
+                logger.warning(f"[Circuit Breaker {breaker_name}] Fallback also failed: {fallback_error}")
+        
+        raise e

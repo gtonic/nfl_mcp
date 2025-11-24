@@ -6,6 +6,7 @@ through the Sleeper API, including league information, rosters, users,
 matchups, transactions, and more.
 """
 
+import asyncio
 import httpx
 import logging
 import os
@@ -1951,15 +1952,25 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
     if "league" in wanted:
         context["league"] = league_resp.get("league")
 
-    # Parallelizable fetches executed sequentially here (simplicity, avoid new deps)
+    # Parallel fetches for rosters and users (no week dependency)
+    parallel_tasks = []
+    task_keys = []
+    
     if "rosters" in wanted:
-        rosters_resp = await get_rosters(league_id)
-        if rosters_resp.get("success"):
-            context["rosters"] = rosters_resp.get("rosters")
+        parallel_tasks.append(get_rosters(league_id))
+        task_keys.append("rosters")
     if "users" in wanted:
-        users_resp = await get_league_users(league_id)
-        if users_resp.get("success"):
-            context["users"] = users_resp.get("users")
+        parallel_tasks.append(get_league_users(league_id))
+        task_keys.append("users")
+    
+    # Execute parallel tasks
+    if parallel_tasks:
+        results = await asyncio.gather(*parallel_tasks, return_exceptions=True)
+        for key, result in zip(task_keys, results):
+            if isinstance(result, Exception):
+                logger.warning(f"[Fantasy Context] Failed to fetch {key}: {result}")
+            elif result.get("success"):
+                context[key] = result.get(key)
 
     # Determine effective week (auto inference if needed)
     auto_inferred = False
@@ -1975,15 +1986,25 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
         except Exception as e:
             logger.debug(f"Context week inference failed: {e}")
 
-    # Fetch week bound data
+    # Parallel fetches for week-dependent data
+    week_tasks = []
+    week_keys = []
+    
     if "matchups" in wanted and effective_week is not None:
-        matchups_resp = await get_matchups(league_id, effective_week)
-        if matchups_resp.get("success"):
-            context["matchups"] = matchups_resp.get("matchups")
+        week_tasks.append(get_matchups(league_id, effective_week))
+        week_keys.append("matchups")
     if "transactions" in wanted:
-        tx_resp = await get_transactions(league_id, week=effective_week)
-        if tx_resp.get("success"):
-            context["transactions"] = tx_resp.get("transactions")
+        week_tasks.append(get_transactions(league_id, week=effective_week))
+        week_keys.append("transactions")
+    
+    # Execute week-dependent parallel tasks
+    if week_tasks:
+        results = await asyncio.gather(*week_tasks, return_exceptions=True)
+        for key, result in zip(week_keys, results):
+            if isinstance(result, Exception):
+                logger.warning(f"[Fantasy Context] Failed to fetch {key}: {result}")
+            elif result.get("success"):
+                context[key] = result.get(key)
 
     return create_success_response({
         "context": context,

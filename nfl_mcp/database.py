@@ -648,6 +648,57 @@ class NFLDatabase:
             return None
 
     # ------------------------------------------------------------------
+    # Snapshot cleanup helpers
+    # ------------------------------------------------------------------
+    def cleanup_old_snapshots(self, max_age_days: int = 7) -> Dict[str, int]:
+        """
+        Clean up old snapshots to prevent unbounded database growth.
+        
+        Args:
+            max_age_days: Delete snapshots older than this many days (default 7)
+            
+        Returns:
+            Dictionary with count of deleted rows per table
+        """
+        import datetime
+        cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=max_age_days)).isoformat()
+        deleted = {"roster_snapshots": 0, "matchup_snapshots": 0, "transaction_snapshots": 0}
+        
+        try:
+            with self._pool.get_connection() as conn:
+                # Roster snapshots
+                cursor = conn.execute(
+                    "DELETE FROM roster_snapshots WHERE fetched_at < ?",
+                    (cutoff,)
+                )
+                deleted["roster_snapshots"] = cursor.rowcount
+                
+                # Matchup snapshots
+                cursor = conn.execute(
+                    "DELETE FROM matchup_snapshots WHERE fetched_at < ?",
+                    (cutoff,)
+                )
+                deleted["matchup_snapshots"] = cursor.rowcount
+                
+                # Transaction snapshots
+                cursor = conn.execute(
+                    "DELETE FROM transaction_snapshots WHERE fetched_at < ?",
+                    (cutoff,)
+                )
+                deleted["transaction_snapshots"] = cursor.rowcount
+                
+                conn.commit()
+                
+                total = sum(deleted.values())
+                if total > 0:
+                    logger.info(f"[Cleanup] Deleted {total} old snapshots: {deleted}")
+                
+                return deleted
+        except Exception as e:
+            logger.warning(f"Failed to cleanup old snapshots: {e}")
+            return deleted
+
+    # ------------------------------------------------------------------
     # Player weekly snap stats helpers
     # ------------------------------------------------------------------
     def upsert_player_week_stats(self, stats: List[Dict]) -> int:
@@ -1548,6 +1599,37 @@ class NFLDatabase:
             
             return [dict(row) for row in cursor.fetchall()]
     
+    def get_athletes_by_ids(self, athlete_ids: List[str]) -> Dict[str, Dict]:
+        """
+        Batch get multiple athletes by their IDs in a single query.
+        
+        Args:
+            athlete_ids: List of athlete IDs to fetch
+            
+        Returns:
+            Dictionary mapping athlete_id -> athlete dict (only found athletes included)
+        """
+        if not athlete_ids:
+            return {}
+        
+        # SQLite has a limit on parameters, so chunk if needed
+        chunk_size = 500
+        results = {}
+        
+        with self._get_connection() as conn:
+            for i in range(0, len(athlete_ids), chunk_size):
+                chunk = athlete_ids[i:i + chunk_size]
+                placeholders = ','.join('?' * len(chunk))
+                cursor = conn.execute(
+                    f"SELECT * FROM athletes WHERE id IN ({placeholders})",
+                    chunk
+                )
+                for row in cursor.fetchall():
+                    athlete_dict = dict(row)
+                    results[athlete_dict['id']] = athlete_dict
+        
+        return results
+
     def get_athletes_by_team(self, team_id: str) -> List[Dict]:
         """
         Get all athletes for a specific team.

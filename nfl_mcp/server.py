@@ -241,6 +241,16 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                 f"Usage: {stats['usage_error'] or 'OK'}"
             )
         
+        # Run snapshot cleanup once per day (every 96 cycles at 15min interval)
+        if cycle_count % 96 == 0:
+            try:
+                deleted = nfl_db.cleanup_old_snapshots(max_age_days=7)
+                total_deleted = sum(deleted.values())
+                if total_deleted > 0:
+                    logger.info(f"[Prefetch Cycle #{cycle_count}] Cleanup: Deleted {total_deleted} old snapshots")
+            except Exception as e:
+                logger.warning(f"[Prefetch Cycle #{cycle_count}] Cleanup failed: {e}")
+        
         logger.info(f"[Prefetch Cycle #{cycle_count}] Next cycle in {PREFETCH_INTERVAL_SECONDS}s")
         
         try:
@@ -335,11 +345,67 @@ def main():
     
     @app.custom_route("/health", methods=["GET"])
     async def health_check(request):
-        """Health check endpoint for monitoring server status."""
+        """Health check endpoint for monitoring server status.
+        
+        Returns detailed status including:
+        - Server status and version
+        - Database health and stats
+        - Circuit breaker states
+        - Rate limiter status
+        - Prefetch status
+        """
+        from .retry_utils import get_all_circuit_breaker_status
+        from .config import get_all_rate_limiter_status
+        
+        # Get version from pyproject.toml or default
+        try:
+            import tomllib
+            from pathlib import Path
+            pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
+            if pyproject_path.exists():
+                with open(pyproject_path, "rb") as f:
+                    version = tomllib.load(f).get("project", {}).get("version", "unknown")
+            else:
+                version = "0.5.9"
+        except Exception:
+            version = "0.5.9"
+        
+        # Get database health
+        nfl_db = tool_registry._nfl_db
+        db_health = {}
+        if nfl_db:
+            try:
+                db_health = nfl_db.health_check()
+            except Exception as e:
+                db_health = {"healthy": False, "error": str(e)}
+        
+        # Get circuit breaker status
+        circuit_breakers = {}
+        try:
+            circuit_breakers = get_all_circuit_breaker_status()
+        except Exception:
+            pass
+        
+        # Get rate limiter status
+        rate_limiters = {}
+        try:
+            rate_limiters = get_all_rate_limiter_status()
+        except Exception:
+            pass
+        
+        # Build response
         return JSONResponse({
             "status": "healthy",
             "service": "NFL MCP Server",
-            "version": "0.4.4"
+            "version": version,
+            "database": db_health,
+            "circuit_breakers": circuit_breakers,
+            "rate_limiters": rate_limiters,
+            "prefetch": {
+                "enabled": PREFETCH_ENABLED,
+                "interval_seconds": PREFETCH_INTERVAL_SECONDS,
+                "advanced_enrich_enabled": os.getenv("NFL_MCP_ADVANCED_ENRICH") == "1"
+            }
         })
     
     # Get DB instance for lifespan
