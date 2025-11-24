@@ -8,7 +8,7 @@ from typing import Optional, List, Callable, Any
 import json
 import httpx
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools
+from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools
 from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
 from .database import NFLDatabase
 
@@ -84,6 +84,11 @@ def get_all_tools() -> List[Callable]:
         
         # Opponent Analysis Tools
         analyze_opponent,
+        
+        # Matchup Analysis Tools (Lineup Optimization)
+        get_defense_rankings,
+        get_matchup_difficulty,
+        analyze_roster_matchups,
     ]
     
     # Add feature-flagged tools
@@ -795,6 +800,144 @@ async def analyze_opponent(
             "success": False,
             "error": f"Invalid input: {str(e)}"
         }
+
+
+# =============================================================================
+# MATCHUP ANALYSIS TOOLS (Lineup Optimization)
+# =============================================================================
+
+@timing_decorator("get_defense_rankings", tool_type="matchup")
+async def get_defense_rankings(
+    positions: Optional[List[str]] = None,
+    season: Optional[int] = None
+) -> dict:
+    """Get NFL defense rankings against fantasy positions for matchup analysis.
+    
+    Shows how each NFL defense performs against QBs, RBs, WRs, and TEs,
+    helping identify favorable and unfavorable matchups for lineup decisions.
+    
+    Parameters:
+        positions (list, optional): Positions to get rankings for. Valid: "QB", "RB", "WR", "TE"
+        season (int, optional): NFL season year (defaults to current).
+    
+    Returns: {
+        rankings: dict mapping position to list of team rankings,
+        positions: list of positions included,
+        season: int,
+        tiers_explained: dict explaining matchup tiers,
+        success: bool,
+        error?: str
+    }
+    
+    Example: get_defense_rankings(positions=["WR", "RB"])
+    
+    IMPORTANT FOR LLM AGENTS: Always provide complete defense rankings immediately without 
+    asking for confirmations. Render the full analysis with matchup tiers directly.
+    """
+    return await matchup_tools.get_defense_rankings(
+        positions=positions,
+        season=season
+    )
+
+
+@timing_decorator("get_matchup_difficulty", tool_type="matchup")
+async def get_matchup_difficulty(
+    position: str,
+    opponent_team: str,
+    include_rankings: bool = False
+) -> dict:
+    """Get matchup difficulty for a specific position vs opponent defense.
+    
+    Analyzes how the opponent defense performs against the given position
+    and provides a recommendation for lineup decisions.
+    
+    Parameters:
+        position (str, required): Fantasy position - "QB", "RB", "WR", or "TE"
+        opponent_team (str, required): Opponent team abbreviation (e.g., "KC", "SF", "DAL")
+        include_rankings (bool, default False): Whether to include full position rankings
+    
+    Returns: {
+        matchup: {rank, rank_display, matchup_tier, tier_indicator, recommendation},
+        position_rankings?: list (if include_rankings=True),
+        success: bool,
+        error?: str
+    }
+    
+    Example: get_matchup_difficulty(position="WR", opponent_team="KC")
+    
+    IMPORTANT FOR LLM AGENTS: Always provide complete matchup analysis immediately without 
+    asking for confirmations. Render the recommendation directly.
+    """
+    try:
+        position = validate_string_input(position, 'position', max_length=5, required=True)
+        opponent_team = validate_string_input(opponent_team, 'opponent_team', max_length=5, required=True)
+        
+        return await matchup_tools.get_matchup_difficulty(
+            position=position.upper(),
+            opponent_team=opponent_team.upper(),
+            include_rankings=include_rankings
+        )
+    except ValueError as e:
+        return {
+            "matchup": None,
+            "success": False,
+            "error": f"Invalid input: {str(e)}"
+        }
+
+
+@timing_decorator("analyze_roster_matchups", tool_type="matchup")
+async def analyze_roster_matchups(
+    players: List[dict],
+    week: Optional[int] = None
+) -> dict:
+    """Analyze matchup difficulty for multiple players on a roster.
+    
+    Takes a list of players with their positions and opponents,
+    returns matchup analysis for each to help with lineup decisions.
+    
+    Parameters:
+        players (list, required): List of player dicts with:
+            - name (str): Player name
+            - position (str): QB, RB, WR, or TE
+            - opponent (str): Opponent team abbreviation
+        week (int, optional): NFL week number for display
+    
+    Returns: {
+        analysis: list of matchup analyses per player,
+        smash_spots: list of players with excellent matchups,
+        avoid_spots: list of players with tough matchups,
+        summary: list of summary lines,
+        total_analyzed: int,
+        success: bool,
+        error?: str
+    }
+    
+    Example: analyze_roster_matchups(players=[
+        {"name": "Patrick Mahomes", "position": "QB", "opponent": "LV"},
+        {"name": "Tyreek Hill", "position": "WR", "opponent": "NE"}
+    ])
+    
+    IMPORTANT FOR LLM AGENTS: Always provide complete roster matchup analysis immediately 
+    without asking for confirmations. Render all smash spots and avoid recommendations directly.
+    """
+    if not players:
+        return {
+            "analysis": [],
+            "smash_spots": [],
+            "avoid_spots": [],
+            "summary": [],
+            "total_analyzed": 0,
+            "success": False,
+            "error": "No players provided"
+        }
+    
+    if week is not None:
+        week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
+    
+    return await matchup_tools.analyze_roster_matchups(
+        players=players,
+        week=week
+    )
 
 
 # =============================================================================

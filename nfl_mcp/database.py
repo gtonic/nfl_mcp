@@ -191,7 +191,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 9
+    CURRENT_SCHEMA_VERSION = 10
     
     def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
         """
@@ -239,6 +239,7 @@ class NFLDatabase:
             7: self._migration_v7_schedule_games,
             8: self._migration_v8_practice_and_usage,
             9: self._migration_v9_injuries,
+            10: self._migration_v10_defense_rankings,
         }
         
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -477,6 +478,31 @@ class NFLDatabase:
             """CREATE INDEX IF NOT EXISTS idx_injury_team ON player_injuries(team_id, updated_at DESC)"""
         )
     
+    def _migration_v10_defense_rankings(self, conn: sqlite3.Connection) -> None:
+        """Migration v10: Table for defense vs position rankings (for lineup optimization)."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS defense_rankings (
+                season INTEGER NOT NULL,
+                week INTEGER NOT NULL,
+                team TEXT NOT NULL,
+                position TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                points_allowed_avg REAL,
+                matchup_tier TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(season, week, team, position)
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_defense_rankings_lookup 
+               ON defense_rankings(season, week, position)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_defense_rankings_team 
+               ON defense_rankings(team, season, position)"""
+        )
     @contextmanager
     def _get_connection(self):
         """Get a database connection with proper cleanup. (Legacy method for compatibility)"""
@@ -1165,6 +1191,156 @@ class NFLDatabase:
                 return dict(row)
         except Exception as e:
             logger.debug(f"get_player_injury_from_cache failed: {e}")
+            return None
+    
+    # ------------------------------------------------------------------
+    # Defense rankings helpers (for lineup optimization)
+    # ------------------------------------------------------------------
+    def upsert_defense_rankings(self, rankings: Dict[str, List[Dict]], season: int, week: int = 0) -> int:
+        """Insert or update defense vs position rankings.
+        
+        Args:
+            rankings: Dict mapping position -> list of team rankings
+                     Each ranking dict: {team, rank, points_allowed_avg, matchup_tier}
+            season: NFL season year
+            week: NFL week (0 for season-long averages)
+            
+        Returns:
+            Number of rankings inserted/updated
+        """
+        if not rankings:
+            return 0
+        
+        try:
+            now = datetime.now(UTC).isoformat()
+            processed = 0
+            
+            with self._pool.get_connection() as conn:
+                for position, team_rankings in rankings.items():
+                    for team_rank in team_rankings:
+                        team = team_rank.get("team", "")
+                        rank = team_rank.get("rank", 16)
+                        pts_allowed = team_rank.get("points_allowed_avg", 0)
+                        tier = team_rank.get("matchup_tier", "neutral")
+                        
+                        if not team:
+                            continue
+                        
+                        conn.execute(
+                            """
+                            INSERT INTO defense_rankings 
+                                (season, week, team, position, rank, points_allowed_avg, matchup_tier, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(season, week, team, position) DO UPDATE SET
+                                rank=excluded.rank,
+                                points_allowed_avg=excluded.points_allowed_avg,
+                                matchup_tier=excluded.matchup_tier,
+                                updated_at=excluded.updated_at
+                            """,
+                            (season, week, team, position, rank, pts_allowed, tier, now)
+                        )
+                        processed += 1
+                
+                conn.commit()
+                return processed
+        except Exception as e:
+            logger.error(f"upsert_defense_rankings failed: {e}")
+            return 0
+    
+    def get_defense_rankings(
+        self, 
+        season: int, 
+        position: Optional[str] = None,
+        week: int = 0,
+        max_age_hours: int = 24
+    ) -> Dict[str, List[Dict]]:
+        """Get cached defense rankings for positions.
+        
+        Args:
+            season: NFL season year
+            position: Specific position (QB, RB, WR, TE) or None for all
+            week: NFL week (0 for season-long averages)
+            max_age_hours: Maximum age of cached data
+            
+        Returns:
+            Dict mapping position -> list of team rankings
+        """
+        try:
+            cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
+            rankings = {}
+            
+            with self._pool.get_connection() as conn:
+                if position:
+                    cur = conn.execute(
+                        """
+                        SELECT team, position, rank, points_allowed_avg, matchup_tier
+                        FROM defense_rankings
+                        WHERE season=? AND week=? AND position=? AND updated_at >= ?
+                        ORDER BY rank ASC
+                        """,
+                        (season, week, position.upper(), cutoff)
+                    )
+                else:
+                    cur = conn.execute(
+                        """
+                        SELECT team, position, rank, points_allowed_avg, matchup_tier
+                        FROM defense_rankings
+                        WHERE season=? AND week=? AND updated_at >= ?
+                        ORDER BY position, rank ASC
+                        """,
+                        (season, week, cutoff)
+                    )
+                
+                for row in cur.fetchall():
+                    pos = row["position"]
+                    if pos not in rankings:
+                        rankings[pos] = []
+                    rankings[pos].append({
+                        "team": row["team"],
+                        "rank": row["rank"],
+                        "points_allowed_avg": row["points_allowed_avg"],
+                        "matchup_tier": row["matchup_tier"]
+                    })
+            
+            return rankings
+        except Exception as e:
+            logger.debug(f"get_defense_rankings failed: {e}")
+            return {}
+    
+    def get_matchup_difficulty(
+        self,
+        season: int,
+        team: str,
+        position: str,
+        week: int = 0
+    ) -> Optional[Dict]:
+        """Get matchup difficulty for specific team/position.
+        
+        Args:
+            season: NFL season year
+            team: Team abbreviation
+            position: Position (QB, RB, WR, TE)
+            week: NFL week (0 for season-long)
+            
+        Returns:
+            Dict with rank and tier, or None if not found
+        """
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT rank, points_allowed_avg, matchup_tier
+                    FROM defense_rankings
+                    WHERE season=? AND week=? AND team=? AND position=?
+                    """,
+                    (season, week, team.upper(), position.upper())
+                )
+                row = cur.fetchone()
+                if row:
+                    return dict(row)
+                return None
+        except Exception as e:
+            logger.debug(f"get_matchup_difficulty failed: {e}")
             return None
     
     # Async Database Operations
