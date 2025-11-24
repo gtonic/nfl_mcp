@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nfl_mcp"
-version = "0.5.10"
+version = "0.5.11"
 description = "NFL MCP Server - Fantasy Football Analysis via Model Context Protocol"
 authors = [{name = "NFL MCP Team", email = "nfl@example.com"}]
 license = {text = "MIT"}

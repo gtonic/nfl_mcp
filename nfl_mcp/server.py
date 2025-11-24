@@ -366,9 +366,9 @@ def main():
                 with open(pyproject_path, "rb") as f:
                     version = tomllib.load(f).get("project", {}).get("version", "unknown")
             else:
-                version = "0.5.10"
+                version = "0.5.11"
         except Exception:
-            version = "0.5.10"
+            version = "0.5.11"
         
         # Get database health
         nfl_db = tool_registry._nfl_db
