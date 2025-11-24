@@ -8,7 +8,7 @@ from typing import Optional, List, Callable, Any
 import json
 import httpx
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools
+from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools
 from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
 from .database import NFLDatabase
 
@@ -95,6 +95,12 @@ def get_all_tools() -> List[Callable]:
         get_roster_recommendations,
         compare_players_for_slot,
         analyze_full_lineup,
+        
+        # Vegas Lines Tools (Game Environment Analysis)
+        get_vegas_lines,
+        get_game_environment,
+        analyze_roster_vegas,
+        get_stack_opportunities,
     ]
     
     # Add feature-flagged tools
@@ -1214,6 +1220,136 @@ async def analyze_full_lineup(
         lineup=lineup,
         week=week
     )
+
+
+# =============================================================================
+# VEGAS LINES TOOLS
+# =============================================================================
+
+@timing_decorator("get_vegas_lines", tool_type="vegas")
+async def get_vegas_lines(
+    teams: Optional[List[str]] = None
+) -> dict:
+    """Get current Vegas lines for NFL games.
+    
+    Provides spreads, totals, and implied team totals to help
+    identify favorable game environments for fantasy scoring.
+    
+    Parameters:
+        teams (list[str], optional): Team abbreviations to filter
+            If not provided, returns all available games
+            Example: ["KC", "BUF", "MIA"]
+    
+    Returns: {
+        games: [{home_team, away_team, total, spread, implied_totals...}],
+        total_games, shootout_games, high_scoring_games, summary,
+        success, error?
+    }
+    
+    Example: get_vegas_lines()
+    Example: get_vegas_lines(teams=["KC", "BUF"])
+    """
+    return await vegas_tools.get_vegas_lines(teams=teams)
+
+
+@timing_decorator("get_game_environment", tool_type="vegas")
+async def get_game_environment(
+    team: str
+) -> dict:
+    """Get game environment analysis for a specific team's matchup.
+    
+    Analyzes the Vegas total and spread to determine if the game
+    environment is favorable for fantasy scoring.
+    
+    Parameters:
+        team (str, required): Team abbreviation (e.g., "KC", "BUF", "DAL")
+    
+    Returns: {
+        team, opponent, is_home, spread, total, implied_total,
+        is_favorite, environment, game_script, recommendations,
+        success, error?
+    }
+    
+    Example: get_game_environment(team="KC")
+    """
+    if not team:
+        return {
+            "team": None,
+            "error": "team parameter required",
+            "success": False
+        }
+    
+    team = validate_string_input(team, 'team', max_length=10, required=True)
+    return await vegas_tools.get_game_environment(team=team)
+
+
+@timing_decorator("analyze_roster_vegas", tool_type="vegas")
+async def analyze_roster_vegas(
+    players: List[dict]
+) -> dict:
+    """Analyze Vegas lines impact for multiple players.
+    
+    Takes a list of players with their teams and returns
+    game environment analysis for each, identifying the best
+    and worst game environments on your roster.
+    
+    Parameters:
+        players (list[dict], required): List of player dicts with keys:
+            - name (str): Player name
+            - team (str): Team abbreviation
+            - position (str, optional): Player position (QB, RB, WR, TE)
+    
+    Returns: {
+        analysis: [{player, team, total, implied_total, environment_tier...}],
+        best_environments, worst_environments, summary,
+        success, error?
+    }
+    
+    Example: analyze_roster_vegas(players=[
+        {"name": "Patrick Mahomes", "team": "KC", "position": "QB"},
+        {"name": "Derrick Henry", "team": "BAL", "position": "RB"}
+    ])
+    """
+    if not players:
+        return {
+            "analysis": [],
+            "best_environments": [],
+            "worst_environments": [],
+            "error": "No players provided",
+            "success": False
+        }
+    
+    return await vegas_tools.analyze_roster_vegas(players=players)
+
+
+@timing_decorator("get_stack_opportunities", tool_type="vegas")
+async def get_stack_opportunities(
+    min_total: Optional[float] = 48.0
+) -> dict:
+    """Identify high-total games for stacking opportunities.
+    
+    Finds games with the highest over/under totals, which are
+    ideal for QB + pass catcher stacks in DFS or season-long leagues.
+    
+    Parameters:
+        min_total (float, default 48.0): Minimum O/U total to consider
+    
+    Returns: {
+        stacks: [{game, total, primary_stack_team, bring_back_team...}],
+        total_opportunities, summary,
+        success, error?
+    }
+    
+    Example: get_stack_opportunities()
+    Example: get_stack_opportunities(min_total=50)
+    """
+    try:
+        min_total_val = float(min_total) if min_total is not None else 48.0
+        min_total_val = max(35.0, min(60.0, min_total_val))  # Clamp to reasonable range
+    except (ValueError, TypeError):
+        min_total_val = 48.0
+    
+    return await vegas_tools.get_stack_opportunities(min_total=min_total_val)
 
 
 # =============================================================================

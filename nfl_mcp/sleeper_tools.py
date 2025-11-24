@@ -2943,6 +2943,58 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
         except Exception as e:
             logger.debug(f"[Enrichment] {player_name}: matchup analysis failed: {e}")
     
+    # Vegas lines game environment analysis - QB, RB, WR, TE only
+    team = athlete.get("team")
+    if team and position in ("QB", "RB", "WR", "TE"):
+        try:
+            from .vegas_tools import get_vegas_analyzer
+            vegas = get_vegas_analyzer()
+            
+            # Get game lines for the team (synchronous - uses cached lines)
+            game = vegas.get_game_lines(team)
+            
+            if game and not game.get("is_fallback", True):
+                # Determine if home or away
+                team_norm = vegas._normalize_team(team)
+                is_home = game.get("home_team") == team_norm
+                
+                # Get team-specific implied total
+                implied_total = game.get("home_implied_total") if is_home else game.get("away_implied_total")
+                spread = game.get("home_spread") if is_home else game.get("away_spread", 0)
+                
+                # Add Vegas data
+                enriched_additions["game_total"] = game.get("total")
+                enriched_additions["implied_team_total"] = implied_total
+                enriched_additions["spread"] = spread
+                
+                # Game environment
+                env = game.get("game_environment", {})
+                enriched_additions["game_environment"] = env.get("tier", "average")
+                enriched_additions["game_environment_indicator"] = env.get("indicator", "➡️")
+                
+                # Position-specific boost indicator
+                if position == "QB":
+                    enriched_additions["vegas_boost"] = env.get("qb_boost", "0%")
+                elif position in ("WR", "TE"):
+                    enriched_additions["vegas_boost"] = env.get("pass_catchers_boost", "0%")
+                elif position == "RB":
+                    enriched_additions["vegas_boost"] = env.get("rb_boost", "0%")
+                
+                logger.debug(
+                    f"[Enrichment] {player_name}: Vegas O/U={game.get('total')}, "
+                    f"implied={implied_total}, env={env.get('tier')}"
+                )
+            else:
+                # Fallback - still provide basic neutral data
+                enriched_additions["game_total"] = 45.0
+                enriched_additions["implied_team_total"] = 22.5
+                enriched_additions["game_environment"] = "average"
+                enriched_additions["game_environment_indicator"] = "➡️"
+                enriched_additions["vegas_source"] = "fallback"
+                logger.debug(f"[Enrichment] {player_name}: Vegas data unavailable (fallback)")
+        except Exception as e:
+            logger.debug(f"[Enrichment] {player_name}: Vegas analysis failed: {e}")
+    
     if enriched_additions:
         logger.info(f"[Enrichment] {player_name}: Added {len(enriched_additions)} enrichment fields")
     

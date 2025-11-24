@@ -169,6 +169,11 @@ The NFL MCP Server provides **30+ MCP tools** organized into these categories:
 - Draft Data: `get_league_drafts`, `get_draft`, `get_draft_picks`, `get_draft_traded_picks`
 - Global / Meta: `get_nfl_state`, `get_trending_players`, `fetch_all_players` (large players map w/ caching)
 
+#### 🎯 Lineup Optimization (11 tools)
+- **Matchup Analysis**: `get_defense_rankings`, `get_matchup_difficulty`, `analyze_roster_matchups`
+- **Start/Sit Recommendations**: `get_start_sit_recommendation`, `get_roster_recommendations`, `compare_players_for_slot`, `analyze_full_lineup`
+- **Vegas Lines**: `get_vegas_lines`, `get_game_environment`, `analyze_roster_vegas`, `get_stack_opportunities`
+
 #### ❤️ Health Endpoint (REST)
 - **GET** `/health` - Server status monitoring
 

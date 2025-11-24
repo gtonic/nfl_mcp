@@ -575,5 +575,215 @@ class TestMatchupEnrichment:
             assert "matchup_tier" not in result  # Skipped due to error
 
 
+class TestVegasEnrichment:
+    """Tests for Vegas lines integration in player enrichment."""
+    
+    def test_vegas_enrichment_shootout_game(self):
+        """Test Vegas enrichment for high-total shootout game."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = None
+        mock_db.get_opponent.return_value = "BUF"
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "12345",
+            "full_name": "Patrick Mahomes",
+            "position": "QB",
+            "team_id": "KC",
+            "team": "KC"
+        }
+        
+        with patch('nfl_mcp.matchup_tools.get_defense_analyzer') as mock_matchup:
+            mock_matchup_instance = MagicMock()
+            mock_matchup_instance.get_matchup_difficulty.return_value = {"is_fallback": True}
+            mock_matchup.return_value = mock_matchup_instance
+            
+            with patch('nfl_mcp.vegas_tools.get_vegas_analyzer') as mock_vegas:
+                mock_vegas_instance = MagicMock()
+                mock_vegas_instance._normalize_team.return_value = "KC"
+                mock_vegas_instance.get_game_lines.return_value = {
+                    "home_team": "KC",
+                    "away_team": "BUF",
+                    "total": 52.5,
+                    "home_spread": -3.0,
+                    "home_implied_total": 27.8,
+                    "away_implied_total": 24.8,
+                    "game_environment": {
+                        "tier": "shootout",
+                        "indicator": "🔥",
+                        "qb_boost": "+15%",
+                        "pass_catchers_boost": "+12%",
+                        "rb_boost": "+5%"
+                    },
+                    "is_fallback": False
+                }
+                mock_vegas.return_value = mock_vegas_instance
+                
+                result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 15)
+                
+                assert result.get("game_total") == 52.5
+                assert result.get("implied_team_total") == 27.8
+                assert result.get("spread") == -3.0
+                assert result.get("game_environment") == "shootout"
+                assert result.get("game_environment_indicator") == "🔥"
+                assert result.get("vegas_boost") == "+15%"
+    
+    def test_vegas_enrichment_low_scoring_game(self):
+        """Test Vegas enrichment for defensive battle."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = None
+        mock_db.get_opponent.return_value = "NE"
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "67890",
+            "full_name": "Aaron Jones",
+            "position": "RB",
+            "team_id": "NYJ",
+            "team": "NYJ"
+        }
+        
+        with patch('nfl_mcp.matchup_tools.get_defense_analyzer') as mock_matchup:
+            mock_matchup_instance = MagicMock()
+            mock_matchup_instance.get_matchup_difficulty.return_value = {"is_fallback": True}
+            mock_matchup.return_value = mock_matchup_instance
+            
+            with patch('nfl_mcp.vegas_tools.get_vegas_analyzer') as mock_vegas:
+                mock_vegas_instance = MagicMock()
+                mock_vegas_instance._normalize_team.return_value = "NYJ"
+                mock_vegas_instance.get_game_lines.return_value = {
+                    "home_team": "NE",
+                    "away_team": "NYJ",
+                    "total": 36.0,
+                    "home_spread": 2.5,
+                    "home_implied_total": 19.2,
+                    "away_implied_total": 16.8,
+                    "game_environment": {
+                        "tier": "defensive_battle",
+                        "indicator": "🛡️",
+                        "qb_boost": "-10%",
+                        "pass_catchers_boost": "-10%",
+                        "rb_boost": "-5%"
+                    },
+                    "is_fallback": False
+                }
+                mock_vegas.return_value = mock_vegas_instance
+                
+                result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 15)
+                
+                assert result.get("game_total") == 36.0
+                assert result.get("implied_team_total") == 16.8  # Away team
+                assert result.get("game_environment") == "defensive_battle"
+                assert result.get("vegas_boost") == "-5%"  # RB boost
+    
+    def test_vegas_enrichment_fallback(self):
+        """Test Vegas enrichment falls back gracefully when no data."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = None
+        mock_db.get_opponent.return_value = "TEN"
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "54321",
+            "full_name": "Garrett Wilson",
+            "position": "WR",
+            "team_id": "NYJ",
+            "team": "NYJ"
+        }
+        
+        with patch('nfl_mcp.matchup_tools.get_defense_analyzer') as mock_matchup:
+            mock_matchup_instance = MagicMock()
+            mock_matchup_instance.get_matchup_difficulty.return_value = {"is_fallback": True}
+            mock_matchup.return_value = mock_matchup_instance
+            
+            with patch('nfl_mcp.vegas_tools.get_vegas_analyzer') as mock_vegas:
+                mock_vegas_instance = MagicMock()
+                mock_vegas_instance._normalize_team.return_value = "NYJ"
+                mock_vegas_instance.get_game_lines.return_value = {
+                    "is_fallback": True,
+                    "total": 45.0
+                }
+                mock_vegas.return_value = mock_vegas_instance
+                
+                result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 15)
+                
+                # Should use fallback values
+                assert result.get("game_total") == 45.0
+                assert result.get("implied_team_total") == 22.5
+                assert result.get("game_environment") == "average"
+                assert result.get("vegas_source") == "fallback"
+    
+    def test_vegas_enrichment_skipped_for_def(self):
+        """Test Vegas enrichment is skipped for DEF position."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = None
+        mock_db.get_opponent.return_value = "DAL"
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "DEF_SF",
+            "full_name": "San Francisco 49ers",
+            "position": "DEF",
+            "team_id": "SF",
+            "team": "SF"
+        }
+        
+        result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 15)
+        
+        # DEF should NOT have Vegas data
+        assert "game_total" not in result
+        assert "implied_team_total" not in result
+        assert "vegas_boost" not in result
+    
+    def test_vegas_enrichment_exception_handling(self):
+        """Test Vegas enrichment handles exceptions gracefully."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = None
+        mock_db.get_opponent.return_value = "PHI"
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "99999",
+            "full_name": "Saquon Barkley",
+            "position": "RB",
+            "team_id": "PHI",
+            "team": "PHI"
+        }
+        
+        with patch('nfl_mcp.matchup_tools.get_defense_analyzer') as mock_matchup:
+            mock_matchup_instance = MagicMock()
+            mock_matchup_instance.get_matchup_difficulty.return_value = {"is_fallback": True}
+            mock_matchup.return_value = mock_matchup_instance
+            
+            with patch('nfl_mcp.vegas_tools.get_vegas_analyzer') as mock_vegas:
+                mock_vegas.side_effect = Exception("API connection error")
+                
+                # Should not raise, just skip Vegas enrichment
+                result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 15)
+                
+                assert result.get("opponent") == "PHI"
+                assert "game_total" not in result  # Skipped due to error
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
