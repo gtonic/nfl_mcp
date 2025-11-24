@@ -2913,6 +2913,36 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                             enriched_additions["usage_trend_overall"] = overall_trend
                             logger.debug(f"[Enrichment] {player_name}: usage_trend={overall_trend}")
     
+    # Matchup difficulty analysis - QB, RB, WR, TE only
+    opponent = enriched_additions.get("opponent")
+    if opponent and position in ("QB", "RB", "WR", "TE"):
+        try:
+            from .matchup_tools import get_defense_analyzer
+            analyzer = get_defense_analyzer()
+            
+            # Get matchup difficulty (synchronous - uses cached rankings)
+            matchup = analyzer.get_matchup_difficulty(position, opponent)
+            
+            if matchup and not matchup.get("is_fallback", True):
+                enriched_additions["matchup_rank"] = matchup.get("rank")
+                enriched_additions["matchup_tier"] = matchup.get("matchup_tier")
+                enriched_additions["matchup_indicator"] = matchup.get("tier_indicator")
+                enriched_additions["matchup_recommendation"] = matchup.get("recommendation")
+                enriched_additions["defense_pts_allowed_avg"] = matchup.get("points_allowed_avg")
+                logger.debug(
+                    f"[Enrichment] {player_name}: matchup vs {opponent} = "
+                    f"{matchup.get('matchup_tier')} (#{matchup.get('rank')})"
+                )
+            else:
+                # Use fallback data but still add basic matchup info
+                enriched_additions["matchup_rank"] = matchup.get("rank", 16)
+                enriched_additions["matchup_tier"] = matchup.get("matchup_tier", "neutral")
+                enriched_additions["matchup_indicator"] = matchup.get("tier_indicator", "🟡")
+                enriched_additions["matchup_source"] = "fallback"
+                logger.debug(f"[Enrichment] {player_name}: matchup vs {opponent} = neutral (fallback)")
+        except Exception as e:
+            logger.debug(f"[Enrichment] {player_name}: matchup analysis failed: {e}")
+    
     if enriched_additions:
         logger.info(f"[Enrichment] {player_name}: Added {len(enriched_additions)} enrichment fields")
     

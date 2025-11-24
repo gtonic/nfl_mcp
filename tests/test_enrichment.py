@@ -423,5 +423,157 @@ class TestSnapshotCleanup:
                 assert count == 1, "New snapshot should still exist"
 
 
+class TestMatchupEnrichment:
+    """Tests for matchup difficulty integration in enrichment."""
+    
+    def test_matchup_enrichment_adds_fields(self):
+        """Test that matchup enrichment adds expected fields."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        # Create mock database
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = {"snap_pct": 80}
+        mock_db.get_opponent.return_value = "KC"
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "12345",
+            "full_name": "Test Player",
+            "position": "WR",
+            "team_id": "DAL"
+        }
+        
+        with patch('nfl_mcp.matchup_tools.get_defense_analyzer') as mock_analyzer:
+            mock_instance = MagicMock()
+            mock_instance.get_matchup_difficulty.return_value = {
+                "rank": 28,
+                "matchup_tier": "smash",
+                "tier_indicator": "💚",
+                "recommendation": "🎯 SMASH SPOT: KC allows most points to WRs",
+                "points_allowed_avg": 25.5,
+                "is_fallback": False
+            }
+            mock_analyzer.return_value = mock_instance
+            
+            result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 10)
+            
+            assert result.get("opponent") == "KC"
+            assert result.get("matchup_tier") == "smash"
+            assert result.get("matchup_rank") == 28
+            assert result.get("matchup_indicator") == "💚"
+            assert "SMASH" in result.get("matchup_recommendation", "")
+    
+    def test_matchup_enrichment_fallback(self):
+        """Test matchup enrichment uses fallback when real data unavailable."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = None
+        mock_db.get_opponent.return_value = "XYZ"  # Invalid team
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "12345",
+            "full_name": "Test Player",
+            "position": "RB",
+            "team_id": "DAL"
+        }
+        
+        with patch('nfl_mcp.matchup_tools.get_defense_analyzer') as mock_analyzer:
+            mock_instance = MagicMock()
+            mock_instance.get_matchup_difficulty.return_value = {
+                "rank": 16,
+                "matchup_tier": "neutral",
+                "tier_indicator": "🟡",
+                "recommendation": "No data for XYZ vs RB",
+                "is_fallback": True
+            }
+            mock_analyzer.return_value = mock_instance
+            
+            result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 10)
+            
+            assert result.get("matchup_tier") == "neutral"
+            assert result.get("matchup_source") == "fallback"
+    
+    def test_matchup_enrichment_skipped_for_def(self):
+        """Test that matchup enrichment is skipped for DEF position."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = None
+        mock_db.get_opponent.return_value = "KC"
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "DEF_DAL",
+            "full_name": "Dallas Cowboys",
+            "position": "DEF",
+            "team_id": "DAL"
+        }
+        
+        result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 10)
+        
+        # DEF should have opponent but NOT matchup tier
+        assert result.get("opponent") == "KC"
+        assert "matchup_tier" not in result
+        assert "matchup_rank" not in result
+    
+    def test_matchup_enrichment_no_opponent(self):
+        """Test matchup enrichment is skipped when no opponent."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = None
+        mock_db.get_opponent.return_value = None  # No opponent
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "12345",
+            "full_name": "Test Player",
+            "position": "QB",
+            "team_id": "DAL"
+        }
+        
+        result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 10)
+        
+        assert "matchup_tier" not in result
+        assert "matchup_rank" not in result
+    
+    def test_matchup_enrichment_exception_handling(self):
+        """Test matchup enrichment handles exceptions gracefully."""
+        from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
+        
+        mock_db = MagicMock()
+        mock_db.get_player_snap_pct.return_value = None
+        mock_db.get_opponent.return_value = "KC"
+        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.get_latest_practice_status.return_value = None
+        mock_db.get_usage_last_n_weeks.return_value = None
+        
+        athlete = {
+            "id": "12345",
+            "full_name": "Test Player",
+            "position": "TE",
+            "team_id": "DAL"
+        }
+        
+        with patch('nfl_mcp.matchup_tools.get_defense_analyzer') as mock_analyzer:
+            mock_analyzer.side_effect = Exception("Connection error")
+            
+            # Should not raise, just skip matchup enrichment
+            result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 10)
+            
+            assert result.get("opponent") == "KC"
+            assert "matchup_tier" not in result  # Skipped due to error
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
