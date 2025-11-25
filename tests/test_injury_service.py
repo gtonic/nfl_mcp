@@ -7,6 +7,7 @@ Tests the InjuryAggregator class and related functionality:
 - Multi-source aggregation
 """
 
+import asyncio
 import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -456,3 +457,95 @@ class TestNFLTeams:
         """Test that Washington uses WSH abbreviation."""
         assert "WSH" in InjuryAggregator.NFL_TEAMS
         assert "WAS" not in InjuryAggregator.NFL_TEAMS
+
+
+class TestCacheManagement:
+    """Test cache management utilities."""
+    
+    def test_clear_caches(self):
+        """Test clearing all in-memory caches."""
+        # Add some test data to caches
+        InjuryAggregator._athlete_name_cache["test_id"] = "Test Player"
+        InjuryAggregator._etag_cache["test_url"] = "test_etag"
+        InjuryAggregator._last_modified_cache["test_url"] = "test_date"
+        
+        # Clear caches
+        stats = InjuryAggregator.clear_caches()
+        
+        # Verify stats returned
+        assert stats["athlete_names"] >= 1
+        assert stats["etags"] >= 1
+        assert stats["last_modified"] >= 1
+        
+        # Verify caches are empty
+        assert len(InjuryAggregator._athlete_name_cache) == 0
+        assert len(InjuryAggregator._etag_cache) == 0
+        assert len(InjuryAggregator._last_modified_cache) == 0
+    
+    def test_get_cache_stats(self):
+        """Test getting cache statistics."""
+        # Clear first to have known state
+        InjuryAggregator.clear_caches()
+        
+        # Add test data
+        InjuryAggregator._athlete_name_cache["12345"] = "Patrick Mahomes"
+        InjuryAggregator._athlete_name_cache["67890"] = "Travis Kelce"
+        
+        stats = InjuryAggregator.get_cache_stats()
+        
+        assert stats["athlete_name_cache_size"] == 2
+        assert stats["athlete_name_cache_max"] == 500  # ATHLETE_CACHE_SIZE
+        assert stats["etag_cache_size"] == 0
+        assert stats["last_modified_cache_size"] == 0
+        assert len(stats["sample_athletes"]) == 2
+        
+        # Cleanup
+        InjuryAggregator.clear_caches()
+    
+    def test_cache_stats_sample_limited(self):
+        """Test that sample_athletes is limited to 5 entries."""
+        InjuryAggregator.clear_caches()
+        
+        # Add more than 5 entries
+        for i in range(10):
+            InjuryAggregator._athlete_name_cache[str(i)] = f"Player {i}"
+        
+        stats = InjuryAggregator.get_cache_stats()
+        
+        assert stats["athlete_name_cache_size"] == 10
+        assert len(stats["sample_athletes"]) == 5
+        
+        # Cleanup
+        InjuryAggregator.clear_caches()
+
+
+class TestConcurrencyConfiguration:
+    """Test concurrency configuration constants."""
+    
+    def test_semaphores_created(self):
+        """Test that semaphores are created with correct limits."""
+        from nfl_mcp.injury_service import MAX_CONCURRENT_TEAMS, MAX_CONCURRENT_INJURIES
+        
+        aggregator = InjuryAggregator()
+        
+        # Verify semaphores exist
+        assert hasattr(aggregator, '_team_semaphore')
+        assert hasattr(aggregator, '_injury_semaphore')
+        
+        # Verify they're semaphores
+        assert isinstance(aggregator._team_semaphore, asyncio.Semaphore)
+        assert isinstance(aggregator._injury_semaphore, asyncio.Semaphore)
+    
+    def test_configuration_constants(self):
+        """Test that configuration constants have reasonable values."""
+        from nfl_mcp.injury_service import (
+            MAX_CONCURRENT_TEAMS,
+            MAX_CONCURRENT_INJURIES,
+            ATHLETE_CACHE_SIZE,
+            REQUEST_TIMEOUT
+        )
+        
+        assert 1 <= MAX_CONCURRENT_TEAMS <= 32  # Not more than total teams
+        assert 1 <= MAX_CONCURRENT_INJURIES <= 50  # Not more than page limit
+        assert ATHLETE_CACHE_SIZE >= 100  # Reasonable cache size
+        assert 5.0 <= REQUEST_TIMEOUT <= 60.0  # Reasonable timeout

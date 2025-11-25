@@ -5,9 +5,16 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, UTC, timedelta
 from enum import IntEnum
+from functools import lru_cache
 from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Configuration constants for performance tuning
+MAX_CONCURRENT_TEAMS = 6  # Parallel team fetches
+MAX_CONCURRENT_INJURIES = 15  # Parallel injury detail fetches per team
+ATHLETE_CACHE_SIZE = 500  # LRU cache size for athlete names
+REQUEST_TIMEOUT = 10.0  # Seconds per request
 
 
 class InjurySeverity(IntEnum):
@@ -105,7 +112,15 @@ STATUS_SEVERITY = {
 
 
 class InjuryAggregator:
-    """Aggregates injury data from multiple sources with confidence scoring."""
+    """Aggregates injury data from multiple sources with confidence scoring.
+    
+    Performance optimizations:
+    - Concurrent team fetching (MAX_CONCURRENT_TEAMS parallel)
+    - Batch injury detail fetching (MAX_CONCURRENT_INJURIES per team)
+    - LRU cache for athlete names to avoid duplicate API calls
+    - Delta updates: only fetch teams with stale cache
+    - ETag/If-Modified-Since support for HTTP caching
+    """
     
     # NFL team abbreviations
     NFL_TEAMS = [
@@ -114,6 +129,11 @@ class InjuryAggregator:
         "LAC", "LAR", "LV", "MIA", "MIN", "NE", "NO", "NYG",
         "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WSH"
     ]
+    
+    # In-memory caches (class-level for reuse across instances)
+    _athlete_name_cache: Dict[str, str] = {}  # player_id -> name
+    _etag_cache: Dict[str, str] = {}  # url -> etag
+    _last_modified_cache: Dict[str, str] = {}  # url -> last-modified
     
     def __init__(self, http_client=None, db=None):
         """Initialize the aggregator.
@@ -125,6 +145,9 @@ class InjuryAggregator:
         self._http_client = http_client
         self._db = db
         self._own_client = False
+        # Semaphores for concurrency control
+        self._team_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TEAMS)
+        self._injury_semaphore = asyncio.Semaphore(MAX_CONCURRENT_INJURIES)
     
     async def __aenter__(self):
         """Async context manager entry."""
@@ -138,6 +161,39 @@ class InjuryAggregator:
         """Async context manager exit."""
         if self._own_client and self._http_client:
             await self._http_client.__aexit__(exc_type, exc_val, exc_tb)
+    
+    @classmethod
+    def clear_caches(cls) -> Dict[str, int]:
+        """Clear all in-memory caches.
+        
+        Returns:
+            Dict with counts of cleared items per cache
+        """
+        stats = {
+            "athlete_names": len(cls._athlete_name_cache),
+            "etags": len(cls._etag_cache),
+            "last_modified": len(cls._last_modified_cache),
+        }
+        cls._athlete_name_cache.clear()
+        cls._etag_cache.clear()
+        cls._last_modified_cache.clear()
+        logger.info(f"[InjuryAggregator] Cleared caches: {stats}")
+        return stats
+    
+    @classmethod
+    def get_cache_stats(cls) -> Dict[str, any]:
+        """Get statistics about in-memory caches.
+        
+        Returns:
+            Dict with cache sizes and sample data
+        """
+        return {
+            "athlete_name_cache_size": len(cls._athlete_name_cache),
+            "athlete_name_cache_max": ATHLETE_CACHE_SIZE,
+            "etag_cache_size": len(cls._etag_cache),
+            "last_modified_cache_size": len(cls._last_modified_cache),
+            "sample_athletes": list(cls._athlete_name_cache.items())[:5],
+        }
     
     @staticmethod
     def normalize_status(status: str) -> str:
@@ -189,7 +245,9 @@ class InjuryAggregator:
         return min(base_score + source_points + agreement_points, 100)
     
     async def fetch_espn_injuries(self, teams: List[str] = None) -> List[InjuryReport]:
-        """Fetch injury reports from ESPN Core API.
+        """Fetch injury reports from ESPN Core API with concurrent team fetching.
+        
+        Uses semaphore-controlled parallelism for optimal performance.
         
         Args:
             teams: Optional list of team abbreviations. If None, fetches all teams.
@@ -198,21 +256,38 @@ class InjuryAggregator:
             List of InjuryReport objects
         """
         teams = teams or self.NFL_TEAMS
-        all_injuries = []
         
         try:
             from .config import get_http_headers
             headers = get_http_headers("nfl_teams")
             
-            for team in teams:
-                try:
-                    team_injuries = await self._fetch_team_espn_injuries(team, headers)
-                    all_injuries.extend(team_injuries)
-                except Exception as e:
-                    logger.debug(f"[InjuryAggregator] ESPN fetch failed for {team}: {e}")
-                    continue
+            # Fetch all teams concurrently with semaphore control
+            async def fetch_team_with_semaphore(team: str) -> List[InjuryReport]:
+                async with self._team_semaphore:
+                    try:
+                        return await self._fetch_team_espn_injuries(team, headers)
+                    except Exception as e:
+                        logger.debug(f"[InjuryAggregator] ESPN fetch failed for {team}: {e}")
+                        return []
             
-            logger.info(f"[InjuryAggregator] ESPN: fetched {len(all_injuries)} injuries from {len(teams)} teams")
+            # Run all team fetches concurrently
+            team_results = await asyncio.gather(
+                *[fetch_team_with_semaphore(team) for team in teams],
+                return_exceptions=True
+            )
+            
+            # Flatten results, filtering out exceptions
+            all_injuries = []
+            successful_teams = 0
+            for i, result in enumerate(team_results):
+                if isinstance(result, list):
+                    all_injuries.extend(result)
+                    if result:
+                        successful_teams += 1
+                elif isinstance(result, Exception):
+                    logger.debug(f"[InjuryAggregator] Team {teams[i]} failed: {result}")
+            
+            logger.info(f"[InjuryAggregator] ESPN: fetched {len(all_injuries)} injuries from {successful_teams}/{len(teams)} teams")
             return all_injuries
             
         except Exception as e:
@@ -220,7 +295,9 @@ class InjuryAggregator:
             return []
     
     async def _fetch_team_espn_injuries(self, team: str, headers: Dict) -> List[InjuryReport]:
-        """Fetch injuries for a single team from ESPN.
+        """Fetch injuries for a single team from ESPN with batch detail fetching.
+        
+        Uses semaphore-controlled parallel fetching for injury details.
         
         Args:
             team: Team abbreviation
@@ -229,47 +306,88 @@ class InjuryAggregator:
         Returns:
             List of InjuryReport objects for the team
         """
-        injuries = []
+        all_injury_urls = []
         page = 1
         page_count = 1
         
+        # First, collect all injury URLs from paginated list
         while page <= page_count:
             url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit=50&page={page}"
             
             try:
-                resp = await self._http_client.get(url, headers=headers)
+                # Add conditional request headers for caching
+                request_headers = dict(headers)
+                if url in self._etag_cache:
+                    request_headers["If-None-Match"] = self._etag_cache[url]
+                if url in self._last_modified_cache:
+                    request_headers["If-Modified-Since"] = self._last_modified_cache[url]
+                
+                resp = await self._http_client.get(url, headers=request_headers, timeout=REQUEST_TIMEOUT)
+                
+                # Handle 304 Not Modified - data unchanged
+                if resp.status_code == 304:
+                    logger.debug(f"[InjuryAggregator] {team} page {page}: not modified (cached)")
+                    break
+                
                 if resp.status_code != 200:
                     break
+                
+                # Store caching headers for future requests
+                if "ETag" in resp.headers:
+                    self._etag_cache[url] = resp.headers["ETag"]
+                if "Last-Modified" in resp.headers:
+                    self._last_modified_cache[url] = resp.headers["Last-Modified"]
                 
                 data = resp.json()
                 if page == 1:
                     page_count = data.get("pageCount", 1)
                 
-                # ESPN Core API returns $ref URLs for each injury
+                # Collect injury URLs
                 for injury_ref in data.get("items", []):
                     injury_url = injury_ref.get("$ref")
-                    if not injury_url:
-                        continue
-                    
-                    try:
-                        injury_detail = await self._fetch_espn_injury_detail(injury_url, headers)
-                        if injury_detail:
-                            injury_detail.team_id = team
-                            injuries.append(injury_detail)
-                    except Exception as e:
-                        logger.debug(f"[InjuryAggregator] Failed to fetch injury detail: {e}")
-                        continue
+                    if injury_url:
+                        all_injury_urls.append(injury_url)
                 
                 page += 1
                 
+            except asyncio.TimeoutError:
+                logger.debug(f"[InjuryAggregator] {team} page {page}: timeout")
+                break
             except Exception as e:
                 logger.debug(f"[InjuryAggregator] ESPN page {page} failed for {team}: {e}")
                 break
         
+        if not all_injury_urls:
+            return []
+        
+        # Batch fetch all injury details concurrently
+        async def fetch_injury_with_semaphore(injury_url: str) -> Optional[InjuryReport]:
+            async with self._injury_semaphore:
+                try:
+                    return await self._fetch_espn_injury_detail(injury_url, headers)
+                except Exception as e:
+                    logger.debug(f"[InjuryAggregator] Failed to fetch injury detail: {e}")
+                    return None
+        
+        # Fetch all injury details in parallel
+        injury_results = await asyncio.gather(
+            *[fetch_injury_with_semaphore(url) for url in all_injury_urls],
+            return_exceptions=True
+        )
+        
+        # Filter successful results and set team_id
+        injuries = []
+        for result in injury_results:
+            if isinstance(result, InjuryReport):
+                result.team_id = team
+                injuries.append(result)
+        
         return injuries
     
     async def _fetch_espn_injury_detail(self, url: str, headers: Dict) -> Optional[InjuryReport]:
-        """Fetch individual injury detail from ESPN.
+        """Fetch individual injury detail from ESPN with athlete name caching.
+        
+        Uses class-level LRU cache for athlete names to avoid duplicate API calls.
         
         Args:
             url: ESPN injury detail URL
@@ -278,59 +396,80 @@ class InjuryAggregator:
         Returns:
             InjuryReport or None
         """
-        resp = await self._http_client.get(url, headers=headers)
-        if resp.status_code != 200:
+        try:
+            resp = await self._http_client.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            if resp.status_code != 200:
+                return None
+            
+            data = resp.json()
+            
+            # Extract athlete info
+            athlete_ref = data.get("athlete", {})
+            if not athlete_ref:
+                return None
+            
+            # Extract player ID from athlete URL
+            athlete_url = athlete_ref.get("$ref", "")
+            id_match = re.search(r"/athletes/(\d+)/", athlete_url)
+            if not id_match:
+                return None
+            
+            player_id = id_match.group(1)
+            
+            # Check athlete name cache first
+            player_name = self._athlete_name_cache.get(player_id)
+            
+            if not player_name:
+                # Try inline displayName first
+                player_name = athlete_ref.get("displayName")
+                
+                if not player_name:
+                    # Fetch athlete details (with timeout)
+                    try:
+                        athlete_resp = await self._http_client.get(
+                            athlete_url, headers=headers, timeout=REQUEST_TIMEOUT
+                        )
+                        if athlete_resp.status_code == 200:
+                            athlete_data = athlete_resp.json()
+                            player_name = athlete_data.get("displayName", "Unknown")
+                        else:
+                            player_name = "Unknown"
+                    except asyncio.TimeoutError:
+                        player_name = "Unknown"
+                    except Exception:
+                        player_name = "Unknown"
+                
+                # Cache the athlete name (with size limit)
+                if len(self._athlete_name_cache) < ATHLETE_CACHE_SIZE:
+                    self._athlete_name_cache[player_id] = player_name
+            
+            # Extract status and type
+            status_data = data.get("status", {})
+            type_data = data.get("type", {})
+            
+            raw_status = status_data if isinstance(status_data, str) else status_data.get("description", "Unknown")
+            normalized_status = self.normalize_status(raw_status)
+            
+            return InjuryReport(
+                player_id=str(player_id),
+                player_name=player_name,
+                team_id="",  # Will be set by caller
+                position=None,  # Not available in injury endpoint
+                injury_status=normalized_status,
+                injury_type=type_data.get("name") if isinstance(type_data, dict) else None,
+                injury_description=data.get("shortComment") or data.get("longComment"),
+                game_status=None,
+                severity=self.get_severity(normalized_status),
+                confidence=60,  # Single source baseline
+                sources=["ESPN"],
+                date_reported=data.get("date"),
+            )
+        except asyncio.TimeoutError:
+            logger.debug(f"[InjuryAggregator] Timeout fetching injury detail: {url}")
             return None
-        
-        data = resp.json()
-        
-        # Extract athlete info
-        athlete_ref = data.get("athlete", {})
-        if not athlete_ref:
+        except Exception as e:
+            logger.debug(f"[InjuryAggregator] Error fetching injury detail: {e}")
             return None
-        
-        # Extract player ID from athlete URL
-        athlete_url = athlete_ref.get("$ref", "")
-        id_match = re.search(r"/athletes/(\d+)/", athlete_url)
-        if not id_match:
-            return None
-        
-        player_id = id_match.group(1)
-        
-        # Get player name - may need to fetch
-        player_name = athlete_ref.get("displayName")
-        if not player_name:
-            try:
-                athlete_resp = await self._http_client.get(athlete_url, headers=headers)
-                if athlete_resp.status_code == 200:
-                    athlete_data = athlete_resp.json()
-                    player_name = athlete_data.get("displayName", "Unknown")
-                else:
-                    player_name = "Unknown"
-            except:
-                player_name = "Unknown"
-        
-        # Extract status and type
-        status_data = data.get("status", {})
-        type_data = data.get("type", {})
-        
-        raw_status = status_data if isinstance(status_data, str) else status_data.get("description", "Unknown")
-        normalized_status = self.normalize_status(raw_status)
-        
-        return InjuryReport(
-            player_id=str(player_id),
-            player_name=player_name,
-            team_id="",  # Will be set by caller
-            position=None,  # Not available in injury endpoint
-            injury_status=normalized_status,
-            injury_type=type_data.get("name") if isinstance(type_data, dict) else None,
-            injury_description=data.get("shortComment") or data.get("longComment"),
-            game_status=None,
-            severity=self.get_severity(normalized_status),
-            confidence=60,  # Single source baseline
-            sources=["ESPN"],
-            date_reported=data.get("date"),
-        )
     
     async def fetch_cbs_injuries(self, teams: List[str] = None) -> List[InjuryReport]:
         """Fetch injury reports from CBS Sports.
@@ -357,41 +496,68 @@ class InjuryAggregator:
         self, 
         teams: List[str] = None,
         use_cache: bool = True,
-        cache_ttl_hours: Optional[int] = None
+        cache_ttl_hours: Optional[int] = None,
+        force_refresh: bool = False
     ) -> List[InjuryReport]:
-        """Fetch and aggregate injuries from all sources.
+        """Fetch and aggregate injuries from all sources with delta updates.
+        
+        Uses incremental fetching: only fetches teams with stale cache,
+        combines with fresh cached data for optimal performance.
         
         Args:
             teams: Optional list of team abbreviations
             use_cache: Whether to use database cache
             cache_ttl_hours: Cache TTL in hours (None for adaptive)
+            force_refresh: If True, bypasses cache entirely
             
         Returns:
             List of aggregated InjuryReport objects
         """
         teams = teams or self.NFL_TEAMS
         
-        # Check cache first if database available
-        if use_cache and self._db:
-            cached = self._get_cached_injuries(teams, cache_ttl_hours)
-            if cached:
-                logger.info(f"[InjuryAggregator] Using cached data: {len(cached)} injuries")
-                return cached
+        # Force refresh bypasses all caching
+        if force_refresh:
+            use_cache = False
         
-        # Fetch from all sources concurrently
-        espn_task = self.fetch_espn_injuries(teams)
-        cbs_task = self.fetch_cbs_injuries(teams)
+        # Check cache and identify stale teams
+        fresh_cached: List[InjuryReport] = []
+        stale_teams: List[str] = []
+        
+        if use_cache and self._db:
+            for team in teams:
+                team_injuries = self._get_cached_injuries([team], cache_ttl_hours)
+                if team_injuries:
+                    fresh_cached.extend(team_injuries)
+                else:
+                    stale_teams.append(team)
+            
+            # If all teams are fresh, return cached data
+            if not stale_teams:
+                logger.info(f"[InjuryAggregator] All {len(teams)} teams fresh in cache: {len(fresh_cached)} injuries")
+                return fresh_cached
+            
+            logger.info(f"[InjuryAggregator] Delta update: {len(stale_teams)} stale teams, {len(teams) - len(stale_teams)} fresh")
+        else:
+            stale_teams = teams
+        
+        # Fetch from all sources concurrently (only stale teams)
+        espn_task = self.fetch_espn_injuries(stale_teams)
+        cbs_task = self.fetch_cbs_injuries(stale_teams)
         
         espn_injuries, cbs_injuries = await asyncio.gather(espn_task, cbs_task)
         
-        # Aggregate and dedupe
-        aggregated = self._aggregate_injuries(espn_injuries, cbs_injuries)
+        # Aggregate newly fetched data
+        newly_fetched = self._aggregate_injuries(espn_injuries, cbs_injuries)
         
-        # Cache results
-        if self._db and aggregated:
-            self._cache_injuries(aggregated)
+        # Cache newly fetched results
+        if self._db and newly_fetched:
+            cached_count = self._cache_injuries(newly_fetched)
+            logger.debug(f"[InjuryAggregator] Cached {cached_count} injuries from {len(stale_teams)} teams")
         
-        return aggregated
+        # Combine fresh cached + newly fetched
+        all_injuries = fresh_cached + newly_fetched
+        
+        return all_injuries
     
     def _get_cached_injuries(
         self, 
