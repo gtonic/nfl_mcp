@@ -409,8 +409,9 @@ class InjuryAggregator:
                 return None
             
             # Extract player ID from athlete URL
+            # Pattern matches /athletes/12345 followed by / or ? or end of string
             athlete_url = athlete_ref.get("$ref", "")
-            id_match = re.search(r"/athletes/(\d+)/", athlete_url)
+            id_match = re.search(r"/athletes/(\d+)(?:/|\?|$)", athlete_url)
             if not id_match:
                 return None
             
