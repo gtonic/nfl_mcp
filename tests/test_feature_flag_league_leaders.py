@@ -3,13 +3,16 @@ import pytest
 from importlib import reload
 
 
-def _count_tools(app):
-    # FastMCP stores tools in app._tool_manager._tools
-    return len(getattr(app._tool_manager, '_tools'))  # type: ignore[attr-defined]
+async def _count_tools(app):
+    # FastMCP 3.0: list_tools() is async and returns a list
+    tools = await app.list_tools()
+    return len(tools)
 
 
-def _tool_names(app):
-    return set(getattr(app._tool_manager, '_tools').keys())  # type: ignore[attr-defined]
+async def _tool_names(app):
+    # FastMCP 3.0: list_tools() returns list of Tool objects
+    tools = await app.list_tools()
+    return set(tool.name for tool in tools)
 
 
 @pytest.mark.asyncio
@@ -25,7 +28,7 @@ async def test_league_leaders_flag_disabled(monkeypatch):
     # Build server app
     from nfl_mcp.server import create_app
     app = create_app()
-    names = _tool_names(app)
+    names = await _tool_names(app)
     assert 'get_league_leaders' not in names, 'league leaders tool should not be registered when flag disabled'
 
 
@@ -38,5 +41,5 @@ async def test_league_leaders_flag_enabled(monkeypatch):
     reload(tool_registry)
     from nfl_mcp.server import create_app
     app = create_app()
-    names = _tool_names(app)
+    names = await _tool_names(app)
     assert 'get_league_leaders' in names, 'league leaders tool should be registered when flag enabled'
