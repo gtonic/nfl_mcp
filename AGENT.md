@@ -15,7 +15,7 @@ The Model Context Protocol (MCP) is a standardized protocol that allows AI/LLM s
 The NFL MCP Server follows a simplified, maintainable architecture:
 
 - **Single Tool Registry**: All tools defined in one centralized location (`tool_registry.py`)
-- **FastMCP Framework**: Built on FastMCP 2.12.0+ for robust MCP protocol support
+- **FastMCP Framework**: Built on FastMCP 3.0+ for robust MCP protocol support
 - **HTTP Transport**: Runs on HTTP transport (default port 9000)
 - **Database Caching**: SQLite-based persistence for optimal performance
 - **Async/Await**: Fully asynchronous for efficient concurrent operations
@@ -483,8 +483,8 @@ async with Client("http://localhost:9000/mcp/") as client:
 
 ## Version Information
 
-- **Server Version**: 0.5.8
-- **FastMCP Version**: 2.12.0+
+- **Server Version**: 0.5.16
+- **FastMCP Version**: 3.0+
 - **Python Version**: 3.9+
 - **Protocol**: Model Context Protocol (MCP)
 
