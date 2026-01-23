@@ -1,6 +1,6 @@
 # NFL MCP Server
 
-A FastMCP server that provides health monitoring, web content extraction, NFL news fetching, NFL teams information, and comprehensive fantasy league management through both REST and MCP protocols.
+A FastMCP 3.0 server that provides health monitoring, web content extraction, NFL news fetching, NFL teams information, and comprehensive fantasy league management through both REST and MCP protocols.
 
 ## Features
 
