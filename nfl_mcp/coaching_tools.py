@@ -38,7 +38,9 @@ def _get_espn_team_id(team_id: str) -> str:
         team_id: Team abbreviation (e.g., 'KC', 'NE') or numeric ID
         
     Returns:
-        ESPN numeric team ID as string
+        ESPN numeric team ID as string. If the team abbreviation is not found
+        in the mapping, returns the original input (useful for numeric IDs or
+        when the API should handle validation).
     """
     team_upper = team_id.upper().strip()
     
@@ -58,7 +60,10 @@ def _classify_coach_role(role_name: str) -> Dict[str, Any]:
         role_name: The raw role name from ESPN API
         
     Returns:
-        Dictionary with role classification
+        Dictionary with role classification containing:
+        - category: 'head_coach', 'coordinator', 'position_coach', or 'assistant'
+        - side: 'offense', 'defense', 'special_teams', 'both', or 'unknown'
+        - is_coordinator: Boolean indicating if this is a coordinator role
     """
     role_lower = role_name.lower()
     
