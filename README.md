@@ -133,6 +133,8 @@ docker run --rm -p 9000:9000 \
 
 📋 **[AI/LLM Integration Guide](./AGENT.md)** - Comprehensive MCP tool reference and integration guide optimized for LLM understanding
 
+📊 **[Coaching Data Research](./docs/COACHING_DATA_RESEARCH.md)** - Research on coaching data sources for performance forecasts and 2026 draft analysis
+
 ### Quick Overview
 
 The NFL MCP Server provides **30+ MCP tools** organized into these categories:
