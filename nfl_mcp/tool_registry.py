@@ -8,7 +8,7 @@ from typing import Optional, List, Callable, Any
 import json
 import httpx
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools
+from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools, coaching_tools
 from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
 from .database import NFLDatabase
 
@@ -106,6 +106,12 @@ def get_all_tools() -> List[Callable]:
         get_injury_report,
         get_high_confidence_injuries,
         get_gameday_inactives,
+        
+        # Coaching Intelligence Tools
+        get_coaching_staff,
+        get_all_coaching_staffs,
+        get_coaching_tree,
+        get_scheme_classification,
     ]
     
     # Add feature-flagged tools
@@ -1569,6 +1575,68 @@ async def get_gameday_inactives(
             "success": False,
             "error": str(e)
         }
+
+
+# =============================================================================
+# COACHING INTELLIGENCE TOOLS
+# =============================================================================
+
+@timing_decorator("get_coaching_staff", tool_type="nfl")
+async def get_coaching_staff(team_id: str) -> dict:
+    """Get coaching staff for a specific NFL team from ESPN API.
+
+    Parameters:
+        team_id (str, required): Team abbreviation (e.g. 'KC', 'NE', 'DAL').
+    Returns: {team_id, team_name, coaches:[...], head_coach, offensive_coordinator, defensive_coordinator, total_coaches, success, error?}
+    Example: get_coaching_staff(team_id="KC")
+    """
+    try:
+        team_id = validate_string_input(team_id, 'team_id', max_length=10, required=True)
+        return await coaching_tools.get_coaching_staff(team_id)
+    except ValueError as e:
+        return {"team_id": team_id, "team_name": None, "coaches": [], "head_coach": None, "success": False, "error": str(e)}
+
+
+@timing_decorator("get_all_coaching_staffs", tool_type="nfl")
+async def get_all_coaching_staffs() -> dict:
+    """Get coaching staff information for all 32 NFL teams.
+
+    Returns: {teams:[{team_id, team_name, head_coach, coach_count}...], total_teams, success, error?}
+    Example: get_all_coaching_staffs()
+    """
+    return await coaching_tools.get_all_coaching_staffs()
+
+
+@timing_decorator("get_coaching_tree", tool_type="nfl")
+async def get_coaching_tree(coach_name: str) -> dict:
+    """Get coaching tree information for a known NFL coach.
+
+    Parameters:
+        coach_name (str, required): Coach's full name (e.g. 'Andy Reid', 'Bill Belichick').
+    Returns: {coach_name, mentors:[...], proteges:[...], scheme_family, known_for:[...], found, success, error?}
+    Example: get_coaching_tree(coach_name="Andy Reid")
+    """
+    try:
+        coach_name = validate_string_input(coach_name, 'coach_name', max_length=100, required=True)
+        return await coaching_tools.get_coaching_tree(coach_name)
+    except ValueError as e:
+        return {"coach_name": coach_name, "found": False, "success": False, "error": str(e)}
+
+
+@timing_decorator("get_scheme_classification", tool_type="nfl")
+async def get_scheme_classification(team_id: str) -> dict:
+    """Get offensive and defensive scheme classification for an NFL team.
+
+    Parameters:
+        team_id (str, required): Team abbreviation (e.g. 'KC', 'NE', 'DAL').
+    Returns: {team_id, offensive_scheme, defensive_scheme, scheme_notes:[...], found, success, error?}
+    Example: get_scheme_classification(team_id="SF")
+    """
+    try:
+        team_id = validate_string_input(team_id, 'team_id', max_length=10, required=True)
+        return await coaching_tools.get_scheme_classification(team_id)
+    except ValueError as e:
+        return {"team_id": team_id, "found": False, "success": False, "error": str(e)}
 
 
 # =============================================================================
