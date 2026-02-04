@@ -83,7 +83,32 @@ Core NFL data access for teams, news, standings, and schedules:
   - Use case: Identify top performers across the league
   - Returns: Leader boards for various statistical categories
 
-### 2. Player/Athlete Tools (4 tools)
+### 2. Coaching Intelligence Tools (4 tools)
+
+Coaching staff information, coaching trees, and scheme analysis:
+
+- **`get_coaching_staff`**: Get coaching staff for a specific NFL team
+  - Parameters: `team_id` (required, e.g., "KC", "NE")
+  - Use case: Identify head coach, coordinators, and position coaches
+  - Returns: Head coach, offensive/defensive coordinators, all coaches with roles
+
+- **`get_all_coaching_staffs`**: Get coaching staff summary for all 32 NFL teams
+  - Parameters: None
+  - Use case: Quick overview of all head coaches across the league
+  - Returns: List of teams with head coach names and coach counts
+
+- **`get_coaching_tree`**: Get coaching tree information for a coach
+  - Parameters: `coach_name` (required, e.g., "Andy Reid", "Bill Belichick")
+  - Use case: Understand coaching lineage, mentors, and proteges
+  - Returns: Mentors, proteges, scheme family, what coach is known for
+  - Available coaches: Andy Reid, Bill Belichick, Kyle Shanahan, Sean McVay, Mike Tomlin, Sean Payton
+
+- **`get_scheme_classification`**: Get offensive/defensive scheme for a team
+  - Parameters: `team_id` (required, e.g., "SF", "KC")
+  - Use case: Analyze scheme fit for players, understand play-calling tendencies
+  - Returns: Offensive scheme (West Coast, Shanahan, McVay, etc.), defensive base, scheme notes
+
+### 3. Player/Athlete Tools (4 tools)
 
 Player data management with Sleeper API integration:
 

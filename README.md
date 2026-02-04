@@ -133,6 +133,8 @@ docker run --rm -p 9000:9000 \
 
 📋 **[AI/LLM Integration Guide](./AGENT.md)** - Comprehensive MCP tool reference and integration guide optimized for LLM understanding
 
+📊 **[Coaching Data Research](./docs/COACHING_DATA_RESEARCH.md)** - Research on coaching data sources for performance forecasts and 2026 draft analysis
+
 ### Quick Overview
 
 The NFL MCP Server provides **30+ MCP tools** organized into these categories:
@@ -147,6 +149,12 @@ The NFL MCP Server provides **30+ MCP tools** organized into these categories:
 - `get_nfl_standings` - Current NFL standings
 - `get_team_schedule` - Team schedules with fantasy context
 - `get_league_leaders` - NFL statistical leaders by category
+
+#### 🧠 Coaching Intelligence (4 tools)
+- `get_coaching_staff` - Team coaching staff (head coach, coordinators, position coaches)
+- `get_all_coaching_staffs` - Coaching staff summary for all 32 NFL teams
+- `get_coaching_tree` - Coach mentors, proteges, and scheme family
+- `get_scheme_classification` - Team offensive/defensive scheme classification
 
 #### 📰 CBS Fantasy Football (3 tools)
 - `get_cbs_player_news` - Latest fantasy football player news from CBS Sports
