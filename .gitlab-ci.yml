@@ -4,24 +4,22 @@
 stages:
   - test
   - build
-  - push
 
 variables:
   # Docker configuration
   DOCKER_IMAGE: $CI_REGISTRY_IMAGE
   DOCKER_TAG: $CI_COMMIT_SHORT_SHA
-  # Python configuration
-  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
-
-# Cache pip packages between jobs
-cache:
-  paths:
-    - .cache/pip/
 
 # Test stage - Run pytest tests
 test:
   stage: test
   image: python:3.11-slim
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  cache:
+    key: pip-cache
+    paths:
+      - .cache/pip/
   before_script:
     - pip install --upgrade pip
     - pip install -r requirements.txt
@@ -35,7 +33,7 @@ test:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
 
-# Build stage - Build Docker image
+# Build stage - Build Docker image (for merge requests, without push)
 build:
   stage: build
   image: docker:24
@@ -49,12 +47,10 @@ build:
     - docker build -t $DOCKER_IMAGE:$DOCKER_TAG -t $DOCKER_IMAGE:latest .
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG
 
-# Push stage - Push Docker image to GitLab Container Registry
-push:
-  stage: push
+# Build and push stage - Build Docker image and push to GitLab Container Registry
+build_and_push:
+  stage: build
   image: docker:24
   services:
     - docker:24-dind
