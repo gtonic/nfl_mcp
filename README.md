@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/gtonic-nfl-mcp-badge.png)](https://mseep.ai/app/gtonic-nfl-mcp)
+
 # NFL MCP Server
 
 A FastMCP 3.0 server that provides health monitoring, web content extraction, NFL news fetching, NFL teams information, and comprehensive fantasy league management through both REST and MCP protocols.
