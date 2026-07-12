@@ -137,7 +137,7 @@ async def get_cbs_player_news(limit: Optional[int] = 50) -> dict:
 async def get_cbs_projections(
     position: str = "QB",
     week: Optional[int] = None,
-    season: Optional[int] = 2025,
+    season: Optional[int] = 2026,
     scoring: str = "ppr"
 ) -> dict:
     """
@@ -149,7 +149,7 @@ async def get_cbs_projections(
     Args:
         position: Player position (QB, RB, WR, TE, K, DST) (default: QB)
         week: NFL week number (1-18, required)
-        season: Season year (default: 2025)
+        season: Season year (default: 2026)
         scoring: Scoring format - ppr, half-ppr, standard (default: ppr)
         
     Returns:
@@ -185,9 +185,9 @@ async def get_cbs_projections(
         )
     
     # Validate season
-    season = season or 2025
+    season = season or 2026
     if season < 2020 or season > 2030:
-        season = 2025
+        season = 2026
     
     # Validate scoring format
     valid_scoring = ['ppr', 'half-ppr', 'standard']

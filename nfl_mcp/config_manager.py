@@ -8,6 +8,7 @@ This module provides flexible configuration management with support for:
 - Hot-reloading
 """
 
+import logging
 import os
 import json
 import yaml
@@ -20,6 +21,8 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import httpx
 from pydantic import BaseModel, ValidationError, Field
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -101,7 +104,7 @@ class ConfigFileHandler(FileSystemEventHandler):
     
     def on_modified(self, event):
         if not event.is_directory and event.src_path == str(self.config_manager.config_file_path):
-            print(f"Configuration file {event.src_path} modified, reloading...")
+            logger.info("Configuration file %s modified, reloading...", event.src_path)
             self.config_manager.reload_configuration()
 
 
@@ -239,9 +242,9 @@ class ConfigManager:
         """Reload configuration from file and environment variables."""
         try:
             self.load_configuration()
-            print("Configuration reloaded successfully")
+            logger.info("Configuration reloaded successfully")
         except Exception as e:
-            print(f"Failed to reload configuration: {e}")
+            logger.error("Failed to reload configuration: %s", e)
     
     @property
     def config(self) -> ConfigurationModel:

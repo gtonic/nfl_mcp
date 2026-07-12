@@ -235,6 +235,6 @@ class TestNFLStandings:
             result = await get_nfl_standings()
             
             assert result["success"] is True
-            assert result["season"] == 2025  # Default
+            assert result["season"] == 2026  # Default
             assert result["season_type"] == 2  # Default
             assert result["group"] is None  # Default

@@ -8,6 +8,7 @@ matchups, transactions, and more.
 
 import asyncio
 import httpx
+import json
 import logging
 import os
 from typing import Optional, Dict, List, Tuple
@@ -1228,7 +1229,7 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
         
         for team in sample_teams:
             try:
-                team_schedule = await nfl_tools.get_team_schedule(team, 2025)
+                team_schedule = await nfl_tools.get_team_schedule(team, 2026)
                 if team_schedule.get("success", False):
                     schedule = team_schedule.get("schedule", [])
                     for game in schedule:
@@ -1292,7 +1293,7 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
     default_data={"coordination_plan": {}, "season": None, "league_id": None},
     operation_name="coordinating season bye weeks"
 )
-async def get_season_bye_week_coordination(league_id: str, season: int = 2025) -> dict:
+async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -> dict:
     """
     Coordinate your fantasy league schedule with NFL bye weeks for season-long planning.
     
@@ -1302,7 +1303,7 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2025) -
     
     Args:
         league_id: The unique identifier for the league
-        season: Season year (defaults to 2025)
+        season: Season year (defaults to 2026)
         
     Returns:
         A dictionary containing:
@@ -1690,7 +1691,7 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
     
     for team in key_teams:
         try:
-            team_schedule = await nfl_tools.get_team_schedule(team, 2025)
+            team_schedule = await nfl_tools.get_team_schedule(team, 2026)
             if team_schedule.get("success", False):
                 schedule = team_schedule.get("schedule", [])
                 
@@ -2163,7 +2164,7 @@ async def _fetch_all_team_schedules(season: int):
     Useful for startup/initial cache population.
     
     Args:
-        season: Season year (e.g., 2025)
+        season: Season year (e.g., 2026)
         
     Returns:
         List of game dicts for upsert_schedule_games (bidirectional rows)
@@ -2376,7 +2377,7 @@ async def _fetch_injuries():
                                             player_name = athlete_detail.get('displayName', 'Unknown')
                                         else:
                                             player_name = 'Unknown'
-                                    except:
+                                    except (httpx.HTTPError, json.JSONDecodeError, KeyError, AttributeError):
                                         player_name = 'Unknown'
                                 
                                 # Status and type are nested objects

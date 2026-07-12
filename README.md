@@ -871,7 +871,6 @@ Get trending players from fantasy leagues.
 
 **Returns:** Dictionary with trending players list, parameters, count, success status, and error (if any)
 
-
 ### Strategic Planning Tools
 
 #### get_strategic_matchup_preview
@@ -945,7 +944,6 @@ Get comprehensive waiver wire dashboard with analysis.
 - `round` (integer, optional): Round number (1-18, omit for all transactions)
 
 **Returns:** Dictionary with waiver log, re-entry analysis, dashboard summary, volatile players, success status, and error (if any)
-
 
 **Example Usage with MCP Client:**
 ```python
@@ -1094,14 +1092,113 @@ async with Client("http://localhost:9000/mcp/") as client:
 - **Waiver Wire Strategy**: Prioritize pickups that exploit opponent position weaknesses
 - **Trade Targeting**: Identify opponents who need help at positions where you have depth
 
-## Development
+### Vegas Lines Tools (MCP)
 
-### Running Tests
+**Tools:** `get_vegas_lines`, `get_game_environment`, `analyze_roster_vegas`, `get_stack_opportunities`
+
+These tools provide game environment analysis based on Vegas lines and totals to help make better lineup decisions.
+
+#### get_vegas_lines
+
+Get current Vegas lines for NFL games.
+
+**Parameters:**
+- `teams` (list[str], optional): Team abbreviations to filter
+
+**Returns:** Dictionary with game information including spreads and totals
+
+**Example Usage with MCP Client:**
+```python
+from fastmcp import Client
+
+async with Client("http://localhost:9000/mcp/") as client:
+    # Get all games
+    result = await client.call_tool("get_vegas_lines", {})
+    if result.data["success"]:
+        print(f"Found {result.data['total_games']} games")
+        for game in result.data["games"][:3]:
+            print(f"{game['away_team']} @ {game['home_team']} - O/U: {game['total']}")
+    
+    # Get specific teams
+    result = await client.call_tool("get_vegas_lines", {"teams": ["KC", "BUF", "MIA"]})
+    if result.data["success"]:
+        print(f"Found {result.data['total_games']} games for specified teams")
+```
+
+#### get_game_environment
+
+Get game environment analysis for a specific team's matchup.
+
+**Parameters:**
+- `team` (str): Team abbreviation
+
+**Returns:** Game environment analysis including spread, total, and recommendations
+
+#### analyze_roster_vegas
+
+Analyze Vegas lines impact for multiple players.
+
+**Parameters:**
+- `players` (list[dict]): List of player dicts with name and team
+
+**Returns:** Player game environment analysis
+
+#### get_stack_opportunities
+
+Identify high-total games for stacking opportunities.
+
+**Parameters:**
+- `min_total` (float, optional): Minimum total to consider (default: 48.0)
+
+**Returns:** Games with high over/under totals for optimal stacking
+
+### Coaching Intelligence Tools (MCP)
+
+**Tools:** `get_coaching_staff`, `get_all_coaching_staffs`, `get_coaching_tree`, `get_scheme_classification`
+
+These tools provide coaching intelligence and scheme information to help with fantasy decisions.
+
+#### get_coaching_staff
+
+Get coaching staff for a specific team.
+
+**Parameters:**
+- `team_id` (str): Team abbreviation
+
+**Returns:** Coaching staff information including head coach, coordinators, and position coaches
+
+#### get_all_coaching_staffs
+
+Get coaching staff information for all 32 NFL teams.
+
+**Returns:** Summary of coaching staff for all teams
+
+#### get_coaching_tree
+
+Get coaching tree information for a known coach.
+
+**Parameters:**
+- `coach_name` (str): Coach's full name
+
+**Returns:** Information about mentors, proteges, and scheme family
+
+#### get_scheme_classification
+
+Get offensive and defensive scheme classification for an NFL team.
+
+**Parameters:**
+- `team_id` (str): Team abbreviation
+
+**Returns:** Team's offensive and defensive scheme information
+
+### Development
+
+#### Running Tests
 ```bash
 pytest tests/ -v --cov=nfl_mcp --cov-report=term-missing
 ```
 
-### Project Structure
+#### Project Structure
 ```
 nfl_mcp/
 ├── nfl_mcp/           # Main package
@@ -1119,7 +1216,7 @@ nfl_mcp/
 └── README.md
 ```
 
-### Available Tasks
+#### Available Tasks
 
 Run `task --list` to see all available tasks:
 
@@ -1131,7 +1228,7 @@ Run `task --list` to see all available tasks:
 - `task health-check` - Check server health
 - `task clean` - Clean up Docker resources
 
-## Security Considerations
+### Security Considerations
 
 This server implements several security measures:
 

@@ -118,7 +118,7 @@ class DatabaseConnectionPool:
                 try:
                     # Return connection to pool
                     self._pool.put_nowait(conn)
-                except:
+                except asyncio.QueueFull:
                     # Pool is full, close the connection
                     conn.close()
                     with self._lock:
@@ -1284,7 +1284,7 @@ class NFLDatabase:
                     if d.get("sources"):
                         try:
                             d["sources"] = json.loads(d["sources"])
-                        except:
+                        except (json.JSONDecodeError, TypeError):
                             d["sources"] = ["ESPN"]
                     result.append(d)
                 return result
@@ -1339,7 +1339,7 @@ class NFLDatabase:
                 if d.get("sources"):
                     try:
                         d["sources"] = json.loads(d["sources"])
-                    except:
+                    except (json.JSONDecodeError, TypeError):
                         d["sources"] = ["ESPN"]
                 return d
         except Exception as e:

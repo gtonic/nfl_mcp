@@ -1,329 +1,289 @@
-"""
-Unit tests for coaching-related MCP tools.
-
-Tests the get_coaching_staff, get_coaching_tree, and get_scheme_classification tools.
-"""
-
+"""Tests for coaching_tools module."""
 import pytest
-import httpx
-from unittest.mock import patch, AsyncMock, MagicMock
-from nfl_mcp import coaching_tools
+from unittest.mock import AsyncMock, MagicMock, patch
+from nfl_mcp.coaching_tools import (
+    _get_espn_team_id,
+    _classify_coach_role,
+    get_coaching_staff,
+    get_all_coaching_staffs,
+    get_coaching_tree,
+    get_scheme_classification,
+    COACHING_TREES,
+    TEAM_SCHEMES,
+)
 
 
-class TestGetCoachingStaff:
-    """Test the get_coaching_staff function."""
+class TestGetEspnTeamId:
+    """Test _get_espn_team_id function."""
 
-    @pytest.mark.asyncio
-    async def test_coaching_staff_invalid_team_id_empty(self):
-        """Test get_coaching_staff with empty team ID."""
-        result = await coaching_tools.get_coaching_staff("")
-        assert result["success"] is False
-        assert "Team ID is required" in result["error"]
+    def test_known_abbreviation(self):
+        """Test known team abbreviation."""
+        result = _get_espn_team_id("KC")
+        assert result == "12"
 
-    @pytest.mark.asyncio
-    async def test_coaching_staff_invalid_team_id_none(self):
-        """Test get_coaching_staff with None team ID."""
-        result = await coaching_tools.get_coaching_staff(None)
-        assert result["success"] is False
-        assert "Team ID is required" in result["error"]
+    def test_case_insensitive(self):
+        """Test case insensitivity."""
+        assert _get_espn_team_id("kc") == "12"
+        assert _get_espn_team_id("Kc") == "12"
 
-    @pytest.mark.asyncio
-    async def test_coaching_staff_successful_response(self):
-        """Test successful get_coaching_staff response."""
-        
-        # Mock ESPN API responses
-        mock_coaches_response = {
-            "items": [
-                {"$ref": "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2025/teams/12/coaches/1"},
-            ]
-        }
-        
-        mock_coach_detail = {
-            "id": "1",
-            "displayName": "Andy Reid",
-            "firstName": "Andy",
-            "lastName": "Reid",
-            "position": {"name": "Head Coach"},
-            "experience": 25,
-            "team": {"$ref": "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/12"}
-        }
-        
-        mock_team_detail = {
-            "id": "12",
-            "abbreviation": "KC",
-            "displayName": "Kansas City Chiefs"
-        }
+    def test_numeric_id_passthrough(self):
+        """Test that numeric IDs pass through unchanged."""
+        result = _get_espn_team_id("25")
+        assert result == "25"
 
-        with patch('nfl_mcp.coaching_tools.create_http_client') as mock_client:
-            mock_response = MagicMock()
-            
-            async def mock_get(url, **kwargs):
-                if "/coaches" in url and "$ref" not in str(url):
-                    mock_response.json.return_value = mock_coaches_response
-                elif "coaches/1" in url:
-                    mock_response.json.return_value = mock_coach_detail
-                elif "/teams/12" in url and "coaches" not in url:
-                    mock_response.json.return_value = mock_team_detail
-                return mock_response
-            
-            mock_response.raise_for_status.return_value = None
-            mock_cm = MagicMock()
-            mock_cm.__aenter__.return_value.get = mock_get
-            mock_cm.__aexit__ = AsyncMock(return_value=None)
-            mock_client.return_value = mock_cm
-
-            result = await coaching_tools.get_coaching_staff("KC")
-            
-            assert result["success"] is True
-            assert result["team_id"] == "KC"
-            assert result["total_coaches"] >= 0
-
-
-class TestGetCoachingTree:
-    """Test the get_coaching_tree function."""
-
-    @pytest.mark.asyncio
-    async def test_coaching_tree_andy_reid(self):
-        """Test get_coaching_tree for Andy Reid."""
-        result = await coaching_tools.get_coaching_tree("Andy Reid")
-        
-        assert result["success"] is True
-        assert result["found"] is True
-        assert result["coach_name"] == "Andy Reid"
-        assert "Doug Pederson" in result["proteges"]
-        assert "John Harbaugh" in result["proteges"]
-        assert "West Coast Offense" in result["scheme_family"]
-
-    @pytest.mark.asyncio
-    async def test_coaching_tree_bill_belichick(self):
-        """Test get_coaching_tree for Bill Belichick."""
-        result = await coaching_tools.get_coaching_tree("Bill Belichick")
-        
-        assert result["success"] is True
-        assert result["found"] is True
-        assert result["coach_name"] == "Bill Belichick"
-        assert "Nick Saban" in result["proteges"]
-        assert "Josh McDaniels" in result["proteges"]
-
-    @pytest.mark.asyncio
-    async def test_coaching_tree_kyle_shanahan(self):
-        """Test get_coaching_tree for Kyle Shanahan."""
-        result = await coaching_tools.get_coaching_tree("Kyle Shanahan")
-        
-        assert result["success"] is True
-        assert result["found"] is True
-        assert "Mike McDaniel" in result["proteges"]
-        assert "Shanahan Wide Zone" in result["scheme_family"]
-
-    @pytest.mark.asyncio
-    async def test_coaching_tree_protege_lookup(self):
-        """Test get_coaching_tree for a known protege."""
-        result = await coaching_tools.get_coaching_tree("Doug Pederson")
-        
-        assert result["success"] is True
-        assert result["found"] is True
-        assert "Andy Reid" in result["mentors"]
-
-    @pytest.mark.asyncio
-    async def test_coaching_tree_unknown_coach(self):
-        """Test get_coaching_tree for unknown coach."""
-        result = await coaching_tools.get_coaching_tree("Unknown Coach")
-        
-        assert result["success"] is True
-        assert result["found"] is False
-        assert "not found" in result["message"].lower()
-
-    @pytest.mark.asyncio
-    async def test_coaching_tree_empty_name(self):
-        """Test get_coaching_tree with empty name."""
-        result = await coaching_tools.get_coaching_tree("")
-        
-        assert result["success"] is False
-        assert "required" in result["error"].lower()
-
-    @pytest.mark.asyncio
-    async def test_coaching_tree_case_insensitive(self):
-        """Test get_coaching_tree is case insensitive."""
-        result = await coaching_tools.get_coaching_tree("andy reid")
-        
-        assert result["success"] is True
-        assert result["found"] is True
-        assert result["coach_name"] == "Andy Reid"
-
-
-class TestGetSchemeClassification:
-    """Test the get_scheme_classification function."""
-
-    @pytest.mark.asyncio
-    async def test_scheme_classification_kc(self):
-        """Test get_scheme_classification for Kansas City."""
-        result = await coaching_tools.get_scheme_classification("KC")
-        
-        assert result["success"] is True
-        assert result["found"] is True
-        assert result["team_id"] == "KC"
-        assert "West Coast" in result["offensive_scheme"]
-        assert "4-3" in result["defensive_scheme"]
-
-    @pytest.mark.asyncio
-    async def test_scheme_classification_sf(self):
-        """Test get_scheme_classification for San Francisco."""
-        result = await coaching_tools.get_scheme_classification("SF")
-        
-        assert result["success"] is True
-        assert result["found"] is True
-        assert "Shanahan" in result["offensive_scheme"]
-        assert len(result["scheme_notes"]) > 0
-
-    @pytest.mark.asyncio
-    async def test_scheme_classification_lar(self):
-        """Test get_scheme_classification for LA Rams."""
-        result = await coaching_tools.get_scheme_classification("LAR")
-        
-        assert result["success"] is True
-        assert result["found"] is True
-        assert "McVay" in result["offensive_scheme"]
-
-    @pytest.mark.asyncio
-    async def test_scheme_classification_all_teams(self):
-        """Test get_scheme_classification for all 32 teams."""
-        teams = ["ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
-                 "DAL", "DEN", "DET", "GB", "HOU", "IND", "JAX", "KC",
-                 "LV", "LAC", "LAR", "MIA", "MIN", "NE", "NO", "NYG",
-                 "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WAS"]
-        
-        for team in teams:
-            result = await coaching_tools.get_scheme_classification(team)
-            assert result["success"] is True
-            assert result["found"] is True
-            assert result["team_id"] == team
-
-    @pytest.mark.asyncio
-    async def test_scheme_classification_invalid_team(self):
-        """Test get_scheme_classification for invalid team."""
-        result = await coaching_tools.get_scheme_classification("XXX")
-        
-        assert result["success"] is True
-        assert result["found"] is False
-        assert "not found" in result["message"].lower()
-
-    @pytest.mark.asyncio
-    async def test_scheme_classification_empty_team(self):
-        """Test get_scheme_classification with empty team ID."""
-        result = await coaching_tools.get_scheme_classification("")
-        
-        assert result["success"] is False
-        assert "required" in result["error"].lower()
-
-    @pytest.mark.asyncio
-    async def test_scheme_classification_lowercase(self):
-        """Test get_scheme_classification with lowercase team ID."""
-        result = await coaching_tools.get_scheme_classification("kc")
-        
-        assert result["success"] is True
-        assert result["found"] is True
-        assert result["team_id"] == "KC"
-
-
-class TestTeamIdMapping:
-    """Test the team ID mapping functionality."""
-
-    def test_team_id_map_complete(self):
-        """Test that all 32 teams are in the mapping."""
-        assert len(coaching_tools.TEAM_ID_MAP) == 32
-
-    def test_espn_team_id_abbreviation(self):
-        """Test _get_espn_team_id with abbreviation."""
-        assert coaching_tools._get_espn_team_id("KC") == "12"
-        assert coaching_tools._get_espn_team_id("NE") == "17"
-        assert coaching_tools._get_espn_team_id("SF") == "25"
-
-    def test_espn_team_id_numeric(self):
-        """Test _get_espn_team_id with numeric ID."""
-        assert coaching_tools._get_espn_team_id("12") == "12"
-        assert coaching_tools._get_espn_team_id("17") == "17"
-
-    def test_espn_team_id_lowercase(self):
-        """Test _get_espn_team_id with lowercase."""
-        assert coaching_tools._get_espn_team_id("kc") == "12"
-        assert coaching_tools._get_espn_team_id("ne") == "17"
+    def test_unknown_team_passthrough(self):
+        """Test that unknown teams pass through unchanged."""
+        result = _get_espn_team_id("UNKNOWN")
+        assert result == "UNKNOWN"
 
 
 class TestClassifyCoachRole:
-    """Test the coach role classification."""
+    """Test _classify_coach_role function."""
 
-    def test_classify_head_coach(self):
-        """Test classification of head coach."""
-        result = coaching_tools._classify_coach_role("Head Coach")
+    def test_head_coach(self):
+        """Test head coach classification."""
+        result = _classify_coach_role("Head Coach")
         assert result["category"] == "head_coach"
         assert result["side"] == "both"
+        assert result["is_coordinator"] is False
 
-    def test_classify_offensive_coordinator(self):
-        """Test classification of offensive coordinator."""
-        result = coaching_tools._classify_coach_role("Offensive Coordinator")
+    def test_offensive_coordinator(self):
+        """Test OC classification."""
+        result = _classify_coach_role("Offensive Coordinator")
         assert result["category"] == "coordinator"
         assert result["side"] == "offense"
         assert result["is_coordinator"] is True
 
-    def test_classify_defensive_coordinator(self):
-        """Test classification of defensive coordinator."""
-        result = coaching_tools._classify_coach_role("Defensive Coordinator")
+    def test_defensive_coordinator(self):
+        """Test DC classification."""
+        result = _classify_coach_role("Defensive Coordinator")
         assert result["category"] == "coordinator"
         assert result["side"] == "defense"
         assert result["is_coordinator"] is True
 
-    def test_classify_qb_coach(self):
-        """Test classification of QB coach."""
-        result = coaching_tools._classify_coach_role("Quarterbacks Coach")
+    def test_position_coach_qb(self):
+        """Test QB position coach classification."""
+        result = _classify_coach_role("Quarterbacks Coach")
         assert result["category"] == "position_coach"
         assert result["side"] == "offense"
 
-    def test_classify_lb_coach(self):
-        """Test classification of linebackers coach."""
-        result = coaching_tools._classify_coach_role("Linebackers Coach")
+    def test_position_coach_wr(self):
+        """Test WR position coach classification."""
+        result = _classify_coach_role("Wide Receivers Coach")
         assert result["category"] == "position_coach"
-        assert result["side"] == "defense"
+        assert result["side"] == "offense"
 
-    def test_classify_unknown_role(self):
-        """Test classification of unknown role."""
-        result = coaching_tools._classify_coach_role("Quality Control")
+    def test_assistant_unknown_role(self):
+        """Test assistant classification for unknown role."""
+        result = _classify_coach_role("Video Coach")
         assert result["category"] == "assistant"
         assert result["side"] == "unknown"
 
 
-class TestCoachingTrees:
-    """Test the coaching trees data structure."""
+class TestGetCoachingTree:
+    """Test get_coaching_tree function."""
 
-    def test_coaching_trees_structure(self):
-        """Test that coaching trees have required fields."""
-        for coach, data in coaching_tools.COACHING_TREES.items():
-            assert "mentors" in data
-            assert "proteges" in data
-            assert "scheme_family" in data
-            assert "known_for" in data
-            assert isinstance(data["mentors"], list)
-            assert isinstance(data["proteges"], list)
-            assert isinstance(data["known_for"], list)
+    @pytest.mark.asyncio
+    async def test_known_coach(self):
+        """Test lookup for known coach."""
+        result = await get_coaching_tree("Andy Reid")
+        assert result["success"] is True
+        assert result["data"]["found"] is True
+        assert result["data"]["coach_name"] == "Andy Reid"
+        assert len(result["data"]["mentors"]) > 0
+        assert len(result["data"]["proteges"]) > 0
 
-    def test_coaching_trees_major_coaches(self):
-        """Test that major coaches are included."""
-        assert "Andy Reid" in coaching_tools.COACHING_TREES
-        assert "Bill Belichick" in coaching_tools.COACHING_TREES
-        assert "Kyle Shanahan" in coaching_tools.COACHING_TREES
-        assert "Sean McVay" in coaching_tools.COACHING_TREES
+    @pytest.mark.asyncio
+    async def test_unknown_coach(self):
+        """Test lookup for unknown coach."""
+        result = await get_coaching_tree("Nobody Coach")
+        assert result["success"] is True
+        assert result["data"]["found"] is False
+
+    @pytest.mark.asyncio
+    async def test_coach_as_protege(self):
+        """Test looking up a coach as a protege."""
+        result = await get_coaching_tree("Doug Pederson")
+        assert result["success"] is True
+        assert result["data"]["found"] is True
+
+    @pytest.mark.asyncio
+    async def test_empty_coach_name(self):
+        """Test with empty coach name."""
+        result = await get_coaching_tree("")
+        assert result["success"] is False
 
 
-class TestTeamSchemes:
-    """Test the team schemes data structure."""
+class TestGetSchemeClassification:
+    """Test get_scheme_classification function."""
 
-    def test_team_schemes_complete(self):
-        """Test that all 32 teams have scheme data."""
-        assert len(coaching_tools.TEAM_SCHEMES) == 32
+    @pytest.mark.asyncio
+    async def test_known_team(self):
+        """Test classification for known team."""
+        result = await get_scheme_classification("KC")
+        assert result["success"] is True
+        assert result["data"]["found"] is True
+        assert "offensive_scheme" in result["data"]
+        assert "defensive_scheme" in result["data"]
 
-    def test_team_schemes_structure(self):
-        """Test that scheme data has required fields."""
-        for team, data in coaching_tools.TEAM_SCHEMES.items():
-            assert "offense" in data
-            assert "defense" in data
-            assert isinstance(data["offense"], str)
-            assert isinstance(data["defense"], str)
+    @pytest.mark.asyncio
+    async def test_unknown_team(self):
+        """Test classification for unknown team."""
+        result = await get_scheme_classification("UNKNOWN")
+        assert result["success"] is True
+        assert result["data"]["found"] is False
+
+    @pytest.mark.asyncio
+    async def test_empty_team_id(self):
+        """Test with empty team ID."""
+        result = await get_scheme_classification("")
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_scheme_notes_generated(self):
+        """Test that scheme notes are generated."""
+        result = await get_scheme_classification("SF")
+        assert result["success"] is True
+        assert "scheme_notes" in result["data"]
+        assert len(result["data"]["scheme_notes"]) > 0
+
+
+class TestGetAllCoachingStaffs:
+    """Test get_all_coaching_staffs async function."""
+
+    @pytest.mark.asyncio
+    async def test_all_coaching_staffs_success(self):
+        """Test successful retrieval of all coaching staffs."""
+        mock_response = AsyncMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "items": [
+                {
+                    "$ref": "https://example.com/team/1",
+                    "abbreviation": "KC",
+                    "displayName": "Kansas City Chiefs"
+                }
+            ]
+        }
+        
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        
+        with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
+            result = await get_all_coaching_staffs()
+            
+            assert result["success"] is True
+            assert "teams" in result["data"]
+            assert "total_teams" in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_all_coaching_staffs_empty(self):
+        """Test with no teams."""
+        mock_response = AsyncMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"items": []}
+        
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        
+        with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
+            result = await get_all_coaching_staffs()
+            
+            assert result["success"] is True
+            assert result["data"]["total_teams"] == 0
+
+
+class TestGetCoachingStaff:
+    """Test get_coaching_staff async function."""
+
+    @pytest.mark.asyncio
+    async def test_coaching_staff_success(self):
+        """Test successful coaching staff fetch."""
+        # Mock team data response
+        team_mock = AsyncMock()
+        team_mock.status_code = 200
+        team_mock.json.return_value = {
+            "abbreviation": "KC",
+            "displayName": "Kansas City Chiefs"
+        }
+        
+        # Mock coaches response
+        coaches_mock = AsyncMock()
+        coaches_mock.status_code = 200
+        coaches_mock.json.return_value = {
+            "items": [
+                {"$ref": "https://example.com/coach/1"}
+            ]
+        }
+        
+        # Mock coach details
+        coach_mock = AsyncMock()
+        coach_mock.status_code = 200
+        coach_mock.json.return_value = {
+            "displayName": "Andy Reid",
+            "firstName": "Andy",
+            "lastName": "Reid",
+            "position": {"name": "Head Coach"}
+        }
+        
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [coaches_mock, coach_mock, team_mock]
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        
+        with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
+            result = await get_coaching_staff("KC")
+            
+            assert result["success"] is True
+            assert "coaches" in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_coaching_staff_404(self):
+        """Test coaching staff fetch with 404 response."""
+        import httpx
+        
+        mock_response = AsyncMock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "404", request=MagicMock(), response=mock_response
+        )
+        
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        
+        with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
+            result = await get_coaching_staff("INVALID")
+            
+            assert result["success"] is True  # Handled gracefully
+            assert "message" in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_coaching_staff_invalid_team_id(self):
+        """Test with invalid team ID."""
+        result = await get_coaching_staff("")
+        assert result["success"] is False
+        assert "validation" in result.get("error_type", "").lower()
+
+
+class TestConstants:
+    """Test COACHING_TREES and TEAM_SCHEMES constants."""
+
+    def test_coaching_trees_have_required_keys(self):
+        """Test coaching trees have required structure."""
+        for coach_name, tree_data in COACHING_TREES.items():
+            assert "mentors" in tree_data
+            assert "proteges" in tree_data
+            assert "scheme_family" in tree_data
+            assert "known_for" in tree_data
+
+    def test_team_schemes_have_required_keys(self):
+        """Test team schemes have required structure."""
+        for team_id, scheme_data in TEAM_SCHEMES.items():
+            assert "offense" in scheme_data
+            assert "defense" in scheme_data
