@@ -141,3 +141,65 @@ class TestRecommendPick:
     async def test_recommend_requires_draft_id(self):
         res = await dt.recommend_draft_pick("", db=_temp_db())
         assert res["success"] is False
+
+
+# A larger pool so a full mock draft can fill starters + bench for all teams
+# without the player pool starving under position caps.
+def _big_pool(n_per_pos=60):
+    pool = []
+    rank = 1
+    for pos, base in (("RB", 10000), ("WR", 9800), ("QB", 6000), ("TE", 5000)):
+        for i in range(n_per_pos):
+            pool.append({
+                "player_id": f"{pos}{i}", "name": f"{pos} Player {i}", "position": pos,
+                "team": "ATL", "value": base - i * 100, "overall_rank": rank,
+                "position_rank": i + 1, "tier": (i // 6) + 1, "trend_30day": 0,
+            })
+            rank += 1
+    return pool
+
+
+class TestSimulateDraft:
+    async def _run(self, db, **kw):
+        svc = _service_with_pool(db)
+        with patch.object(svc, "_fetch_from_fantasycalc", return_value=_big_pool()):
+            return await dt.simulate_draft(db=db, **kw)
+
+    async def test_single_sim_fills_starters(self):
+        db = _temp_db()
+        res = await self._run(db, my_slot=3, num_teams=12, rounds=15, seed=42)
+        assert res["success"] is True
+        sample = res["sample"]
+        assert len(sample["my_team"]) == 15
+        # roster must satisfy starter requirements (QB1/RB2/WR2/TE1)
+        assert sample["starters_filled"] is True
+        counts = sample["my_position_counts"]
+        assert counts.get("QB", 0) >= 1 and counts.get("TE", 0) >= 1
+        # no position wildly over-stacked (caps enforced)
+        assert counts.get("WR", 0) <= 7 and counts.get("RB", 0) <= 7
+        assert 1 <= sample["my_value_rank"] <= 12
+        pv._service = None
+
+    async def test_deterministic_with_seed(self):
+        db = _temp_db()
+        a = await self._run(db, my_slot=5, num_teams=10, seed=7)
+        b = await self._run(db, my_slot=5, num_teams=10, seed=7)
+        assert [r["player_id"] for r in a["sample"]["my_team"]] == \
+               [r["player_id"] for r in b["sample"]["my_team"]]
+        pv._service = None
+
+    async def test_multi_sim_aggregate(self):
+        db = _temp_db()
+        res = await self._run(db, my_slot=1, num_teams=12, num_sims=10, seed=1)
+        assert res["num_sims"] == 10
+        agg = res["aggregate"]
+        assert "avg_position_counts" in agg
+        assert "avg_value_rank" in agg
+        assert sum(agg["grade_distribution"].values()) == 10
+        pv._service = None
+
+    async def test_invalid_slot(self):
+        db = _temp_db()
+        res = await self._run(db, my_slot=20, num_teams=12)
+        assert res["success"] is False
+        pv._service = None

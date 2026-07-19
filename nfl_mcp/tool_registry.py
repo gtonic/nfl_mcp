@@ -101,6 +101,7 @@ def get_all_tools() -> List[Callable]:
         # Draft Assistant Tools (VBD board + live pick recommendations)
         get_draft_board,
         recommend_draft_pick,
+        simulate_draft,
 
         # Opponent Analysis Tools
         analyze_opponent,
@@ -919,6 +920,54 @@ async def recommend_draft_pick(
         return {"suggestions": [], "success": False, "error": f"Invalid input: {str(e)}"}
     return await draft_tools.recommend_draft_pick(
         draft_id=draft_id, my_slot=my_slot, num_suggestions=num_suggestions, db=get_db(),
+    )
+
+
+@timing_decorator("simulate_draft", tool_type="draft")
+async def simulate_draft(
+    my_slot: int,
+    num_teams: int = 12,
+    rounds: int = 15,
+    scoring: str = "ppr",
+    superflex: bool = False,
+    dynasty: bool = False,
+    randomness: float = 0.15,
+    num_sims: int = 1,
+    seed: Optional[int] = None,
+) -> dict:
+    """Rehearse a full snake draft offline (solo, repeatable).
+
+    Opponents pick by need-weighted VBD with realistic ADP noise; your slot picks
+    optimally. Great for pre-draft prep: try different slots, see roster structure
+    and a value-based standing. Only QB/RB/WR/TE are modeled (no K/DST).
+
+    Parameters:
+        my_slot (int, required): Your draft position (1..num_teams).
+        num_teams (int): League size (default 12).
+        rounds (int): Number of rounds (default 15).
+        scoring (str): "ppr", "half-ppr", "standard".
+        superflex (bool): True for 2-QB / superflex.
+        dynasty (bool): Dynasty vs redraft values.
+        randomness (float): Opponent ADP noise 0..1 (0 = always best available).
+        num_sims (int): How many drafts to run (>1 returns aggregate structure).
+        seed (int, optional): RNG seed for reproducibility.
+    Returns: {sample:{my_team, standings, grade,...}, aggregate?, format, source, success}
+
+    IMPORTANT FOR LLM AGENTS: Run the simulation and present the result immediately.
+    """
+    try:
+        my_slot = validate_numeric_input(my_slot, min_val=1, max_val=32, required=True)
+        num_teams = validate_numeric_input(num_teams, min_val=2, max_val=32, default=12, required=False)
+        rounds = validate_numeric_input(rounds, min_val=1, max_val=30, default=15, required=False)
+        num_sims = validate_numeric_input(num_sims, min_val=1, max_val=200, default=1, required=False)
+        if seed is not None:
+            seed = validate_numeric_input(seed, min_val=0, max_val=2**31 - 1, required=False)
+    except ValueError as e:
+        return {"sample": None, "success": False, "error": f"Invalid input: {str(e)}"}
+    return await draft_tools.simulate_draft(
+        my_slot=my_slot, num_teams=num_teams, rounds=rounds, scoring=scoring,
+        superflex=superflex, dynasty=dynasty, randomness=randomness,
+        num_sims=num_sims, seed=seed, db=get_db(),
     )
 
 
