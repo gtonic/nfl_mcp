@@ -1,0 +1,9 @@
+# Code owners for this repository.
+# These owners are requested for review automatically on matching PRs.
+
+# Default owner for everything in the repo
+*                       @gtonic
+
+# CI / build pipeline
+/.github/               @gtonic
+/Dockerfile             @gtonic
