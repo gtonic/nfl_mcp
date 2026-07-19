@@ -6,6 +6,7 @@ on:
     tags: ["v*"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch: {}  # allow manual "build & publish" runs
 
 # Cancel superseded runs on the same ref.
 concurrency:
