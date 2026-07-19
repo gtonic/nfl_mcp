@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Playoff odds** (`playoff_tools.py`) — `get_playoff_odds` Monte-Carlos the rest
+  of the regular season (each team scores ~ Normal around its points-per-game),
+  ranks by record then points, and reports each team's playoff probability and
+  average seed. Optional win/lose-this-week swing for your roster.
+
 ### Fixed
 - **Defense-vs-position rankings now use real data** (nflverse weekly stats:
   fantasy points allowed per game, per defense, per position), replacing the

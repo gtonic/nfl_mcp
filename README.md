@@ -834,7 +834,11 @@ async with Client("http://localhost:9000/mcp/") as client:
 ### Sleeper API Tools (MCP)
 
 **Basic Tools:** `get_league`, `get_rosters`, `get_league_users`, `get_matchups`, `get_playoff_bracket`, `get_transactions`, `get_traded_picks`, `get_nfl_state`, `get_trending_players`
-**Strategic Tools:** `get_strategic_matchup_preview`, `get_season_bye_week_coordination`, `get_trade_deadline_analysis`, `get_playoff_preparation_plan`
+**Strategic Tools:** `get_strategic_matchup_preview`, `get_season_bye_week_coordination`, `get_trade_deadline_analysis`, `get_playoff_preparation_plan`, `get_playoff_odds`
+
+> `get_playoff_odds(league_id, current_week, my_roster_id)` Monte-Carlos the rest
+> of the season and returns each team's **playoff probability** + average seed,
+> plus your **win/lose-this-week swing** — real numbers instead of gut feeling.
 **Analysis Tools:** `analyze_opponent` - Opponent roster weakness analysis and exploitation strategies
 
 ### Waiver Wire Analysis Tools (MCP)
