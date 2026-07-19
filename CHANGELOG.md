@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Defense-vs-position rankings now use real data** (nflverse weekly stats:
+  fantasy points allowed per game, per defense, per position), replacing the
+  broken ESPN/FantasyPros HTML paths that always fell back to alphabetical
+  placeholders. This makes the matchup factor meaningful in-season for
+  projections, start/sit and opponent analysis; in the preseason (no data yet)
+  it honestly reports an `unknown` matchup instead of a fake rating.
+
 ### Added
 - **Weekly projections** (`projections.py`) — transparent, no scraping/keys:
   `projected = base_ppg(position rank) × matchup × Vegas game environment × usage
