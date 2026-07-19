@@ -38,7 +38,9 @@ class TestFetchAthletes:
         """Test fetch_athletes with HTTP error."""
         mock_db = MagicMock()
 
-        mock_response = AsyncMock()
+        # MagicMock (not AsyncMock): httpx response.raise_for_status() is sync,
+        # so the side_effect must raise synchronously.
+        mock_response = MagicMock()
         mock_response.status_code = 500
         mock_response.raise_for_status.side_effect = Exception("500")
 

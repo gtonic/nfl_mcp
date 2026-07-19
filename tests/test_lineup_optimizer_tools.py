@@ -58,9 +58,9 @@ class TestConfidenceWeightValues:
     """Test weight and score constants."""
 
     def test_confidence_weights_sum_to_one(self):
-        """Test that confidence weights sum to 100."""
+        """Test that confidence weights (fractions) sum to 1.0."""
         total = sum(CONFIDENCE_WEIGHTS.values())
-        assert total == 100.0
+        assert total == pytest.approx(1.0)
 
     def test_injury_status_scores_complete(self):
         """Test injury status scores have expected values."""
@@ -181,9 +181,9 @@ class TestStartSitRecommendation:
         )
         
         assert result["success"] is True
-        assert "recommendation" in result["data"]
-        assert "confidence" in result["data"]
-        assert "reasoning" in result["data"]
+        assert "recommendation" in result
+        assert "confidence" in result
+        assert "reasoning" in result
 
     @pytest.mark.asyncio
     async def test_start_sit_recommendation_minimal(self):
@@ -196,7 +196,7 @@ class TestStartSitRecommendation:
         )
         
         assert result["success"] is True
-        assert "recommendation" in result["data"]
+        assert "recommendation" in result
 
 
 class TestGetRosterRecommendations:
@@ -226,8 +226,8 @@ class TestGetRosterRecommendations:
         result = await get_roster_recommendations(players)
         
         assert result["success"] is True
-        assert "recommendations" in result["data"]
-        assert len(result["data"]["recommendations"]) == 1
+        assert "recommendations" in result
+        assert len(result["recommendations"]) == 1
 
     @pytest.mark.asyncio
     async def test_roster_recommendations_multiple_players(self):
@@ -245,7 +245,7 @@ class TestGetRosterRecommendations:
         result = await get_roster_recommendations(players)
         
         assert result["success"] is True
-        assert result["data"]["total_analyzed"] == 4
+        assert result["total_analyzed"] == 4
 
 
 class TestComparePlayersForSlot:
@@ -271,10 +271,10 @@ class TestComparePlayersForSlot:
         result = await compare_players_for_slot(players)
         
         assert result["success"] is True
-        assert "winner" in result["data"]
-        assert "comparison" in result["data"]
-        assert len(result["data"]["comparison"]) == 2
-        assert "verdict" in result["data"]
+        assert "winner" in result
+        assert "comparison" in result
+        assert len(result["comparison"]) == 2
+        assert "verdict" in result
 
 
 class TestAnalyzeFullLineup:
@@ -301,10 +301,10 @@ class TestAnalyzeFullLineup:
         result = await analyze_full_lineup(lineup)
         
         assert result["success"] is True
-        assert "starters" in result["data"]
-        assert "bench" in result["data"]
-        assert "lineup_grade" in result["data"]
-        assert "total_projected" in result["data"]
+        assert "starters" in result
+        assert "bench" in result
+        assert "lineup_grade" in result
+        assert "total_projected" in result
 
     @pytest.mark.asyncio
     async def test_analyze_lineup_with_flex(self):
@@ -317,4 +317,4 @@ class TestAnalyzeFullLineup:
         result = await analyze_full_lineup(lineup)
         
         assert result["success"] is True
-        assert "starters" in result["data"]
+        assert "starters" in result

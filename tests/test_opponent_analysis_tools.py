@@ -185,5 +185,5 @@ class TestAnalyzeOpponent:
                 result = await analyze_opponent("league1", 1)
                 
                 assert result["success"] is True
-                assert result["data"]["opponent_name"] == "Test User"
-                assert "vulnerability_score" in result["data"]
+                assert result["opponent_name"] == "Test User"
+                assert "vulnerability_score" in result

@@ -450,7 +450,25 @@ class DefenseRankingsAnalyzer:
         for team_rank in pos_rankings:
             if team_rank["team"] == opponent_team:
                 tier = team_rank["matchup_tier"]
-                
+
+                # Honesty: fallback rankings are placeholders (no live data), so
+                # do NOT emit a confident smash/avoid call that would mislead.
+                if team_rank.get("is_fallback"):
+                    return {
+                        "position": position,
+                        "opponent": opponent_team,
+                        "rank": team_rank.get("rank", 16),
+                        "rank_display": "n/a",
+                        "matchup_tier": "unknown",
+                        "tier_indicator": "⚪",
+                        "points_allowed_avg": 0,
+                        "recommendation": (
+                            f"⚠️ No live defense-vs-{position} data available for "
+                            f"{opponent_team} — matchup rating unknown (treat as neutral)"
+                        ),
+                        "is_fallback": True,
+                    }
+
                 # Generate recommendation
                 if tier == "smash":
                     rec = f"🎯 SMASH SPOT: {opponent_team} allows most points to {position}s"

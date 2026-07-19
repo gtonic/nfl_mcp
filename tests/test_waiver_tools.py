@@ -314,10 +314,10 @@ class TestGetWaiverWireDashboard:
                 result = await get_waiver_wire_dashboard("league1")
                 
                 assert result["success"] is True
-                assert "waiver_log" in result["data"]
-                assert "re_entry_analysis" in result["data"]
-                assert "dashboard_summary" in result["data"]
-                assert "total_waiver_transactions" in result["data"]["dashboard_summary"]
+                assert "waiver_log" in result
+                assert "re_entry_analysis" in result
+                assert "dashboard_summary" in result
+                assert "total_waiver_transactions" in result["dashboard_summary"]
 
     @pytest.mark.asyncio
     async def test_dashboard_failed_waiver_log(self):

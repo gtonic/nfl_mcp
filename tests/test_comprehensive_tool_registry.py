@@ -159,7 +159,7 @@ class TestToolRegistry:
     @pytest.mark.asyncio
     async def test_athlete_tools_functionality(self):
         """Test athlete tools."""
-        result = await search_athletes(name="Smith", limit=5)
+        result = search_athletes(name="Smith", limit=5)
         assert isinstance(result, dict)
         assert 'athletes' in result or 'success' in result or 'error' in result
 
@@ -286,7 +286,7 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         
         # Athlete tools
-        result = await search_athletes(name="Jones", limit=3)
+        result = search_athletes(name="Jones", limit=3)
         assert isinstance(result, dict)
         
         # Fantasy tools

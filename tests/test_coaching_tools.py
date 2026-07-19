@@ -88,24 +88,24 @@ class TestGetCoachingTree:
         """Test lookup for known coach."""
         result = await get_coaching_tree("Andy Reid")
         assert result["success"] is True
-        assert result["data"]["found"] is True
-        assert result["data"]["coach_name"] == "Andy Reid"
-        assert len(result["data"]["mentors"]) > 0
-        assert len(result["data"]["proteges"]) > 0
+        assert result["found"] is True
+        assert result["coach_name"] == "Andy Reid"
+        assert len(result["mentors"]) > 0
+        assert len(result["proteges"]) > 0
 
     @pytest.mark.asyncio
     async def test_unknown_coach(self):
         """Test lookup for unknown coach."""
         result = await get_coaching_tree("Nobody Coach")
         assert result["success"] is True
-        assert result["data"]["found"] is False
+        assert result["found"] is False
 
     @pytest.mark.asyncio
     async def test_coach_as_protege(self):
         """Test looking up a coach as a protege."""
         result = await get_coaching_tree("Doug Pederson")
         assert result["success"] is True
-        assert result["data"]["found"] is True
+        assert result["found"] is True
 
     @pytest.mark.asyncio
     async def test_empty_coach_name(self):
@@ -122,16 +122,16 @@ class TestGetSchemeClassification:
         """Test classification for known team."""
         result = await get_scheme_classification("KC")
         assert result["success"] is True
-        assert result["data"]["found"] is True
-        assert "offensive_scheme" in result["data"]
-        assert "defensive_scheme" in result["data"]
+        assert result["found"] is True
+        assert "offensive_scheme" in result
+        assert "defensive_scheme" in result
 
     @pytest.mark.asyncio
     async def test_unknown_team(self):
         """Test classification for unknown team."""
         result = await get_scheme_classification("UNKNOWN")
         assert result["success"] is True
-        assert result["data"]["found"] is False
+        assert result["found"] is False
 
     @pytest.mark.asyncio
     async def test_empty_team_id(self):
@@ -144,8 +144,8 @@ class TestGetSchemeClassification:
         """Test that scheme notes are generated."""
         result = await get_scheme_classification("SF")
         assert result["success"] is True
-        assert "scheme_notes" in result["data"]
-        assert len(result["data"]["scheme_notes"]) > 0
+        assert "scheme_notes" in result
+        assert len(result["scheme_notes"]) > 0
 
 
 class TestGetAllCoachingStaffs:
@@ -154,7 +154,7 @@ class TestGetAllCoachingStaffs:
     @pytest.mark.asyncio
     async def test_all_coaching_staffs_success(self):
         """Test successful retrieval of all coaching staffs."""
-        mock_response = AsyncMock()
+        mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
             "items": [
@@ -175,13 +175,13 @@ class TestGetAllCoachingStaffs:
             result = await get_all_coaching_staffs()
             
             assert result["success"] is True
-            assert "teams" in result["data"]
-            assert "total_teams" in result["data"]
+            assert "teams" in result
+            assert "total_teams" in result
 
     @pytest.mark.asyncio
     async def test_all_coaching_staffs_empty(self):
         """Test with no teams."""
-        mock_response = AsyncMock()
+        mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"items": []}
         
@@ -194,7 +194,7 @@ class TestGetAllCoachingStaffs:
             result = await get_all_coaching_staffs()
             
             assert result["success"] is True
-            assert result["data"]["total_teams"] == 0
+            assert result["total_teams"] == 0
 
 
 class TestGetCoachingStaff:
@@ -204,7 +204,7 @@ class TestGetCoachingStaff:
     async def test_coaching_staff_success(self):
         """Test successful coaching staff fetch."""
         # Mock team data response
-        team_mock = AsyncMock()
+        team_mock = MagicMock()
         team_mock.status_code = 200
         team_mock.json.return_value = {
             "abbreviation": "KC",
@@ -212,7 +212,7 @@ class TestGetCoachingStaff:
         }
         
         # Mock coaches response
-        coaches_mock = AsyncMock()
+        coaches_mock = MagicMock()
         coaches_mock.status_code = 200
         coaches_mock.json.return_value = {
             "items": [
@@ -221,7 +221,7 @@ class TestGetCoachingStaff:
         }
         
         # Mock coach details
-        coach_mock = AsyncMock()
+        coach_mock = MagicMock()
         coach_mock.status_code = 200
         coach_mock.json.return_value = {
             "displayName": "Andy Reid",
@@ -239,14 +239,14 @@ class TestGetCoachingStaff:
             result = await get_coaching_staff("KC")
             
             assert result["success"] is True
-            assert "coaches" in result["data"]
+            assert "coaches" in result
 
     @pytest.mark.asyncio
     async def test_coaching_staff_404(self):
         """Test coaching staff fetch with 404 response."""
         import httpx
         
-        mock_response = AsyncMock()
+        mock_response = MagicMock()
         mock_response.status_code = 404
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "404", request=MagicMock(), response=mock_response
@@ -261,7 +261,7 @@ class TestGetCoachingStaff:
             result = await get_coaching_staff("INVALID")
             
             assert result["success"] is True  # Handled gracefully
-            assert "message" in result["data"]
+            assert "message" in result
 
     @pytest.mark.asyncio
     async def test_coaching_staff_invalid_team_id(self):
