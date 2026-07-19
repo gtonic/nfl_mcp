@@ -58,11 +58,24 @@ python -m nfl_mcp.server
 ```
 
 #### Using Docker
+
+Pull the published image (built and pushed by CI on every push to `main` and on
+version tags):
 ```bash
-# Build and run
+docker run --rm -p 9000:9000 ghcr.io/gtonic/nfl_mcp:latest
+# or a pinned version tag, e.g. ghcr.io/gtonic/nfl_mcp:0.5.16
+```
+
+Or build locally:
+```bash
 docker build -t nfl-mcp-server .
 docker run --rm -p 9000:9000 nfl-mcp-server
 ```
+
+**CI/CD:** The [CI workflow](.github/workflows/ci.yml) runs the test suite on
+Python 3.11 & 3.12, then builds the Docker image and (on `main`/tags) publishes
+it to the GitHub Container Registry at `ghcr.io/gtonic/nfl_mcp`. Pull requests
+build the image to validate the Dockerfile without publishing.
 
 #### Using Taskfile
 ```bash
