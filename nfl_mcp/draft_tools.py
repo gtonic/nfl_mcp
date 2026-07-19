@@ -524,18 +524,26 @@ def _starting_lineup_value(players: List[Dict], reqs: Dict[str, int]) -> float:
     return round(total, 1)
 
 
-def _grade_from_rank(rank: int, num_teams: int) -> str:
-    """Letter grade from a team's value-rank (1 = best) among the league."""
-    if num_teams <= 1:
+def _grade_from_value(my_value: float, field_values: List[float]) -> str:
+    """Letter grade from where a team's starter value sits in the field's range.
+
+    Distance-based (not ordinal rank): when the field is tightly bunched, being a
+    hair behind shouldn't crater your grade. Grades on the fraction of the
+    realized value spread captured (0 = worst roster, 1 = best roster).
+    """
+    if not field_values:
         return "A"
-    pct = (num_teams - rank) / (num_teams - 1)  # 1.0 best .. 0.0 worst
-    if pct >= 0.85:
+    best, worst = max(field_values), min(field_values)
+    if best <= worst:
         return "A"
-    if pct >= 0.65:
+    pct = (my_value - worst) / (best - worst)
+    if pct >= 0.80:
+        return "A"
+    if pct >= 0.55:
         return "B"
-    if pct >= 0.40:
+    if pct >= 0.30:
         return "C"
-    if pct >= 0.20:
+    if pct >= 0.12:
         return "D"
     return "F"
 
@@ -591,15 +599,21 @@ def _simulate_one(
 
     starters_filled = all(counts[my_slot].get(pos, 0) >= need for pos, need in reqs.items() if pos != "FLEX")
 
+    field_vals = list(starter_vbd.values())
+    best = max(field_vals)
+    my_val = starter_vbd[my_slot]
+    gap_to_best_pct = round((best - my_val) / best * 100, 1) if best else 0.0
+
     return {
         "my_team": rosters[my_slot],
         "my_position_counts": counts[my_slot],
-        "my_starter_vbd": starter_vbd[my_slot],
+        "my_starter_vbd": my_val,
         "my_total_vbd": team_vbd[my_slot],
         "my_total_value": round(sum((r.get("value") or 0) for r in rosters[my_slot]), 0),
         "starters_filled": starters_filled,
         "my_value_rank": my_rank,
-        "grade": _grade_from_rank(my_rank, num_teams),
+        "gap_to_best_pct": gap_to_best_pct,
+        "grade": _grade_from_value(my_val, field_vals),
         "standings": [
             {"slot": s, "starter_vbd": v, "total_vbd": team_vbd[s], "is_me": s == my_slot}
             for s, v in standings
@@ -715,7 +729,8 @@ async def simulate_draft(
     else:
         result["message"] = (
             f"Mock from slot {my_slot}: grade {sample['grade']} "
-            f"(value-rank {sample['my_value_rank']}/{num_teams}), "
+            f"(value-rank {sample['my_value_rank']}/{num_teams}, "
+            f"{sample['gap_to_best_pct']}% behind best), "
             f"starters {'filled' if sample['starters_filled'] else 'INCOMPLETE'}"
         )
 
