@@ -10,6 +10,7 @@ Extracted from server.py as part of Fix #3 (extract health endpoint).
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -24,8 +25,6 @@ def _get_version() -> str:
         import tomli as tomllib
 
     # Walk up to find pyproject.toml from this module's location
-    from pathlib import Path
-
     here = Path(__file__).resolve()
     for parent in [here, *here.parents]:
         candidate = parent / "pyproject.toml"

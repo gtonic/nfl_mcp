@@ -191,7 +191,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
     
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 11
+    CURRENT_SCHEMA_VERSION = 12
     
     def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
         """
@@ -241,6 +241,7 @@ class NFLDatabase:
             9: self._migration_v9_injuries,
             10: self._migration_v10_defense_rankings,
             11: self._migration_v11_injuries_v2,
+            12: self._migration_v12_player_values,
         }
         
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -587,8 +588,44 @@ class NFLDatabase:
             """
         )
         conn.execute(
-            """CREATE INDEX IF NOT EXISTS idx_injury_history_player 
+            """CREATE INDEX IF NOT EXISTS idx_injury_history_player
                ON injury_history(player_id, recorded_at DESC)"""
+        )
+
+    def _migration_v12_player_values(self, conn: sqlite3.Connection) -> None:
+        """Migration v12: Consensus player market values (FantasyCalc) for trades & drafts.
+
+        Stores format-aware player values keyed by (format_key, player_id) where
+        player_id is the Sleeper player id so roster/draft data can be joined directly.
+        format_key encodes scoring/roster settings so multiple league formats coexist.
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_values (
+                format_key TEXT NOT NULL,
+                player_id TEXT NOT NULL,
+                name TEXT,
+                position TEXT,
+                team TEXT,
+                value INTEGER,
+                redraft_value INTEGER,
+                overall_rank INTEGER,
+                position_rank INTEGER,
+                tier INTEGER,
+                trend_30day INTEGER,
+                source TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(format_key, player_id)
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_player_values_rank
+               ON player_values(format_key, overall_rank ASC)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_player_values_pos
+               ON player_values(format_key, position, position_rank ASC)"""
         )
 
     @contextmanager
@@ -1551,7 +1588,140 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"get_matchup_difficulty failed: {e}")
             return None
-    
+
+    # ------------------------------------------------------------------
+    # Player market values (FantasyCalc) - powers trades & draft board
+    # ------------------------------------------------------------------
+    def upsert_player_values(self, values: List[Dict], format_key: str) -> int:
+        """Insert or update consensus player market values for a league format.
+
+        Args:
+            values: List of dicts with keys player_id, name, position, team,
+                    value, redraft_value, overall_rank, position_rank, tier,
+                    trend_30day, source
+            format_key: Encoded league format (see player_values.format_key)
+
+        Returns:
+            Number of rows inserted/updated
+        """
+        if not values or not format_key:
+            return 0
+
+        try:
+            now = datetime.now(UTC).isoformat()
+            processed = 0
+            with self._pool.get_connection() as conn:
+                for v in values:
+                    player_id = v.get("player_id")
+                    if not player_id:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO player_values
+                            (format_key, player_id, name, position, team, value,
+                             redraft_value, overall_rank, position_rank, tier,
+                             trend_30day, source, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(format_key, player_id) DO UPDATE SET
+                            name=excluded.name,
+                            position=excluded.position,
+                            team=excluded.team,
+                            value=excluded.value,
+                            redraft_value=excluded.redraft_value,
+                            overall_rank=excluded.overall_rank,
+                            position_rank=excluded.position_rank,
+                            tier=excluded.tier,
+                            trend_30day=excluded.trend_30day,
+                            source=excluded.source,
+                            updated_at=excluded.updated_at
+                        """,
+                        (
+                            format_key, str(player_id), v.get("name"), v.get("position"),
+                            v.get("team"), v.get("value"), v.get("redraft_value"),
+                            v.get("overall_rank"), v.get("position_rank"), v.get("tier"),
+                            v.get("trend_30day"), v.get("source", "fantasycalc"), now,
+                        ),
+                    )
+                    processed += 1
+                conn.commit()
+                return processed
+        except Exception as e:
+            logger.error(f"upsert_player_values failed: {e}")
+            return 0
+
+    def get_player_value(self, player_id: str, format_key: str) -> Optional[Dict]:
+        """Get the cached market value for a single player in a given format."""
+        if not player_id or not format_key:
+            return None
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT * FROM player_values WHERE format_key=? AND player_id=?",
+                    (format_key, str(player_id)),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.debug(f"get_player_value failed: {e}")
+            return None
+
+    def get_player_values(
+        self,
+        format_key: str,
+        position: Optional[str] = None,
+        limit: Optional[int] = None,
+        max_age_hours: Optional[int] = None,
+    ) -> List[Dict]:
+        """Get cached player values for a format, ordered by overall rank (best first).
+
+        Args:
+            format_key: Encoded league format
+            position: Optional position filter (QB, RB, WR, TE, ...)
+            limit: Optional max rows
+            max_age_hours: If set, only return rows fresher than this
+        """
+        if not format_key:
+            return []
+        try:
+            params: List = [format_key]
+            where = "format_key=?"
+            if position:
+                where += " AND position=?"
+                params.append(position.upper())
+            if max_age_hours is not None:
+                cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
+                where += " AND updated_at >= ?"
+                params.append(cutoff)
+            sql = (
+                f"SELECT * FROM player_values WHERE {where} "
+                "ORDER BY overall_rank ASC"
+            )
+            if limit:
+                sql += " LIMIT ?"
+                params.append(int(limit))
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(sql, tuple(params))
+                return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_player_values failed: {e}")
+            return []
+
+    def get_player_values_last_updated(self, format_key: str) -> Optional[str]:
+        """Return the newest updated_at timestamp for a format (or None)."""
+        if not format_key:
+            return None
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT MAX(updated_at) FROM player_values WHERE format_key=?",
+                    (format_key,),
+                )
+                row = cur.fetchone()
+                return row[0] if row and row[0] else None
+        except Exception as e:
+            logger.debug(f"get_player_values_last_updated failed: {e}")
+            return None
+
     # Async Database Operations
     # These methods provide async alternatives to the main database operations
     

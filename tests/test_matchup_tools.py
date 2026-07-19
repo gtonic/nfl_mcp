@@ -102,6 +102,16 @@ class TestDefenseRankingsAnalyzer:
         assert all("team" in r and "rank" in r for r in rankings)
         assert all(r["is_fallback"] is True for r in rankings)
     
+    def test_matchup_difficulty_fallback_is_honest(self):
+        """Fallback (placeholder) rankings must NOT emit a confident smash/avoid call."""
+        analyzer = DefenseRankingsAnalyzer(db=None)
+        fallback = {"WR": analyzer._get_fallback_rankings("WR")}
+        result = analyzer.get_matchup_difficulty("WR", "KC", fallback)
+        assert result["is_fallback"] is True
+        assert result["matchup_tier"] == "unknown"
+        assert "SMASH" not in result["recommendation"].upper()
+        assert "no live" in result["recommendation"].lower()
+
     def test_get_matchup_difficulty_valid(self):
         """Test matchup difficulty with valid input."""
         analyzer = DefenseRankingsAnalyzer(db=None)

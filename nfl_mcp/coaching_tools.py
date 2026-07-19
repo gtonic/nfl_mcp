@@ -75,13 +75,17 @@ def _classify_coach_role(role_name: str) -> Dict[str, Any]:
         return {"category": "coordinator", "side": "defense", "is_coordinator": True}
     elif 'special teams coordinator' in role_lower:
         return {"category": "coordinator", "side": "special_teams", "is_coordinator": True}
-    elif 'quarterback' in role_lower or 'qb' in role_lower:
+    # Tokenize so 2-letter abbreviations (qb/wr/te/rb/lb) match whole words only
+    # and don't false-positive on substrings like "special TEams" -> "te".
+    words = set(role_lower.replace('-', ' ').split())
+    if 'quarterback' in role_lower or 'qb' in words:
         return {"category": "position_coach", "side": "offense", "is_coordinator": False}
-    elif any(pos in role_lower for pos in ['receiver', 'wr', 'tight end', 'te']):
+    elif 'receiver' in role_lower or 'tight end' in role_lower or 'wr' in words or 'te' in words:
         return {"category": "position_coach", "side": "offense", "is_coordinator": False}
-    elif any(pos in role_lower for pos in ['running back', 'rb', 'offensive line', 'o-line']):
+    elif 'running back' in role_lower or 'offensive line' in role_lower or 'rb' in words:
         return {"category": "position_coach", "side": "offense", "is_coordinator": False}
-    elif any(pos in role_lower for pos in ['linebacker', 'lb', 'defensive line', 'd-line', 'secondary', 'corner', 'safety']):
+    elif (any(pos in role_lower for pos in ['linebacker', 'defensive line', 'secondary', 'corner', 'safety'])
+          or 'lb' in words):
         return {"category": "position_coach", "side": "defense", "is_coordinator": False}
     else:
         return {"category": "assistant", "side": "unknown", "is_coordinator": False}

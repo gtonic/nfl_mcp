@@ -43,8 +43,8 @@ class TestGetNflNews:
             result = await get_nfl_news(limit=1)
             
             assert result["success"] is True
-            assert result["data"]["total_articles"] == 1
-            assert result["data"]["articles"][0]["headline"] == "Test Article"
+            assert result["total_articles"] == 1
+            assert result["articles"][0]["headline"] == "Test Article"
 
     @pytest.mark.asyncio
     async def test_get_nfl_news_default_limit(self):
@@ -102,8 +102,8 @@ class TestGetTeams:
             result = await get_teams()
             
             assert result["success"] is True
-            assert result["data"]["total_teams"] == 1
-            assert result["data"]["teams"][0]["abbreviation"] == "KC"
+            assert result["total_teams"] == 1
+            assert result["teams"][0]["abbreviation"] == "KC"
 
 
 class TestGetDepthChart:
@@ -133,7 +133,7 @@ class TestGetDepthChart:
             result = await get_depth_chart("KC")
             
             assert result["success"] is True
-            assert result["data"]["team_id"] == "KC"
+            assert result["team_id"] == "KC"
 
     @pytest.mark.asyncio
     async def test_get_depth_chart_invalid_team(self):
@@ -175,7 +175,7 @@ class TestGetTeamInjuries:
             result = await get_team_injuries("KC")
             
             assert result["success"] is True
-            assert result["data"]["count"] == 1
+            assert result["count"] == 1
 
     @pytest.mark.asyncio
     async def test_get_team_injuries_404(self):
@@ -197,7 +197,7 @@ class TestGetTeamInjuries:
             result = await get_team_injuries("INVALID")
             
             assert result["success"] is True  # Handled gracefully
-            assert result["data"]["count"] == 0
+            assert result["count"] == 0
 
     @pytest.mark.asyncio
     async def test_get_team_injuries_invalid_team(self):
@@ -238,8 +238,8 @@ class TestGetTeamPlayerStats:
             result = await get_team_player_stats("KC")
             
             assert result["success"] is True
-            assert result["data"]["count"] == 1
-            assert result["data"]["season"] == 2026  # Default season
+            assert result["count"] == 1
+            assert result["season"] == 2026  # Default season
 
     @pytest.mark.asyncio
     async def test_get_team_player_stats_with_season(self):
@@ -257,7 +257,7 @@ class TestGetTeamPlayerStats:
             result = await get_team_player_stats("KC", season=2025)
             
             assert result["success"] is True
-            assert result["data"]["season"] == 2025
+            assert result["season"] == 2025
 
 
 class TestGetNflStandings:
@@ -293,9 +293,9 @@ class TestGetNflStandings:
             result = await get_nfl_standings()
             
             assert result["success"] is True
-            assert result["data"]["count"] == 1
-            assert result["data"]["standings"][0]["wins"] == 14
-            assert result["data"]["standings"][0]["losses"] == 3
+            assert result["count"] == 1
+            assert result["standings"][0]["wins"] == 14
+            assert result["standings"][0]["losses"] == 3
 
     @pytest.mark.asyncio
     async def test_get_nfl_standings_default_season(self):
@@ -313,7 +313,7 @@ class TestGetNflStandings:
             result = await get_nfl_standings()
             
             assert result["success"] is True
-            assert result["data"]["season"] == 2026
+            assert result["season"] == 2026
 
 
 class TestGetTeamSchedule:
@@ -358,8 +358,8 @@ class TestGetTeamSchedule:
             result = await get_team_schedule("KC")
             
             assert result["success"] is True
-            assert result["data"]["count"] == 1
-            assert result["data"]["team_id"] == "KC"
+            assert result["count"] == 1
+            assert result["team_id"] == "KC"
 
     @pytest.mark.asyncio
     async def test_get_team_schedule_invalid_team(self):
@@ -409,7 +409,7 @@ class TestGetLeagueLeaders:
             
             # Should succeed (even if no leaders found)
             assert result["success"] is True
-            assert result["data"]["season"] == 2026
+            assert result["season"] == 2026
 
 
 class TestGetCurrentSeasonAndWeek:
@@ -429,7 +429,7 @@ class TestGetCurrentSeasonAndWeek:
         async def mock_get_nfl_state():
             return mock_state
         
-        with patch('nfl_mcp.nfl_tools.get_nfl_state', side_effect=mock_get_nfl_state):
+        with patch('nfl_mcp.sleeper_tools.get_nfl_state', side_effect=mock_get_nfl_state):
             season, week = await get_current_season_and_week()
             
             assert season == 2026
@@ -441,7 +441,7 @@ class TestGetCurrentSeasonAndWeek:
         async def mock_get_nfl_state():
             raise Exception("API error")
         
-        with patch('nfl_mcp.nfl_tools.get_nfl_state', side_effect=mock_get_nfl_state):
+        with patch('nfl_mcp.sleeper_tools.get_nfl_state', side_effect=mock_get_nfl_state):
             season, week = await get_current_season_and_week()
             
             # Should return current year and week 0

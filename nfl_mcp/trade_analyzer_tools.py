@@ -12,14 +12,43 @@ import logging
 
 from .sleeper_tools import get_rosters, get_league, get_trending_players
 from .athlete_tools import lookup_athlete
+from .player_values import get_values_service
 from .errors import create_success_response, create_error_response, ErrorType
 
 logger = logging.getLogger(__name__)
 
+# Replacement-level value assigned to players missing from the consensus value
+# list (deep bench / K / DST). Low but non-zero so they still count for depth.
+ESTIMATED_REPLACEMENT_VALUE = 150.0
+
+
+def league_format_from_settings(league: Optional[Dict]) -> Dict:
+    """Derive value format (ppr, superflex, teams, dynasty) from a Sleeper league."""
+    league = league or {}
+    scoring = league.get("scoring_settings") or {}
+    ppr = scoring.get("rec", 0) or 0
+    try:
+        ppr = float(ppr)
+    except (TypeError, ValueError):
+        ppr = 0.0
+    roster_positions = league.get("roster_positions") or []
+    qb_slots = sum(1 for p in roster_positions if p == "QB")
+    superflex = ("SUPER_FLEX" in roster_positions) or ("QB" in [p for p in roster_positions if p == "QB"] and qb_slots >= 2)
+    num_teams = league.get("total_rosters") or len(league.get("rosters", []) or []) or 12
+    # Sleeper league settings.type: 0=redraft, 1=keeper, 2=dynasty
+    dynasty = (league.get("settings", {}) or {}).get("type") == 2
+    return {
+        "ppr": ppr,
+        "num_qbs": 2 if superflex else 1,
+        "num_teams": int(num_teams),
+        "is_dynasty": bool(dynasty),
+        "superflex": bool(superflex),
+    }
+
 
 class TradeAnalyzer:
     """Analyzer for fantasy football trade evaluation with fairness scoring."""
-    
+
     def __init__(self):
         self.position_tiers = {
             "QB": {"tier1": 5, "tier2": 10, "tier3": 20},
@@ -29,71 +58,54 @@ class TradeAnalyzer:
             "K": {"tier1": 5, "tier2": 10, "tier3": 15},
             "DEF": {"tier1": 5, "tier2": 10, "tier3": 15}
         }
-    
-    def _calculate_player_value(self, player: Dict, nfl_db, trending_data: Optional[Dict] = None) -> float:
+
+    def _calculate_player_value(
+        self, player: Dict, service, values_index: Dict
+    ) -> Tuple[float, str, Optional[Dict]]:
         """
-        Calculate player value based on available data.
-        
+        Calculate a player's trade value from real market-consensus values.
+
+        Uses FantasyCalc market value (format-aware) as the base — the honest
+        measure of what a player is worth in a trade — then applies small
+        short-term modifiers (practice status, usage trend) that the season-long
+        market value cannot capture. Falls back to a replacement-level value when
+        the player is outside the consensus list.
+
         Args:
             player: Player data dictionary with enriched fields
-            nfl_db: Database instance for player lookups
-            trending_data: Optional trending players data
-            
+            service: PlayerValuesService (for name/id lookup)
+            values_index: Indexed values dict from service.get_values()
+
         Returns:
-            float: Player value score (0-100)
+            (value, value_source, market_entry)
         """
-        value = 50.0  # Base value
-        
         position = player.get("position", "")
         player_id = player.get("player_id", "")
-        
-        # Adjust for position scarcity
-        position_multipliers = {
-            "QB": 1.0,
-            "RB": 1.3,  # RBs more valuable due to scarcity
-            "WR": 1.1,
-            "TE": 1.2,
-            "K": 0.7,
-            "DEF": 0.8
-        }
-        value *= position_multipliers.get(position, 1.0)
-        
-        # Check trending status
-        if trending_data and player_id:
-            trending_players = trending_data.get("trending_players", [])
-            for trending in trending_players:
-                if trending.get("player_id") == player_id:
-                    # Trending status means higher value
-                    add_count = trending.get("count", 0)
-                    value += min(add_count * 2, 20)  # Cap at +20 for trending
-                    break
-        
-        # Check for advanced enrichment data
-        if player.get("practice_status"):
-            status = player.get("practice_status")
-            if status == "DNP":
-                value *= 0.7  # Significant penalty for not practicing
-            elif status == "LP":
-                value *= 0.85  # Moderate penalty
-            elif status in ["FP", "Full"]:
-                value *= 1.05  # Slight bonus for full practice
-        
-        # Usage trends
+        name = player.get("full_name") or player.get("name")
+
+        market = service.lookup(values_index, player_id=player_id, name=name, position=position)
+        if market and market.get("value") is not None:
+            value = float(market["value"])
+            value_source = "fantasycalc"
+        else:
+            value = ESTIMATED_REPLACEMENT_VALUE
+            value_source = "estimated"
+
+        # Short-term modifiers on top of season-long market value.
+        multiplier = 1.0
+        status = player.get("practice_status")
+        if status == "DNP":
+            multiplier *= 0.85  # not practicing -> injury risk
+        elif status == "LP":
+            multiplier *= 0.95
+
         usage_trend = player.get("usage_trend_overall")
         if usage_trend == "up":
-            value *= 1.15
+            multiplier *= 1.05
         elif usage_trend == "down":
-            value *= 0.85
-        
-        # Snap percentage consideration
-        snap_pct = player.get("snap_pct")
-        if snap_pct:
-            if snap_pct > 80:
-                value *= 1.1
-            elif snap_pct < 30:
-                value *= 0.8
-        
-        return min(max(value, 0), 100)  # Clamp between 0-100
+            multiplier *= 0.95
+
+        return max(value * multiplier, 0.0), value_source, market
     
     def _calculate_positional_needs(self, roster: Dict) -> Dict[str, int]:
         """
@@ -182,23 +194,24 @@ class TradeAnalyzer:
         Returns:
             Tuple of (recommendation, fairness_score, details)
         """
-        team1_value = sum(p.get("calculated_value", 50) for p in team1_gives)
-        team2_value = sum(p.get("calculated_value", 50) for p in team2_gives)
-        
-        # Adjust for positional needs
-        team1_need_adjustment = 0
-        team2_need_adjustment = 0
-        
-        for player in team2_gives:  # What team 1 receives
-            pos = player.get("position", "")
-            need = team1_needs.get(pos, 5)
-            team1_need_adjustment += need * 2  # Each need point worth 2 value points
-        
-        for player in team1_gives:  # What team 2 receives
-            pos = player.get("position", "")
-            need = team2_needs.get(pos, 5)
-            team2_need_adjustment += need * 2
-        
+        team1_value = sum(p.get("calculated_value", ESTIMATED_REPLACEMENT_VALUE) for p in team1_gives)
+        team2_value = sum(p.get("calculated_value", ESTIMATED_REPLACEMENT_VALUE) for p in team2_gives)
+
+        # Positional fit: receiving a player at a position of need is worth more
+        # to that team. Scale proportionally to the player's value (up to +20% at
+        # maximum need) so it stays meaningful next to real market values.
+        def _fit_bonus(received: List[Dict], needs: Dict[str, int]) -> float:
+            bonus = 0.0
+            for player in received:
+                pos = player.get("position", "")
+                need = needs.get(pos, 5)
+                val = player.get("calculated_value", ESTIMATED_REPLACEMENT_VALUE)
+                bonus += val * (need / 10.0) * 0.20
+            return bonus
+
+        team1_need_adjustment = _fit_bonus(team2_gives, team1_needs)  # team1 receives team2_gives
+        team2_need_adjustment = _fit_bonus(team1_gives, team2_needs)  # team2 receives team1_gives
+
         adjusted_team1_receives = team2_value + team1_need_adjustment
         adjusted_team2_receives = team1_value + team2_need_adjustment
         
@@ -312,49 +325,71 @@ async def analyze_trade(
                 {"recommendation": None, "fairness_score": 0}
             )
         
-        # Get trending data if requested
-        trending_data = None
+        # Determine the league's value format (PPR / superflex / size / dynasty)
+        # so consensus values match how this league actually plays.
+        league_fmt = {"ppr": 0.0, "num_qbs": 1, "num_teams": len(rosters) or 12,
+                      "is_dynasty": False, "superflex": False}
+        try:
+            league_result = await get_league(league_id)
+            if league_result.get("success") and league_result.get("league"):
+                league_fmt = league_format_from_settings(league_result["league"])
+        except Exception as e:
+            logger.warning(f"Could not fetch league format, using defaults: {e}")
+
+        # Load real market-consensus values for this format.
+        service = get_values_service(nfl_db)
+        values_index = await service.get_values(
+            ppr=league_fmt["ppr"], num_qbs=league_fmt["num_qbs"],
+            num_teams=league_fmt["num_teams"], is_dynasty=league_fmt["is_dynasty"],
+        )
+        values_stale = values_index.get("stale", False)
+
+        # Optional trending context (informational only; not used for value).
+        trending_ids = set()
         if include_trending:
             try:
                 trending_result = await get_trending_players(nfl_db, "add", 24, 50)
                 if trending_result.get("success"):
-                    trending_data = trending_result
+                    for tp in trending_result.get("trending_players", []):
+                        if tp.get("player_id"):
+                            trending_ids.add(str(tp["player_id"]))
             except Exception as e:
                 logger.warning(f"Could not fetch trending data: {e}")
-        
+
         # Initialize analyzer
         analyzer = TradeAnalyzer()
-        
+
         # Calculate positional needs
         team1_needs = analyzer._calculate_positional_needs(team1_roster)
         team2_needs = analyzer._calculate_positional_needs(team2_roster)
-        
+
         # Enrich and calculate values for players being traded
         team1_gives_enriched = []
         team2_gives_enriched = []
-        
+
         team1_players = {p.get("player_id"): p for p in team1_roster.get("players_enriched", [])}
         team2_players = {p.get("player_id"): p for p in team2_roster.get("players_enriched", [])}
-        
-        for player_id in team1_gives:
-            player = team1_players.get(player_id)
-            if not player:
-                logger.warning(f"Player {player_id} not found in team1 roster")
-                player = {"player_id": player_id, "full_name": f"Unknown ({player_id})", "position": ""}
-            
-            value = analyzer._calculate_player_value(player, nfl_db, trending_data)
-            player["calculated_value"] = value
-            team1_gives_enriched.append(player)
-        
-        for player_id in team2_gives:
-            player = team2_players.get(player_id)
-            if not player:
-                logger.warning(f"Player {player_id} not found in team2 roster")
-                player = {"player_id": player_id, "full_name": f"Unknown ({player_id})", "position": ""}
-            
-            value = analyzer._calculate_player_value(player, nfl_db, trending_data)
-            player["calculated_value"] = value
-            team2_gives_enriched.append(player)
+
+        def _enrich_gives(give_ids, roster_players):
+            out = []
+            for player_id in give_ids:
+                player = roster_players.get(player_id)
+                if not player:
+                    logger.warning(f"Player {player_id} not found in roster")
+                    player = {"player_id": player_id, "full_name": f"Unknown ({player_id})", "position": ""}
+                value, value_source, market = analyzer._calculate_player_value(
+                    player, service, values_index
+                )
+                player["calculated_value"] = round(value, 1)
+                player["value_source"] = value_source
+                player["overall_rank"] = (market or {}).get("overall_rank")
+                player["position_rank"] = (market or {}).get("position_rank")
+                player["is_trending"] = str(player_id) in trending_ids
+                out.append(player)
+            return out
+
+        team1_gives_enriched = _enrich_gives(team1_gives, team1_players)
+        team2_gives_enriched = _enrich_gives(team2_gives, team2_players)
         
         # Evaluate trade fairness
         recommendation, fairness_score, trade_details = analyzer._evaluate_trade_fairness(
@@ -374,8 +409,19 @@ async def analyze_trade(
         
         # Check for lopsided trades
         if fairness_score < 60:
-            warnings.append("This trade appears significantly lopsided")
-        
+            winner = "Team 1" if trade_details["team1_receives_adjusted_value"] > trade_details["team2_receives_adjusted_value"] else "Team 2"
+            warnings.append(f"This trade appears significantly lopsided (favors {winner})")
+
+        # Transparency: values that fell back to a replacement-level estimate.
+        estimated = [p.get("full_name", "Unknown") for p in team1_gives_enriched + team2_gives_enriched if p.get("value_source") == "estimated"]
+        if estimated:
+            warnings.append(
+                "No consensus market value for: " + ", ".join(estimated)
+                + " (deep bench / K / DST) - values estimated at replacement level"
+            )
+        if values_stale:
+            warnings.append("⚠️ Using cached (stale) market values - live value API unavailable")
+
         # Check if trading away too many at one position
         team1_gives_positions = [p.get("position") for p in team1_gives_enriched]
         team2_gives_positions = [p.get("position") for p in team2_gives_enriched]
@@ -389,19 +435,39 @@ async def analyze_trade(
             if team2_pos_count >= 2 and pos in ["RB", "WR"]:
                 warnings.append(f"Team 2 is giving up {team2_pos_count} {pos}s - may create depth issues")
         
+        def _fmt(p):
+            return {
+                "player_id": p["player_id"],
+                "name": p.get("full_name"),
+                "position": p.get("position"),
+                "value": p.get("calculated_value"),
+                "value_source": p.get("value_source"),
+                "overall_rank": p.get("overall_rank"),
+                "position_rank": p.get("position_rank"),
+                "is_trending": p.get("is_trending", False),
+            }
+
         return create_success_response({
             "recommendation": recommendation,
             "fairness_score": round(fairness_score, 2),
+            "value_format": {
+                "scoring": ("ppr" if league_fmt["ppr"] >= 1 else "half-ppr" if league_fmt["ppr"] > 0 else "standard"),
+                "superflex": league_fmt.get("superflex", False),
+                "num_teams": league_fmt["num_teams"],
+                "dynasty": league_fmt["is_dynasty"],
+            },
+            "value_source": values_index.get("source"),
+            "values_stale": values_stale,
             "team1_analysis": {
                 "roster_id": team1_roster_id,
-                "gives": [{"player_id": p["player_id"], "name": p.get("full_name"), "position": p.get("position"), "value": p.get("calculated_value")} for p in team1_gives_enriched],
-                "receives": [{"player_id": p["player_id"], "name": p.get("full_name"), "position": p.get("position"), "value": p.get("calculated_value")} for p in team2_gives_enriched],
+                "gives": [_fmt(p) for p in team1_gives_enriched],
+                "receives": [_fmt(p) for p in team2_gives_enriched],
                 "positional_needs": team1_needs
             },
             "team2_analysis": {
                 "roster_id": team2_roster_id,
-                "gives": [{"player_id": p["player_id"], "name": p.get("full_name"), "position": p.get("position"), "value": p.get("calculated_value")} for p in team2_gives_enriched],
-                "receives": [{"player_id": p["player_id"], "name": p.get("full_name"), "position": p.get("position"), "value": p.get("calculated_value")} for p in team1_gives_enriched],
+                "gives": [_fmt(p) for p in team2_gives_enriched],
+                "receives": [_fmt(p) for p in team1_gives_enriched],
                 "positional_needs": team2_needs
             },
             "trade_details": trade_details,

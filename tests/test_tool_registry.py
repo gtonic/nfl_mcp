@@ -133,7 +133,7 @@ async def test_cbs_tools():
 @pytest.mark.asyncio
 async def test_athlete_tools():
     """Test athlete tools."""
-    result = await search_athletes(name="Smith", limit=5)
+    result = search_athletes(name="Smith", limit=5)
     assert isinstance(result, dict)
     assert 'athletes' in result or 'success' in result or 'error' in result
 

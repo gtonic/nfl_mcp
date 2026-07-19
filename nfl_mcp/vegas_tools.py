@@ -509,6 +509,10 @@ async def get_vegas_lines(
     high_scoring = [g for g in games if g.get("game_environment", {}).get("tier") == "high_scoring"]
     
     summary = []
+    if not games and not analyzer.api_key:
+        summary.append(
+            "⚠️ No Vegas lines available — set ODDS_API_KEY to enable live spreads/totals"
+        )
     if shootout_games:
         matchups = [f"{g['away_team']}@{g['home_team']}" for g in shootout_games[:3]]
         summary.append(f"🔥 SHOOTOUT ALERT: {', '.join(matchups)}")
@@ -583,7 +587,14 @@ async def get_game_environment(
     spread = result["spread"]
     
     recommendations = []
-    
+
+    # Honesty: without real lines (no ODDS_API_KEY / API down) everything is a
+    # neutral placeholder — say so instead of implying a real read.
+    if result.get("is_fallback"):
+        recommendations.append(
+            "⚠️ No live Vegas lines (set ODDS_API_KEY) — neutral placeholder values shown"
+        )
+
     if env_tier in ["shootout", "high_scoring"]:
         recommendations.append(f"🔥 GREAT game environment (O/U {result['total']})")
     elif env_tier == "defensive_battle":

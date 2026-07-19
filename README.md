@@ -85,11 +85,16 @@ export NFL_MCP_TIMEOUT_TOTAL=45.0
 export NFL_MCP_NFL_NEWS_MAX=75
 export NFL_MCP_SERVER_VERSION="1.0.0"
 
+# External data source API keys (optional but recommended)
+export ODDS_API_KEY=your_key_here       # Enables live Vegas lines/totals (the-odds-api.com).
+                                        # Without it, Vegas tools return neutral placeholders.
+# Player values (trades + draft board) use FantasyCalc, which needs NO key.
+
 # Advanced enrichment and prefetch (optional)
 export NFL_MCP_ADVANCED_ENRICH=1        # Enable snap%, opponent, practice status, usage metrics
 export NFL_MCP_PREFETCH=1               # Enable background data prefetch
 export NFL_MCP_PREFETCH_INTERVAL=900    # Prefetch interval in seconds (default: 900 = 15 min)
-export NFL_MCP_PREFETCH_SNAPS_TTL=1800  # Snap data TTL in seconds (default: 1800 = 30 min)
+export NFL_MCP_PREFETCH_SNAPS_TTL=900   # Snap data TTL in seconds (default: 900 = 15 min)
 export NFL_MCP_PREFETCH_SCHEDULE_WEEKS=4 # Number of weeks to prefetch schedules for (default: 4)
 
 # Logging configuration (optional)
@@ -137,7 +142,7 @@ docker run --rm -p 9000:9000 \
 
 ### Quick Overview
 
-The NFL MCP Server provides **30+ MCP tools** organized into these categories:
+The NFL MCP Server provides **60+ MCP tools** organized into these categories:
 
 #### 🏈 NFL Information (9 tools)
 - `get_nfl_news` - Latest NFL news from ESPN
@@ -181,6 +186,30 @@ The NFL MCP Server provides **30+ MCP tools** organized into these categories:
 - **Matchup Analysis**: `get_defense_rankings`, `get_matchup_difficulty`, `analyze_roster_matchups`
 - **Start/Sit Recommendations**: `get_start_sit_recommendation`, `get_roster_recommendations`, `compare_players_for_slot`, `analyze_full_lineup`
 - **Vegas Lines**: `get_vegas_lines`, `get_game_environment`, `analyze_roster_vegas`, `get_stack_opportunities`
+
+#### 💰 Player Values & Draft Assistant (4 tools)
+Real market-consensus values (FantasyCalc, no API key) power trades and drafting:
+- `get_player_values` - Consensus market values (format-aware: PPR, superflex, teams, dynasty)
+- `get_player_value` - Single-player value by Sleeper id or name
+- `get_draft_board` - Tiered board ranked by **VBD** (value over positional replacement)
+- `recommend_draft_pick` - Live Sleeper-draft pick recommendations with roster-need weighting, value-cliff and positional-run detection
+
+The trade analyzer (`analyze_trade`) is built on the same real values, so it no longer
+treats every player as equal — it derives the league's format from Sleeper settings and
+flags lopsided deals with market-value evidence.
+
+**Draft-day flow:**
+```python
+# Before the draft: study the board
+board = await client.call_tool("get_draft_board", {"scoring": "ppr", "num_teams": 12})
+
+# On the clock: get the best pick for YOUR roster
+pick = await client.call_tool("recommend_draft_pick", {
+    "draft_id": "your_sleeper_draft_id",  # from get_league_drafts
+    "my_slot": 3                            # your draft position
+})
+print(pick.data["top_pick"], pick.data["value_cliffs"])
+```
 
 #### ❤️ Health Endpoint (REST)
 - **GET** `/health` - Server status monitoring

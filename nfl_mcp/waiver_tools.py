@@ -77,8 +77,10 @@ class WaiverAnalyzer:
         """Track re-entry status for players (dropped then re-added)."""
         player_activity = defaultdict(list)  # player_id -> list of (action, timestamp, roster_id)
         
-        # Process all transactions chronologically
-        sorted_transactions = sorted(waiver_transactions, key=lambda x: x.get('created', 0))
+        # Process all transactions chronologically.
+        # Note: `created` may be present-but-None, so coerce to 0 (not just a
+        # missing-key default) to avoid None<None comparison errors.
+        sorted_transactions = sorted(waiver_transactions, key=lambda x: x.get('created') or 0)
         
         for transaction in sorted_transactions:
             timestamp = transaction.get('created')
@@ -118,8 +120,13 @@ class WaiverAnalyzer:
                 re_entries = []
                 
                 for drop in drops:
-                    # Find adds after this drop
-                    subsequent_adds = [a for a in adds if a['timestamp'] > drop['timestamp']]
+                    # Find adds after this drop (None-safe: skip if either
+                    # timestamp is missing rather than raising on None<None).
+                    subsequent_adds = [
+                        a for a in adds
+                        if a['timestamp'] is not None and drop['timestamp'] is not None
+                        and a['timestamp'] > drop['timestamp']
+                    ]
                     
                     for add in subsequent_adds:
                         re_entries.append({
@@ -131,15 +138,17 @@ class WaiverAnalyzer:
                             'same_roster': drop['roster_id'] == add['roster_id']
                         })
                 
-                if re_entries:
-                    re_entry_analysis[player_id] = {
-                        'total_activities': len(activities),
-                        'drops_count': len(drops),
-                        'adds_count': len(adds),
-                        're_entries': re_entries,
-                        'is_volatile': len(re_entries) > 1,  # More than one re-entry indicates volatility
-                        'latest_status': activities[-1]['action'] if activities else None
-                    }
+                # Record any player with both an add and a drop (churn). re_entries
+                # may be empty (added then dropped, never re-added); volatility
+                # still requires more than one actual re-entry.
+                re_entry_analysis[player_id] = {
+                    'total_activities': len(activities),
+                    'drops_count': len(drops),
+                    'adds_count': len(adds),
+                    're_entries': re_entries,
+                    'is_volatile': len(re_entries) > 1,  # More than one re-entry indicates volatility
+                    'latest_status': activities[-1]['action'] if activities else None
+                }
         
         return re_entry_analysis
 
