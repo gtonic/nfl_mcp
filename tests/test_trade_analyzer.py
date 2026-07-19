@@ -6,6 +6,17 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from nfl_mcp import trade_analyzer_tools
+from nfl_mcp.trade_analyzer_tools import ESTIMATED_REPLACEMENT_VALUE
+
+
+class _FakeService:
+    """Minimal PlayerValuesService stand-in (id-based lookup)."""
+
+    def __init__(self, by_id=None):
+        self._by_id = {str(k): v for k, v in (by_id or {}).items()}
+
+    def lookup(self, indexed, player_id=None, name=None, position=None):
+        return self._by_id.get(str(player_id))
 
 
 class TestTradeAnalyzerModule:
@@ -33,18 +44,17 @@ class TestTradeAnalyzerModule:
             "full_name": "Test Player",
             "position": "RB"
         }
-        
-        value = analyzer._calculate_player_value(player, None, None)
-        
-        # RB has 1.3 multiplier, so base 50 * 1.3 = 65
-        assert value > 0
-        assert value <= 100
-        assert value == pytest.approx(65.0, abs=0.1)
-    
+
+        # Not in the consensus list -> replacement-level estimate.
+        value, source, market = analyzer._calculate_player_value(player, _FakeService(), {})
+        assert value == pytest.approx(ESTIMATED_REPLACEMENT_VALUE)
+        assert source == "estimated"
+
     def test_calculate_player_value_with_practice_status(self):
         """Test player value calculation with injury status."""
         analyzer = trade_analyzer_tools.TradeAnalyzer()
-        
+        svc = _FakeService({"1234": {"value": 5000}, "5678": {"value": 5000}})
+
         # Player not practicing (DNP)
         player_dnp = {
             "player_id": "1234",
@@ -52,9 +62,8 @@ class TestTradeAnalyzerModule:
             "position": "WR",
             "practice_status": "DNP"
         }
-        
-        value_dnp = analyzer._calculate_player_value(player_dnp, None, None)
-        
+        value_dnp, _, _ = analyzer._calculate_player_value(player_dnp, svc, {})
+
         # Player fully practicing
         player_full = {
             "player_id": "5678",
@@ -62,16 +71,16 @@ class TestTradeAnalyzerModule:
             "position": "WR",
             "practice_status": "Full"
         }
-        
-        value_full = analyzer._calculate_player_value(player_full, None, None)
-        
+        value_full, _, _ = analyzer._calculate_player_value(player_full, svc, {})
+
         # DNP should have significantly lower value than Full
         assert value_dnp < value_full
-    
+
     def test_calculate_player_value_with_usage_trend(self):
         """Test player value calculation with usage trends."""
         analyzer = trade_analyzer_tools.TradeAnalyzer()
-        
+        svc = _FakeService({"1234": {"value": 5000}, "5678": {"value": 5000}})
+
         # Player with upward trend
         player_up = {
             "player_id": "1234",
@@ -79,9 +88,8 @@ class TestTradeAnalyzerModule:
             "position": "RB",
             "usage_trend_overall": "up"
         }
-        
-        value_up = analyzer._calculate_player_value(player_up, None, None)
-        
+        value_up, _, _ = analyzer._calculate_player_value(player_up, svc, {})
+
         # Player with downward trend
         player_down = {
             "player_id": "5678",
@@ -89,9 +97,8 @@ class TestTradeAnalyzerModule:
             "position": "RB",
             "usage_trend_overall": "down"
         }
-        
-        value_down = analyzer._calculate_player_value(player_down, None, None)
-        
+        value_down, _, _ = analyzer._calculate_player_value(player_down, svc, {})
+
         # Upward trend should have higher value
         assert value_up > value_down
     

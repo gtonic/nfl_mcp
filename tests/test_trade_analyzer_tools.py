@@ -1,65 +1,70 @@
 """Tests for trade_analyzer_tools module."""
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
-from nfl_mcp.trade_analyzer_tools import TradeAnalyzer, analyze_trade
+from nfl_mcp.trade_analyzer_tools import (
+    TradeAnalyzer, analyze_trade, ESTIMATED_REPLACEMENT_VALUE,
+)
+
+
+class _FakeService:
+    """Minimal stand-in for PlayerValuesService (id-based lookup only)."""
+
+    def __init__(self, by_id):
+        self._by_id = {str(k): v for k, v in by_id.items()}
+
+    async def get_values(self, **kwargs):
+        return {"source": "fantasycalc", "stale": False,
+                "list": list(self._by_id.values()), "by_id": self._by_id}
+
+    def lookup(self, indexed, player_id=None, name=None, position=None):
+        return self._by_id.get(str(player_id))
 
 
 class TestTradeAnalyzer:
-    """Test TradeAnalyzer class."""
+    """Test TradeAnalyzer class (real market-value based)."""
 
     @pytest.fixture
     def analyzer(self):
         return TradeAnalyzer()
 
-    def test_calculate_player_value_base(self, analyzer):
-        """Test base player value calculation."""
+    def test_calculate_player_value_uses_market_value(self, analyzer):
+        """A player in the consensus list uses its real market value."""
+        svc = _FakeService({"1": {"value": 5000, "overall_rank": 20, "position_rank": 4}})
         player = {"position": "RB", "player_id": "1"}
-        value = analyzer._calculate_player_value(player, None)
-        assert value > 0
-        assert value <= 100
+        value, source, market = analyzer._calculate_player_value(player, svc, {})
+        assert source == "fantasycalc"
+        assert value == pytest.approx(5000)
+        assert market["overall_rank"] == 20
 
-    def test_calculate_player_value_position_multiplier(self, analyzer):
-        """Test position-based value adjustment."""
-        rb = {"position": "RB", "player_id": "1"}
-        qb = {"position": "QB", "player_id": "1"}
-        k = {"position": "K", "player_id": "1"}
-        
-        rb_value = analyzer._calculate_player_value(rb, None)
-        qb_value = analyzer._calculate_player_value(qb, None)
-        k_value = analyzer._calculate_player_value(k, None)
-        
-        # RB should be worth more than QB due to scarcity
-        assert rb_value >= qb_value
+    def test_calculate_player_value_estimated_when_missing(self, analyzer):
+        """A player outside the value list falls back to replacement level."""
+        svc = _FakeService({})
+        player = {"position": "RB", "player_id": "999"}
+        value, source, market = analyzer._calculate_player_value(player, svc, {})
+        assert source == "estimated"
+        assert value == pytest.approx(ESTIMATED_REPLACEMENT_VALUE)
+        assert market is None
 
-    def test_calculate_player_value_trending(self, analyzer):
-        """Test trending player value boost."""
-        player = {
-            "position": "RB",
-            "player_id": "1"
-        }
-        trending_data = {
-            "trending_players": [
-                {"player_id": "1", "count": 5}
-            ]
-        }
-        
-        value_with_trending = analyzer._calculate_player_value(player, None, trending_data)
-        value_without_trending = analyzer._calculate_player_value(player, None, None)
-        
-        assert value_with_trending > value_without_trending
-
-    def test_calculate_player_value_injury(self, analyzer):
-        """Test injury status affects value."""
-        healthy = {"position": "RB", "player_id": "1", "practice_status": "Full"}
+    def test_calculate_player_value_injury_modifier(self, analyzer):
+        """DNP practice status reduces value vs a healthy player."""
+        svc = _FakeService({"1": {"value": 5000}})
+        healthy = {"position": "RB", "player_id": "1"}
         dnp = {"position": "RB", "player_id": "1", "practice_status": "DNP"}
         lp = {"position": "RB", "player_id": "1", "practice_status": "LP"}
-        
-        healthy_value = analyzer._calculate_player_value(healthy, None)
-        dnp_value = analyzer._calculate_player_value(dnp, None)
-        lp_value = analyzer._calculate_player_value(lp, None)
-        
-        assert healthy_value > dnp_value
-        assert lp_value > dnp_value
+        hv, _, _ = analyzer._calculate_player_value(healthy, svc, {})
+        dv, _, _ = analyzer._calculate_player_value(dnp, svc, {})
+        lv, _, _ = analyzer._calculate_player_value(lp, svc, {})
+        assert hv > dv
+        assert lv > dv
+
+    def test_calculate_player_value_usage_trend_modifier(self, analyzer):
+        """Rising usage is worth more than declining usage."""
+        svc = _FakeService({"1": {"value": 5000}})
+        up = {"position": "RB", "player_id": "1", "usage_trend_overall": "up"}
+        down = {"position": "RB", "player_id": "1", "usage_trend_overall": "down"}
+        uv, _, _ = analyzer._calculate_player_value(up, svc, {})
+        dv, _, _ = analyzer._calculate_player_value(down, svc, {})
+        assert uv > dv
 
     def test_calculate_positional_needs(self, analyzer):
         """Test positional needs calculation."""
@@ -142,19 +147,34 @@ class TestAnalyzeTrade:
         
         async def mock_get_rosters(league_id):
             return {"success": True, "rosters": [mock_roster1, mock_roster2]}
-        
+
         async def mock_get_trending(nfl_db, *args):
             return {"success": True, "trending_players": []}
-        
-        with patch('nfl_mcp.trade_analyzer_tools.get_rosters', side_effect=mock_get_rosters):
-            with patch('nfl_mcp.trade_analyzer_tools.get_trending_players', side_effect=mock_get_trending):
-                result = await analyze_trade("league1", 1, 2, ["1", "2"], ["3", "4"])
-                
-                assert result["success"] is True
-                assert result["data"]["recommendation"] is not None
-                assert result["data"]["fairness_score"] is not None
-                assert "team1_analysis" in result["data"]
-                assert "team2_analysis" in result["data"]
+
+        async def mock_get_league(league_id):
+            return {"success": True, "league": {"scoring_settings": {"rec": 1.0},
+                    "roster_positions": ["QB", "RB", "WR", "TE"], "total_rosters": 12,
+                    "settings": {"type": 0}}}
+
+        svc = _FakeService({
+            "1": {"value": 6000, "overall_rank": 5, "position_rank": 2},
+            "2": {"value": 5500, "overall_rank": 8, "position_rank": 3},
+            "3": {"value": 6200, "overall_rank": 4, "position_rank": 1},
+            "4": {"value": 5300, "overall_rank": 9, "position_rank": 1},
+        })
+
+        with patch('nfl_mcp.trade_analyzer_tools.get_rosters', side_effect=mock_get_rosters), \
+             patch('nfl_mcp.trade_analyzer_tools.get_league', side_effect=mock_get_league), \
+             patch('nfl_mcp.trade_analyzer_tools.get_trending_players', side_effect=mock_get_trending), \
+             patch('nfl_mcp.trade_analyzer_tools.get_values_service', return_value=svc):
+            result = await analyze_trade("league1", 1, 2, ["1", "2"], ["3", "4"])
+
+            assert result["success"] is True
+            assert result["recommendation"] is not None
+            assert result["fairness_score"] is not None
+            assert "team1_analysis" in result
+            assert "team2_analysis" in result
+            assert result["value_source"] == "fantasycalc"
 
     @pytest.mark.asyncio
     async def test_analyze_trade_warnings(self):
@@ -176,15 +196,27 @@ class TestAnalyzeTrade:
         
         async def mock_get_rosters(league_id):
             return {"success": True, "rosters": [mock_roster1, mock_roster2]}
-        
+
         async def mock_get_trending(nfl_db, *args):
             return {"success": True, "trending_players": []}
-        
-        with patch('nfl_mcp.trade_analyzer_tools.get_rosters', side_effect=mock_get_rosters):
-            with patch('nfl_mcp.trade_analyzer_tools.get_trending_players', side_effect=mock_get_trending):
-                result = await analyze_trade("league1", 1, 2, ["1"], ["2"])
-                
-                assert result["success"] is True
-                # Should have warnings about injury
-                assert len(result["data"]["warnings"]) > 0
-                assert any("DNP" in w for w in result["data"]["warnings"])
+
+        async def mock_get_league(league_id):
+            return {"success": True, "league": {"scoring_settings": {"rec": 1.0},
+                    "roster_positions": ["QB", "RB", "WR", "TE"], "total_rosters": 12,
+                    "settings": {"type": 0}}}
+
+        svc = _FakeService({
+            "1": {"value": 6000, "overall_rank": 5, "position_rank": 2},
+            "2": {"value": 5800, "overall_rank": 6, "position_rank": 1},
+        })
+
+        with patch('nfl_mcp.trade_analyzer_tools.get_rosters', side_effect=mock_get_rosters), \
+             patch('nfl_mcp.trade_analyzer_tools.get_league', side_effect=mock_get_league), \
+             patch('nfl_mcp.trade_analyzer_tools.get_trending_players', side_effect=mock_get_trending), \
+             patch('nfl_mcp.trade_analyzer_tools.get_values_service', return_value=svc):
+            result = await analyze_trade("league1", 1, 2, ["1"], ["2"])
+
+            assert result["success"] is True
+            # Should have warnings about injury
+            assert len(result["warnings"]) > 0
+            assert any("DNP" in w for w in result["warnings"])

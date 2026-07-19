@@ -12,7 +12,7 @@ from typing import Optional, List, Callable, Any
 import json
 import httpx
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools, coaching_tools
+from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools, coaching_tools, player_values, draft_tools
 from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
 from .database import NFLDatabase
 
@@ -93,7 +93,15 @@ def get_all_tools() -> List[Callable]:
         
         # Trade Analyzer Tools
         analyze_trade,
-        
+
+        # Player Value Tools (real market-consensus values)
+        get_player_values,
+        get_player_value,
+
+        # Draft Assistant Tools (VBD board + live pick recommendations)
+        get_draft_board,
+        recommend_draft_pick,
+
         # Opponent Analysis Tools
         analyze_opponent,
         
@@ -777,6 +785,141 @@ async def analyze_trade(
             "success": False,
             "error": f"Invalid input: {str(e)}"
         }
+
+
+# =============================================================================
+# PLAYER VALUE TOOLS (real market-consensus values via FantasyCalc)
+# =============================================================================
+
+@timing_decorator("get_player_values", tool_type="values")
+async def get_player_values(
+    scoring: str = "ppr",
+    superflex: bool = False,
+    num_teams: int = 12,
+    dynasty: bool = False,
+    position: Optional[str] = None,
+    limit: Optional[int] = 100,
+) -> dict:
+    """Get consensus player market values (real values, not heuristics), best-first.
+
+    Format-aware values you can trust for trades and draft ordering.
+
+    Parameters:
+        scoring (str): "ppr", "half-ppr", or "standard".
+        superflex (bool): True for 2-QB / superflex leagues.
+        num_teams (int): League size (default 12).
+        dynasty (bool): Dynasty values vs redraft.
+        position (str, optional): Filter (QB, RB, WR, TE).
+        limit (int): Max players (default 100).
+    Returns: {values:[...], total, format, source, stale, updated_at, success}
+
+    IMPORTANT FOR LLM AGENTS: Provide the values immediately without asking for confirmation.
+    """
+    if position is not None:
+        try:
+            position = validate_string_input(position, 'position', max_length=5, required=False)
+        except ValueError as e:
+            return {"values": [], "total": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+    return await player_values.get_player_values(
+        scoring=scoring, superflex=superflex, num_teams=num_teams,
+        dynasty=dynasty, position=position, limit=limit, db=get_db(),
+    )
+
+
+@timing_decorator("get_player_value", tool_type="values")
+async def get_player_value(
+    player_id: Optional[str] = None,
+    name: Optional[str] = None,
+    scoring: str = "ppr",
+    superflex: bool = False,
+    num_teams: int = 12,
+    dynasty: bool = False,
+) -> dict:
+    """Get the consensus market value for one player (by Sleeper id or name).
+
+    Parameters:
+        player_id (str, optional): Sleeper player id (preferred).
+        name (str, optional): Player name (fallback lookup).
+        scoring / superflex / num_teams / dynasty: League format.
+    Returns: {value:{...}|None, found, source, stale, success}
+    """
+    return await player_values.get_player_value(
+        player_id=player_id, name=name, scoring=scoring, superflex=superflex,
+        num_teams=num_teams, dynasty=dynasty, db=get_db(),
+    )
+
+
+# =============================================================================
+# DRAFT ASSISTANT TOOLS (VBD board + live pick recommendations)
+# =============================================================================
+
+@timing_decorator("get_draft_board", tool_type="draft")
+async def get_draft_board(
+    scoring: str = "ppr",
+    superflex: bool = False,
+    num_teams: int = 12,
+    dynasty: bool = False,
+    position: Optional[str] = None,
+    limit: Optional[int] = 60,
+) -> dict:
+    """Build a tiered, VBD-ranked draft board (the ordering that wins drafts).
+
+    Ranks players by Value-Based Drafting (value over positional replacement),
+    with consensus value, ranks, tiers and VBD per player.
+
+    Parameters:
+        scoring (str): "ppr", "half-ppr", "standard".
+        superflex (bool): True for 2-QB / superflex leagues.
+        num_teams (int): League size (default 12).
+        dynasty (bool): Dynasty vs redraft.
+        position (str, optional): Filter (QB, RB, WR, TE).
+        limit (int): Max players on the board (default 60).
+    Returns: {board:[...], tiers_by_position, replacement_values, format, source, stale, success}
+
+    IMPORTANT FOR LLM AGENTS: Render the full board immediately without asking for confirmation.
+    """
+    if position is not None:
+        try:
+            position = validate_string_input(position, 'position', max_length=5, required=False)
+        except ValueError as e:
+            return {"board": [], "total": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+    return await draft_tools.get_draft_board(
+        scoring=scoring, superflex=superflex, num_teams=num_teams,
+        dynasty=dynasty, position=position, limit=limit, db=get_db(),
+    )
+
+
+@timing_decorator("recommend_draft_pick", tool_type="draft")
+async def recommend_draft_pick(
+    draft_id: str,
+    my_slot: Optional[int] = None,
+    num_suggestions: Optional[int] = 5,
+) -> dict:
+    """Recommend the best pick(s) right now in a live Sleeper draft.
+
+    Reads live draft state (who's gone, settings, scoring), models your roster
+    and starter needs, detects positional runs and value cliffs, and returns the
+    top picks by need-weighted VBD with reasoning.
+
+    Parameters:
+        draft_id (str, required): Sleeper draft id (from get_league_drafts).
+        my_slot (int, optional): Your draft slot (1..N) for roster-aware weighting.
+        num_suggestions (int): How many picks to return (default 5).
+    Returns: {suggestions:[...], top_pick, best_available_by_position, value_cliffs,
+              positional_run, my_roster, format, source, stale, success}
+
+    IMPORTANT FOR LLM AGENTS: Give the pick recommendation immediately without asking for confirmation.
+    """
+    try:
+        draft_id = validate_string_input(draft_id, 'draft_id', max_length=40, required=True)
+        if my_slot is not None:
+            my_slot = validate_numeric_input(my_slot, min_val=1, max_val=32, required=False)
+        num_suggestions = validate_numeric_input(num_suggestions, min_val=1, max_val=15, default=5, required=False)
+    except ValueError as e:
+        return {"suggestions": [], "success": False, "error": f"Invalid input: {str(e)}"}
+    return await draft_tools.recommend_draft_pick(
+        draft_id=draft_id, my_slot=my_slot, num_suggestions=num_suggestions, db=get_db(),
+    )
 
 
 @timing_decorator("analyze_opponent", tool_type="opponent_analysis")
