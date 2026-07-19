@@ -931,15 +931,16 @@ async def simulate_draft(
     scoring: str = "ppr",
     superflex: bool = False,
     dynasty: bool = False,
-    randomness: float = 0.15,
+    randomness: float = 0.35,
     num_sims: int = 1,
     seed: Optional[int] = None,
 ) -> dict:
     """Rehearse a full snake draft offline (solo, repeatable).
 
     Opponents pick by need-weighted VBD with realistic ADP noise; your slot picks
-    optimally. Great for pre-draft prep: try different slots, see roster structure
-    and a value-based standing. Only QB/RB/WR/TE are modeled (no K/DST).
+    optimally. Graded on your optimal STARTING lineup value. Great for pre-draft
+    prep: try different slots, see roster structure and a value-based standing.
+    Only QB/RB/WR/TE are modeled (no K/DST).
 
     Parameters:
         my_slot (int, required): Your draft position (1..num_teams).
@@ -948,7 +949,7 @@ async def simulate_draft(
         scoring (str): "ppr", "half-ppr", "standard".
         superflex (bool): True for 2-QB / superflex.
         dynasty (bool): Dynasty vs redraft values.
-        randomness (float): Opponent ADP noise 0..1 (0 = always best available).
+        randomness (float): Opponent ADP noise 0..1 (default 0.35 ~ realistic).
         num_sims (int): How many drafts to run (>1 returns aggregate structure).
         seed (int, optional): RNG seed for reproducibility.
     Returns: {sample:{my_team, standings, grade,...}, aggregate?, format, source, success}

@@ -497,6 +497,33 @@ def _snake_slot(overall_index: int, num_teams: int) -> int:
     return num_teams - pos_in_round
 
 
+def _starting_lineup_value(players: List[Dict], reqs: Dict[str, int]) -> float:
+    """Sum of VBD of a roster's optimal starting lineup (QB/RB/WR/TE + FLEX).
+
+    This is what a draft is really graded on — starters, not deep bench. Bench
+    players (often negative VBD) don't drag the number down.
+    """
+    by_pos: Dict[str, List[float]] = {}
+    for p in players:
+        pos = (p.get("position") or "").upper()
+        if pos in VBD_POSITIONS:
+            by_pos.setdefault(pos, []).append(p.get("vbd") or 0.0)
+    for pos in by_pos:
+        by_pos[pos].sort(reverse=True)
+
+    total = 0.0
+    leftovers: List[float] = []  # flex-eligible players not used as base starters
+    for pos in VBD_POSITIONS:
+        need = reqs.get(pos, 0)
+        vals = by_pos.get(pos, [])
+        total += sum(vals[:need])
+        if pos in ("RB", "WR", "TE"):
+            leftovers.extend(vals[need:])
+    leftovers.sort(reverse=True)
+    total += sum(leftovers[: reqs.get("FLEX", 0)])
+    return round(total, 1)
+
+
 def _grade_from_rank(rank: int, num_teams: int) -> str:
     """Letter grade from a team's value-rank (1 = best) among the league."""
     if num_teams <= 1:
@@ -556,23 +583,27 @@ def _simulate_one(
             "vbd": choice.get("vbd"),
         })
 
-    # Team value totals (sum of VBD) -> standings
+    # Grade on STARTER value (optimal starting lineup), not deep-bench totals.
+    starter_vbd = {s: _starting_lineup_value(rosters[s], reqs) for s in rosters}
     team_vbd = {s: round(sum((r.get("vbd") or 0) for r in rosters[s]), 1) for s in rosters}
-    standings = sorted(team_vbd.items(), key=lambda x: x[1], reverse=True)
+    standings = sorted(starter_vbd.items(), key=lambda x: x[1], reverse=True)
     my_rank = [i + 1 for i, (s, _) in enumerate(standings) if s == my_slot][0]
 
     starters_filled = all(counts[my_slot].get(pos, 0) >= need for pos, need in reqs.items() if pos != "FLEX")
-    my_total_vbd = team_vbd[my_slot]
 
     return {
         "my_team": rosters[my_slot],
         "my_position_counts": counts[my_slot],
-        "my_total_vbd": my_total_vbd,
+        "my_starter_vbd": starter_vbd[my_slot],
+        "my_total_vbd": team_vbd[my_slot],
         "my_total_value": round(sum((r.get("value") or 0) for r in rosters[my_slot]), 0),
         "starters_filled": starters_filled,
         "my_value_rank": my_rank,
         "grade": _grade_from_rank(my_rank, num_teams),
-        "standings": [{"slot": s, "total_vbd": v, "is_me": s == my_slot} for s, v in standings],
+        "standings": [
+            {"slot": s, "starter_vbd": v, "total_vbd": team_vbd[s], "is_me": s == my_slot}
+            for s, v in standings
+        ],
         "rosters_by_slot": {
             s: [f"{r['name']} ({r['position']})" for r in rosters[s]] for s in rosters
         },
@@ -590,7 +621,7 @@ async def simulate_draft(
     scoring: str = "ppr",
     superflex: bool = False,
     dynasty: bool = False,
-    randomness: float = 0.15,
+    randomness: float = 0.35,
     num_sims: int = 1,
     seed: Optional[int] = None,
     db=None,
@@ -598,7 +629,8 @@ async def simulate_draft(
     """Rehearse a full snake draft offline (solo, repeatable).
 
     Opponents pick by need-weighted VBD with realistic ADP noise; your slot
-    picks optimally (same logic as recommend_draft_pick). Note: only QB/RB/WR/TE
+    picks optimally (same logic as recommend_draft_pick). Grading is based on
+    your optimal STARTING lineup value (not deep bench). Note: only QB/RB/WR/TE
     are modeled (no K/DST in the consensus value set).
 
     Args:
@@ -608,7 +640,9 @@ async def simulate_draft(
         scoring: "ppr", "half-ppr", "standard".
         superflex: True for 2-QB / superflex.
         dynasty: Dynasty values vs redraft.
-        randomness: Opponent ADP noise 0..1 (0 = always best available).
+        randomness: Opponent ADP noise 0..1 (default 0.35 ~ realistic human
+            variance; lower makes opponents near-perfect so draft slot dominates,
+            higher makes them erratic so disciplined play always wins).
         num_sims: How many drafts to run. >1 returns aggregate structure.
         seed: Optional RNG seed for reproducibility.
 
@@ -659,18 +693,18 @@ async def simulate_draft(
     if n > 1:
         # Aggregate my roster structure across sims.
         pos_totals: Dict[str, float] = {}
-        vbd_sum = 0.0
+        starter_vbd_sum = 0.0
         rank_sum = 0.0
         grade_counts: Dict[str, int] = {}
         for s in sims:
             for pos, c in s["my_position_counts"].items():
                 pos_totals[pos] = pos_totals.get(pos, 0) + c
-            vbd_sum += s["my_total_vbd"]
+            starter_vbd_sum += s["my_starter_vbd"]
             rank_sum += s["my_value_rank"]
             grade_counts[s["grade"]] = grade_counts.get(s["grade"], 0) + 1
         result["aggregate"] = {
             "avg_position_counts": {pos: round(t / n, 2) for pos, t in pos_totals.items()},
-            "avg_total_vbd": round(vbd_sum / n, 1),
+            "avg_starter_vbd": round(starter_vbd_sum / n, 1),
             "avg_value_rank": round(rank_sum / n, 2),
             "grade_distribution": grade_counts,
         }
