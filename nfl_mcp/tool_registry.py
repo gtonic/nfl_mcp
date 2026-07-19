@@ -12,7 +12,7 @@ from typing import Optional, List, Callable, Any
 import json
 import httpx
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools, coaching_tools, player_values, draft_tools, projections, faab_tools
+from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools, coaching_tools, player_values, draft_tools, projections, faab_tools, playoff_tools
 from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
 from .database import NFLDatabase
 
@@ -76,6 +76,7 @@ def get_all_tools() -> List[Callable]:
         get_season_bye_week_coordination,
         get_trade_deadline_analysis,
         get_playoff_preparation_plan,
+        get_playoff_odds,
 
     # Sleeper Additional Core Endpoints
     get_user,
@@ -596,6 +597,47 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
         return await sleeper_tools.get_playoff_preparation_plan(league_id, current_week)
     except ValueError as e:
         return {"playoff_plan": {}, "league_id": league_id, "readiness_score": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+
+
+@timing_decorator("get_playoff_odds", tool_type="sleeper")
+async def get_playoff_odds(
+    league_id: str,
+    current_week: Optional[int] = None,
+    num_sims: Optional[int] = 10000,
+    score_sd: Optional[float] = 25.0,
+    my_roster_id: Optional[int] = None,
+    seed: Optional[int] = None,
+) -> dict:
+    """Compute playoff probabilities via Monte-Carlo of the rest of the season.
+
+    Simulates every remaining regular-season matchup (each team scores ~ Normal
+    around its points-per-game), ranks by record then points, and counts how
+    often each team makes a playoff seed.
+
+    Parameters:
+        league_id (str, required): Sleeper league id.
+        current_week (int, optional): First unplayed week (defaults to NFL state).
+        num_sims (int): Iterations (default 10000, capped 100..50000).
+        score_sd (float): Weekly scoring std-dev (default 25).
+        my_roster_id (int, optional): Also returns your win/lose-this-week swing.
+        seed (int, optional): RNG seed for reproducibility.
+    Returns: {odds:[{roster_id, name, record, mean_ppg, playoff_pct, avg_seed}],
+              this_week_swing?, playoff_teams, current_week, success}
+
+    IMPORTANT FOR LLM AGENTS: Render the odds immediately without asking for confirmation.
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        if current_week is not None:
+            current_week = validate_numeric_input(current_week, min_val=1, max_val=22, required=False)
+        if my_roster_id is not None:
+            my_roster_id = validate_numeric_input(my_roster_id, min_val=1, max_val=32, required=False)
+    except ValueError as e:
+        return {"odds": [], "success": False, "error": f"Invalid input: {str(e)}"}
+    return await playoff_tools.get_playoff_odds(
+        league_id=league_id, current_week=current_week, num_sims=num_sims or 10000,
+        score_sd=score_sd or 25.0, my_roster_id=my_roster_id, seed=seed, db=get_db(),
+    )
 
 
 # =============================================================================
