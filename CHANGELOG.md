@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Weekly projections** (`projections.py`) — transparent, no scraping/keys:
+  `projected = base_ppg(position rank) × matchup × Vegas game environment × usage
+  × injury`, with floor/ceiling, confidence and a full breakdown. Tools
+  `project_player`, `project_players`. The lineup optimizer now **auto-fills
+  projected points**, so start/sit works without manual point entry.
+- **FAAB bid recommendations** (`faab_tools.py`) — `recommend_faab_bid` turns a
+  waiver claim into a bid (% of budget + absolute) from real market value, the
+  marginal upgrade for your roster, league demand (trending adds), and your
+  remaining budget / weeks left, with a tier and transparent breakdown.
+
 ## [0.5.16] - 2026-07-19
 
 ### Added

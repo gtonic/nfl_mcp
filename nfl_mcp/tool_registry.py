@@ -12,7 +12,7 @@ from typing import Optional, List, Callable, Any
 import json
 import httpx
 from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools, coaching_tools, player_values, draft_tools
+from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools, coaching_tools, player_values, draft_tools, projections, faab_tools
 from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
 from .database import NFLDatabase
 
@@ -90,6 +90,7 @@ def get_all_tools() -> List[Callable]:
         get_waiver_log,
         check_re_entry_status,
         get_waiver_wire_dashboard,
+        recommend_faab_bid,
         
         # Trade Analyzer Tools
         analyze_trade,
@@ -102,6 +103,10 @@ def get_all_tools() -> List[Callable]:
         get_draft_board,
         recommend_draft_pick,
         simulate_draft,
+
+        # Projection Tools (transparent weekly projections)
+        project_player,
+        project_players,
 
         # Opponent Analysis Tools
         analyze_opponent,
@@ -710,6 +715,39 @@ async def get_waiver_wire_dashboard(league_id: str, round: Optional[int] = None)
         return {"dashboard": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {str(e)}"}
 
 
+@timing_decorator("recommend_faab_bid", tool_type="waiver")
+async def recommend_faab_bid(
+    league_id: str,
+    player_id: Optional[str] = None,
+    player_name: Optional[str] = None,
+    my_roster_id: Optional[int] = None,
+) -> dict:
+    """Recommend a FAAB waiver bid for a player (% of budget + absolute).
+
+    Combines the player's real market value, the marginal upgrade for your roster,
+    league demand (trending adds), and your remaining budget / weeks left.
+
+    Parameters:
+        league_id (str, required): Sleeper league id.
+        player_id (str, optional): Sleeper player id of the target (preferred).
+        player_name (str, optional): Player name (fallback lookup).
+        my_roster_id (int, optional): Your roster id for roster-need weighting.
+    Returns: {recommendation:{bid_pct, bid_absolute, tier, range, reasoning, breakdown}, success}
+
+    IMPORTANT FOR LLM AGENTS: Provide the bid recommendation immediately without asking for confirmation.
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        if my_roster_id is not None:
+            my_roster_id = validate_numeric_input(my_roster_id, min_val=1, max_val=32, required=False)
+    except ValueError as e:
+        return {"recommendation": None, "success": False, "error": f"Invalid input: {str(e)}"}
+    return await faab_tools.recommend_faab_bid(
+        league_id=league_id, player_id=player_id, player_name=player_name,
+        my_roster_id=my_roster_id, db=get_db(),
+    )
+
+
 # =============================================================================
 # TRADE ANALYZER TOOLS
 # =============================================================================
@@ -969,6 +1007,71 @@ async def simulate_draft(
         my_slot=my_slot, num_teams=num_teams, rounds=rounds, scoring=scoring,
         superflex=superflex, dynasty=dynasty, randomness=randomness,
         num_sims=num_sims, seed=seed, db=get_db(),
+    )
+
+
+# =============================================================================
+# PROJECTION TOOLS (transparent weekly fantasy point projections)
+# =============================================================================
+
+@timing_decorator("project_player", tool_type="projection")
+async def project_player(
+    player_name: str,
+    position: str,
+    team: str,
+    opponent: str,
+    snap_percentage: Optional[float] = None,
+    usage_trend: Optional[str] = None,
+    injury_status: Optional[str] = None,
+    scoring: str = "ppr",
+    superflex: bool = False,
+) -> dict:
+    """Project weekly fantasy points for one player (transparent, no scraping).
+
+    Combines market-value baseline × matchup × Vegas game environment × usage ×
+    injury into a projection with floor/ceiling, confidence and a full breakdown.
+
+    Parameters:
+        player_name, position (QB/RB/WR/TE), team, opponent (all required abbreviations).
+        snap_percentage (float, optional), usage_trend ("up"/"down", optional),
+        injury_status (optional), scoring ("ppr"/"half-ppr"/"standard"), superflex (bool).
+    Returns: {projection:{projected_points, floor, ceiling, confidence, breakdown,...}, success}
+    """
+    try:
+        player_name = validate_string_input(player_name, 'player_name', max_length=100, required=True)
+        position = validate_string_input(position, 'position', max_length=5, required=True)
+        team = validate_string_input(team, 'team', max_length=5, required=True)
+        opponent = validate_string_input(opponent, 'opponent', max_length=5, required=True)
+    except ValueError as e:
+        return {"projection": None, "success": False, "error": f"Invalid input: {str(e)}"}
+    return await projections.project_player(
+        player_name=player_name, position=position.upper(), team=team.upper(),
+        opponent=opponent.upper(), snap_percentage=snap_percentage, usage_trend=usage_trend,
+        injury_status=injury_status, scoring=scoring, superflex=superflex, db=get_db(),
+    )
+
+
+@timing_decorator("project_players", tool_type="projection")
+async def project_players(
+    players: List[dict],
+    scoring: str = "ppr",
+    superflex: bool = False,
+    num_teams: int = 12,
+) -> dict:
+    """Project weekly fantasy points for multiple players at once.
+
+    Parameters:
+        players (list, required): dicts with name, position, team, opponent and
+            optional usage {snap_percentage, usage_trend} and injury {status}.
+        scoring/superflex/num_teams: league format for the value baseline.
+    Returns: {projections:[...], total, success}
+
+    IMPORTANT FOR LLM AGENTS: Return projections immediately without asking for confirmation.
+    """
+    if not players:
+        return {"projections": [], "total": 0, "success": False, "error": "No players provided"}
+    return await projections.project_players(
+        players=players, scoring=scoring, superflex=superflex, num_teams=num_teams, db=get_db(),
     )
 
 

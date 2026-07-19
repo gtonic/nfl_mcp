@@ -195,10 +195,13 @@ The NFL MCP Server provides **60+ MCP tools** organized into these categories:
 - Draft Data: `get_league_drafts`, `get_draft`, `get_draft_picks`, `get_draft_traded_picks`
 - Global / Meta: `get_nfl_state`, `get_trending_players`, `fetch_all_players` (large players map w/ caching)
 
-#### 🎯 Lineup Optimization (11 tools)
+#### 🎯 Lineup Optimization (13 tools)
 - **Matchup Analysis**: `get_defense_rankings`, `get_matchup_difficulty`, `analyze_roster_matchups`
 - **Start/Sit Recommendations**: `get_start_sit_recommendation`, `get_roster_recommendations`, `compare_players_for_slot`, `analyze_full_lineup`
 - **Vegas Lines**: `get_vegas_lines`, `get_game_environment`, `analyze_roster_vegas`, `get_stack_opportunities`
+- **Weekly Projections**: `project_player`, `project_players` — transparent projections
+  (value × matchup × Vegas environment × usage × injury) with floor/ceiling and a
+  breakdown. Start/sit tools **auto-fill projected points**, so no manual entry needed.
 
 #### 💰 Player Values & Draft Assistant (5 tools)
 Real market-consensus values (FantasyCalc, no API key) power trades and drafting:
@@ -836,7 +839,12 @@ async with Client("http://localhost:9000/mcp/") as client:
 
 ### Waiver Wire Analysis Tools (MCP)
 
-**Tools:** `get_waiver_log`, `check_re_entry_status`, `get_waiver_wire_dashboard`
+**Tools:** `get_waiver_log`, `check_re_entry_status`, `get_waiver_wire_dashboard`, `recommend_faab_bid`
+
+> `recommend_faab_bid(league_id, player_id, my_roster_id)` turns a waiver claim
+> into a data-driven bid (% of FAAB budget + absolute) from the player's real
+> market value, the marginal upgrade for your roster, league demand (trending
+> adds), and your remaining budget / weeks left — with a tier and breakdown.
 
 These advanced tools provide enhanced waiver wire intelligence for fantasy football decision making, addressing common issues like duplicate transaction tracking and identifying volatile players.
 
