@@ -292,3 +292,53 @@ class TestToolRegistryIntegration:
         assert hasattr(matchup_tools, 'get_matchup_difficulty')
         assert hasattr(matchup_tools, 'analyze_roster_matchups')
         assert hasattr(matchup_tools, 'DefenseRankingsAnalyzer')
+
+
+class TestNflverseRankings:
+    """Offline tests for the nflverse-based defense-vs-position parser."""
+
+    CSV = (
+        "season,week,season_type,position,recent_team,opponent_team,fantasy_points_ppr\n"
+        "2024,1,REG,WR,AAA,WAS,10\n"      # WAS allows 10 (wk1)
+        "2024,2,REG,WR,BBB,WAS,20\n"      # WAS allows 20 (wk2) -> 15/game
+        "2024,1,REG,WR,CCC,KC,5\n"        # KC allows 5 (wk1)
+        "2024,2,REG,WR,DDD,KC,5\n"        # KC allows 5 (wk2) -> 5/game (tougher)
+        "2024,1,POST,WR,EEE,KC,99\n"      # postseason -> must be ignored
+    )
+
+    class _Resp:
+        def __init__(self, text, status=200):
+            self.text = text
+            self.status_code = status
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise Exception("http error")
+
+    class _Client:
+        def __init__(self, resp):
+            self._resp = resp
+
+        async def get(self, url, **kw):
+            return self._resp
+
+    @pytest.mark.asyncio
+    async def test_parses_and_ranks(self):
+        an = DefenseRankingsAnalyzer(db=None)
+        client = self._Client(self._Resp(self.CSV))
+        rankings = await an._fetch_nflverse_rankings(client, 2024)
+        assert rankings is not None
+        wr = rankings["WR"]
+        # KC (5/game) is toughest -> rank 1; WAS (15/game) -> rank 2
+        assert wr[0]["team"] == "KC" and wr[0]["rank"] == 1
+        assert wr[0]["source"] == "nflverse"
+        # nflverse "WAS" normalized to "WSH"
+        assert any(t["team"] == "WSH" for t in wr)
+        # postseason row excluded (KC average stays 5, not inflated by the 99)
+        assert wr[0]["points_allowed_avg"] == 5.0
+
+    @pytest.mark.asyncio
+    async def test_404_returns_none(self):
+        an = DefenseRankingsAnalyzer(db=None)
+        client = self._Client(self._Resp("", status=404))
+        assert await an._fetch_nflverse_rankings(client, 2099) is None

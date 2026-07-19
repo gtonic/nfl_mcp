@@ -6,12 +6,23 @@ and game environment factors to help optimize fantasy lineups.
 """
 
 import asyncio
+import csv
 import httpx
 import logging
+from io import StringIO
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, UTC, timedelta
 
-from .config import get_http_headers, create_http_client, LONG_TIMEOUT
+from .config import create_http_client, LONG_TIMEOUT
+
+# nflverse publishes weekly player stats (incl. fantasy points + opponent) as a
+# free CSV per season — the reliable source for defense-vs-position.
+NFLVERSE_PLAYER_STATS_URL = (
+    "https://github.com/nflverse/nflverse-data/releases/download/"
+    "player_stats/player_stats_{season}.csv"
+)
+# nflverse abbreviations -> the abbreviations used across this codebase.
+_NFLVERSE_TEAM_FIX = {"LA": "LAR", "WAS": "WSH", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LAR"}
 from .errors import (
     create_error_response, create_success_response, ErrorType,
     handle_http_errors
@@ -118,33 +129,27 @@ class DefenseRankingsAnalyzer:
                 return cached["data"]
         
         rankings = {}
-        
-        # Fetch rankings for each position from ESPN stats API
-        position_stat_types = {
-            "QB": "passingYards",     # Points allowed to QBs
-            "RB": "rushingYards",     # Points allowed to RBs  
-            "WR": "receivingYards",   # Points allowed to WRs
-            "TE": "receivingYards",   # Points allowed to TEs
-        }
-        
+
+        # Primary source: nflverse weekly stats -> real fantasy points allowed
+        # per game by each defense to each position. (The old ESPN/FantasyPros
+        # HTML paths no longer expose this reliably.)
         try:
             async with create_http_client(timeout=LONG_TIMEOUT) as client:
-                for position in ["QB", "RB", "WR", "TE"]:
-                    try:
-                        position_rankings = await self._fetch_position_rankings(
-                            client, position, season
-                        )
-                        rankings[position] = position_rankings
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch {position} rankings: {e}")
-                        rankings[position] = self._get_fallback_rankings(position)
-        
+                nfl = await self._fetch_nflverse_rankings(client, season)
+            if nfl:
+                rankings = nfl
+            else:
+                logger.info(
+                    f"No nflverse defense data for {season} yet (preseason?); "
+                    "using neutral fallback"
+                )
+                for pos in ["QB", "RB", "WR", "TE"]:
+                    rankings[pos] = self._get_fallback_rankings(pos)
         except Exception as e:
             logger.error(f"Failed to fetch defense rankings: {e}")
-            # Return fallback rankings for all positions
             for pos in ["QB", "RB", "WR", "TE"]:
                 rankings[pos] = self._get_fallback_rankings(pos)
-        
+
         # Cache results
         self._rankings_cache[cache_key] = {
             "data": rankings,
@@ -160,178 +165,84 @@ class DefenseRankingsAnalyzer:
         
         return rankings
     
-    async def _fetch_position_rankings(
-        self, 
-        client: httpx.AsyncClient,
-        position: str,
-        season: int
-    ) -> List[Dict]:
+    async def _fetch_nflverse_rankings(
+        self, client: httpx.AsyncClient, season: int
+    ) -> Optional[Dict[str, List[Dict]]]:
+        """Compute defense-vs-position rankings from nflverse weekly stats.
+
+        Aggregates PPR fantasy points allowed per game by each defense to each
+        position over the regular season. Returns None when the season's data
+        isn't available yet (e.g. preseason).
         """
-        Fetch rankings for a specific position from ESPN.
-        
-        Uses ESPN's fantasy football defense rankings which show
-        points allowed to each position.
-        """
-        # ESPN fantasy defense vs position endpoint
-        # This shows how many fantasy points each defense allows to a position
-        url = f"https://fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/0"
-        
-        params = {
-            "view": "kona_player_info",
-        }
-        
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-        }
-        
-        # For now, use ESPN's public team stats API
-        stats_url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/statistics"
-        
+        url = NFLVERSE_PLAYER_STATS_URL.format(season=season)
         try:
-            response = await client.get(stats_url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            
-            # Parse team defensive stats
-            rankings = self._parse_defensive_stats(data, position)
-            return rankings
-            
+            resp = await client.get(url)
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            text = resp.text
         except Exception as e:
-            logger.debug(f"ESPN stats API failed for {position}: {e}")
-            # Try alternative approach - scrape Fantasy Pros
-            return await self._fetch_from_fantasy_pros(client, position, season)
-    
-    async def _fetch_from_fantasy_pros(
-        self,
-        client: httpx.AsyncClient, 
-        position: str,
-        season: int
-    ) -> List[Dict]:
-        """
-        Fallback: Fetch defense vs position from FantasyPros.
-        
-        FantasyPros has excellent defense vs position data.
-        """
-        # Map position to FantasyPros URL format
-        pos_map = {
-            "QB": "qb",
-            "RB": "rb", 
-            "WR": "wr",
-            "TE": "te"
-        }
-        
-        pos_slug = pos_map.get(position, position.lower())
-        url = f"https://www.fantasypros.com/nfl/points-allowed.php?position={pos_slug}"
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Accept": "text/html,application/xhtml+xml"
-        }
-        
+            logger.debug(f"nflverse fetch failed for {season}: {e}")
+            return None
+
+        weekly: Dict = {}           # (opponent, position, week) -> summed PPR points
+        weeks_seen: Dict = {}       # (opponent, position) -> set of weeks
         try:
-            response = await client.get(url, headers=headers, follow_redirects=True)
-            response.raise_for_status()
-            
-            # Parse HTML table
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            rankings = []
-            table = soup.find("table", {"id": "data-table"})
-            
-            if table:
-                rows = table.find("tbody").find_all("tr") if table.find("tbody") else []
-                
-                for rank, row in enumerate(rows, 1):
-                    cells = row.find_all("td")
-                    if len(cells) >= 2:
-                        team_cell = cells[0]
-                        pts_cell = cells[-1]  # Last column is usually total points
-                        
-                        # Extract team abbreviation
-                        team_name = team_cell.get_text(strip=True)
-                        team_abbr = self._normalize_team_name(team_name)
-                        
-                        # Extract points allowed
-                        try:
-                            pts_allowed = float(pts_cell.get_text(strip=True).replace(",", ""))
-                        except ValueError:
-                            pts_allowed = 0.0
-                        
-                        rankings.append({
-                            "team": team_abbr,
-                            "rank": rank,
-                            "points_allowed_avg": round(pts_allowed, 1),
-                            "matchup_tier": _get_matchup_tier(rank),
-                            "tier_indicator": _get_tier_color(_get_matchup_tier(rank))
-                        })
-            
-            if rankings:
-                return rankings
-                
-        except Exception as e:
-            logger.debug(f"FantasyPros fetch failed for {position}: {e}")
-        
-        # Return fallback if all else fails
-        return self._get_fallback_rankings(position)
-    
-    def _parse_defensive_stats(self, data: Dict, position: str) -> List[Dict]:
-        """Parse ESPN defensive stats into position rankings."""
-        # This is a simplified parser - ESPN's stats structure varies
-        rankings = []
-        
-        try:
-            # ESPN returns teams with their defensive stats
-            teams = data.get("teams", data.get("items", []))
-            
-            team_stats = []
-            for team_data in teams:
-                team_id = str(team_data.get("id", team_data.get("team", {}).get("id", "")))
-                team_abbr = ESPN_TEAM_MAP.get(team_id, "UNK")
-                
-                # Get relevant stat for position
-                stats = team_data.get("statistics", team_data.get("stats", {}))
-                
-                # Map position to relevant defensive stat
-                if position == "QB":
-                    pts = stats.get("passingYardsAllowed", stats.get("passingPointsAllowed", 0))
-                elif position == "RB":
-                    pts = stats.get("rushingYardsAllowed", stats.get("rushingPointsAllowed", 0))
-                else:  # WR, TE
-                    pts = stats.get("receivingYardsAllowed", stats.get("receivingPointsAllowed", 0))
-                
-                if isinstance(pts, dict):
-                    pts = pts.get("value", pts.get("displayValue", 0))
-                
+            for row in csv.DictReader(StringIO(text)):
+                if (row.get("season_type") or "").upper() != "REG":
+                    continue
+                pos = (row.get("position") or row.get("position_group") or "").upper()
+                if pos not in ("QB", "RB", "WR", "TE"):
+                    continue
+                opp = (row.get("opponent_team") or "").upper()
+                opp = _NFLVERSE_TEAM_FIX.get(opp, opp)
+                wk = row.get("week")
+                if not opp or not wk:
+                    continue
                 try:
-                    pts = float(pts) if pts else 0
-                except (ValueError, TypeError):
-                    pts = 0
-                
-                team_stats.append({
-                    "team": team_abbr,
-                    "points_allowed": pts
-                })
-            
-            # Sort by points allowed (higher = worse defense = better matchup)
-            team_stats.sort(key=lambda x: x["points_allowed"], reverse=True)
-            
-            # Assign ranks (1 = toughest, 32 = easiest)
-            for rank, team in enumerate(reversed(team_stats), 1):
-                rankings.append({
-                    "team": team["team"],
-                    "rank": rank,
-                    "points_allowed_avg": round(team["points_allowed"], 1),
-                    "matchup_tier": _get_matchup_tier(rank),
-                    "tier_indicator": _get_tier_color(_get_matchup_tier(rank))
-                })
-            
+                    pts = float(row.get("fantasy_points_ppr") or 0)
+                except (TypeError, ValueError):
+                    pts = 0.0
+                weekly[(opp, pos, wk)] = weekly.get((opp, pos, wk), 0.0) + pts
+                weeks_seen.setdefault((opp, pos), set()).add(wk)
         except Exception as e:
-            logger.debug(f"Error parsing ESPN stats: {e}")
-        
-        return rankings if rankings else self._get_fallback_rankings(position)
-    
+            logger.debug(f"nflverse parse failed: {e}")
+            return None
+
+        if not weekly:
+            return None
+
+        totals: Dict = {}           # (opponent, position) -> total PPR points
+        for (opp, pos, _wk), pts in weekly.items():
+            totals[(opp, pos)] = totals.get((opp, pos), 0.0) + pts
+
+        rankings: Dict[str, List[Dict]] = {}
+        for pos in ("QB", "RB", "WR", "TE"):
+            per_team = []
+            for (opp, p), total in totals.items():
+                if p != pos:
+                    continue
+                games = max(1, len(weeks_seen.get((opp, pos), {1})))
+                per_team.append((opp, round(total / games, 1)))
+            if not per_team:
+                continue
+            # Fewest points allowed = toughest defense = rank 1 (elite).
+            per_team.sort(key=lambda x: x[1])
+            ranked = []
+            for rank, (team, ppg) in enumerate(per_team, 1):
+                tier = _get_matchup_tier(rank)
+                ranked.append({
+                    "team": team,
+                    "rank": rank,
+                    "points_allowed_avg": ppg,
+                    "matchup_tier": tier,
+                    "tier_indicator": _get_tier_color(tier),
+                    "source": "nflverse",
+                    "season": season,
+                })
+            rankings[pos] = ranked
+        return rankings or None
+
     def _normalize_team_name(self, name: str) -> str:
         """Convert team name/city to standard abbreviation."""
         name_lower = name.lower().strip()
