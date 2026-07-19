@@ -160,10 +160,15 @@ class LineupOptimizer:
     Uses a weighted scoring system to calculate confidence in recommendations.
     """
     
-    def __init__(self, db=None, defense_analyzer=None):
-        """Initialize the optimizer with optional database and analyzer."""
+    def __init__(self, db=None, defense_analyzer=None, auto_project=True):
+        """Initialize the optimizer with optional database and analyzer.
+
+        auto_project: when True, fill projected points from the internal
+        projection engine whenever the caller doesn't supply them.
+        """
         self.db = db
         self.defense_analyzer = defense_analyzer
+        self.auto_project = auto_project
         self._init_dependencies()
     
     def _init_dependencies(self):
@@ -395,11 +400,29 @@ class LineupOptimizer:
             analysis.injury_status = injury_data.get("status", "healthy")
             analysis.practice_status = injury_data.get("practice_status", "full")
         
-        # Apply projection data
-        if projection_data:
+        # Apply projection data — or auto-project when the caller didn't supply
+        # points, so start/sit works without manual point entry.
+        if projection_data and projection_data.get("projected_points"):
             analysis.projected_points = projection_data.get("projected_points", 0.0)
             analysis.floor = projection_data.get("floor", 0.0)
             analysis.ceiling = projection_data.get("ceiling", 0.0)
+        elif self.auto_project:
+            try:
+                from .projections import get_projection_engine
+                engine = get_projection_engine(self.db)
+                pr = await engine.project_many([{
+                    "name": player_name, "player_id": player_id,
+                    "position": position.upper(), "team": team.upper(),
+                    "opponent": opponent.upper(),
+                    "usage": usage_data or {}, "injury": injury_data or {},
+                }])
+                if pr.get("projections"):
+                    pp = pr["projections"][0]
+                    analysis.projected_points = pp["projected_points"]
+                    analysis.floor = pp["floor"]
+                    analysis.ceiling = pp["ceiling"]
+            except Exception as e:
+                logger.debug(f"Auto-projection failed for {player_name}: {e}")
         
         # Calculate confidence and decision
         confidence, confidence_level, reasoning = self.calculate_confidence(analysis)

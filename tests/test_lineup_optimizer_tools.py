@@ -318,3 +318,42 @@ class TestAnalyzeFullLineup:
         
         assert result["success"] is True
         assert "starters" in result
+
+
+class TestAutoProjection:
+    """The optimizer fills projected points itself when the caller doesn't."""
+
+    def _fresh_defense(self):
+        # Own analyzer instance (NOT the global singleton) with a no-network fetch,
+        # so mutating it can't leak into other tests.
+        from unittest.mock import AsyncMock
+        from nfl_mcp.matchup_tools import DefenseRankingsAnalyzer
+        da = DefenseRankingsAnalyzer(db=None)
+        da.fetch_defense_rankings = AsyncMock(return_value={})
+        return da
+
+    @pytest.mark.asyncio
+    async def test_analyze_player_auto_projects(self):
+        from unittest.mock import patch
+        from nfl_mcp import lineup_optimizer_tools as lo
+
+        opt = lo.LineupOptimizer(db=None, auto_project=True, defense_analyzer=self._fresh_defense())
+
+        class FakeEngine:
+            async def project_many(self, players):
+                return {"projections": [{"projected_points": 18.5, "floor": 12.0, "ceiling": 25.0}]}
+
+        with patch("nfl_mcp.projections.get_projection_engine", return_value=FakeEngine()):
+            analysis = await opt.analyze_player("Some WR", "", "WR", "MIA", "NE")
+
+        assert analysis.projected_points == 18.5
+        assert analysis.floor == 12.0
+        assert analysis.ceiling == 25.0
+
+    @pytest.mark.asyncio
+    async def test_auto_project_disabled_leaves_zero(self):
+        from nfl_mcp import lineup_optimizer_tools as lo
+
+        opt = lo.LineupOptimizer(db=None, auto_project=False, defense_analyzer=self._fresh_defense())
+        analysis = await opt.analyze_player("Some WR", "", "WR", "MIA", "NE")
+        assert analysis.projected_points == 0.0
