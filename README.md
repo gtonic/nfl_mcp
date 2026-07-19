@@ -187,12 +187,13 @@ The NFL MCP Server provides **60+ MCP tools** organized into these categories:
 - **Start/Sit Recommendations**: `get_start_sit_recommendation`, `get_roster_recommendations`, `compare_players_for_slot`, `analyze_full_lineup`
 - **Vegas Lines**: `get_vegas_lines`, `get_game_environment`, `analyze_roster_vegas`, `get_stack_opportunities`
 
-#### 💰 Player Values & Draft Assistant (4 tools)
+#### 💰 Player Values & Draft Assistant (5 tools)
 Real market-consensus values (FantasyCalc, no API key) power trades and drafting:
 - `get_player_values` - Consensus market values (format-aware: PPR, superflex, teams, dynasty)
 - `get_player_value` - Single-player value by Sleeper id or name
 - `get_draft_board` - Tiered board ranked by **VBD** (value over positional replacement)
 - `recommend_draft_pick` - Live Sleeper-draft pick recommendations with roster-need weighting, value-cliff and positional-run detection
+- `simulate_draft` - **Offline snake-draft rehearsal** (solo, repeatable): opponents pick by need-weighted VBD with ADP noise, your slot picks optimally; returns your roster, a value-based standing, and aggregate structure over many runs
 
 The trade analyzer (`analyze_trade`) is built on the same real values, so it no longer
 treats every player as equal — it derives the league's format from Sleeper settings and
@@ -209,6 +210,18 @@ pick = await client.call_tool("recommend_draft_pick", {
     "my_slot": 3                            # your draft position
 })
 print(pick.data["top_pick"], pick.data["value_cliffs"])
+
+# Rehearse the whole draft offline before draft day (no mates needed):
+sim = await client.call_tool("simulate_draft", {
+    "my_slot": 3, "num_teams": 12, "scoring": "ppr", "seed": 42
+})
+print(sim.data["sample"]["my_team"], sim.data["sample"]["grade"])
+
+# Compare slots / structures over many runs:
+agg = await client.call_tool("simulate_draft", {
+    "my_slot": 3, "num_teams": 12, "num_sims": 100
+})
+print(agg.data["aggregate"])  # avg roster structure + grade distribution
 ```
 
 #### ❤️ Health Endpoint (REST)
