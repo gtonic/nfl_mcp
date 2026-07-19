@@ -85,6 +85,87 @@ task run-docker   # Run in Docker
 task all          # Complete pipeline
 ```
 
+## 🚀 Going Live — Use It From Your AI Client
+
+The server speaks **MCP over HTTP** at `http://localhost:9000/mcp/`. Get it into
+an assistant (Claude Code, Claude Desktop, …) in three steps.
+
+### 1. Start the server
+
+```bash
+# Published image (recommended) — plus the env that unlocks full power:
+docker run -d --name nfl-mcp -p 9000:9000 \
+  -e NFL_MCP_ADVANCED_ENRICH=1 \   # real snap%/usage enrichment (in-season)
+  -e NFL_MCP_PREFETCH=1 \          # warm caches in the background
+  -e ODDS_API_KEY=your_key_here \  # optional: live Vegas lines (the-odds-api.com)
+  ghcr.io/gtonic/nfl_mcp:latest
+
+# Sanity check:
+curl -s http://localhost:9000/health | jq .status   # -> "healthy"
+```
+
+> The SQLite database is just a **cache** (athletes, schedules, enrichment). It
+> lives inside the container and repopulates itself from the APIs on demand
+> (e.g. `fetch_athletes`, or the background prefetch), so losing it on restart is
+> harmless — no volume required.
+
+### 2. Connect your MCP client
+
+**Claude Code (CLI):**
+```bash
+claude mcp add --transport http nfl-mcp http://localhost:9000/mcp/
+# then, in a session:
+/mcp            # verify "nfl-mcp" is connected and lists tools
+```
+
+**Claude Desktop / Cursor / other stdio clients** — bridge to the HTTP server
+with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote). Add to the client's
+MCP config (e.g. `claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "nfl-mcp": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:9000/mcp/"]
+    }
+  }
+}
+```
+Restart the client; the NFL tools then appear in the tool list.
+
+**Programmatic (Python):**
+```python
+from fastmcp import Client
+async with Client("http://localhost:9000/mcp/") as client:
+    print(await client.call_tool("get_player_values", {"scoring": "ppr"}))
+```
+
+### 3. Point it at your Sleeper league
+
+Everything Sleeper-related needs your **`league_id`**. You don't have to hunt for
+it — just ask the assistant, which uses the built-in tools:
+
+> *"My Sleeper username is **`your_name`**. Find my 2026 leagues."*
+> → runs `get_user` → `get_user_leagues(user_id, 2026)` and lists each `league_id`.
+
+(Or grab it from the app: an open league's URL is `sleeper.com/leagues/<league_id>/...`.)
+
+### What to try first
+
+**Now (pre-draft):**
+> *"Build my draft board for a 12-team PPR league, then simulate a draft from
+> slot 7 a hundred times and tell me the roster shape I should target."*
+> → `get_draft_board`, `simulate_draft`
+
+**On draft day** (create a Sleeper mock draft, grab its `draft_id`):
+> *"I'm in draft `<draft_id>` at slot 7 — who should I take right now?"*
+> → `recommend_draft_pick`
+
+**During the season** (with `league_id`):
+> *"Set my week-5 lineup, tell me my best FAAB bid on `<player>`, and what my
+> playoff odds are if I win vs lose this week."*
+> → `analyze_full_lineup` (auto-projections), `recommend_faab_bid`, `get_playoff_odds`
+
 ## Configuration
 
 The NFL MCP Server supports flexible configuration through environment variables and configuration files.
