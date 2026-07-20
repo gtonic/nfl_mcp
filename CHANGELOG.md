@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Evals — data-source contract checks** (`evals/contracts/`, Eval Layer B): a
+  daily, non-blocking `contracts.yml` workflow that hits FantasyCalc / nflverse /
+  Sleeper / ESPN and asserts the fields we depend on (`sleeperId`, `off_snp`,
+  `opponent_team`, …) still exist — the early-warning system that would have
+  caught the ESPN/FantasyPros defense-rankings breakage immediately. Critical
+  failures fail the job; offline runner tests included.
+
 ### Changed
 - **Matchup multiplier is now position-specific** (`matchup_multiplier()` in
   projections), tuned by the backtest: RB full weight, TE half, QB a quarter,
