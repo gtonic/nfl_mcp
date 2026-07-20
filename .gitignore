@@ -220,3 +220,6 @@ config.json
 *.db-shm
 *.patch
 .venv*/
+
+# eval cache
+evals/backtest/.cache/
