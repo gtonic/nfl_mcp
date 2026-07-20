@@ -56,6 +56,16 @@ class TestPureHelpers:
         reqs = dt._starter_requirements({"slots_qb": 1, "slots_rb": 2, "slots_wr": 3, "slots_te": 1, "slots_flex": 1})
         assert reqs == {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 1}
 
+    def test_starter_requirements_counts_all_flex_variants(self):
+        # Real Sleeper league: flex + wrrb_flex + rec_flex = 3 flex slots; super_flex -> QB.
+        reqs = dt._starter_requirements({
+            "slots_qb": 1, "slots_rb": 2, "slots_wr": 2, "slots_te": 1,
+            "slots_flex": 1, "slots_wrrb_flex": 1, "slots_rec_flex": 1,
+            "slots_super_flex": 1,
+        })
+        assert reqs["FLEX"] == 3
+        assert reqs["QB"] == 2  # base QB + superflex
+
     def test_need_multiplier(self):
         reqs = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1}
         # need a starter -> boosted

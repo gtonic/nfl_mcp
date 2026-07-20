@@ -161,6 +161,13 @@ it — just ask the assistant, which uses the built-in tools:
 > *"I'm in draft `<draft_id>` at slot 7 — who should I take right now?"*
 > → `recommend_draft_pick`
 
+> **Pre-draft flight check** — validate the whole draft flow against your real
+> league before draft day (drives the live Sleeper API through our code):
+> ```bash
+> python -m evals.live.validate_draft --username your_sleeper_name --season 2026
+> # or --league-id <id> / --draft-id <id>
+> ```
+
 **During the season** (with `league_id`):
 > *"Set my week-5 lineup, tell me my best FAAB bid on `<player>`, and what my
 > playoff odds are if I win vs lose this week."*

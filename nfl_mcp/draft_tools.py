@@ -199,7 +199,10 @@ def _starter_requirements(settings: Dict) -> Dict[str, int]:
             return int(s.get(k, 0) or 0)
         except (TypeError, ValueError):
             return 0
-    flex = g("slots_flex") + g("slots_wrrb_flex") + g("slots_rb_wr") + g("slots_rb_wr_te")
+    # Sleeper uses several names for flexible skill-position slots. Count them all
+    # (verified against a real league that had slots_rec_flex, which we'd missed).
+    flex = (g("slots_flex") + g("slots_wrrb_flex") + g("slots_rb_wr")
+            + g("slots_rb_wr_te") + g("slots_rec_flex") + g("slots_wr_te"))
     return {
         "QB": g("slots_qb") + g("slots_super_flex"),
         "RB": g("slots_rb"),
