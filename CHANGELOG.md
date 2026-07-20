@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skewing the roster-need weighting in `recommend_draft_pick`.
 
 ### Added
+- **Draft-Day Playbook** (`docs/DRAFT_DAY.md`) + **live "war room" watcher**
+  (`evals/live/draft_watch.py`): the playbook documents the full before/during
+  draft workflow, how to read the recommendations, and where the tool leads
+  (value rounds) vs where your judgment does (bench depth / handcuffs). The
+  watcher polls a live Sleeper draft and recommends a pick each time you're on
+  the clock, flipping to a bench-depth overlay once your starters are full.
+  Distilled from a full live run against a real Sleeper draft.
 - **Pre-draft flight check** (`evals/live/validate_draft.py`): runs the real
   Sleeper draft flow (`get_draft` → `get_draft_picks` → `recommend_draft_pick`)
   against your actual league/draft by username, league id or draft id — a
