@@ -1,0 +1,31 @@
+name: Source Contracts
+
+# Layer B — live data-source contract checks. Runs DAILY (breakage should be
+# caught fast) and on demand. NOT part of PR CI (it's live/networked). The job
+# goes red — and GitHub notifies — if a CRITICAL upstream contract breaks
+# (e.g. FantasyCalc drops sleeperId, or the nflverse/Sleeper shape changes).
+on:
+  schedule:
+    - cron: "0 13 * * *"   # daily 13:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  contracts:
+    name: Data-source contract checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run contract checks (fails on critical breakage)
+        run: python -m evals.contracts.checks

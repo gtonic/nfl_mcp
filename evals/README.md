@@ -11,12 +11,11 @@ different places and run on different cadences.
 
 | Layer | Question | Where | Cadence |
 |-------|----------|-------|---------|
-| **A. Analytical accuracy** (this dir) | Do our outputs predict reality? | `evals/backtest/` | scheduled / on-demand |
+| **A. Analytical accuracy** | Do our outputs predict reality? | `evals/backtest/` | scheduled / on-demand |
 | **B. Contract checks** | Do the data sources & tools still return the schema we depend on? | `tests/` (offline) + `evals/contracts/` (live, scheduled) | PR + scheduled |
 | **C. Agent / tool-use** | Does an LLM *use* the tools correctly and safely? | `evals/agent/` | on tool-description changes |
 
-> Only **Layer A** is implemented so far. Layers B and C are on the roadmap
-> (see the bottom of this file).
+> **Layers A and B are implemented.** Layer C is on the roadmap (see the bottom).
 
 Why the split? The fast unit tests (`tests/`, PR-blocking) prove the code *runs*.
 Evals prove the code is *right about football* — which needs real historical data
@@ -168,16 +167,50 @@ Layer A is for.
 
 ---
 
+---
+
+## Layer B — data-source contract checks (`evals/contracts/`)
+
+An **early-warning system.** Every day, hit each upstream source and assert the
+fields our code depends on still exist. This is exactly what would have caught the
+ESPN/FantasyPros defense-rankings breakage the day it happened, instead of it
+silently degrading to placeholder data.
+
+Where possible a check drives our *own* code (so it also catches our parsing
+breaking); the field-level checks hit the raw API so a failure pinpoints an
+*upstream* change.
+
+| Check | Level | Asserts |
+|-------|-------|---------|
+| `fantasycalc.values` | critical | list of values; `player.sleeperId`, `position`, `value`, `positionRank`; and our value service returns them |
+| `nflverse.defense_rankings` | critical | 32 teams × QB/RB/WR/TE, computed via our analyzer, `source == nflverse` |
+| `nflverse.usage_columns` | critical | player_stats CSV parses with `fantasy_points_ppr` + targets/carries |
+| `sleeper.state` | critical | `week` / `season` / `season_type` |
+| `sleeper.week_stats` | critical | `off_snp` / `tm_off_snp` / `rec_tgt` present (snap%/usage enrichment) |
+| `sleeper.players` | warn | big players map; entries have `position` + name |
+| `espn.teams` | warn | ≥32 teams with `abbreviation` |
+| `espn.news` | warn | articles with headlines |
+
+Checks auto-fall-back to the most recent season that has published data, so they
+stay green year-round.
+
+```bash
+python -m evals.contracts.checks     # exits non-zero iff a CRITICAL check fails
+```
+
+Runs daily via `.github/workflows/contracts.yml` (+ manual dispatch). A **critical**
+failure turns the job red and GitHub notifies you; **warn** failures are reported
+but don't fail the job. Offline runner tests live in `tests/test_eval_contracts.py`.
+
+---
+
 ## Roadmap
 
 - ~~Apply the finding: position-aware matchup multipliers, then re-measure.~~ ✅ done.
-- **More targets:** backtest start/sit hit-rate, defense-ranking predictive
-  validity (split-sample), FAAB bid ↔ realized value, and playoff-odds
+- ~~Layer B — live source contract checks.~~ ✅ done (`evals/contracts/`).
+- **More Layer A targets:** backtest start/sit hit-rate, defense-ranking
+  predictive validity (split-sample), FAAB bid ↔ realized value, and playoff-odds
   **calibration** (Brier score) once multi-season snapshots exist.
-- **Layer B — contract checks** (`evals/contracts/`): a scheduled job that hits
-  FantasyCalc / nflverse / Sleeper / ESPN and asserts the fields we depend on
-  (`sleeperId`, `off_snp`, `opponent_team`, …) still exist. This is exactly what
-  would have caught the ESPN/FantasyPros defense-rankings breakage early.
 - **Layer C — agent evals** (`evals/agent/`): prompt → expected tool selection +
   answer assertions (incl. "must not present fallback/stale data as confident"),
   run against an LLM with the MCP server attached.
