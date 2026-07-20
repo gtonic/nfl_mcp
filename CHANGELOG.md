@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Draft starter requirements now count all Sleeper flex variants** — validating
+  the live draft flow against a real 10-team league surfaced that
+  `slots_rec_flex` (and `slots_wr_te`) were ignored, undercounting FLEX and
+  skewing the roster-need weighting in `recommend_draft_pick`.
+
 ### Added
+- **Pre-draft flight check** (`evals/live/validate_draft.py`): runs the real
+  Sleeper draft flow (`get_draft` → `get_draft_picks` → `recommend_draft_pick`)
+  against your actual league/draft by username, league id or draft id — a
+  green/red pre-flight before draft day. Verified end-to-end against a real
+  completed Sleeper draft.
 - **Evals — agent tool-routing** (`evals/agent/`, Eval Layer C): scenarios of
   realistic prompts → the tool(s) an assistant should call, with tool schemas
   derived from the live registry. A key-gated runner checks the model routes
