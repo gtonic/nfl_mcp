@@ -15,7 +15,8 @@ different places and run on different cadences.
 | **B. Contract checks** | Do the data sources & tools still return the schema we depend on? | `tests/` (offline) + `evals/contracts/` (live, scheduled) | PR + scheduled |
 | **C. Agent / tool-use** | Does an LLM *use* the tools correctly and safely? | `evals/agent/` | on tool-description changes |
 
-> **Layers A and B are implemented.** Layer C is on the roadmap (see the bottom).
+> **All three layers are implemented.** Layer C's live run is gated behind an
+> API key; its offline guards run in normal CI.
 
 Why the split? The fast unit tests (`tests/`, PR-blocking) prove the code *runs*.
 Evals prove the code is *right about football* — which needs real historical data
@@ -204,16 +205,50 @@ but don't fail the job. Offline runner tests live in `tests/test_eval_contracts.
 
 ---
 
+## Layer C — agent / tool-use evals (`evals/agent/`)
+
+Does an LLM using our tools pick the **right tool** for a request? A wrong tool
+(or bad args) means a wrong answer no matter how good the analytics are — and
+tool *descriptions* are what drive that choice, so this guards them.
+
+- **Scenarios** (`scenarios.py`): realistic prompts → the tool(s) a good assistant
+  should call (any-of), plus optional argument assertions.
+- **Tool schemas** (`tools.py`): derived from the live `tool_registry` (name +
+  docstring + signature), so the eval sees exactly what production exposes. Pure
+  and offline.
+- **Runner** (`run.py`): single-turn routing — attach the tool schemas, ask the
+  model each prompt, and check it *chose* an acceptable tool with sensible args
+  (we inspect the `tool_use`, we don't execute the tool). Highest signal, lowest
+  cost.
+
+```bash
+export ANTHROPIC_API_KEY=...            # required for the live run
+python -m evals.agent.run --model claude-sonnet-5 --threshold 0.8
+# no key -> skips gracefully (exit 0)
+```
+
+Runs **on demand** via `.github/workflows/agent-evals.yml` (needs the
+`ANTHROPIC_API_KEY` repo secret; costs tokens). The **offline guards** —
+scenario/schema/registry validity and "every tool still has a description" — run
+in the normal test suite (`tests/test_agent_scenarios.py`), so tool-description
+regressions are caught on every PR without a key.
+
+> Not yet run against the live model in this repo (no key configured here). Add
+> the `ANTHROPIC_API_KEY` secret and dispatch the workflow to get routing numbers.
+
+---
+
 ## Roadmap
 
 - ~~Apply the finding: position-aware matchup multipliers, then re-measure.~~ ✅ done.
 - ~~Layer B — live source contract checks.~~ ✅ done (`evals/contracts/`).
+- ~~Layer C — agent tool-routing evals.~~ ✅ done (`evals/agent/`).
 - **More Layer A targets:** backtest start/sit hit-rate, defense-ranking
   predictive validity (split-sample), FAAB bid ↔ realized value, and playoff-odds
   **calibration** (Brier score) once multi-season snapshots exist.
-- **Layer C — agent evals** (`evals/agent/`): prompt → expected tool selection +
-  answer assertions (incl. "must not present fallback/stale data as confident"),
-  run against an LLM with the MCP server attached.
+- **Deeper Layer C:** faithfulness/safety judging (execute the tool, then check
+  the rendered answer doesn't present fallback/stale/unknown data as confident) —
+  needs a multi-turn loop + LLM-as-judge.
 
 ## CI
 The backtest runs in a **scheduled, non-PR-blocking** workflow

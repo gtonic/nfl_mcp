@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Evals — agent tool-routing** (`evals/agent/`, Eval Layer C): scenarios of
+  realistic prompts → the tool(s) an assistant should call, with tool schemas
+  derived from the live registry. A key-gated runner checks the model routes
+  correctly (single-turn); offline guards (scenario/schema/registry validity,
+  "every tool still has a description") run in normal CI so tool-description
+  regressions are caught on every PR. On-demand `agent-evals.yml` workflow.
 - **Evals — data-source contract checks** (`evals/contracts/`, Eval Layer B): a
   daily, non-blocking `contracts.yml` workflow that hits FantasyCalc / nflverse /
   Sleeper / ESPN and asserts the fields we depend on (`sleeperId`, `off_snp`,
