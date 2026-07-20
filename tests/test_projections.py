@@ -67,6 +67,17 @@ class TestPureHelpers:
         assert pj._injury_mult("questionable") == 0.9
         assert pj._injury_mult(None) == 1.0
 
+    def test_matchup_multiplier_is_position_specific(self):
+        # Data-driven (evals/backtest): RB matchup matters most, WR essentially not.
+        assert pj.matchup_multiplier("RB", "smash") > pj.matchup_multiplier("WR", "smash")
+        assert pj.matchup_multiplier("WR", "smash") == 1.0   # WR strength 0 -> no swing
+        assert pj.matchup_multiplier("WR", "elite") == 1.0
+        # RB swings both ways around 1.0
+        assert pj.matchup_multiplier("RB", "smash") > 1.0 > pj.matchup_multiplier("RB", "elite")
+        # unknown / neutral tier never moves anything
+        assert pj.matchup_multiplier("RB", "unknown") == 1.0
+        assert pj.matchup_multiplier("TE", "neutral") == 1.0
+
 
 class TestProjectMany:
     async def test_smash_and_environment_boost(self):

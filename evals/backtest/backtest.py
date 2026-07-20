@@ -41,7 +41,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional
 
 # Import the LIVE constants so the backtest evaluates production behaviour.
-from nfl_mcp.projections import _MATCHUP_MULT, _usage_mult
+from nfl_mcp.projections import matchup_multiplier, _MATCHUP_TIER_DEV, _usage_mult
 from nfl_mcp.matchup_tools import _get_matchup_tier
 
 from .data import load_season
@@ -74,10 +74,8 @@ def _defense_ranks(records: List[Dict], upto_week: int) -> Dict[str, Dict[str, i
     return ranks
 
 
-def _matchup_mult(rank: Optional[int]) -> float:
-    if not rank:
-        return 1.0
-    return _MATCHUP_MULT.get(_get_matchup_tier(rank), 1.0)
+def _tier_for(rank: Optional[int]) -> str:
+    return _get_matchup_tier(rank) if rank else "unknown"
 
 
 def _touch_trend(prior: List[Dict]) -> str:
@@ -126,7 +124,9 @@ def build_samples(
         if wk not in dcache:
             dcache[wk] = _defense_ranks(records, wk)
         rank = dcache[wk].get(r["position"], {}).get(r["opponent"])
-        m_mult = _matchup_mult(rank)
+        tier = _tier_for(rank)
+        m_mult = matchup_multiplier(r["position"], tier)  # position-aware (live)
+        tier_dev = _MATCHUP_TIER_DEV.get(tier, 0.0)        # raw ±dev for sweeps
         u_mult = _usage_mult(None, _touch_trend(prior))
 
         samples.append({
@@ -137,6 +137,7 @@ def build_samples(
             "usage": trailing * u_mult,
             "full": trailing * m_mult * u_mult,
             "matchup_mult": m_mult,
+            "tier_dev": tier_dev,
         })
     return samples
 
@@ -179,9 +180,29 @@ def run_backtest(
         preds = []
         for smp in samples:
             usage_factor = (smp["usage"] / smp["base"]) if smp["base"] else 1.0
-            scaled_m = 1 + s * (smp["matchup_mult"] - 1)
+            scaled_m = 1 + s * smp["tier_dev"]
             preds.append(smp["base"] * scaled_m * usage_factor)
         tuning.append({"strength": s, "mae": round(mae(preds, actuals), 3)})
+
+    # Per-position best matchup strength (drives position-specific multipliers).
+    grid = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25]
+    per_pos_tuning: Dict[str, Dict] = {}
+    for pos in ("QB", "RB", "WR", "TE"):
+        sub = [smp for smp in samples if smp["position"] == pos]
+        if not sub:
+            continue
+        acts = [smp["actual"] for smp in sub]
+        curve = []
+        for s in grid:
+            preds = []
+            for smp in sub:
+                scaled_m = 1 + s * smp["tier_dev"]
+                preds.append(smp["base"] * scaled_m)  # matchup-only, isolate its effect
+            curve.append({"strength": s, "mae": round(mae(preds, acts), 3)})
+        best = min(curve, key=lambda c: c["mae"])
+        per_pos_tuning[pos] = {"best_strength": best["strength"], "best_mae": best["mae"],
+                               "base_mae": round(mae([smp["base"] for smp in sub], acts), 3),
+                               "curve": curve}
     best = min(tuning, key=lambda t: t["mae"])
 
     return {
@@ -193,6 +214,7 @@ def run_backtest(
         "models": results,
         "per_position": per_pos,
         "tuning": {"sweep": tuning, "best_strength": best["strength"], "best_mae": best["mae"]},
+        "per_position_tuning": per_pos_tuning,
     }
 
 
@@ -231,6 +253,12 @@ def print_report(res: Dict) -> None:
             "we OVER-adjust; soften multipliers" if bs < 1.0 else
             "we UNDER-adjust; strengthen multipliers")
     print(f"\n  => best matchup strength ≈ {bs}  [{hint}]")
+
+    if res.get("per_position_tuning"):
+        print("\nBest matchup strength PER POSITION (matchup-only MAE vs base):")
+        for pos, d in res["per_position_tuning"].items():
+            print(f"  {pos}: best s={d['best_strength']:<5} "
+                  f"MAE {d['base_mae']} -> {d['best_mae']}")
     print("=" * 78)
 
 
