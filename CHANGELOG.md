@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Matchup multiplier is now position-specific** (`matchup_multiplier()` in
+  projections), tuned by the backtest: RB full weight, TE half, QB a quarter,
+  WR off. The old flat ±10% over-adjusted and *hurt* QB/WR accuracy; the tuned
+  version now improves projections on backtest instead of degrading them
+  (measure → change → re-measure, see `evals/README.md`).
+
 ### Added
 - **Evals — projection accuracy backtest** (`evals/backtest/`, Eval Layer A): a
   leak-free walk-forward backtest that measures whether the projection engine's

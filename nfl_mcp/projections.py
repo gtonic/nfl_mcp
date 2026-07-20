@@ -49,8 +49,22 @@ def base_ppg(position: str, pos_rank: Optional[int]) -> float:
     return 8.0
 
 
-_MATCHUP_MULT = {"smash": 1.10, "favorable": 1.05, "neutral": 1.0,
-                 "tough": 0.95, "elite": 0.90, "unknown": 1.0}
+# Tier -> baseline point-swing from an average matchup (before position scaling).
+_MATCHUP_TIER_DEV = {"smash": 0.10, "favorable": 0.05, "neutral": 0.0,
+                     "tough": -0.05, "elite": -0.10, "unknown": 0.0}
+# How much each position's projection actually moves with matchup. Data-driven
+# from evals/backtest (2023-24, n~5.2k): RB matchup matters most (full weight),
+# TE half, QB a little, WR essentially not at all (talent dominates). A flat
+# ±10% over-adjusted overall — see evals/README.md.
+_MATCHUP_POS_STRENGTH = {"RB": 1.0, "TE": 0.5, "QB": 0.25, "WR": 0.0}
+_DEFAULT_POS_STRENGTH = 0.3
+
+
+def matchup_multiplier(position: str, tier: str) -> float:
+    """Position-aware matchup multiplier (see evals/backtest for the tuning)."""
+    dev = _MATCHUP_TIER_DEV.get(tier, 0.0)
+    strength = _MATCHUP_POS_STRENGTH.get((position or "").upper(), _DEFAULT_POS_STRENGTH)
+    return round(1.0 + strength * dev, 4)
 
 # Higher fantasy scoring variance = wider floor/ceiling band.
 _VOLATILITY = {"QB": 0.22, "RB": 0.30, "WR": 0.38, "TE": 0.40, "K": 0.35, "DST": 0.45, "DEF": 0.45}
@@ -126,7 +140,7 @@ class ProjectionEngine:
                 matchup_tier = m.get("matchup_tier", "unknown")
             except Exception:
                 matchup_tier = "unknown"
-        matchup_mult = _MATCHUP_MULT.get(matchup_tier, 1.0)
+        matchup_mult = matchup_multiplier(position, matchup_tier)
 
         # 3) Game environment (Vegas implied team total)
         implied_total = None

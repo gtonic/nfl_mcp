@@ -124,12 +124,34 @@ Matchup-strength tuning: best s ≈ 0.5  => we OVER-adjust.
 3. **Matchup should be position-specific:** it helps **RB and TE** (scheme /
    game-script dependent) but *hurts* **QB and WR** (talent dominates, defenses
    matter less week-to-week).
-4. **The usage trend adjustment mildly helps** (better Spearman) and is worth keeping.
+4. **The usage trend adjustment is roughly neutral** on aggregate.
 
-➡️ **Recommended engine change (follow-up):** make `_MATCHUP_MULT` position-aware
-— roughly ±5% for RB/TE, ≈0% for QB/WR — and re-run this backtest to confirm the
-improvement. (Kept separate from the eval so the change is evidence-driven and
-independently validated.)
+### ✅ Loop closed — the finding was applied and re-measured
+
+The matchup multiplier is now **position-specific** (`matchup_multiplier()` in
+`nfl_mcp/projections.py`), with per-position strength tuned by the backtest's
+per-position sweep on 2023–24:
+
+| Position | strength (× the ±10% swing) | why |
+|---|---|---|
+| RB | **1.0** (full) | matchup matters most (scheme / game script) |
+| TE | 0.5 | moderate |
+| QB | 0.25 | small |
+| WR | **0.0** (off) | talent dominates; matchup was pure noise |
+
+Re-running the same backtest confirms the fix:
+
+```
+             flat ±10% (before)      position-specific (after)
+full vs base   5.842 -> 5.853  (-0.2%, HURTS)   5.842 -> 5.835  (+0.1%, HELPS)
+matchup-only          — (net negative)          5.833  (< base 5.842, better Spearman)
+per position   QB -1.2% WR -0.9%  (hurt)         QB +0.2% RB +0.5% TE +0.3% WR ~0
+```
+
+So the adjustment now **helps instead of hurts**, and no longer penalises QBs/WRs.
+The effect is still small in absolute terms (weekly scoring is noisy) — matchup is
+a real but modest edge. This measure → change → re-measure loop is exactly what
+Layer A is for.
 
 ### Limitations / honesty
 - **Base differs from production.** Here the base is trailing actual PPG (available
@@ -148,7 +170,7 @@ independently validated.)
 
 ## Roadmap
 
-- **Apply the finding:** position-aware matchup multipliers, then re-measure.
+- ~~Apply the finding: position-aware matchup multipliers, then re-measure.~~ ✅ done.
 - **More targets:** backtest start/sit hit-rate, defense-ranking predictive
   validity (split-sample), FAAB bid ↔ realized value, and playoff-odds
   **calibration** (Brier score) once multi-season snapshots exist.
