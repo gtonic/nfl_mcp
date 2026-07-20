@@ -168,6 +168,16 @@ it — just ask the assistant, which uses the built-in tools:
 > # or --league-id <id> / --draft-id <id>
 > ```
 
+> **Live "war room" watcher** — polls a live Sleeper draft and gives you a
+> recommendation each time you're on the clock (with a bench-depth overlay in the
+> late rounds):
+> ```bash
+> python -m evals.live.draft_watch --draft-id <draft_id> --my-slot 4
+> ```
+
+📖 **Full [Draft-Day Playbook](docs/DRAFT_DAY.md)** — before/during the draft, how
+to read the recommendations, and where the tool leads vs where your judgment does.
+
 **During the season** (with `league_id`):
 > *"Set my week-5 lineup, tell me my best FAAB bid on `<player>`, and what my
 > playoff odds are if I win vs lose this week."*
