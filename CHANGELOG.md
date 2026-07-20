@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Evals — projection accuracy backtest** (`evals/backtest/`, Eval Layer A): a
+  leak-free walk-forward backtest that measures whether the projection engine's
+  multipliers beat a trailing-PPG baseline against real nflverse outcomes
+  (MAE/RMSE/Spearman), and tunes the matchup strength. Imports the live constants
+  so it evaluates production. Scheduled, non-blocking `evals.yml` workflow +
+  `evals/README.md` documenting the 3-layer eval philosophy and findings.
+  (Finding: the flat ±10% matchup multiplier over-adjusts and should be
+  position-specific — helps RB/TE, hurts QB/WR.)
 - **Playoff odds** (`playoff_tools.py`) — `get_playoff_odds` Monte-Carlos the rest
   of the regular season (each team scores ~ Normal around its points-per-game),
   ranks by record then points, and reports each team's playoff probability and
