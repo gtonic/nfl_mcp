@@ -1,0 +1,40 @@
+name: Agent Evals
+
+# Layer C — LLM tool-routing evals. On-demand only (it calls the model and costs
+# tokens). Needs an ANTHROPIC_API_KEY repo secret; without it the run skips
+# gracefully. The offline guards (scenario/schema/registry) run in the normal
+# test suite, so tool-description regressions are still caught on every PR.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Anthropic model id"
+        default: "claude-sonnet-5"
+      threshold:
+        description: "Minimum pass rate (0-1)"
+        default: "0.8"
+
+jobs:
+  routing:
+    name: Tool-routing eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . anthropic
+
+      - name: Run agent tool-routing eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_EVAL_MODEL: ${{ github.event.inputs.model }}
+        run: |
+          python -m evals.agent.run --threshold "${{ github.event.inputs.threshold }}"
