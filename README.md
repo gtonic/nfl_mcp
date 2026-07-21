@@ -1,32 +1,55 @@
-# NFL MCP Server
+# 🏈 NFL MCP — Your AI Fantasy Football War Room
 
-A FastMCP 3.0 server that provides health monitoring, web content extraction, NFL news fetching, NFL teams information, and comprehensive fantasy league management through both REST and MCP protocols.
+> **Win your draft. Dominate your season. With data, not gut feeling.**
 
-## Features
+NFL MCP turns real NFL & fantasy data into a decisive edge — **70+ tools** that plug
+straight into your AI assistant (Claude Desktop, Claude Code, Cursor, …). Ask a plain
+question, get a data-backed answer: *who to draft, who to start, whether that trade is a
+fleece, and what your playoff odds really are* — for **your** league, **your** roster,
+**your** pick, in real time.
 
-- **Health Endpoint**: Non-MCP REST endpoint at `/health` for monitoring server status
-- **URL Crawling Tool**: MCP tool that crawls arbitrary URLs and extracts LLM-friendly text content
-- **NFL News Tool**: MCP tool that fetches the latest NFL news from ESPN API
-- **NFL Teams Tools**: Comprehensive MCP tools for NFL teams including:
-  - Team data fetching and database caching from ESPN API
-  - Depth chart retrieval for individual teams
-- **Fantasy Intelligence APIs**: Advanced MCP tools for fantasy football decision making:
-  - **Injury Reports**: Real-time injury status for start/sit decisions
-  - **Player Performance Stats**: Team player statistics and fantasy relevance indicators  
-  - **NFL Standings**: League standings with playoff implications and team motivation context
-  - **Team Schedules**: Matchup analysis with fantasy implications and strength of schedule
-- **CBS Fantasy Football Tools**: MCP tools for fetching CBS Sports fantasy content:
-  - **Player News**: Latest fantasy football player news and updates
-  - **Projections**: Weekly player projections by position with customizable scoring formats
-  - **Expert Picks**: NFL expert picks against the spread for informed betting and fantasy decisions
-- **Athlete Tools**: MCP tools for fetching, caching, and looking up NFL athletes from Sleeper API with SQLite persistence
-- **Sleeper API Tools**: Comprehensive MCP tools for fantasy league management including:
-  - League information, rosters, users, matchups, playoff brackets
-  - Transactions, traded picks, NFL state, trending players
-- **Flexible Configuration**: Environment variables and configuration files (YAML/JSON) with hot-reloading
-- **HTTP Transport**: Runs on HTTP transport protocol (default port 9000)
-- **Containerized**: Docker support for easy deployment
-- **Well Tested**: Comprehensive unit tests for all functionality
+This isn't another rankings site you tab away from mid-draft. It lives **inside your
+assistant** and answers the question you actually asked.
+
+## 🔥 Why you'll win
+
+**🎯 Draft day**
+- **VBD draft board** ranked by *value over replacement* — the ordering that wins drafts, not raw ADP.
+- **Live "war room"** — during your real Sleeper draft it reads the board live and calls the best pick *for your roster*, with **value-cliff** warnings ("grab him now or lose the tier") and **positional-run** alerts.
+- **Rehearse first** — run 100 mock drafts from your slot to learn your realistic roster before you're on the clock.
+
+**📊 Every week**
+- **Start/sit with automatic projections** — no manual point entry. `value × matchup × Vegas game-script × usage × injury`, with floor/ceiling and a transparent breakdown.
+- **A real matchup edge** — which defense a player actually feasts on, computed from real weekly results (not a stale rankings page).
+
+**🔄 Trades & waivers**
+- **Trade analyzer on real market values** — it knows your league's exact format and flags a lopsided deal *with evidence*, so nobody fleeces you.
+- **FAAB bids** — exactly how much to spend on that waiver breakout (market value + league demand + your budget).
+
+**🏆 Season strategy**
+- **Monte-Carlo playoff odds** — *"72% to make it — 84% if you win this week."* Real probabilities, not vibes.
+- Bye-week coordination, trade-deadline timing, opponent-weakness scouting.
+
+## ✅ Why you can trust it
+
+- **Real data, zero gut-feeling heuristics** — market-consensus values ([FantasyCalc](https://fantasycalc.com)), real weekly stats ([nflverse](https://github.com/nflverse)), your live league ([Sleeper](https://sleeper.com)), news & injuries (ESPN). No paid API keys required to start.
+- **Honest about uncertainty** — when it lacks live data it *says so* instead of faking a confident call.
+- **It grades its own accuracy.** A built-in backtest measures whether its projections actually beat a baseline on real past seasons, and a daily watchdog alerts if a data source changes. *Most fantasy tools never check whether they're right. This one does.*
+
+## ⚡ 60-second start
+
+```bash
+docker run --rm -p 9000:9000 ghcr.io/gtonic/nfl_mcp:latest
+```
+Connect it to your assistant ([2-minute guide](#-going-live--use-it-from-your-ai-client)), then just ask:
+
+> *"My Sleeper username is `gary` — find my league, build my draft board, and simulate a draft from my slot."*
+
+🎓 Draft-day tactics, start to finish: the **[Draft-Day Playbook](docs/DRAFT_DAY.md)**.
+
+---
+
+<sub><b>Under the hood:</b> a FastMCP 3.0 server exposing 70+ MCP tools over HTTP — containerized, published to GHCR, tested on Python 3.11 & 3.12 in CI, with a three-layer eval suite (accuracy backtest · data-source contracts · agent tool-routing). Full technical reference below.</sub>
 
 ## Quick Start
 
