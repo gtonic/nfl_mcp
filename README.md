@@ -2,6 +2,13 @@
 
 > **Win your draft. Dominate your season. With data, not gut feeling.**
 
+[![CI](https://github.com/gtonic/nfl_mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/gtonic/nfl_mcp/actions/workflows/ci.yml)
+[![Data-source watchdog](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml/badge.svg)](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml)
+[![Docker image](https://img.shields.io/badge/image-ghcr.io%2Fgtonic%2Fnfl__mcp-2496ED?logo=docker&logoColor=white)](https://github.com/gtonic/nfl_mcp/pkgs/container/nfl_mcp)
+[![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](https://github.com/gtonic/nfl_mcp)
+[![70+ MCP tools](https://img.shields.io/badge/MCP%20tools-70%2B-8A2BE2)](#-going-live--use-it-from-your-ai-client)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 NFL MCP turns real NFL & fantasy data into a decisive edge — **70+ tools** that plug
 straight into your AI assistant (Claude Desktop, Claude Code, Cursor, …). Ask a plain
 question, get a data-backed answer: *who to draft, who to start, whether that trade is a
@@ -10,6 +17,22 @@ fleece, and what your playoff odds really are* — for **your** league, **your**
 
 This isn't another rankings site you tab away from mid-draft. It lives **inside your
 assistant** and answers the question you actually asked.
+
+## 💬 See it in action
+
+> **You:** *"I'm on the clock at 1.09 in my 12-team half-PPR draft — who do I take?"*
+>
+> **🏈 NFL MCP:** *Jahmyr Gibbs (RB) — top value here (VBD 8787), and there's a **value cliff at RB after him (−1995)**. Elite WRs are deeper, so lock the RB now and grab WR at the turn.*
+
+> **You:** *"Start Puka Nacua or DeVonta Smith this week?"*
+>
+> **🏈 NFL MCP:** *Nacua — 18.7 projected (floor 11.6 / ceiling 25.8), ✅ high snap share, smash matchup. Smith's spot is tougher. Start Nacua with confidence.*
+
+> **You:** *"Is trading my Bijan for their CeeDee + a WR2 fair?"*
+>
+> **🏈 NFL MCP:** *Slightly favors you (fairness 82/100) — two startable pieces beat one stud for your thin WR room. ⚠️ You'd drop to 3 RB, so mind the depth.*
+
+<sub>Real tool outputs — value cliffs, projections with floor/ceiling, market-value trade fairness — rendered by your assistant.</sub>
 
 ## 🔥 Why you'll win
 
