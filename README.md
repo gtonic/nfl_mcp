@@ -299,7 +299,7 @@ docker run --rm -p 9000:9000 \
 
 ### Quick Overview
 
-The NFL MCP Server provides **60+ MCP tools** organized into these categories:
+The NFL MCP Server provides **70+ MCP tools** organized into these categories:
 
 #### 🏈 NFL Information (9 tools)
 - `get_nfl_news` - Latest NFL news from ESPN
@@ -523,7 +523,7 @@ Returns server health status.
 {
   "status": "healthy",
   "service": "NFL MCP Server", 
-  "version": "0.1.0"
+  "version": "0.6.0"
 }
 ```
 
