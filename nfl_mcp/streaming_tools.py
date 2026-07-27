@@ -164,6 +164,38 @@ def _needs_defense(positions: List[str]) -> bool:
     return any(p.upper() in DEFENSE_POSITIONS for p in positions)
 
 
+async def _rostered_ids(league_id: str) -> Tuple[set, bool]:
+    """Return (set of rostered player_ids, rosters_available)."""
+    from . import sleeper_tools
+    resp = await sleeper_tools.get_rosters(league_id)
+    rosters = resp.get("rosters") or []
+    rostered = {str(pid) for r in rosters for pid in (r.get("players") or [])}
+    return rostered, bool(rosters)
+
+
+def _unit_availability(position: str, team: str, rostered: set, db) -> Dict:
+    """Availability of a team's streamable unit at ``position`` in the league.
+
+    DST maps 1:1 (Sleeper DST id = team abbreviation). K/QB/TE/RB/WR enumerate the
+    team's players at that position from the athletes cache, each flagged
+    free_agent/rostered (a specific starter isn't singled out — a design note).
+    """
+    pos, team = position.upper(), (team or "").upper()
+    if pos in ("DST", "DEF"):
+        status = "rostered" if team in rostered else "free_agent"
+        return {"unit_player_id": team, "status": status, "has_free_agent": status == "free_agent"}
+    players = []
+    for a in (db.get_athletes_by_team(team) or []) if db else []:
+        if (a.get("position") or "").upper() == pos:
+            pid = str(a.get("id"))
+            players.append({
+                "player_id": pid,
+                "name": a.get("full_name"),
+                "status": "rostered" if pid in rostered else "free_agent",
+            })
+    return {"players": players, "has_free_agent": any(p["status"] == "free_agent" for p in players)}
+
+
 @handle_http_errors(
     default_data={"season": None, "weeks": [], "streaming_options": {}},
     operation_name="computing streaming options",
@@ -175,6 +207,8 @@ async def get_streaming_options(
     positions: Optional[List[str]] = None,
     strength_season: Optional[int] = None,
     top_n: int = 8,
+    league_id: Optional[str] = None,
+    only_available: bool = False,
 ) -> dict:
     """Rank weekly streaming options per position over the next 1-4 weeks.
 
@@ -192,6 +226,11 @@ async def get_streaming_options(
         strength_season: Season for the rankings prior (default auto: target
             season, else prior season before live data exists).
         top_n: Max options returned per position (default 8; 0 = all teams).
+        league_id: Sleeper league id — when given, each option is annotated with
+            free-agent availability (clean for DST; K/QB/TE/RB/WR list the team's
+            players at that position from the athletes cache).
+        only_available: with league_id, keep only options that have a free-agent
+            streamer (applied before top_n, so you get the top_n *available*).
 
     Returns a dict with ``streaming_options`` (per-position, best-first) plus
     ``defense_source_season`` / ``offense_source_season`` transparency fields.
@@ -229,10 +268,22 @@ async def get_streaming_options(
 
     scores = compute_streaming_scores(opponents, positions, def_rankings, off_rankings, analyzer)
 
+    # Optional free-agent availability from the league's rosters.
+    availability_active = False
+    rostered: set = set()
+    if league_id:
+        rostered, rosters_ok = await _rostered_ids(league_id)
+        availability_active = rosters_ok
+
     streaming_options: Dict[str, List[Dict]] = {}
     for pos, teams in scores.items():
         rows = [{"team": team, **data} for team, data in teams.items()]
         rows.sort(key=lambda r: r["stream_score"], reverse=True)
+        if availability_active:
+            for r in rows:
+                r["availability"] = _unit_availability(pos, r["team"], rostered, db)
+            if only_available:
+                rows = [r for r in rows if r["availability"]["has_free_agent"]]
         for i, r in enumerate(rows, 1):
             r["stream_rank"] = i
         streaming_options[pos] = rows[:top_n] if top_n else rows
@@ -244,6 +295,8 @@ async def get_streaming_options(
         notes.append("No live offense data — DST/K ratings are low-confidence.")
     if _needs_offense(positions) and not off_rankings:
         notes.append("No offense rankings available at all — DST/K could not be scored.")
+    if league_id and not availability_active:
+        notes.append(f"Could not load rosters for league {league_id} — availability not annotated.")
     notes.append("K accuracy improves with the weather/wind factor (planned).")
 
     return create_success_response({
@@ -254,6 +307,7 @@ async def get_streaming_options(
         "defense_is_fallback": def_fb,
         "offense_source_season": off_season,
         "offense_is_fallback": off_fb,
+        "availability_active": availability_active,
         "streaming_options": streaming_options,
         "stream_score_explained": (
             "0-100, higher = better weekly stream. QB/RB/WR/TE: softer opponent "

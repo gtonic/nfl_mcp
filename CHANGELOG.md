@@ -56,7 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per team, mirror of the defense rankings) to power the DST/K signals, with the
   same prior-season fallback (`offense_source_season` / `*_is_fallback`).
   Verified end-to-end against real 2025 data (Lions the #1 K stream, as
-  expected). K improves further once the weather/wind factor lands.
+  expected). K improves further once the weather/wind factor lands. Optional
+  `league_id` annotates each option with **free-agent availability** (clean for
+  DST via the team-abbrev id; K/QB/TE/RB/WR list the team's players at that
+  position), and `only_available=True` keeps just the streamers you can actually
+  add.
 - **Strength-of-schedule tools** (`nfl_mcp/sos_tools.py`) — new MCP tools
   `get_strength_of_schedule` (arbitrary week range) and `get_playoff_sos`
   (fantasy weeks 15-17) that rank NFL teams by schedule difficulty per position
