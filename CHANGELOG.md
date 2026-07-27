@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-07-27
+
 ### Security
 - **Multi-stage Docker build — drops `gcc`/`binutils` from the runtime image.**
   The build stage keeps the C toolchain (to compile any sdist-only dependency)
