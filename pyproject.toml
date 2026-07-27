@@ -97,8 +97,10 @@ ignore = [
 "__init__.py" = ["F401"]
 # All B023 hits here are enrichment closures defined AND consumed within the
 # same retry-loop iteration (captured vars are re-bound each pass), so they are
-# false positives. Revisit when sleeper_tools.py is split by domain.
+# false positives. (get_rosters stays in sleeper_tools; get_transactions' copies
+# moved to sleeper_transactions in the domain split.)
 "nfl_mcp/sleeper_tools.py" = ["B023"]
+"nfl_mcp/sleeper_transactions.py" = ["B023"]
 
 [tool.mypy]
 python_version = "3.11"
