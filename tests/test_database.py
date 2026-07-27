@@ -349,3 +349,29 @@ class TestAthleteDatabase:
         assert athlete["team_id"] == ""  # Should be empty string, not None
         assert athlete["position"] == ""
         assert athlete["status"] == ""
+
+
+class TestDatabasePathConfig:
+    """The DB path is configurable via NFL_MCP_DB_PATH so a persistent volume can
+    be mounted without code changes (every no-arg NFLDatabase() honors it)."""
+
+    def test_env_var_sets_default_path(self, tmp_path, monkeypatch):
+        target = tmp_path / "sub" / "nfl_cache.db"
+        target.parent.mkdir(parents=True)
+        monkeypatch.setenv("NFL_MCP_DB_PATH", str(target))
+        db = NFLDatabase()  # no explicit path -> falls back to the env var
+        assert db.db_path == target
+        assert target.exists()  # _ensure_database created it at the configured path
+
+    def test_explicit_path_overrides_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("NFL_MCP_DB_PATH", str(tmp_path / "from_env.db"))
+        explicit = tmp_path / "explicit.db"
+        db = NFLDatabase(str(explicit))
+        assert db.db_path == explicit
+        assert not (tmp_path / "from_env.db").exists()
+
+    def test_default_when_env_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("NFL_MCP_DB_PATH", raising=False)
+        monkeypatch.chdir(tmp_path)  # keep the default file out of the repo
+        db = NFLDatabase()
+        assert db.db_path == Path("nfl_data.db")
