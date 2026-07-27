@@ -30,7 +30,7 @@ async def test_get_league_leaders_multi(monkeypatch):
             ]}]},
             {"name": "rushingYards", "displayName": "Rushing Yards", "leaders": [{"leaders": [
                 {"rank": 1, "value": 1200, "athlete": {"id": "3", "displayName": "RB One"}, "team": {"id": "12", "abbreviation": "CCC"}}
-            ]}]}        
+            ]}]}
         ]
     }
     monkeypatch.setattr(nfl_tools, "create_http_client", lambda *a, **k: DummyClient(sample))

@@ -12,9 +12,9 @@ class TestValidateParams:
             "age": {"type": int, "required": True}
         }
         values = {"name": "John", "age": 30}
-        
+
         validated, errors = validate_params(schema, values)
-        
+
         assert len(errors) == 0
         assert validated["name"] == "John"
         assert validated["age"] == 30
@@ -26,9 +26,9 @@ class TestValidateParams:
             "age": {"type": int, "required": True}
         }
         values = {"name": "John"}  # age is missing
-        
-        validated, errors = validate_params(schema, values)
-        
+
+        _validated, errors = validate_params(schema, values)
+
         assert len(errors) > 0
         assert "age" in errors[0].lower() or "required" in errors[0].lower()
 
@@ -39,9 +39,9 @@ class TestValidateParams:
             "debug": {"type": bool, "default": False}
         }
         values = {"name": "John"}
-        
+
         validated, errors = validate_params(schema, values)
-        
+
         assert len(errors) == 0
         assert validated["debug"] is False
 
@@ -51,9 +51,9 @@ class TestValidateParams:
             "count": {"type": int, "required": True}
         }
         values = {"count": "not_an_int"}  # String instead of int
-        
-        validated, errors = validate_params(schema, values)
-        
+
+        _validated, errors = validate_params(schema, values)
+
         assert len(errors) > 0
         assert "type" in errors[0].lower() or "int" in errors[0].lower()
 
@@ -62,22 +62,22 @@ class TestValidateParams:
         schema = {
             "age": {"type": int, "min": 0, "max": 120}
         }
-        
+
         # Too low
         values = {"age": -1}
         validated, errors = validate_params(schema, values)
         assert len(errors) > 0
         assert ">=" in errors[0]
-        
+
         # Too high
         values = {"age": 150}
         validated, errors = validate_params(schema, values)
         assert len(errors) > 0
         assert "<=" in errors[0]
-        
+
         # Valid
         values = {"age": 30}
-        validated, errors = validate_params(schema, values)
+        _validated, errors = validate_params(schema, values)
         assert len(errors) == 0
 
     def test_validate_params_choices(self):
@@ -85,15 +85,15 @@ class TestValidateParams:
         schema = {
             "status": {"type": str, "choices": ["active", "inactive", "pending"]}
         }
-        
+
         # Valid choice
         values = {"status": "active"}
         validated, errors = validate_params(schema, values)
         assert len(errors) == 0
-        
+
         # Invalid choice
         values = {"status": "unknown"}
-        validated, errors = validate_params(schema, values)
+        _validated, errors = validate_params(schema, values)
         assert len(errors) > 0
         assert "one of" in errors[0].lower()
 
@@ -104,9 +104,9 @@ class TestValidateParams:
             "age": {"type": int, "required": True, "nullable": False}
         }
         values = {"name": None, "age": 30}
-        
+
         validated, errors = validate_params(schema, values)
-        
+
         assert len(errors) == 0
         assert validated["name"] is None
         assert validated["age"] == 30
@@ -117,9 +117,9 @@ class TestValidateParams:
             "count": {"type": int, "required": True}
         }
         values = {"count": "42"}
-        
+
         validated, errors = validate_params(schema, values)
-        
+
         assert len(errors) == 0
         assert validated["count"] == 42
 
@@ -128,15 +128,15 @@ class TestValidateParams:
         schema = {
             "value": {"type": (str, int), "required": True}
         }
-        
+
         # String is valid
         values = {"value": "test"}
         validated, errors = validate_params(schema, values)
         assert len(errors) == 0
-        
+
         # Int is also valid
         values = {"value": 123}
-        validated, errors = validate_params(schema, values)
+        _validated, errors = validate_params(schema, values)
         assert len(errors) == 0
 
 

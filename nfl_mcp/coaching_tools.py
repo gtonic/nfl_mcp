@@ -1,12 +1,12 @@
 """
 Coaching-related MCP tools for the NFL MCP Server.
 
-This module contains MCP tools for fetching coaching staff data, 
+This module contains MCP tools for fetching coaching staff data,
 coach records, and coaching tree information from ESPN API.
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 import httpx
 
@@ -35,32 +35,32 @@ TEAM_ID_MAP = {
 def _get_espn_team_id(team_id: str) -> str:
     """
     Convert team abbreviation to ESPN numeric team ID.
-    
+
     Args:
         team_id: Team abbreviation (e.g., 'KC', 'NE') or numeric ID
-        
+
     Returns:
         ESPN numeric team ID as string. If the team abbreviation is not found
         in the mapping, returns the original input (useful for numeric IDs or
         when the API should handle validation).
     """
     team_upper = team_id.upper().strip()
-    
+
     # If it's already numeric, return as-is
     if team_upper.isdigit():
         return team_upper
-    
+
     # Look up in mapping
     return TEAM_ID_MAP.get(team_upper, team_upper)
 
 
-def _classify_coach_role(role_name: str) -> Dict[str, Any]:
+def _classify_coach_role(role_name: str) -> dict[str, Any]:
     """
     Classify a coach role into standard categories.
-    
+
     Args:
         role_name: The raw role name from ESPN API
-        
+
     Returns:
         Dictionary with role classification containing:
         - category: 'head_coach', 'coordinator', 'position_coach', or 'assistant'
@@ -68,7 +68,7 @@ def _classify_coach_role(role_name: str) -> Dict[str, Any]:
         - is_coordinator: Boolean indicating if this is a coordinator role
     """
     role_lower = role_name.lower()
-    
+
     if 'head coach' in role_lower:
         return {"category": "head_coach", "side": "both", "is_coordinator": False}
     elif 'offensive coordinator' in role_lower:
@@ -80,11 +80,7 @@ def _classify_coach_role(role_name: str) -> Dict[str, Any]:
     # Tokenize so 2-letter abbreviations (qb/wr/te/rb/lb) match whole words only
     # and don't false-positive on substrings like "special TEams" -> "te".
     words = set(role_lower.replace('-', ' ').split())
-    if 'quarterback' in role_lower or 'qb' in words:
-        return {"category": "position_coach", "side": "offense", "is_coordinator": False}
-    elif 'receiver' in role_lower or 'tight end' in role_lower or 'wr' in words or 'te' in words:
-        return {"category": "position_coach", "side": "offense", "is_coordinator": False}
-    elif 'running back' in role_lower or 'offensive line' in role_lower or 'rb' in words:
+    if 'quarterback' in role_lower or 'qb' in words or 'receiver' in role_lower or 'tight end' in role_lower or 'wr' in words or 'te' in words or 'running back' in role_lower or 'offensive line' in role_lower or 'rb' in words:
         return {"category": "position_coach", "side": "offense", "is_coordinator": False}
     elif (any(pos in role_lower for pos in ['linebacker', 'defensive line', 'secondary', 'corner', 'safety'])
           or 'lb' in words):
@@ -100,13 +96,13 @@ def _classify_coach_role(role_name: str) -> Dict[str, Any]:
 async def get_coaching_staff(team_id: str) -> dict:
     """
     Get the coaching staff for a specific NFL team from ESPN API.
-    
+
     This tool fetches coaching information including head coach, coordinators,
     and position coaches from ESPN's Core API.
-    
+
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE') or ESPN team ID
-        
+
     Returns:
         A dictionary containing:
         - team_id: The team identifier used
@@ -125,15 +121,15 @@ async def get_coaching_staff(team_id: str) -> dict:
             "Team ID is required and must be a string",
             {"team_id": team_id, "team_name": None, "coaches": [], "head_coach": None}
         )
-    
+
     team_id_upper = team_id.upper().strip()
     espn_team_id = _get_espn_team_id(team_id_upper)
-    
+
     headers = get_http_headers("nfl_teams")
-    
+
     # ESPN Core API endpoint for team coaches
     url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{espn_team_id}/coaches"
-    
+
     async with create_http_client() as client:
         try:
             response = await client.get(url, headers=headers)
@@ -150,19 +146,19 @@ async def get_coaching_staff(team_id: str) -> dict:
                     "message": f"No coaching data found for team '{team_id}'. Team may not exist or data unavailable."
                 })
             raise
-        
+
         # Parse JSON response
         data = response.json()
-        
+
         # ESPN Core API returns a list of coach references that need to be followed
         coach_refs = data.get('items', [])
-        
+
         coaches = []
         head_coach = None
         offensive_coordinator = None
         defensive_coordinator = None
         team_name = None
-        
+
         # Fetch details for each coach reference
         for coach_ref in coach_refs:
             ref_url = coach_ref.get('$ref', '')
@@ -171,7 +167,7 @@ async def get_coaching_staff(team_id: str) -> dict:
                     coach_response = await client.get(ref_url, headers=headers)
                     coach_response.raise_for_status()
                     coach_data = coach_response.json()
-                    
+
                     # Extract coach info
                     coach_info = {
                         "id": coach_data.get('id', ''),
@@ -181,11 +177,11 @@ async def get_coaching_staff(team_id: str) -> dict:
                         "role": coach_data.get('position', {}).get('name', 'Unknown'),
                         "experience": coach_data.get('experience', None),
                     }
-                    
+
                     # Classify the role
                     role_info = _classify_coach_role(coach_info['role'])
                     coach_info.update(role_info)
-                    
+
                     # Get team name if we don't have it yet
                     if not team_name:
                         team_ref = coach_data.get('team', {}).get('$ref', '')
@@ -197,9 +193,9 @@ async def get_coaching_staff(team_id: str) -> dict:
                                 team_name = team_data.get('displayName', team_data.get('name', ''))
                             except Exception:
                                 pass
-                    
+
                     coaches.append(coach_info)
-                    
+
                     # Track key positions
                     if coach_info['category'] == 'head_coach':
                         head_coach = coach_info
@@ -207,11 +203,11 @@ async def get_coaching_staff(team_id: str) -> dict:
                         offensive_coordinator = coach_info
                     elif 'defensive coordinator' in coach_info['role'].lower():
                         defensive_coordinator = coach_info
-                        
+
                 except Exception as e:
                     logger.warning(f"Failed to fetch coach details from {ref_url}: {e}")
                     continue
-        
+
         return create_success_response({
             "team_id": team_id_upper,
             "team_name": team_name,
@@ -230,10 +226,10 @@ async def get_coaching_staff(team_id: str) -> dict:
 async def get_all_coaching_staffs() -> dict:
     """
     Get coaching staff information for all NFL teams.
-    
+
     This tool fetches coaching information for all 32 NFL teams,
     returning a summary of each team's coaching staff.
-    
+
     Returns:
         A dictionary containing:
         - teams: List of teams with their coaching staff summary
@@ -242,43 +238,43 @@ async def get_all_coaching_staffs() -> dict:
         - error: Error message (if any)
     """
     headers = get_http_headers("nfl_teams")
-    
+
     teams_url = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams?limit=32"
-    
+
     async with create_http_client() as client:
         # First, get all teams
         response = await client.get(teams_url, headers=headers)
         response.raise_for_status()
-        
+
         teams_data = response.json()
         team_refs = teams_data.get('items', [])
-        
+
         all_teams = []
-        
+
         for team_ref in team_refs:
             team_url = team_ref.get('$ref', '')
             if not team_url:
                 continue
-                
+
             try:
                 # Fetch team details
                 team_response = await client.get(team_url, headers=headers)
                 team_response.raise_for_status()
                 team_info = team_response.json()
-                
+
                 team_id = team_info.get('abbreviation', team_info.get('id', ''))
                 team_name = team_info.get('displayName', team_info.get('name', ''))
-                
+
                 # Fetch coaches for this team
                 coaches_url = f"{team_url}/coaches"
                 try:
                     coaches_response = await client.get(coaches_url, headers=headers)
                     coaches_response.raise_for_status()
                     coaches_data = coaches_response.json()
-                    
+
                     coach_refs = coaches_data.get('items', [])
                     head_coach_name = None
-                    
+
                     # Get head coach name
                     for coach_ref in coach_refs[:5]:  # Check first 5 coaches
                         ref_url = coach_ref.get('$ref', '')
@@ -293,14 +289,14 @@ async def get_all_coaching_staffs() -> dict:
                                     break
                             except Exception:
                                 continue
-                    
+
                     all_teams.append({
                         "team_id": team_id,
                         "team_name": team_name,
                         "head_coach": head_coach_name,
                         "coach_count": len(coach_refs)
                     })
-                    
+
                 except Exception as e:
                     logger.warning(f"Failed to fetch coaches for team {team_id}: {e}")
                     all_teams.append({
@@ -309,14 +305,14 @@ async def get_all_coaching_staffs() -> dict:
                         "head_coach": None,
                         "coach_count": 0
                     })
-                    
+
             except Exception as e:
                 logger.warning(f"Failed to fetch team details: {e}")
                 continue
-        
+
         # Sort by team name
         all_teams.sort(key=lambda x: x.get('team_name', ''))
-        
+
         return create_success_response({
             "teams": all_teams,
             "total_teams": len(all_teams)
@@ -367,13 +363,13 @@ COACHING_TREES = {
 async def get_coaching_tree(coach_name: str) -> dict:
     """
     Get coaching tree information for a known NFL coach.
-    
+
     This tool provides information about a coach's mentors, proteges,
     and scheme family. Based on historical coaching lineage data.
-    
+
     Args:
         coach_name: The coach's name (e.g., 'Andy Reid', 'Bill Belichick')
-        
+
     Returns:
         A dictionary containing:
         - coach_name: The coach name queried
@@ -389,13 +385,13 @@ async def get_coaching_tree(coach_name: str) -> dict:
             "Coach name is required and must be a string",
             {"coach_name": coach_name, "found": False}
         )
-    
+
     # Normalize coach name for lookup
     coach_name_normalized = coach_name.strip().title()
-    
+
     # Look up in known coaching trees
     tree_data = COACHING_TREES.get(coach_name_normalized)
-    
+
     if tree_data:
         return create_success_response({
             "coach_name": coach_name_normalized,
@@ -405,7 +401,7 @@ async def get_coaching_tree(coach_name: str) -> dict:
             "known_for": tree_data.get("known_for", []),
             "found": True
         })
-    
+
     # Check if the name appears as a protege in any tree
     for head_coach, data in COACHING_TREES.items():
         if coach_name_normalized in data.get("proteges", []):
@@ -418,7 +414,7 @@ async def get_coaching_tree(coach_name: str) -> dict:
                 "found": True,
                 "note": f"Coach found as protege of {head_coach}"
             })
-    
+
     return create_success_response({
         "coach_name": coach_name_normalized,
         "mentors": [],
@@ -470,13 +466,13 @@ TEAM_SCHEMES = {
 async def get_scheme_classification(team_id: str) -> dict:
     """
     Get the offensive and defensive scheme classification for an NFL team.
-    
+
     This tool provides the general scheme philosophy for a team's
     offense and defense, useful for player fit analysis.
-    
+
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE')
-        
+
     Returns:
         A dictionary containing:
         - team_id: The team identifier
@@ -490,17 +486,17 @@ async def get_scheme_classification(team_id: str) -> dict:
             "Team ID is required and must be a string",
             {"team_id": team_id}
         )
-    
+
     team_id_upper = team_id.upper().strip()
-    
+
     scheme_data = TEAM_SCHEMES.get(team_id_upper)
-    
+
     if scheme_data:
         # Generate scheme notes based on classification
         notes = []
         offense = scheme_data["offense"]
         defense = scheme_data["defense"]
-        
+
         if "Shanahan" in offense:
             notes.append("Emphasizes outside zone running and play-action")
         if "McVay" in offense:
@@ -511,14 +507,14 @@ async def get_scheme_classification(team_id: str) -> dict:
             notes.append("Multiple receiver sets, space creation")
         if "Erhardt-Perkins" in offense:
             notes.append("Concept-based playcalling, flexibility")
-        
+
         if "3-4" in defense:
             notes.append("Two-gap technique, versatile edge rushers")
         if "4-3" in defense:
             notes.append("One-gap technique, penetrating defensive line")
         if "Multiple" in defense:
             notes.append("Situational base changes, versatile personnel")
-        
+
         return create_success_response({
             "team_id": team_id_upper,
             "offensive_scheme": offense,
@@ -526,7 +522,7 @@ async def get_scheme_classification(team_id: str) -> dict:
             "scheme_notes": notes,
             "found": True
         })
-    
+
     return create_success_response({
         "team_id": team_id_upper,
         "offensive_scheme": None,

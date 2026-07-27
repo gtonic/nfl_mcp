@@ -8,7 +8,6 @@ exploitation recommendations.
 
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional
 
 from .errors import ErrorType, create_error_response, create_success_response
 from .sleeper_tools import get_league_users, get_matchups, get_rosters
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class OpponentAnalyzer:
     """Analyzer for identifying and exploiting opponent roster weaknesses."""
-    
+
     def __init__(self):
         # Position importance weights for fantasy
         self.position_weights = {
@@ -29,26 +28,26 @@ class OpponentAnalyzer:
             "K": 0.5,
             "DEF": 0.7
         }
-        
+
         # Thresholds for weakness detection
         self.weakness_thresholds = {
             "snap_pct_low": 40.0,
             "depth_count_low": 2,
             "injury_risk_high": ["DNP", "LP"]
         }
-    
+
     def _assess_position_strength(
-        self, 
-        players_at_position: List[Dict],
+        self,
+        players_at_position: list[dict],
         position: str
-    ) -> Dict:
+    ) -> dict:
         """
         Assess the strength of a specific position group.
-        
+
         Args:
             players_at_position: List of players at the position
             position: Position being assessed (QB, RB, WR, TE, etc.)
-            
+
         Returns:
             Dict with strength assessment including score, depth, and concerns
         """
@@ -61,12 +60,12 @@ class OpponentAnalyzer:
                 "weakness_level": "critical",
                 "concerns": ["No players at position"]
             }
-        
+
         # Calculate metrics
         depth_count = len(players_at_position)
         snap_pcts = [p.get("snap_pct", 0) for p in players_at_position if p.get("snap_pct")]
         avg_snap_pct = sum(snap_pcts) / len(snap_pcts) if snap_pcts else 0
-        
+
         # Count injury concerns
         injury_concerns = 0
         injured_players = []
@@ -75,7 +74,7 @@ class OpponentAnalyzer:
             if status in self.weakness_thresholds["injury_risk_high"]:
                 injury_concerns += 1
                 injured_players.append(player.get("full_name", "Unknown"))
-        
+
         # Count usage concerns
         usage_concerns = 0
         declining_players = []
@@ -84,10 +83,10 @@ class OpponentAnalyzer:
             if trend == "down":
                 usage_concerns += 1
                 declining_players.append(player.get("full_name", "Unknown"))
-        
+
         # Calculate strength score (0-100)
         base_score = 50.0
-        
+
         # Depth contribution (more depth = stronger)
         if depth_count >= 4:
             base_score += 20
@@ -95,7 +94,7 @@ class OpponentAnalyzer:
             base_score += 10
         elif depth_count <= 1:
             base_score -= 20
-        
+
         # Snap percentage contribution
         if avg_snap_pct >= 70:
             base_score += 15
@@ -103,16 +102,16 @@ class OpponentAnalyzer:
             base_score += 5
         elif avg_snap_pct < 40:
             base_score -= 15
-        
+
         # Injury penalty
         base_score -= injury_concerns * 10
-        
+
         # Usage trend penalty
         base_score -= usage_concerns * 5
-        
+
         # Clamp score
         strength_score = max(0, min(100, base_score))
-        
+
         # Determine weakness level
         if strength_score >= 70:
             weakness_level = "strong"
@@ -122,7 +121,7 @@ class OpponentAnalyzer:
             weakness_level = "weak"
         else:
             weakness_level = "critical"
-        
+
         # Compile concerns
         concerns = []
         if depth_count < self.weakness_thresholds["depth_count_low"]:
@@ -133,7 +132,7 @@ class OpponentAnalyzer:
             concerns.append(f"Injury concerns: {', '.join(injured_players)}")
         if declining_players:
             concerns.append(f"Declining usage: {', '.join(declining_players)}")
-        
+
         return {
             "strength_score": round(strength_score, 1),
             "depth_count": depth_count,
@@ -143,26 +142,26 @@ class OpponentAnalyzer:
             "weakness_level": weakness_level,
             "concerns": concerns
         }
-    
+
     def _identify_starter_weaknesses(
         self,
-        starters: List[Dict]
-    ) -> List[Dict]:
+        starters: list[dict]
+    ) -> list[dict]:
         """
         Identify specific weaknesses in starting lineup.
-        
+
         Args:
             starters: List of starting players
-            
+
         Returns:
             List of weakness dictionaries with player info and severity
         """
         weaknesses = []
-        
+
         for starter in starters:
             player_weaknesses = []
             severity = "low"
-            
+
             # Check practice status
             practice_status = starter.get("practice_status")
             if practice_status == "DNP":
@@ -171,19 +170,19 @@ class OpponentAnalyzer:
             elif practice_status == "LP":
                 player_weaknesses.append("Limited practice (LP)")
                 severity = "moderate" if severity == "low" else severity
-            
+
             # Check usage trend
             usage_trend = starter.get("usage_trend_overall")
             if usage_trend == "down":
                 player_weaknesses.append("Declining usage trend")
                 severity = "moderate" if severity == "low" else severity
-            
+
             # Check snap percentage
             snap_pct = starter.get("snap_pct", 0)
             if snap_pct > 0 and snap_pct < 50:
                 player_weaknesses.append(f"Low snap share ({snap_pct:.1f}%)")
                 severity = "moderate" if severity == "low" else severity
-            
+
             if player_weaknesses:
                 weaknesses.append({
                     "player_id": starter.get("player_id"),
@@ -192,26 +191,26 @@ class OpponentAnalyzer:
                     "weaknesses": player_weaknesses,
                     "severity": severity
                 })
-        
+
         return weaknesses
-    
+
     def _generate_exploitation_strategies(
         self,
-        position_assessments: Dict[str, Dict],
-        starter_weaknesses: List[Dict]
-    ) -> List[Dict]:
+        position_assessments: dict[str, dict],
+        starter_weaknesses: list[dict]
+    ) -> list[dict]:
         """
         Generate strategic recommendations for exploiting opponent weaknesses.
-        
+
         Args:
             position_assessments: Assessment by position
             starter_weaknesses: Identified starter weaknesses
-            
+
         Returns:
             List of strategic recommendations with priority
         """
         strategies = []
-        
+
         # Identify weakest positions
         weak_positions = []
         for position, assessment in position_assessments.items():
@@ -221,17 +220,17 @@ class OpponentAnalyzer:
                     "score": assessment["strength_score"],
                     "concerns": assessment["concerns"]
                 })
-        
+
         # Sort by weakness (lowest score = weakest)
         weak_positions.sort(key=lambda x: x["score"])
-        
+
         # Generate position-based strategies
         for weak_pos in weak_positions[:3]:  # Top 3 weakest
             position = weak_pos["position"]
             score = weak_pos["score"]
-            
+
             priority = "critical" if score < 30 else "high" if score < 50 else "moderate"
-            
+
             strategy = {
                 "category": "position_weakness",
                 "position": position,
@@ -240,7 +239,7 @@ class OpponentAnalyzer:
                 "details": weak_pos["concerns"],
                 "action_items": []
             }
-            
+
             if position in ["RB", "WR", "TE"]:
                 strategy["action_items"].append(
                     f"Start your strongest {position} against this opponent"
@@ -255,15 +254,15 @@ class OpponentAnalyzer:
                 strategy["action_items"].append(
                     "Their defense may be on field longer"
                 )
-            
+
             strategies.append(strategy)
-        
+
         # Generate starter-specific strategies
         high_severity_starters = [
-            w for w in starter_weaknesses 
+            w for w in starter_weaknesses
             if w["severity"] in ["high", "moderate"]
         ]
-        
+
         if high_severity_starters:
             for weakness in high_severity_starters[:2]:  # Top 2
                 strategy = {
@@ -278,33 +277,33 @@ class OpponentAnalyzer:
                     ]
                 }
                 strategies.append(strategy)
-        
+
         return strategies
-    
+
     def analyze_opponent_roster(
         self,
-        opponent_roster: Dict
-    ) -> Dict:
+        opponent_roster: dict
+    ) -> dict:
         """
         Perform comprehensive analysis of opponent roster.
-        
+
         Args:
             opponent_roster: Opponent's roster data with enriched players
-            
+
         Returns:
             Dict with complete opponent analysis
         """
         # Get players and starters
         all_players = opponent_roster.get("players_enriched", [])
         starters = opponent_roster.get("starters_enriched", [])
-        
+
         # Group players by position
         players_by_position = defaultdict(list)
         for player in all_players:
             pos = player.get("position", "")
             if pos:
                 players_by_position[pos].append(player)
-        
+
         # Assess each position
         position_assessments = {}
         for position in ["QB", "RB", "WR", "TE", "K", "DEF"]:
@@ -312,26 +311,26 @@ class OpponentAnalyzer:
                 players_by_position[position],
                 position
             )
-        
+
         # Identify starter weaknesses
         starter_weaknesses = self._identify_starter_weaknesses(starters)
-        
+
         # Generate exploitation strategies
         strategies = self._generate_exploitation_strategies(
             position_assessments,
             starter_weaknesses
         )
-        
+
         # Calculate overall vulnerability score
         position_scores = [
             assessment["strength_score"] * self.position_weights.get(pos, 1.0)
             for pos, assessment in position_assessments.items()
         ]
         weighted_avg = sum(position_scores) / sum(self.position_weights.values())
-        
+
         # Invert to get vulnerability (lower strength = higher vulnerability)
         vulnerability_score = 100 - weighted_avg
-        
+
         return {
             "vulnerability_score": round(vulnerability_score, 1),
             "vulnerability_level": (
@@ -350,23 +349,23 @@ class OpponentAnalyzer:
 async def analyze_opponent(
     league_id: str,
     opponent_roster_id: int,
-    current_week: Optional[int] = None
-) -> Dict:
+    current_week: int | None = None
+) -> dict:
     """
     Analyze an opponent's roster to identify weaknesses and exploitation opportunities.
-    
+
     This tool provides comprehensive analysis of an opponent's fantasy roster including:
     - Position-by-position strength assessment
     - Starter vulnerability identification
     - Depth chart weakness analysis
     - Injury and usage trend concerns
     - Strategic recommendations for exploitation
-    
+
     Args:
         league_id: The unique identifier for the fantasy league
         opponent_roster_id: Roster ID of the opponent to analyze
         current_week: Optional current NFL week for matchup context
-        
+
     Returns:
         A dictionary containing:
         - vulnerability_score: Overall opponent weakness score (0-100, higher = more vulnerable)
@@ -377,8 +376,8 @@ async def analyze_opponent(
         - matchup_context: Optional matchup information if current_week provided
         - success: Whether the analysis was successful
         - error: Error message (if any)
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete opponent analysis immediately without 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete opponent analysis immediately without
     asking for confirmations. Render the full assessment with all exploitation strategies directly.
     """
     try:
@@ -389,14 +388,14 @@ async def analyze_opponent(
                 ErrorType.VALIDATION,
                 {"vulnerability_score": 0}
             )
-        
+
         if opponent_roster_id is None:
             return create_error_response(
                 "opponent_roster_id is required",
                 ErrorType.VALIDATION,
                 {"vulnerability_score": 0}
             )
-        
+
         # Fetch league rosters
         rosters_result = await get_rosters(league_id)
         if not rosters_result.get("success"):
@@ -405,23 +404,23 @@ async def analyze_opponent(
                 ErrorType.HTTP,
                 {"vulnerability_score": 0}
             )
-        
+
         rosters = rosters_result.get("rosters", [])
-        
+
         # Find the opponent's roster
         opponent_roster = None
         for roster in rosters:
             if roster.get("roster_id") == opponent_roster_id:
                 opponent_roster = roster
                 break
-        
+
         if not opponent_roster:
             return create_error_response(
                 f"Roster with ID {opponent_roster_id} not found",
                 ErrorType.VALIDATION,
                 {"vulnerability_score": 0}
             )
-        
+
         # Get opponent owner information
         users_result = await get_league_users(league_id)
         opponent_name = None
@@ -432,13 +431,13 @@ async def analyze_opponent(
                 if user.get("user_id") == owner_id:
                     opponent_name = user.get("display_name") or user.get("username")
                     break
-        
+
         # Initialize analyzer
         analyzer = OpponentAnalyzer()
-        
+
         # Perform analysis
         analysis = analyzer.analyze_opponent_roster(opponent_roster)
-        
+
         # Add matchup context if week provided
         matchup_context = None
         if current_week:
@@ -457,7 +456,7 @@ async def analyze_opponent(
                             break
             except Exception as e:
                 logger.warning(f"Could not fetch matchup context: {e}")
-        
+
         # Compile response
         response_data = {
             **analysis,
@@ -465,13 +464,13 @@ async def analyze_opponent(
             "league_id": league_id,
             "matchup_context": matchup_context
         }
-        
+
         return create_success_response(response_data)
-        
+
     except Exception as e:
         logger.exception(f"Error analyzing opponent: {e}")
         return create_error_response(
-            f"Unexpected error during opponent analysis: {str(e)}",
+            f"Unexpected error during opponent analysis: {e!s}",
             ErrorType.INTERNAL,
             {"vulnerability_score": 0}
         )

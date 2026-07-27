@@ -17,7 +17,7 @@ import socket
 import time
 import urllib.parse
 from collections import defaultdict, deque
-from typing import Any, Dict
+from typing import Any
 
 import httpx
 
@@ -31,15 +31,15 @@ _rate_limit_storage = defaultdict(lambda: deque())
 class OutboundRateLimiter:
     """
     Token bucket rate limiter for outbound API calls.
-    
+
     Prevents hitting external API rate limits by controlling request rate.
     Thread-safe and async-compatible.
     """
-    
-    def __init__(self, calls_per_minute: int = 60, burst_capacity: int = None):
+
+    def __init__(self, calls_per_minute: int = 60, burst_capacity: int | None = None):
         """
         Initialize the rate limiter.
-        
+
         Args:
             calls_per_minute: Maximum sustained calls per minute
             burst_capacity: Maximum burst size (defaults to calls_per_minute)
@@ -49,14 +49,14 @@ class OutboundRateLimiter:
         self.tokens = float(self.capacity)
         self.last_update = time.monotonic()
         self._lock = asyncio.Lock()
-    
+
     async def acquire(self, tokens: int = 1) -> float:
         """
         Acquire tokens, waiting if necessary.
-        
+
         Args:
             tokens: Number of tokens to acquire (default 1)
-            
+
         Returns:
             Time waited in seconds
         """
@@ -68,43 +68,43 @@ class OutboundRateLimiter:
                 elapsed = now - self.last_update
                 self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
                 self.last_update = now
-                
+
                 if self.tokens >= tokens:
                     self.tokens -= tokens
                     return waited
-                
+
                 # Calculate wait time needed
                 tokens_needed = tokens - self.tokens
                 wait_time = tokens_needed / self.rate
                 await asyncio.sleep(min(wait_time, 1.0))  # Cap at 1 second chunks
                 waited += min(wait_time, 1.0)
-    
+
     def try_acquire(self, tokens: int = 1) -> bool:
         """
         Try to acquire tokens without waiting.
-        
+
         Args:
             tokens: Number of tokens to acquire
-            
+
         Returns:
             True if acquired, False if would need to wait
         """
         now = time.monotonic()
         elapsed = now - self.last_update
         current_tokens = min(self.capacity, self.tokens + elapsed * self.rate)
-        
+
         if current_tokens >= tokens:
             self.tokens = current_tokens - tokens
             self.last_update = now
             return True
         return False
-    
-    def get_status(self) -> Dict[str, Any]:
+
+    def get_status(self) -> dict[str, Any]:
         """Get current rate limiter status."""
         now = time.monotonic()
         elapsed = now - self.last_update
         current_tokens = min(self.capacity, self.tokens + elapsed * self.rate)
-        
+
         return {
             "available_tokens": round(current_tokens, 2),
             "capacity": self.capacity,
@@ -114,17 +114,17 @@ class OutboundRateLimiter:
 
 
 # Global rate limiters for external APIs
-_rate_limiters: Dict[str, OutboundRateLimiter] = {}
+_rate_limiters: dict[str, OutboundRateLimiter] = {}
 
 def get_rate_limiter(api_name: str) -> OutboundRateLimiter:
     """
     Get or create a rate limiter for an API.
-    
+
     Default limits:
     - sleeper: 100 calls/minute (generous, no published limit)
     - espn: 60 calls/minute (conservative)
     - default: 60 calls/minute
-    
+
     Can be overridden via environment variables:
     - NFL_MCP_SLEEPER_RATE_LIMIT
     - NFL_MCP_ESPN_RATE_LIMIT
@@ -133,7 +133,7 @@ def get_rate_limiter(api_name: str) -> OutboundRateLimiter:
         # Check for env var override
         env_key = f"NFL_MCP_{api_name.upper()}_RATE_LIMIT"
         env_value = os.getenv(env_key)
-        
+
         if env_value:
             try:
                 limit = int(env_value)
@@ -147,16 +147,16 @@ def get_rate_limiter(api_name: str) -> OutboundRateLimiter:
                 "cbs": 30,
             }
             limit = default_limits.get(api_name, 60)
-        
+
         _rate_limiters[api_name] = OutboundRateLimiter(
             calls_per_minute=limit,
             burst_capacity=min(limit * 2, 200)  # Allow burst up to 2x, max 200
         )
-    
+
     return _rate_limiters[api_name]
 
 
-def get_all_rate_limiter_status() -> Dict[str, Dict[str, Any]]:
+def get_all_rate_limiter_status() -> dict[str, dict[str, Any]]:
     """Get status of all rate limiters."""
     return {name: limiter.get_status() for name, limiter in _rate_limiters.items()}
 
@@ -164,26 +164,26 @@ def get_all_rate_limiter_status() -> Dict[str, Dict[str, Any]]:
 def check_rate_limit(identifier: str, limit: int, window_seconds: int = 60) -> bool:
     """
     Check if a request is within rate limits.
-    
+
     Args:
         identifier: Unique identifier (IP, user_id, etc.)
         limit: Maximum requests allowed in window
         window_seconds: Time window in seconds
-        
+
     Returns:
         True if request is allowed, False if rate limited
     """
     now = time.time()
     requests = _rate_limit_storage[identifier]
-    
+
     # Remove old requests outside the window
     while requests and requests[0] <= now - window_seconds:
         requests.popleft()
-    
+
     # Check if we're at the limit
     if len(requests) >= limit:
         return False
-    
+
     # Add current request
     requests.append(now)
     return True
@@ -192,25 +192,25 @@ def check_rate_limit(identifier: str, limit: int, window_seconds: int = 60) -> b
 def get_rate_limit_status(identifier: str, limit: int, window_seconds: int = 60) -> dict:
     """
     Get current rate limit status for an identifier.
-    
+
     Args:
         identifier: Unique identifier
         limit: Maximum requests allowed
         window_seconds: Time window in seconds
-        
+
     Returns:
         Dictionary with rate limit status information
     """
     now = time.time()
     requests = _rate_limit_storage[identifier]
-    
+
     # Remove old requests
     while requests and requests[0] <= now - window_seconds:
         requests.popleft()
-    
+
     remaining = max(0, limit - len(requests))
     reset_time = int(now + window_seconds) if requests else int(now)
-    
+
     return {
         "limit": limit,
         "remaining": remaining,
@@ -315,13 +315,13 @@ def _get_user_agents():
 USER_AGENTS = _get_user_agents()
 
 
-def get_http_headers(service_name: str) -> Dict[str, str]:
+def get_http_headers(service_name: str) -> dict[str, str]:
     """
     Get standardized HTTP headers for a service.
-    
+
     Args:
         service_name: The service name key from USER_AGENTS
-        
+
     Returns:
         Dictionary with standard headers including User-Agent
     """
@@ -367,10 +367,10 @@ ALLOWED_URL_SCHEMES = _get_allowed_url_schemes()
 def is_valid_url(url: str) -> bool:
     """
     Validate URL format for security.
-    
+
     Args:
         url: URL to validate
-        
+
     Returns:
         True if URL is valid and safe, False otherwise
     """
@@ -568,19 +568,19 @@ def _get_rate_limits():
 RATE_LIMITS = _get_rate_limits()
 
 
-def validate_string_input(value: str, input_type: str = 'general', max_length: int = None, required: bool = True) -> str:
+def validate_string_input(value: str, input_type: str = 'general', max_length: int | None = None, required: bool = True) -> str:
     """
     Validate and sanitize string inputs to prevent injection attacks.
-    
+
     Args:
         value: The string value to validate
         input_type: Type of input (general, id, name, team_id, league_id, trend_type)
         max_length: Maximum allowed length (uses ConfigManager default if None)
         required: Whether the input is required (cannot be empty)
-        
+
     Returns:
         Validated and sanitized string
-        
+
     Raises:
         ValueError: If validation fails
     """
@@ -588,64 +588,63 @@ def validate_string_input(value: str, input_type: str = 'general', max_length: i
         if required:
             raise ValueError("Required string input cannot be None")
         return ""
-    
+
     if not isinstance(value, str):
         raise ValueError(f"Input must be a string, got {type(value)}")
-    
+
     # Get max_length from ConfigManager if not provided
     if max_length is None:
         try:
             max_length = get_config_manager().config.security.max_string_length
         except Exception:
             max_length = 1000  # Fallback default
-    
+
     # Check length
     if len(value) > max_length:
         raise ValueError(f"Input length ({len(value)}) exceeds maximum ({max_length})")
-    
+
     if required and not value.strip():
         raise ValueError("Required string input cannot be empty")
-    
+
     # Validate against specific patterns if input_type is specified FIRST
-    if input_type in SAFE_PATTERNS:
-        if not SAFE_PATTERNS[input_type].match(value):
-            raise ValueError(f"Input does not match required pattern for {input_type}")
-    
+    if input_type in SAFE_PATTERNS and not SAFE_PATTERNS[input_type].match(value):
+        raise ValueError(f"Input does not match required pattern for {input_type}")
+
     # Sanitize the input
     sanitized = html.escape(value.strip())
-    
+
     # Check for dangerous patterns only if not a specific safe pattern type
     # and if injection detection is enabled
     try:
         enable_injection_detection = get_config_manager().config.security.enable_injection_detection
     except Exception:
         enable_injection_detection = True  # Default to enabled
-    
+
     if input_type not in SAFE_PATTERNS and enable_injection_detection:
         value_lower = value.lower()
         for pattern_type, patterns in DANGEROUS_PATTERNS.items():
             for pattern in patterns:
                 if re.search(pattern, value_lower, re.IGNORECASE):
                     raise ValueError(f"Input contains potentially dangerous pattern ({pattern_type})")
-    
+
     return sanitized
 
 
-def validate_numeric_input(value: Any, min_val: int = None, max_val: int = None, 
-                         default: int = None, required: bool = True) -> int:
+def validate_numeric_input(value: Any, min_val: int | None = None, max_val: int | None = None,
+                         default: int | None = None, required: bool = True) -> int:
     """
     Enhanced numeric validation with type checking and comprehensive validation.
-    
+
     Args:
         value: The value to validate
         min_val: Minimum allowed value
         max_val: Maximum allowed value
         default: Default value if None or invalid
         required: Whether the input is required
-        
+
     Returns:
         Validated integer value
-        
+
     Raises:
         ValueError: If validation fails and no default provided
     """
@@ -655,122 +654,122 @@ def validate_numeric_input(value: Any, min_val: int = None, max_val: int = None,
         if not required:
             return 0
         raise ValueError("Required numeric input cannot be None")
-    
+
     # Try to convert to int
     try:
         if isinstance(value, str):
             # Check for dangerous patterns in string numbers
             if any(char in value for char in ['$', '(', ')', ';', '|', '&']):
                 raise ValueError("Numeric input contains invalid characters")
-        
+
         int_value = int(value)
     except (ValueError, TypeError):
         if default is not None:
             return default
         raise ValueError(f"Cannot convert '{value}' to integer") from None
-    
+
     # Range validation
     if min_val is not None and int_value < min_val:
         if default is not None:
             return max(default, min_val)
         raise ValueError(f"Value {int_value} is below minimum {min_val}")
-    
+
     if max_val is not None and int_value > max_val:
         if default is not None:
             return min(default, max_val)
         raise ValueError(f"Value {int_value} exceeds maximum {max_val}")
-    
+
     return int_value
 
 
-def validate_limit(value: int, min_val: int, max_val: int, default: int = None) -> int:
+def validate_limit(value: int, min_val: int, max_val: int, default: int | None = None) -> int:
     """
     Validate and correct a limit parameter.
-    
+
     Args:
         value: The value to validate
         min_val: Minimum allowed value
         max_val: Maximum allowed value
         default: Default value if None or invalid
-        
+
     Returns:
         Validated and corrected value
     """
     if value is None:
         return default if default is not None else min_val
-    
+
     try:
         return validate_numeric_input(value, min_val, max_val, default, required=True)
     except ValueError:
         return default if default is not None else min_val
 
 
-def sanitize_content(content: str, max_length: int = None) -> str:
+def sanitize_content(content: str, max_length: int | None = None) -> str:
     """
     Sanitize text content for safe processing and display.
-    
+
     Args:
         content: Text content to sanitize
         max_length: Maximum length (truncates with ellipsis)
-        
+
     Returns:
         Sanitized content
     """
     if not content:
         return ""
-    
+
     # Remove potentially dangerous script tags and javascript first
     sanitized = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.IGNORECASE | re.DOTALL)
     sanitized = re.sub(r'javascript:', '', sanitized, flags=re.IGNORECASE)
-    
+
     # HTML escape
     sanitized = html.escape(sanitized)
-    
+
     # Normalize whitespace
     sanitized = re.sub(r'\s+', ' ', sanitized).strip()
-    
+
     # Truncate if needed
     if max_length and len(sanitized) > max_length:
         sanitized = sanitized[:max_length] + "..."
-    
+
     return sanitized
 
 
-def validate_url_enhanced(url: str, allowed_schemes: list = None, allowed_domains: list = None) -> bool:
+def validate_url_enhanced(url: str, allowed_schemes: list | None = None, allowed_domains: list | None = None) -> bool:
     """
     Enhanced URL validation with additional security checks.
-    
+
     Args:
         url: URL to validate
         allowed_schemes: List of allowed schemes (defaults to http/https)
         allowed_domains: Optional list of allowed domains
-        
+
     Returns:
         True if URL is valid and safe, False otherwise
     """
     if not url or not isinstance(url, str):
         return False
-    
+
     # Use existing basic validation first
     if not is_valid_url(url):
         return False
-    
+
     schemes = allowed_schemes or ALLOWED_URL_SCHEMES
-    
+
     try:
         parsed = urllib.parse.urlparse(url)
-        
+
         # Check scheme
         if not any(url.startswith(scheme) for scheme in schemes):
             return False
-        
+
         # Check for dangerous patterns
         url_lower = url.lower()
         for _pattern_type, patterns in DANGEROUS_PATTERNS.items():
             for pattern in patterns:
                 if re.search(pattern, url_lower):
                     return False
-        
+
         # Check domain restrictions if provided
         if allowed_domains and parsed.netloc:
             domain_allowed = any(
@@ -779,7 +778,7 @@ def validate_url_enhanced(url: str, allowed_schemes: list = None, allowed_domain
             )
             if not domain_allowed:
                 return False
-        
+
         # Prevent local/private network access (syntactic / offline check).
         # This does NOT resolve DNS — callers that actually fetch user-supplied
         # URLs must additionally gate on is_safe_public_url() at the fetch site.
@@ -797,6 +796,6 @@ def validate_url_enhanced(url: str, allowed_schemes: list = None, allowed_domain
                 return False
 
         return True
-        
+
     except Exception:
         return False

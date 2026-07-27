@@ -64,12 +64,33 @@ line-length = 100
 extend-exclude = ["FastMCP.txt", "*.egg-info", "docs", "examples"]
 
 [tool.ruff.lint]
-# Start with the high-signal correctness core: pyflakes (F), bugbear (B) and
-# import sorting (I). Stylistic/volume debt (blind-except BLE001, try-except-pass
-# SIM105, line length E501, whitespace W29x, annotation-style UP006/UP045) is
-# deliberately deferred to a follow-up cleanup so this gate stays green on the
-# existing code while still catching real regressions. See CHANGELOG.
-select = ["F", "B", "I"]
+# Correctness core (F/B/I) plus, after the debt cleanup, whitespace (E/W),
+# pyupgrade modernization (UP), simplifications (SIM), comprehensions (C4),
+# misc (PIE), Ruff-native checks (RUF) and timezone-aware datetimes (DTZ).
+select = ["F", "B", "I", "E", "W", "UP", "SIM", "C4", "PIE", "RUF", "DTZ"]
+ignore = [
+    "E501",   # line length — legacy long lines aren't worth reflowing
+    # Ambiguous-unicode: this project is full of emoji + docstrings; the
+    # warnings are noise here, not real homoglyph risks.
+    "RUF001", "RUF002", "RUF003",
+    # Blind `except Exception` is a deliberate best-effort pattern across the
+    # enrichment/fetch paths (graceful fallback); narrowing 160+ sites would
+    # change behavior. Not enforced (would be false-positive-heavy).
+    "BLE001",
+    # Manual-only style nits left after the auto-fix sweep. The *auto-fixable*
+    # members of these families (whitespace, pyupgrade, comprehensions, f-strings,
+    # …) ARE enforced; these specific hand-edit rules are deferred to targeted
+    # cleanups (and mostly superseded by the planned type-checker pass).
+    "E402",   # module-import-not-at-top (intentional lazy/conditional imports)
+    "E702",   # multi-statement semicolons (existing one-liner idiom)
+    "E741",   # ambiguous var names (l/O) in a few spots
+    "DTZ005", # naive datetime.now() (used for .year / cache-age — harmless)
+    "RUF012", # mutable class defaults (constants, never mutated)
+    "RUF059", # unused unpacked variable
+    "SIM102", "SIM105", "SIM108", "SIM115", "SIM116", "SIM117",  # collapsible/style
+    "C401",   # unnecessary generator
+    "PIE810", # multiple startswith/endswith
+]
 
 [tool.ruff.lint.per-file-ignores]
 # __init__.py re-exports are intentional, not dead imports.

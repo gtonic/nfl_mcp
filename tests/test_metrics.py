@@ -68,7 +68,7 @@ class TestMetricsCollector:
         # Add some metrics
         for i in range(100):
             collector.record_histogram("test_histogram", float(i))
-        
+
         metrics = collector.get_metrics()
         # Should still have the metrics (cleanup happens on next record)
         assert metrics["summaries"]["test_histogram"]["count"] == 100
@@ -82,7 +82,7 @@ class TestTimingDecorator:
         @timing_decorator("test_timing", category="test")
         def sync_func():
             return "success"
-        
+
         result = sync_func()
         assert result == "success"
 
@@ -92,7 +92,7 @@ class TestTimingDecorator:
         @timing_decorator("test_async_timing", category="test")
         async def async_func():
             return "async_success"
-        
+
         result = await async_func()
         assert result == "async_success"
 
@@ -102,9 +102,9 @@ class TestTimingDecorator:
             @timing_decorator("test_metric", type="timing")
             def test_func():
                 return "done"
-            
+
             test_func()
-            
+
             # Should have called increment_counter and record_timing
             assert mock_metrics.increment_counter.called
             assert mock_metrics.record_timing.called
@@ -114,7 +114,7 @@ class TestTimingDecorator:
         @timing_decorator("error_metric", category="test")
         def error_func():
             raise ValueError("test error")
-        
+
         with pytest.raises(ValueError, match="test error"):
             error_func()
 

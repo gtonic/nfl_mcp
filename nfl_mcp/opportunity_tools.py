@@ -11,7 +11,6 @@ import csv
 import logging
 import re
 from io import StringIO
-from typing import Dict, List, Optional
 
 from . import opportunity
 from .config import LONG_TIMEOUT, create_http_client
@@ -25,7 +24,7 @@ _STAT_FIELDS = (
     "receiving_yards", "receiving_tds", "rushing_yards", "rushing_tds",
     "passing_yards", "passing_tds", "interceptions",
 )
-_logs_cache: Dict[int, Dict[str, Dict]] = {}
+_logs_cache: dict[int, dict[str, dict]] = {}
 
 
 def _to_float(v) -> float:
@@ -35,12 +34,12 @@ def _to_float(v) -> float:
         return 0.0
 
 
-def parse_game_logs(csv_text: str) -> Dict[str, Dict]:
+def parse_game_logs(csv_text: str) -> dict[str, dict]:
     """Parse nflverse weekly CSV into ``{player_id: {name, position, team, games[...]}}``.
 
     Only regular-season QB/RB/WR/TE rows are kept. Pure/testable.
     """
-    logs: Dict[str, Dict] = {}
+    logs: dict[str, dict] = {}
     for row in csv.DictReader(StringIO(csv_text)):
         if (row.get("season_type") or "").upper() != "REG":
             continue
@@ -66,7 +65,7 @@ def parse_game_logs(csv_text: str) -> Dict[str, Dict]:
     return logs
 
 
-async def _fetch_game_logs(season: int) -> Dict[str, Dict]:
+async def _fetch_game_logs(season: int) -> dict[str, dict]:
     """Fetch + parse a season's game logs (cached per season). ``{}`` if unavailable."""
     if season in _logs_cache:
         return _logs_cache[season]
@@ -85,7 +84,7 @@ async def _fetch_game_logs(season: int) -> Dict[str, Dict]:
     return logs
 
 
-def _match(entry: Dict, query: str) -> bool:
+def _match(entry: dict, query: str) -> bool:
     q = query.strip().lower()
     return q == entry["player_id"].lower() or q in (entry["name"] or "").lower()
 
@@ -93,7 +92,7 @@ def _match(entry: Dict, query: str) -> bool:
 _SUFFIX_RE = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b")
 
 
-def norm_name(s: Optional[str]) -> str:
+def norm_name(s: str | None) -> str:
     """Normalize a player name for cross-source matching (nflverse ↔ league)."""
     s = (s or "").lower()
     s = re.sub(r"[.',]", "", s)
@@ -101,19 +100,19 @@ def norm_name(s: Optional[str]) -> str:
     return " ".join(s.split())
 
 
-def build_name_index(logs: Dict[str, Dict]) -> Dict[str, Dict]:
+def build_name_index(logs: dict[str, dict]) -> dict[str, dict]:
     """Index game logs by normalized player name for O(1) projection lookup."""
     return {norm_name(e["name"]): e for e in logs.values()}
 
 
 def opportunity_base_for(
-    name_index: Dict[str, Dict],
+    name_index: dict[str, dict],
     name: str,
     position: str,
     week: int,
     lookback: int = opportunity.DEFAULT_LOOKBACK,
     min_games: int = 2,
-) -> Optional[float]:
+) -> float | None:
     """Opportunity projection for a player (by name) usable as a projection base.
 
     Returns None when the player isn't found, the position isn't a skill/QB
@@ -128,7 +127,7 @@ def opportunity_base_for(
     return opportunity.project_opportunity(prior, position, lookback=lookback)
 
 
-def _project_entry(entry: Dict, week: int, lookback: int, min_games: int) -> Optional[Dict]:
+def _project_entry(entry: dict, week: int, lookback: int, min_games: int) -> dict | None:
     """Project one player from games before `week`. None if too few prior games."""
     prior = [g for g in entry["games"] if g["week"] < week]
     if len(prior) < min_games:
@@ -158,7 +157,7 @@ def _project_entry(entry: Dict, week: int, lookback: int, min_games: int) -> Opt
 async def get_opportunity_projections(
     season: int,
     week: int,
-    players: Optional[List[str]] = None,
+    players: list[str] | None = None,
     lookback: int = opportunity.DEFAULT_LOOKBACK,
     min_games: int = 2,
     top_n: int = 50,

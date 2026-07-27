@@ -18,13 +18,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import tempfile
-from typing import List, Optional
 
 from nfl_mcp import draft_tools as dt
 from nfl_mcp import sleeper_tools as st
 from nfl_mcp.database import NFLDatabase
 
-_results: List[dict] = []
+_results: list[dict] = []
 
 
 def _ok(name: str, detail: str):
@@ -37,7 +36,7 @@ def _fail(name: str, detail: str):
     print(f"  ❌ {name:<26} {detail}")
 
 
-async def _resolve_draft_id(args) -> Optional[str]:
+async def _resolve_draft_id(args) -> str | None:
     if args.draft_id:
         return args.draft_id
     if args.league_id:

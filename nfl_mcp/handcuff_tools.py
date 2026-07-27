@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
 
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .opportunity_tools import norm_name
@@ -26,12 +25,12 @@ logger = logging.getLogger(__name__)
 # label per row — the row is keyed by the starter's name.
 
 
-def _clean_name(name: Optional[str]) -> str:
+def _clean_name(name: str | None) -> str:
     """Strip ESPN's trailing injury tag (Q/O/D/IR/PUP/SUS…) and whitespace."""
     return re.sub(r"(?<=[a-z])[A-Z]+$", "", (name or "").strip())
 
 
-def handcuff_from_depth(depth_chart: List[Dict], starter_name: str) -> Tuple[Optional[str], str]:
+def handcuff_from_depth(depth_chart: list[dict], starter_name: str) -> tuple[str | None, str]:
     """The immediate backup behind ``starter_name`` on the team's depth chart.
 
     Returns ``(handcuff_name_or_None, method)``:
@@ -58,7 +57,7 @@ def handcuff_from_depth(depth_chart: List[Dict], starter_name: str) -> Tuple[Opt
     return None, "not_on_depth_chart"
 
 
-def _availability(player_id: Optional[str], rostered: Dict[str, int], my_roster_id: int) -> str:
+def _availability(player_id: str | None, rostered: dict[str, int], my_roster_id: int) -> str:
     if not player_id or player_id not in rostered:
         return "free_agent"
     return "yours" if rostered[player_id] == my_roster_id else "rostered_by_opponent"
@@ -96,8 +95,8 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
         )
 
     # player_id -> roster_id, and locate your roster.
-    rostered: Dict[str, int] = {}
-    my_players: List[str] = []
+    rostered: dict[str, int] = {}
+    my_players: list[str] = []
     for r in rosters:
         rid = r.get("roster_id")
         for pid in (r.get("players") or []):
@@ -113,9 +112,9 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
     athletes = db.get_athletes_by_ids(my_players)
     my_rbs = [a for a in athletes.values() if (a.get("position") or "").upper() == "RB"]
 
-    depth_cache: Dict[str, List[Dict]] = {}
-    team_athletes_cache: Dict[str, List[Dict]] = {}
-    handcuffs: List[Dict] = []
+    depth_cache: dict[str, list[dict]] = {}
+    team_athletes_cache: dict[str, list[dict]] = {}
+    handcuffs: list[dict] = []
 
     for rb in my_rbs:
         starter = rb.get("full_name")

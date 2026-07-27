@@ -167,15 +167,15 @@ class TestGetAllCoachingStaffs:
                 }
             ]
         }
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
             result = await get_all_coaching_staffs()
-            
+
             assert result["success"] is True
             assert "teams" in result
             assert "total_teams" in result
@@ -186,15 +186,15 @@ class TestGetAllCoachingStaffs:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"items": []}
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
             result = await get_all_coaching_staffs()
-            
+
             assert result["success"] is True
             assert result["total_teams"] == 0
 
@@ -212,7 +212,7 @@ class TestGetCoachingStaff:
             "abbreviation": "KC",
             "displayName": "Kansas City Chiefs"
         }
-        
+
         # Mock coaches response
         coaches_mock = MagicMock()
         coaches_mock.status_code = 200
@@ -221,7 +221,7 @@ class TestGetCoachingStaff:
                 {"$ref": "https://example.com/coach/1"}
             ]
         }
-        
+
         # Mock coach details
         coach_mock = MagicMock()
         coach_mock.status_code = 200
@@ -231,15 +231,15 @@ class TestGetCoachingStaff:
             "lastName": "Reid",
             "position": {"name": "Head Coach"}
         }
-        
+
         mock_client = AsyncMock()
         mock_client.get.side_effect = [coaches_mock, coach_mock, team_mock]
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
             result = await get_coaching_staff("KC")
-            
+
             assert result["success"] is True
             assert "coaches" in result
 
@@ -247,21 +247,21 @@ class TestGetCoachingStaff:
     async def test_coaching_staff_404(self):
         """Test coaching staff fetch with 404 response."""
         import httpx
-        
+
         mock_response = MagicMock()
         mock_response.status_code = 404
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "404", request=MagicMock(), response=mock_response
         )
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
             result = await get_coaching_staff("INVALID")
-            
+
             assert result["success"] is True  # Handled gracefully
             assert "message" in result
 

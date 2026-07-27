@@ -22,12 +22,12 @@ class _FakeService:
 
 class TestTradeAnalyzerModule:
     """Test the trade_analyzer_tools module functionality."""
-    
+
     def test_module_imports_successfully(self):
         """Test that the trade_analyzer_tools module can be imported."""
         assert hasattr(trade_analyzer_tools, 'analyze_trade')
         assert hasattr(trade_analyzer_tools, 'TradeAnalyzer')
-    
+
     def test_trade_analyzer_initialization(self):
         """Test TradeAnalyzer class can be initialized."""
         analyzer = trade_analyzer_tools.TradeAnalyzer()
@@ -35,11 +35,11 @@ class TestTradeAnalyzerModule:
         assert hasattr(analyzer, 'position_tiers')
         assert 'QB' in analyzer.position_tiers
         assert 'RB' in analyzer.position_tiers
-    
+
     def test_calculate_player_value_basic(self):
         """Test basic player value calculation."""
         analyzer = trade_analyzer_tools.TradeAnalyzer()
-        
+
         player = {
             "player_id": "1234",
             "full_name": "Test Player",
@@ -47,7 +47,7 @@ class TestTradeAnalyzerModule:
         }
 
         # Not in the consensus list -> replacement-level estimate.
-        value, source, market = analyzer._calculate_player_value(player, _FakeService(), {})
+        value, source, _market = analyzer._calculate_player_value(player, _FakeService(), {})
         assert value == pytest.approx(ESTIMATED_REPLACEMENT_VALUE)
         assert source == "estimated"
 
@@ -102,11 +102,11 @@ class TestTradeAnalyzerModule:
 
         # Upward trend should have higher value
         assert value_up > value_down
-    
+
     def test_calculate_positional_needs(self):
         """Test positional need calculation."""
         analyzer = trade_analyzer_tools.TradeAnalyzer()
-        
+
         roster = {
             "players_enriched": [
                 {"player_id": "1", "position": "QB"},
@@ -123,63 +123,63 @@ class TestTradeAnalyzerModule:
                 {"player_id": "4", "position": "WR"}
             ]
         }
-        
+
         needs = analyzer._calculate_positional_needs(roster)
-        
+
         assert "QB" in needs
         assert "RB" in needs
         assert "WR" in needs
         assert "TE" in needs
-        
+
         # Should need QB more (only 1) than WR (has 3)
         assert needs["QB"] > needs["WR"]
-    
+
     def test_evaluate_trade_fairness_balanced(self):
         """Test trade fairness evaluation for balanced trade."""
         analyzer = trade_analyzer_tools.TradeAnalyzer()
-        
+
         team1_gives = [
             {"player_id": "1", "full_name": "Player 1", "position": "RB", "calculated_value": 70}
         ]
         team2_gives = [
             {"player_id": "2", "full_name": "Player 2", "position": "WR", "calculated_value": 72}
         ]
-        
+
         team1_needs = {"RB": 5, "WR": 6}
         team2_needs = {"RB": 7, "WR": 4}
-        
-        recommendation, fairness_score, details = analyzer._evaluate_trade_fairness(
+
+        recommendation, fairness_score, _details = analyzer._evaluate_trade_fairness(
             team1_gives, team2_gives, team1_needs, team2_needs
         )
-        
+
         assert fairness_score >= 75  # Should be fairly balanced
         assert "fair" in recommendation.lower() or "slightly" in recommendation.lower()
-    
+
     def test_evaluate_trade_fairness_lopsided(self):
         """Test trade fairness evaluation for lopsided trade."""
         analyzer = trade_analyzer_tools.TradeAnalyzer()
-        
+
         team1_gives = [
             {"player_id": "1", "full_name": "Star Player", "position": "RB", "calculated_value": 90}
         ]
         team2_gives = [
             {"player_id": "2", "full_name": "Bench Player", "position": "WR", "calculated_value": 30}
         ]
-        
+
         team1_needs = {"RB": 3, "WR": 5}
         team2_needs = {"RB": 5, "WR": 3}
-        
-        recommendation, fairness_score, details = analyzer._evaluate_trade_fairness(
+
+        recommendation, fairness_score, _details = analyzer._evaluate_trade_fairness(
             team1_gives, team2_gives, team1_needs, team2_needs
         )
-        
+
         assert fairness_score < 75  # Should be lopsided
         assert "needs_adjustment" in recommendation or "unfair" in recommendation
 
 
 class TestTradeAnalyzerIntegration:
     """Integration tests for trade analyzer with mocked dependencies."""
-    
+
     @pytest.mark.asyncio
     async def test_analyze_trade_missing_parameters(self):
         """Test analyze_trade with missing required parameters."""
@@ -190,11 +190,11 @@ class TestTradeAnalyzerIntegration:
             team1_gives=[],
             team2_gives=["4034"]
         )
-        
+
         assert result["success"] is False
         assert "error" in result
         assert result["recommendation"] is None
-    
+
     @pytest.mark.asyncio
     async def test_analyze_trade_rosters_fetch_fails(self):
         """Test analyze_trade when roster fetch fails."""
@@ -204,7 +204,7 @@ class TestTradeAnalyzerIntegration:
                 "error": "API error",
                 "rosters": []
             }
-            
+
             result = await trade_analyzer_tools.analyze_trade(
                 league_id="12345",
                 team1_roster_id=1,
@@ -212,11 +212,11 @@ class TestTradeAnalyzerIntegration:
                 team1_gives=["4034"],
                 team2_gives=["4035"]
             )
-            
+
             assert result["success"] is False
             assert "error" in result
             assert "rosters" in result["error"].lower()
-    
+
     @pytest.mark.asyncio
     async def test_analyze_trade_roster_not_found(self):
         """Test analyze_trade when roster IDs don't exist."""
@@ -228,7 +228,7 @@ class TestTradeAnalyzerIntegration:
                     {"roster_id": 6, "players_enriched": [], "starters_enriched": []}
                 ]
             }
-            
+
             result = await trade_analyzer_tools.analyze_trade(
                 league_id="12345",
                 team1_roster_id=1,
@@ -236,11 +236,11 @@ class TestTradeAnalyzerIntegration:
                 team1_gives=["4034"],
                 team2_gives=["4035"]
             )
-            
+
             assert result["success"] is False
             assert "error" in result
             assert "roster" in result["error"].lower()
-    
+
     @pytest.mark.asyncio
     async def test_analyze_trade_successful_basic(self):
         """Test successful trade analysis with basic data."""
@@ -270,13 +270,13 @@ class TestTradeAnalyzerIntegration:
                     }
                 ]
             }
-            
+
             with patch('nfl_mcp.trade_analyzer_tools.get_trending_players') as mock_trending:
                 mock_trending.return_value = {
                     "success": True,
                     "trending_players": []
                 }
-                
+
                 result = await trade_analyzer_tools.analyze_trade(
                     league_id="12345",
                     team1_roster_id=1,
@@ -285,7 +285,7 @@ class TestTradeAnalyzerIntegration:
                     team2_gives=["4036"],
                     include_trending=True
                 )
-                
+
                 assert result["success"] is True
                 assert "recommendation" in result
                 assert "fairness_score" in result
@@ -293,18 +293,18 @@ class TestTradeAnalyzerIntegration:
                 assert "team2_analysis" in result
                 assert "trade_details" in result
                 assert "warnings" in result
-                
+
                 # Check team1 analysis structure
                 assert result["team1_analysis"]["roster_id"] == 1
                 assert len(result["team1_analysis"]["gives"]) == 1
                 assert len(result["team1_analysis"]["receives"]) == 1
                 assert "positional_needs" in result["team1_analysis"]
-                
+
                 # Check team2 analysis structure
                 assert result["team2_analysis"]["roster_id"] == 2
                 assert len(result["team2_analysis"]["gives"]) == 1
                 assert len(result["team2_analysis"]["receives"]) == 1
-    
+
     @pytest.mark.asyncio
     async def test_analyze_trade_with_injured_player_warning(self):
         """Test trade analysis generates warning for injured players."""
@@ -333,10 +333,10 @@ class TestTradeAnalyzerIntegration:
                     }
                 ]
             }
-            
+
             with patch('nfl_mcp.trade_analyzer_tools.get_trending_players') as mock_trending:
                 mock_trending.return_value = {"success": False}
-                
+
                 result = await trade_analyzer_tools.analyze_trade(
                     league_id="12345",
                     team1_roster_id=1,
@@ -345,13 +345,13 @@ class TestTradeAnalyzerIntegration:
                     team2_gives=["4036"],
                     include_trending=False
                 )
-                
+
                 assert result["success"] is True
                 assert len(result["warnings"]) > 0
                 # Should have a warning about DNP status
                 dnp_warnings = [w for w in result["warnings"] if "DNP" in w]
                 assert len(dnp_warnings) > 0
-    
+
     @pytest.mark.asyncio
     async def test_analyze_trade_multi_player_trade(self):
         """Test trade analysis with multiple players on each side."""
@@ -378,10 +378,10 @@ class TestTradeAnalyzerIntegration:
                     }
                 ]
             }
-            
+
             with patch('nfl_mcp.trade_analyzer_tools.get_trending_players') as mock_trending:
                 mock_trending.return_value = {"success": False}
-                
+
                 result = await trade_analyzer_tools.analyze_trade(
                     league_id="12345",
                     team1_roster_id=1,
@@ -390,7 +390,7 @@ class TestTradeAnalyzerIntegration:
                     team2_gives=["4", "5"],
                     include_trending=False
                 )
-                
+
                 assert result["success"] is True
                 assert len(result["team1_analysis"]["gives"]) == 2
                 assert len(result["team1_analysis"]["receives"]) == 2
@@ -400,21 +400,21 @@ class TestTradeAnalyzerIntegration:
 
 class TestTradeAnalyzerToolRegistry:
     """Test trade analyzer tool registration and validation."""
-    
+
     @pytest.mark.asyncio
     async def test_tool_registry_has_analyze_trade(self):
         """Test that analyze_trade is registered in tool_registry."""
         from nfl_mcp import tool_registry
-        
+
         assert hasattr(tool_registry, 'analyze_trade')
         func = tool_registry.analyze_trade
         assert callable(func)
-    
+
     @pytest.mark.asyncio
     async def test_tool_registry_analyze_trade_validation(self):
         """Test tool_registry analyze_trade validates inputs."""
         from nfl_mcp import tool_registry
-        
+
         # Test with invalid league_id (too long)
         result = await tool_registry.analyze_trade(
             league_id="a" * 100,  # Too long
@@ -423,15 +423,15 @@ class TestTradeAnalyzerToolRegistry:
             team1_gives=["4034"],
             team2_gives=["4035"]
         )
-        
+
         assert result["success"] is False
         assert "error" in result
-    
+
     @pytest.mark.asyncio
     async def test_tool_registry_analyze_trade_empty_lists(self):
         """Test tool_registry analyze_trade rejects empty player lists."""
         from nfl_mcp import tool_registry
-        
+
         # Test with empty team1_gives
         result = await tool_registry.analyze_trade(
             league_id="12345",
@@ -440,7 +440,7 @@ class TestTradeAnalyzerToolRegistry:
             team1_gives=[],
             team2_gives=["4035"]
         )
-        
+
         assert result["success"] is False
         assert "error" in result
         assert "empty" in result["error"].lower()

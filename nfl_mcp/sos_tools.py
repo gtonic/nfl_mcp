@@ -14,7 +14,6 @@ and whether it fell back to placeholder data.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
 
 from . import matchup_tools, sleeper_tools
 from .errors import create_success_response, handle_http_errors, handle_validation_error
@@ -36,7 +35,7 @@ def _ease_score(rank: float) -> float:
     return round((r - 1) / 31 * 100, 1)
 
 
-def _all_fallback(rankings: Optional[Dict[str, List[Dict]]]) -> bool:
+def _all_fallback(rankings: dict[str, list[dict]] | None) -> bool:
     """True when every ranking entry is placeholder data (no live season yet)."""
     if not rankings:
         return True
@@ -48,11 +47,11 @@ def _all_fallback(rankings: Optional[Dict[str, List[Dict]]]) -> bool:
 
 
 def compute_team_sos(
-    opponents_by_week: Dict[str, Dict[int, Optional[str]]],
-    rankings: Dict[str, List[Dict]],
-    positions: List[str],
+    opponents_by_week: dict[str, dict[int, str | None]],
+    rankings: dict[str, list[dict]],
+    positions: list[str],
     analyzer,
-) -> Dict[str, Dict]:
+) -> dict[str, dict]:
     """Pure aggregation of per-team, per-position SOS over the given weeks.
 
     Args:
@@ -64,15 +63,15 @@ def compute_team_sos(
 
     Returns ``{team: {games, bye_or_missing_weeks, positions{...}, overall_ease_score}}``.
     """
-    result: Dict[str, Dict] = {}
+    result: dict[str, dict] = {}
     for team, wk_opps in opponents_by_week.items():
         games = [(wk, opp) for wk, opp in sorted(wk_opps.items()) if opp]
         missing = [wk for wk, opp in sorted(wk_opps.items()) if not opp]
 
-        pos_summary: Dict[str, Dict] = {}
+        pos_summary: dict[str, dict] = {}
         for pos in positions:
             per_week = []
-            ranks: List[float] = []
+            ranks: list[float] = []
             fallback_any = False
             for wk, opp in games:
                 m = analyzer.get_matchup_difficulty(pos, opp, rankings)
@@ -110,7 +109,7 @@ def compute_team_sos(
     return result
 
 
-async def _resolve_rankings(analyzer, season: int, strength_season: Optional[int]):
+async def _resolve_rankings(analyzer, season: int, strength_season: int | None):
     """Return ``(rankings, used_season, is_fallback)``.
 
     Uses ``strength_season`` if given; otherwise tries ``season`` and, when that
@@ -129,12 +128,12 @@ async def _resolve_rankings(analyzer, season: int, strength_season: Optional[int
     return rankings, used, fell_back
 
 
-async def _gather_opponents(db, season: int, weeks: List[int]) -> Dict[str, Dict[int, Optional[str]]]:
+async def _gather_opponents(db, season: int, weeks: list[int]) -> dict[str, dict[int, str | None]]:
     """Build ``{team: {week: opponent}}`` for the weeks, cache-first then fetch."""
-    opponents: Dict[str, Dict[int, Optional[str]]] = {}
+    opponents: dict[str, dict[int, str | None]] = {}
     teams = list(matchup_tools.ESPN_TEAM_MAP.values())
     for wk in weeks:
-        week_map: Dict[str, str] = {}
+        week_map: dict[str, str] = {}
         if db:
             for team in teams:
                 try:
@@ -159,9 +158,9 @@ async def _gather_opponents(db, season: int, weeks: List[int]) -> Dict[str, Dict
     return opponents
 
 
-def _ranked_views(sos: Dict[str, Dict], positions: List[str]) -> Dict:
+def _ranked_views(sos: dict[str, dict], positions: list[str]) -> dict:
     """Turn the per-team SOS map into easiest-first ranked lists."""
-    by_position: Dict[str, List[Dict]] = {}
+    by_position: dict[str, list[dict]] = {}
     for pos in positions:
         rows = []
         for team, data in sos.items():
@@ -199,8 +198,8 @@ async def get_strength_of_schedule(
     season: int,
     start_week: int,
     end_week: int,
-    positions: Optional[List[str]] = None,
-    strength_season: Optional[int] = None,
+    positions: list[str] | None = None,
+    strength_season: int | None = None,
 ) -> dict:
     """Rank NFL teams by schedule difficulty over a week range, per position.
 
@@ -283,8 +282,8 @@ async def get_strength_of_schedule(
 )
 async def get_playoff_sos(
     season: int,
-    positions: Optional[List[str]] = None,
-    strength_season: Optional[int] = None,
+    positions: list[str] | None = None,
+    strength_season: int | None = None,
 ) -> dict:
     """Strength of schedule for the fantasy playoff weeks (15-17).
 

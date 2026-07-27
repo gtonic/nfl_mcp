@@ -22,15 +22,15 @@ If errors_list is empty, validation succeeded.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 
-def validate_params(schema: Dict[str, Dict[str, Any]], values: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+def validate_params(schema: dict[str, dict[str, Any]], values: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     validated = {}
-    errors: List[str] = []
+    errors: list[str] = []
 
     for name, spec in schema.items():
-        val = values.get(name, None)
+        val = values.get(name)
         required = spec.get("required", False)
         nullable = spec.get("nullable", False)
         expected_type = spec.get("type", Any)
@@ -85,5 +85,5 @@ def validate_params(schema: Dict[str, Dict[str, Any]], values: Dict[str, Any]) -
     return validated, errors
 
 
-def format_errors(errors: List[str]) -> str:
+def format_errors(errors: list[str]) -> str:
     return "; ".join(errors)

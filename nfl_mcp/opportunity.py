@@ -19,15 +19,13 @@ decided by the backtest (see ``evals/backtest``), not asserted.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
-
 # Standard PPR scoring weights (match nflverse `fantasy_points_ppr`).
 PASS_YD, PASS_TD, INT = 0.04, 4.0, -2.0
 RUSH_YD, RUSH_TD = 0.1, 6.0
 REC, REC_YD, REC_TD = 1.0, 0.1, 6.0
 
 # Position priors: PPR points per opportunity (per target / carry / pass attempt).
-_PRIORS: Dict[str, Dict[str, float]] = {
+_PRIORS: dict[str, dict[str, float]] = {
     "WR": {"ppt": 1.55, "ppc": 0.50},
     "TE": {"ppt": 1.35, "ppc": 0.50},
     "RB": {"ppt": 1.45, "ppc": 0.62},
@@ -41,23 +39,23 @@ DEFAULT_LOOKBACK = 6
 OPPORTUNITY_POSITIONS = ("QB", "RB", "WR", "TE")
 
 
-def rec_points(g: Dict) -> float:
+def rec_points(g: dict) -> float:
     return (g.get("receptions", 0.0) * REC
             + g.get("receiving_yards", 0.0) * REC_YD
             + g.get("receiving_tds", 0.0) * REC_TD)
 
 
-def rush_points(g: Dict) -> float:
+def rush_points(g: dict) -> float:
     return g.get("rushing_yards", 0.0) * RUSH_YD + g.get("rushing_tds", 0.0) * RUSH_TD
 
 
-def pass_points(g: Dict) -> float:
+def pass_points(g: dict) -> float:
     return (g.get("passing_yards", 0.0) * PASS_YD
             + g.get("passing_tds", 0.0) * PASS_TD
             + g.get("interceptions", 0.0) * INT)
 
 
-def _weighted_mean(values: List[float], weights: List[float]) -> float:
+def _weighted_mean(values: list[float], weights: list[float]) -> float:
     tw = sum(weights)
     return sum(v * w for v, w in zip(weights, values, strict=False)) / tw if tw else 0.0
 
@@ -68,10 +66,10 @@ def _shrunk_rate(total_points: float, total_volume: float, prior: float, k: floa
 
 
 def project_opportunity(
-    prior_games: List[Dict],
+    prior_games: list[dict],
     position: str,
     lookback: int = DEFAULT_LOOKBACK,
-) -> Optional[float]:
+) -> float | None:
     """Expected PPR points for the next game from trailing opportunity.
 
     Args:

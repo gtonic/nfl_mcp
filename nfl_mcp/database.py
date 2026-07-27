@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Dict, List, Optional, Union
 
 try:
     import aiosqlite
@@ -39,7 +38,7 @@ class ConnectionPoolConfig:
 
 class DatabaseConnectionPool:
     """Simple connection pool for SQLite database with thread safety."""
-    
+
     def __init__(self, db_path: str, config: ConnectionPoolConfig):
         self.db_path = db_path
         self.config = config
@@ -47,10 +46,10 @@ class DatabaseConnectionPool:
         self._lock = threading.RLock()
         self._total_connections = 0
         self._last_health_check = 0
-        
+
         # Pre-populate pool with initial connections
         self._initialize_pool()
-    
+
     def _initialize_pool(self):
         """Initialize the connection pool with initial connections."""
         with self._lock:
@@ -59,8 +58,8 @@ class DatabaseConnectionPool:
                 if conn:
                     self._pool.put(conn)
                     self._total_connections += 1
-    
-    def _create_connection(self) -> Optional[sqlite3.Connection]:
+
+    def _create_connection(self) -> sqlite3.Connection | None:
         """Create a new database connection with proper settings."""
         try:
             conn = sqlite3.connect(
@@ -69,17 +68,17 @@ class DatabaseConnectionPool:
                 check_same_thread=False  # Allow connection sharing between threads
             )
             conn.row_factory = sqlite3.Row  # Enable dict-like access
-            
+
             # Enable WAL mode for better concurrent access
             conn.execute("PRAGMA journal_mode=WAL")
             # Set reasonable timeout for busy database
             conn.execute("PRAGMA busy_timeout=30000")  # 30 seconds
-            
+
             return conn
         except Exception as e:
             logger.error(f"Failed to create database connection: {e}")
             return None
-    
+
     @contextmanager
     def get_connection(self):
         """Get a connection from the pool with automatic cleanup."""
@@ -95,24 +94,23 @@ class DatabaseConnectionPool:
                         conn = self._create_connection()
                         if conn:
                             self._total_connections += 1
-                    
+
                 if not conn:
                     # Wait longer for a connection to become available
                     conn = self._pool.get(timeout=self.config.connection_timeout)
-            
+
             if not conn:
                 raise Exception("Failed to obtain database connection")
-            
+
             # Health check connection if needed
-            if self._should_health_check():
-                if not self._test_connection(conn):
-                    conn.close()
-                    conn = self._create_connection()
-                    if not conn:
-                        raise Exception("Failed to create healthy database connection")
-            
+            if self._should_health_check() and not self._test_connection(conn):
+                conn.close()
+                conn = self._create_connection()
+                if not conn:
+                    raise Exception("Failed to create healthy database connection")
+
             yield conn
-            
+
         finally:
             if conn:
                 try:
@@ -123,7 +121,7 @@ class DatabaseConnectionPool:
                     conn.close()
                     with self._lock:
                         self._total_connections -= 1
-    
+
     def _should_health_check(self) -> bool:
         """Check if it's time for a health check."""
         now = time.time()
@@ -131,7 +129,7 @@ class DatabaseConnectionPool:
             self._last_health_check = now
             return True
         return False
-    
+
     def _test_connection(self, conn: sqlite3.Connection) -> bool:
         """Test if a connection is healthy."""
         try:
@@ -139,23 +137,23 @@ class DatabaseConnectionPool:
             return True
         except Exception:
             return False
-    
-    def health_check(self) -> Dict[str, Union[bool, int, str]]:
+
+    def health_check(self) -> dict[str, bool | int | str]:
         """Perform a comprehensive health check of the connection pool."""
         try:
             with self.get_connection() as conn:
                 # Test basic connectivity
                 conn.execute("SELECT 1").fetchone()
-                
+
                 # Get database stats
                 cursor = conn.execute("PRAGMA database_list")
                 cursor.fetchall()
-                
+
                 # Check if database file exists and is accessible
                 db_size = 0
                 if Path(self.db_path).exists():
                     db_size = Path(self.db_path).stat().st_size
-                
+
                 return {
                     "healthy": True,
                     "pool_size": self._total_connections,
@@ -173,7 +171,7 @@ class DatabaseConnectionPool:
                 "pool_size": self._total_connections,
                 "last_check": datetime.now(UTC).isoformat()
             }
-    
+
     def close(self):
         """Close all connections in the pool."""
         with self._lock:
@@ -188,14 +186,14 @@ class DatabaseConnectionPool:
 
 class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
-    
+
     # Database schema version for migrations
     CURRENT_SCHEMA_VERSION = 12
-    
-    def __init__(self, db_path: str = "nfl_data.db", pool_config: Optional[ConnectionPoolConfig] = None):
+
+    def __init__(self, db_path: str = "nfl_data.db", pool_config: ConnectionPoolConfig | None = None):
         """
         Initialize the NFL database.
-        
+
         Args:
             db_path: Path to the SQLite database file
             pool_config: Configuration for connection pooling
@@ -204,7 +202,7 @@ class NFLDatabase:
         self.pool_config = pool_config or ConnectionPoolConfig()
         self._pool = DatabaseConnectionPool(str(self.db_path), self.pool_config)
         self._ensure_database()
-    
+
     def _ensure_database(self) -> None:
         """Create database and tables if they don't exist, run migrations."""
         with self._pool.get_connection() as conn:
@@ -215,17 +213,17 @@ class NFLDatabase:
                     applied_at TEXT NOT NULL
                 )
             """)
-            
+
             # Get current schema version
             cursor = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
             row = cursor.fetchone()
             current_version = row[0] if row else 0
-            
+
             # Run migrations
             self._run_migrations(conn, current_version)
-            
+
             conn.commit()
-    
+
     def _run_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Run database migrations from the current version to the latest."""
         migrations = {
@@ -242,7 +240,7 @@ class NFLDatabase:
             11: self._migration_v11_injuries_v2,
             12: self._migration_v12_player_values,
         }
-        
+
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
             if version in migrations:
                 logger.info(f"Running migration to version {version}")
@@ -251,7 +249,7 @@ class NFLDatabase:
                     "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
                     (version, datetime.now(UTC).isoformat())
                 )
-    
+
     def _migration_v1_initial_schema(self, conn: sqlite3.Connection) -> None:
         """Migration v1: Create initial database schema."""
         # Create athletes table
@@ -268,7 +266,7 @@ class NFLDatabase:
                 raw JSON
             )
         """)
-        
+
         # Create teams table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS teams (
@@ -285,12 +283,12 @@ class NFLDatabase:
                 raw JSON
             )
         """)
-        
+
         # Create basic indexes
         conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_team ON athletes(team_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_name ON athletes(full_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_abbreviation ON teams(abbreviation)")
-    
+
     def _migration_v2_optimized_indexes(self, conn: sqlite3.Connection) -> None:
         """Migration v2: Add optimized indexes for better query performance."""
         # Compound indexes for common query patterns
@@ -298,18 +296,18 @@ class NFLDatabase:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_position_status ON athletes(position, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_name_search ON athletes(full_name COLLATE NOCASE)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_athletes_updated ON athletes(updated_at)")
-        
+
         # Team search optimizations
         conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_name_search ON teams(name COLLATE NOCASE)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_updated ON teams(updated_at)")
-        
+
         # Covering indexes for frequent lookups
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_athletes_lookup 
+            CREATE INDEX IF NOT EXISTS idx_athletes_lookup
             ON athletes(id, full_name, team_id, position, status)
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_teams_lookup 
+            CREATE INDEX IF NOT EXISTS idx_teams_lookup
             ON teams(id, abbreviation, name, display_name)
         """)
 
@@ -431,7 +429,7 @@ class NFLDatabase:
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_practice_status_date ON player_practice_status(player_id, updated_at DESC)"""
         )
-        
+
         # Usage Stats table
         conn.execute(
             """
@@ -453,7 +451,7 @@ class NFLDatabase:
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_usage_lookup ON player_usage_stats(player_id, season, week DESC)"""
         )
-    
+
     def _migration_v9_injuries(self, conn: sqlite3.Connection) -> None:
         """Migration v9: Table for player injury reports (DNP/Questionable/Out/Doubtful/etc)."""
         conn.execute(
@@ -478,7 +476,7 @@ class NFLDatabase:
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_injury_team ON player_injuries(team_id, updated_at DESC)"""
         )
-    
+
     def _migration_v10_defense_rankings(self, conn: sqlite3.Connection) -> None:
         """Migration v10: Table for defense vs position rankings (for lineup optimization)."""
         conn.execute(
@@ -497,17 +495,17 @@ class NFLDatabase:
             """
         )
         conn.execute(
-            """CREATE INDEX IF NOT EXISTS idx_defense_rankings_lookup 
+            """CREATE INDEX IF NOT EXISTS idx_defense_rankings_lookup
                ON defense_rankings(season, week, position)"""
         )
         conn.execute(
-            """CREATE INDEX IF NOT EXISTS idx_defense_rankings_team 
+            """CREATE INDEX IF NOT EXISTS idx_defense_rankings_team
                ON defense_rankings(team, season, position)"""
         )
-    
+
     def _migration_v11_injuries_v2(self, conn: sqlite3.Connection) -> None:
         """Migration v11: Improved injuries table with proper PK and multi-source support.
-        
+
         Changes:
         - New table with (player_id, team_id) as PK (enables true upserts)
         - Added: severity (1-5 scale), confidence (0-100), sources JSON
@@ -535,21 +533,21 @@ class NFLDatabase:
             )
             """
         )
-        
+
         # Create optimized indexes
         conn.execute(
-            """CREATE INDEX IF NOT EXISTS idx_injuries_v2_team 
+            """CREATE INDEX IF NOT EXISTS idx_injuries_v2_team
                ON player_injuries_v2(team_id)"""
         )
         conn.execute(
-            """CREATE INDEX IF NOT EXISTS idx_injuries_v2_status 
+            """CREATE INDEX IF NOT EXISTS idx_injuries_v2_status
                ON player_injuries_v2(injury_status)"""
         )
         conn.execute(
-            """CREATE INDEX IF NOT EXISTS idx_injuries_v2_updated 
+            """CREATE INDEX IF NOT EXISTS idx_injuries_v2_updated
                ON player_injuries_v2(updated_at DESC)"""
         )
-        
+
         # Migrate data from old table (most recent entry per player)
         conn.execute(
             """
@@ -559,7 +557,7 @@ class NFLDatabase:
                 game_status, severity, confidence, sources,
                 date_reported, updated_at
             )
-            SELECT 
+            SELECT
                 player_id, player_name, team_id, position,
                 injury_status, injury_type, injury_description,
                 NULL, NULL, 50, '["ESPN"]',
@@ -568,11 +566,11 @@ class NFLDatabase:
             GROUP BY player_id, team_id
             """
         )
-        
+
         # Drop old table and rename new one
         conn.execute("DROP TABLE IF EXISTS player_injuries")
         conn.execute("ALTER TABLE player_injuries_v2 RENAME TO player_injuries")
-        
+
         # Create injury history table for trend analysis
         conn.execute(
             """
@@ -632,27 +630,27 @@ class NFLDatabase:
         """Get a database connection with proper cleanup. (Legacy method for compatibility)"""
         with self._pool.get_connection() as conn:
             yield conn
-    
-    def health_check(self) -> Dict[str, Union[bool, int, str]]:
+
+    def health_check(self) -> dict[str, bool | int | str]:
         """Perform a comprehensive health check of the database."""
         pool_health = self._pool.health_check()
-        
+
         if not pool_health["healthy"]:
             return pool_health
-        
+
         try:
             with self._pool.get_connection() as conn:
                 # Additional database-specific checks
                 athlete_count = conn.execute("SELECT COUNT(*) FROM athletes").fetchone()[0]
                 team_count = conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
-                
+
                 # Check for recent data
                 cursor = conn.execute("SELECT MAX(updated_at) FROM athletes")
                 last_athlete_update = cursor.fetchone()[0]
-                
+
                 cursor = conn.execute("SELECT MAX(updated_at) FROM teams")
                 last_team_update = cursor.fetchone()[0]
-                
+
                 pool_health.update({
                     "athlete_count": athlete_count,
                     "team_count": team_count,
@@ -660,24 +658,24 @@ class NFLDatabase:
                     "last_team_update": last_team_update,
                     "schema_version": self.CURRENT_SCHEMA_VERSION
                 })
-                
+
                 return pool_health
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
             pool_health.update({
                 "healthy": False,
-                "error": f"Database check failed: {str(e)}"
+                "error": f"Database check failed: {e!s}"
             })
             return pool_health
-    
-    def get_connection_stats(self) -> Dict[str, int]:
+
+    def get_connection_stats(self) -> dict[str, int]:
         """Get connection pool statistics."""
         return {
             "active_connections": self._pool._total_connections,
             "max_connections": self._pool.config.max_connections,
             "pool_utilization": (self._pool._total_connections / self._pool.config.max_connections) * 100
         }
-    
+
     def close(self) -> None:
         """Close the database connection pool."""
         self._pool.close()
@@ -693,7 +691,7 @@ class NFLDatabase:
             with self._pool.get_connection() as conn:
                 conn.execute(
                     "INSERT INTO roster_snapshots (league_id, payload_json, fetched_at) VALUES (?,?,?)",
-                    (league_id, json.dumps(rosters), datetime.datetime.utcnow().isoformat())
+                    (league_id, json.dumps(rosters), datetime.datetime.now(datetime.UTC).isoformat())
                 )
                 conn.commit()
         except Exception as e:
@@ -714,7 +712,7 @@ class NFLDatabase:
                     return None
                 payload_json, fetched_at = row
                 dt = datetime.datetime.fromisoformat(fetched_at)
-                age_seconds = (datetime.datetime.utcnow() - dt).total_seconds()
+                age_seconds = (datetime.datetime.now(datetime.UTC) - dt).total_seconds()
                 stale = age_seconds > ttl_minutes * 60
                 return {"rosters": json.loads(payload_json), "stale": stale, "fetched_at": fetched_at, "age_seconds": age_seconds}
         except Exception as e:
@@ -732,13 +730,13 @@ class NFLDatabase:
             with self._pool.get_connection() as conn:
                 conn.execute(
                     "INSERT INTO transaction_snapshots (league_id, week, payload_json, fetched_at) VALUES (?,?,?,?)",
-                    (league_id, week, json.dumps(transactions), datetime.datetime.utcnow().isoformat())
+                    (league_id, week, json.dumps(transactions), datetime.datetime.now(datetime.UTC).isoformat())
                 )
                 conn.commit()
         except Exception as e:
             logger.debug(f"save_transaction_snapshot failed: {e}")
 
-    def load_transaction_snapshot(self, league_id: str, week: Optional[int] = None, ttl_minutes: int = 15):
+    def load_transaction_snapshot(self, league_id: str, week: int | None = None, ttl_minutes: int = 15):
         """Load most recent transactions snapshot for league (and week if provided)."""
         try:
             import datetime
@@ -759,7 +757,7 @@ class NFLDatabase:
                     return None
                 snap_week, payload_json, fetched_at = row
                 dt = datetime.datetime.fromisoformat(fetched_at)
-                age_seconds = (datetime.datetime.utcnow() - dt).total_seconds()
+                age_seconds = (datetime.datetime.now(datetime.UTC) - dt).total_seconds()
                 stale = age_seconds > ttl_minutes * 60
                 return {"transactions": json.loads(payload_json), "week": snap_week, "stale": stale, "fetched_at": fetched_at, "age_seconds": age_seconds}
         except Exception as e:
@@ -776,7 +774,7 @@ class NFLDatabase:
             with self._pool.get_connection() as conn:
                 conn.execute(
                     "INSERT INTO matchup_snapshots (league_id, week, payload_json, fetched_at) VALUES (?,?,?,?)",
-                    (league_id, week, json.dumps(matchups), datetime.datetime.utcnow().isoformat())
+                    (league_id, week, json.dumps(matchups), datetime.datetime.now(datetime.UTC).isoformat())
                 )
                 conn.commit()
         except Exception as e:
@@ -796,7 +794,7 @@ class NFLDatabase:
                     return None
                 payload_json, fetched_at = row
                 dt = datetime.datetime.fromisoformat(fetched_at)
-                age_seconds = (datetime.datetime.utcnow() - dt).total_seconds()
+                age_seconds = (datetime.datetime.now(datetime.UTC) - dt).total_seconds()
                 stale = age_seconds > ttl_minutes * 60
                 return {"matchups": json.loads(payload_json), "stale": stale, "fetched_at": fetched_at, "age_seconds": age_seconds}
         except Exception as e:
@@ -806,20 +804,20 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     # Snapshot cleanup helpers
     # ------------------------------------------------------------------
-    def cleanup_old_snapshots(self, max_age_days: int = 7) -> Dict[str, int]:
+    def cleanup_old_snapshots(self, max_age_days: int = 7) -> dict[str, int]:
         """
         Clean up old snapshots to prevent unbounded database growth.
-        
+
         Args:
             max_age_days: Delete snapshots older than this many days (default 7)
-            
+
         Returns:
             Dictionary with count of deleted rows per table
         """
         import datetime
-        cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=max_age_days)).isoformat()
+        cutoff = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=max_age_days)).isoformat()
         deleted = {"roster_snapshots": 0, "matchup_snapshots": 0, "transaction_snapshots": 0}
-        
+
         try:
             with self._pool.get_connection() as conn:
                 # Roster snapshots
@@ -828,27 +826,27 @@ class NFLDatabase:
                     (cutoff,)
                 )
                 deleted["roster_snapshots"] = cursor.rowcount
-                
+
                 # Matchup snapshots
                 cursor = conn.execute(
                     "DELETE FROM matchup_snapshots WHERE fetched_at < ?",
                     (cutoff,)
                 )
                 deleted["matchup_snapshots"] = cursor.rowcount
-                
+
                 # Transaction snapshots
                 cursor = conn.execute(
                     "DELETE FROM transaction_snapshots WHERE fetched_at < ?",
                     (cutoff,)
                 )
                 deleted["transaction_snapshots"] = cursor.rowcount
-                
+
                 conn.commit()
-                
+
                 total = sum(deleted.values())
                 if total > 0:
                     logger.info(f"[Cleanup] Deleted {total} old snapshots: {deleted}")
-                
+
                 return deleted
         except Exception as e:
             logger.warning(f"Failed to cleanup old snapshots: {e}")
@@ -857,7 +855,7 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     # Player weekly snap stats helpers
     # ------------------------------------------------------------------
-    def upsert_player_week_stats(self, stats: List[Dict]) -> int:
+    def upsert_player_week_stats(self, stats: list[dict]) -> int:
         """Insert or update player weekly snap stats.
 
         Expected dict keys per item: player_id, season, week, snaps_offense, snaps_team_offense, snap_pct (optional), raw (optional)
@@ -915,7 +913,7 @@ class NFLDatabase:
                 conn.rollback()
                 return processed
 
-    def get_player_snap_pct(self, player_id: str, season: int, week: int) -> Optional[Dict]:
+    def get_player_snap_pct(self, player_id: str, season: int, week: int) -> dict | None:
         """Fetch cached snap percentage info for a player/week."""
         try:
             with self._pool.get_connection() as conn:
@@ -938,7 +936,7 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     # Schedule / opponent helpers
     # ------------------------------------------------------------------
-    def upsert_schedule_games(self, games: List[Dict]) -> int:
+    def upsert_schedule_games(self, games: list[dict]) -> int:
         """Insert or update schedule games for opponent lookup.
 
         Each dict requires: season, week, team, opponent, is_home (bool/int), kickoff (optional), raw(optional)
@@ -979,7 +977,7 @@ class NFLDatabase:
                 conn.rollback()
                 return processed
 
-    def get_opponent(self, season: int, week: int, team: str) -> Optional[str]:
+    def get_opponent(self, season: int, week: int, team: str) -> str | None:
         """Return opponent abbreviation for team in given season/week if cached."""
         try:
             with self._pool.get_connection() as conn:
@@ -995,9 +993,9 @@ class NFLDatabase:
             logger.debug(f"get_opponent failed: {e}")
             return None
 
-    def get_team_schedule_from_cache(self, team: str, season: int) -> List[Dict]:
+    def get_team_schedule_from_cache(self, team: str, season: int) -> list[dict]:
         """Fetch team's full schedule from cache (all weeks for given season).
-        
+
         Returns list of games with: week, opponent, is_home, kickoff, raw
         """
         try:
@@ -1005,7 +1003,7 @@ class NFLDatabase:
                 cur = conn.execute(
                     """
                     SELECT week, opponent, is_home, kickoff, raw
-                    FROM schedule_games 
+                    FROM schedule_games
                     WHERE season=? AND team=?
                     ORDER BY week ASC
                     """,
@@ -1020,7 +1018,7 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     # Practice status helpers (DNP/LP/FP)
     # ------------------------------------------------------------------
-    def upsert_practice_status(self, reports: List[Dict]) -> int:
+    def upsert_practice_status(self, reports: list[dict]) -> int:
         """Insert or update player practice status reports.
 
         Expected dict keys: player_id, date (ISO YYYY-MM-DD), status (DNP/LP/FP/Full), source (optional).
@@ -1057,7 +1055,7 @@ class NFLDatabase:
                 conn.rollback()
                 return processed
 
-    def get_latest_practice_status(self, player_id: str, max_age_hours: int = 72) -> Optional[Dict]:
+    def get_latest_practice_status(self, player_id: str, max_age_hours: int = 72) -> dict | None:
         """Fetch most recent practice status for a player within max_age_hours."""
         try:
             from datetime import timedelta
@@ -1084,7 +1082,7 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     # Usage stats helpers (targets, routes, RZ touches)
     # ------------------------------------------------------------------
-    def upsert_usage_stats(self, stats: List[Dict]) -> int:
+    def upsert_usage_stats(self, stats: list[dict]) -> int:
         """Insert or update player weekly usage stats.
 
         Expected dict keys: player_id, season, week, targets, routes, rz_touches, touches, air_yards, snap_share (all optional except player_id/season/week).
@@ -1136,14 +1134,14 @@ class NFLDatabase:
                 conn.rollback()
                 return processed
 
-    def get_usage_last_n_weeks(self, player_id: str, season: int, current_week: int, n: int = 3) -> Optional[Dict]:
+    def get_usage_last_n_weeks(self, player_id: str, season: int, current_week: int, n: int = 3) -> dict | None:
         """Calculate average usage stats for a player over the last n weeks (excluding current_week)."""
         try:
             start_week = max(1, current_week - n)
             with self._pool.get_connection() as conn:
                 cur = conn.execute(
                     """
-                    SELECT 
+                    SELECT
                         AVG(targets) as targets_avg,
                         AVG(routes) as routes_avg,
                         AVG(rz_touches) as rz_touches_avg,
@@ -1161,10 +1159,10 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"get_usage_last_n_weeks failed: {e}")
             return None
-    
-    def get_usage_weekly_breakdown(self, player_id: str, season: int, current_week: int, n: int = 3) -> Optional[List[Dict]]:
+
+    def get_usage_weekly_breakdown(self, player_id: str, season: int, current_week: int, n: int = 3) -> list[dict] | None:
         """Get individual week usage stats for trend calculation.
-        
+
         Returns list of dicts with week and stats, ordered by week DESC.
         Used to calculate if usage is trending up/down/flat.
         """
@@ -1173,7 +1171,7 @@ class NFLDatabase:
             with self._pool.get_connection() as conn:
                 cur = conn.execute(
                     """
-                    SELECT 
+                    SELECT
                         week,
                         targets,
                         routes,
@@ -1193,13 +1191,13 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"get_usage_weekly_breakdown failed: {e}")
             return None
-    
+
     # ------------------------------------------------------------------
     # Injury reports helpers
     # ------------------------------------------------------------------
-    def upsert_injuries(self, injuries: List[Dict]) -> int:
+    def upsert_injuries(self, injuries: list[dict]) -> int:
         """Insert or update player injury reports.
-        
+
         Args:
             injuries: List of injury dicts with keys:
                 - player_id: Player identifier
@@ -1214,13 +1212,13 @@ class NFLDatabase:
                 - confidence: 0-100 confidence score (optional)
                 - sources: List of source names (optional)
                 - date_reported: Date of injury report (optional)
-                
+
         Returns:
             Number of rows inserted/updated
         """
         if not injuries:
             return 0
-        
+
         try:
             now = datetime.now(UTC).isoformat()
             with self._pool.get_connection() as conn:
@@ -1229,16 +1227,16 @@ class NFLDatabase:
                     player_id = inj.get("player_id")
                     if not player_id:
                         continue
-                    
+
                     # Handle sources as JSON array
                     sources = inj.get("sources", ["ESPN"])
                     if isinstance(sources, list):
                         sources = json.dumps(sources)
-                    
+
                     conn.execute(
                         """
                         INSERT INTO player_injuries(
-                            player_id, player_name, team_id, position, 
+                            player_id, player_name, team_id, position,
                             injury_status, injury_type, injury_description,
                             game_status, severity, confidence, sources,
                             date_reported, updated_at
@@ -1278,19 +1276,19 @@ class NFLDatabase:
         except Exception as e:
             logger.error(f"upsert_injuries failed: {e}")
             return 0
-    
+
     def get_team_injuries_from_cache(
-        self, 
-        team_id: str, 
-        max_age_hours: int = None
-    ) -> List[Dict]:
+        self,
+        team_id: str,
+        max_age_hours: int | None = None
+    ) -> list[dict]:
         """Get cached injury reports for a team with adaptive TTL.
-        
+
         Args:
             team_id: Team abbreviation
             max_age_hours: Maximum age of cached data in hours
                           If None, uses adaptive TTL based on day of week
-            
+
         Returns:
             List of injury dicts
         """
@@ -1303,7 +1301,7 @@ class NFLDatabase:
                     max_age_hours = 2  # Game window - fresher data
                 else:
                     max_age_hours = 12  # Off-day - longer cache
-            
+
             cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
             with self._pool.get_connection() as conn:
                 cur = conn.execute(
@@ -1333,19 +1331,19 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"get_team_injuries_from_cache failed: {e}")
             return []
-    
+
     def get_player_injury_from_cache(
-        self, 
-        player_id: str, 
-        max_age_hours: int = None
-    ) -> Optional[Dict]:
+        self,
+        player_id: str,
+        max_age_hours: int | None = None
+    ) -> dict | None:
         """Get cached injury report for a specific player with adaptive TTL.
-        
+
         Args:
             player_id: Player identifier
             max_age_hours: Maximum age of cached data in hours
                           If None, uses adaptive TTL based on day of week
-            
+
         Returns:
             Injury dict or None
         """
@@ -1353,11 +1351,8 @@ class NFLDatabase:
             # Adaptive TTL: 2h during game windows (Thu-Mon), 12h for off-days
             if max_age_hours is None:
                 day_of_week = datetime.now(UTC).weekday()
-                if day_of_week in (0, 3, 4, 5, 6):
-                    max_age_hours = 2
-                else:
-                    max_age_hours = 12
-            
+                max_age_hours = 2 if day_of_week in (0, 3, 4, 5, 6) else 12
+
             cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
             with self._pool.get_connection() as conn:
                 cur = conn.execute(
@@ -1387,16 +1382,16 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"get_player_injury_from_cache failed: {e}")
             return None
-    
-    def add_injury_history(self, player_id: str, team_id: str, status: str, injury_type: str = None) -> bool:
+
+    def add_injury_history(self, player_id: str, team_id: str, status: str, injury_type: str | None = None) -> bool:
         """Add entry to injury history for trend analysis.
-        
+
         Args:
             player_id: Player identifier
             team_id: Team abbreviation
             status: Injury status
             injury_type: Type of injury (optional)
-            
+
         Returns:
             True if successful
         """
@@ -1415,14 +1410,14 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"add_injury_history failed: {e}")
             return False
-    
-    def get_injury_history(self, player_id: str, limit: int = 10) -> List[Dict]:
+
+    def get_injury_history(self, player_id: str, limit: int = 10) -> list[dict]:
         """Get injury history for a player.
-        
+
         Args:
             player_id: Player identifier
             limit: Max number of history entries
-            
+
         Returns:
             List of historical injury entries
         """
@@ -1443,29 +1438,29 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"get_injury_history failed: {e}")
             return []
-    
+
     # ------------------------------------------------------------------
     # Defense rankings helpers (for lineup optimization)
     # ------------------------------------------------------------------
-    def upsert_defense_rankings(self, rankings: Dict[str, List[Dict]], season: int, week: int = 0) -> int:
+    def upsert_defense_rankings(self, rankings: dict[str, list[dict]], season: int, week: int = 0) -> int:
         """Insert or update defense vs position rankings.
-        
+
         Args:
             rankings: Dict mapping position -> list of team rankings
                      Each ranking dict: {team, rank, points_allowed_avg, matchup_tier}
             season: NFL season year
             week: NFL week (0 for season-long averages)
-            
+
         Returns:
             Number of rankings inserted/updated
         """
         if not rankings:
             return 0
-        
+
         try:
             now = datetime.now(UTC).isoformat()
             processed = 0
-            
+
             with self._pool.get_connection() as conn:
                 for position, team_rankings in rankings.items():
                     for team_rank in team_rankings:
@@ -1473,13 +1468,13 @@ class NFLDatabase:
                         rank = team_rank.get("rank", 16)
                         pts_allowed = team_rank.get("points_allowed_avg", 0)
                         tier = team_rank.get("matchup_tier", "neutral")
-                        
+
                         if not team:
                             continue
-                        
+
                         conn.execute(
                             """
-                            INSERT INTO defense_rankings 
+                            INSERT INTO defense_rankings
                                 (season, week, team, position, rank, points_allowed_avg, matchup_tier, updated_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(season, week, team, position) DO UPDATE SET
@@ -1491,35 +1486,35 @@ class NFLDatabase:
                             (season, week, team, position, rank, pts_allowed, tier, now)
                         )
                         processed += 1
-                
+
                 conn.commit()
                 return processed
         except Exception as e:
             logger.error(f"upsert_defense_rankings failed: {e}")
             return 0
-    
+
     def get_defense_rankings(
-        self, 
-        season: int, 
-        position: Optional[str] = None,
+        self,
+        season: int,
+        position: str | None = None,
         week: int = 0,
         max_age_hours: int = 24
-    ) -> Dict[str, List[Dict]]:
+    ) -> dict[str, list[dict]]:
         """Get cached defense rankings for positions.
-        
+
         Args:
             season: NFL season year
             position: Specific position (QB, RB, WR, TE) or None for all
             week: NFL week (0 for season-long averages)
             max_age_hours: Maximum age of cached data
-            
+
         Returns:
             Dict mapping position -> list of team rankings
         """
         try:
             cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
             rankings = {}
-            
+
             with self._pool.get_connection() as conn:
                 if position:
                     cur = conn.execute(
@@ -1541,7 +1536,7 @@ class NFLDatabase:
                         """,
                         (season, week, cutoff)
                     )
-                
+
                 for row in cur.fetchall():
                     pos = row["position"]
                     if pos not in rankings:
@@ -1552,27 +1547,27 @@ class NFLDatabase:
                         "points_allowed_avg": row["points_allowed_avg"],
                         "matchup_tier": row["matchup_tier"]
                     })
-            
+
             return rankings
         except Exception as e:
             logger.debug(f"get_defense_rankings failed: {e}")
             return {}
-    
+
     def get_matchup_difficulty(
         self,
         season: int,
         team: str,
         position: str,
         week: int = 0
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Get matchup difficulty for specific team/position.
-        
+
         Args:
             season: NFL season year
             team: Team abbreviation
             position: Position (QB, RB, WR, TE)
             week: NFL week (0 for season-long)
-            
+
         Returns:
             Dict with rank and tier, or None if not found
         """
@@ -1597,7 +1592,7 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     # Player market values (FantasyCalc) - powers trades & draft board
     # ------------------------------------------------------------------
-    def upsert_player_values(self, values: List[Dict], format_key: str) -> int:
+    def upsert_player_values(self, values: list[dict], format_key: str) -> int:
         """Insert or update consensus player market values for a league format.
 
         Args:
@@ -1654,7 +1649,7 @@ class NFLDatabase:
             logger.error(f"upsert_player_values failed: {e}")
             return 0
 
-    def get_player_value(self, player_id: str, format_key: str) -> Optional[Dict]:
+    def get_player_value(self, player_id: str, format_key: str) -> dict | None:
         """Get the cached market value for a single player in a given format."""
         if not player_id or not format_key:
             return None
@@ -1673,10 +1668,10 @@ class NFLDatabase:
     def get_player_values(
         self,
         format_key: str,
-        position: Optional[str] = None,
-        limit: Optional[int] = None,
-        max_age_hours: Optional[int] = None,
-    ) -> List[Dict]:
+        position: str | None = None,
+        limit: int | None = None,
+        max_age_hours: int | None = None,
+    ) -> list[dict]:
         """Get cached player values for a format, ordered by overall rank (best first).
 
         Args:
@@ -1688,7 +1683,7 @@ class NFLDatabase:
         if not format_key:
             return []
         try:
-            params: List = [format_key]
+            params: list = [format_key]
             where = "format_key=?"
             if position:
                 where += " AND position=?"
@@ -1711,7 +1706,7 @@ class NFLDatabase:
             logger.debug(f"get_player_values failed: {e}")
             return []
 
-    def get_player_values_last_updated(self, format_key: str) -> Optional[str]:
+    def get_player_values_last_updated(self, format_key: str) -> str | None:
         """Return the newest updated_at timestamp for a format (or None)."""
         if not format_key:
             return None
@@ -1729,21 +1724,21 @@ class NFLDatabase:
 
     # Async Database Operations
     # These methods provide async alternatives to the main database operations
-    
+
     @asynccontextmanager
     async def _get_async_connection(self):  # Return type left un-annotated to satisfy runtime and avoid mismatched protocol
         """Get an async database connection with proper cleanup."""
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite. Install with: pip install aiosqlite")
-        
+
         async with aiosqlite.connect(str(self.db_path)) as conn:
             # Enable WAL mode and set timeouts
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA busy_timeout=30000")
             conn.row_factory = aiosqlite.Row
             yield conn
-    
-    async def async_health_check(self) -> Dict[str, Union[bool, int, str]]:
+
+    async def async_health_check(self) -> dict[str, bool | int | str]:
         """Perform an async health check of the database."""
         if not ASYNC_SUPPORT:
             return {
@@ -1751,24 +1746,24 @@ class NFLDatabase:
                 "error": "Async operations not supported. Install aiosqlite.",
                 "last_check": datetime.now(UTC).isoformat()
             }
-        
+
         try:
             async with self._get_async_connection() as conn:
                 # Test basic connectivity
                 await conn.execute("SELECT 1")
-                
+
                 # Get database stats
                 athlete_count = await conn.execute_fetchall("SELECT COUNT(*) FROM athletes")
                 team_count = await conn.execute_fetchall("SELECT COUNT(*) FROM teams")
-                
+
                 last_athlete_update = await conn.execute_fetchall("SELECT MAX(updated_at) FROM athletes")
                 last_team_update = await conn.execute_fetchall("SELECT MAX(updated_at) FROM teams")
-                
+
                 # Get database size
                 db_size = 0
                 if self.db_path.exists():
                     db_size = self.db_path.stat().st_size
-                
+
                 return {
                     "healthy": True,
                     "athlete_count": athlete_count[0][0] if athlete_count else 0,
@@ -1788,71 +1783,71 @@ class NFLDatabase:
                 "async_support": True,
                 "last_check": datetime.now(UTC).isoformat()
             }
-    
-    async def async_get_athlete_by_id(self, athlete_id: str) -> Optional[Dict]:
+
+    async def async_get_athlete_by_id(self, athlete_id: str) -> dict | None:
         """
         Async version: Get athlete by ID.
-        
+
         Args:
             athlete_id: The athlete's unique identifier
-            
+
         Returns:
             Athlete dictionary or None if not found
         """
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite")
-        
+
         async with self._get_async_connection() as conn:
             cursor = await conn.execute(
-                "SELECT * FROM athletes WHERE id = ?", 
+                "SELECT * FROM athletes WHERE id = ?",
                 (athlete_id,)
             )
             row = await cursor.fetchone()
-            
+
             if row:
                 return dict(row)
             return None
-    
-    async def async_search_athletes_by_name(self, name: str, limit: int = 10) -> List[Dict]:
+
+    async def async_search_athletes_by_name(self, name: str, limit: int = 10) -> list[dict]:
         """
         Async version: Search athletes by name (partial match).
-        
+
         Args:
             name: Name to search for (partial match supported)
             limit: Maximum number of results to return
-            
+
         Returns:
             List of matching athlete dictionaries
         """
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite")
-        
+
         search_term = f"%{name}%"
-        
+
         async with self._get_async_connection() as conn:
             cursor = await conn.execute("""
-                SELECT * FROM athletes 
+                SELECT * FROM athletes
                 WHERE full_name LIKE ? OR first_name LIKE ? OR last_name LIKE ?
                 ORDER BY full_name
                 LIMIT ?
             """, (search_term, search_term, search_term, limit))
-            
+
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
-    
-    async def async_get_athletes_by_team(self, team_id: str) -> List[Dict]:
+
+    async def async_get_athletes_by_team(self, team_id: str) -> list[dict]:
         """
         Async version: Get all athletes for a specific team.
-        
+
         Args:
             team_id: The team identifier
-            
+
         Returns:
             List of athlete dictionaries for the team
         """
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite")
-        
+
         async with self._get_async_connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM athletes WHERE team_id = ? ORDER BY full_name",
@@ -1860,89 +1855,89 @@ class NFLDatabase:
             )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
-    
-    async def async_get_team_by_id(self, team_id: str) -> Optional[Dict]:
+
+    async def async_get_team_by_id(self, team_id: str) -> dict | None:
         """
         Async version: Get team by ID.
-        
+
         Args:
             team_id: The team's unique identifier
-            
+
         Returns:
             Team dictionary or None if not found
         """
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite")
-        
+
         async with self._get_async_connection() as conn:
             cursor = await conn.execute(
-                "SELECT * FROM teams WHERE id = ?", 
+                "SELECT * FROM teams WHERE id = ?",
                 (team_id,)
             )
             row = await cursor.fetchone()
-            
+
             if row:
                 return dict(row)
             return None
-    
-    async def async_get_team_by_abbreviation(self, abbreviation: str) -> Optional[Dict]:
+
+    async def async_get_team_by_abbreviation(self, abbreviation: str) -> dict | None:
         """
         Async version: Get team by abbreviation (e.g., 'KC', 'TB').
-        
+
         Args:
             abbreviation: The team's abbreviation
-            
+
         Returns:
             Team dictionary or None if not found
         """
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite")
-        
+
         async with self._get_async_connection() as conn:
             cursor = await conn.execute(
-                "SELECT * FROM teams WHERE abbreviation = ?", 
+                "SELECT * FROM teams WHERE abbreviation = ?",
                 (abbreviation,)
             )
             row = await cursor.fetchone()
-            
+
             if row:
                 return dict(row)
             return None
-    
-    async def async_get_all_teams(self) -> List[Dict]:
+
+    async def async_get_all_teams(self) -> list[dict]:
         """
         Async version: Get all teams from the database.
-        
+
         Returns:
             List of all team dictionaries
         """
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite")
-        
+
         async with self._get_async_connection() as conn:
             cursor = await conn.execute("SELECT * FROM teams ORDER BY name")
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
-    
-    async def async_upsert_athletes(self, athletes_data: List[Dict]) -> int:
+
+    async def async_upsert_athletes(self, athletes_data: list[dict]) -> int:
         """
         Async version: Insert or update athlete records.
-        
+
         Args:
             athletes_data: List of athlete dictionaries from Sleeper API
-            
+
         Returns:
             Number of athletes processed
         """
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite")
-        
+
         if not athletes_data:
             return 0
-        
+
         updated_at = datetime.now(UTC).isoformat()
         processed_count = 0
-        
+
         async with self._get_async_connection() as conn:
             try:
                 for athlete_id, athlete in athletes_data.items():
@@ -1953,17 +1948,17 @@ class NFLDatabase:
                     team_id = athlete.get('team', '') or ''
                     position = athlete.get('position', '') or ''
                     status = athlete.get('status', '') or ''
-                    
+
                     # Store the complete raw data as JSON
                     raw_json = json.dumps(athlete)
-                    
+
                     # Upsert the athlete record
                     await conn.execute("""
                         INSERT INTO athletes(
-                            id, full_name, first_name, last_name, 
+                            id, full_name, first_name, last_name,
                             team_id, position, status, updated_at, raw
                         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, json(?))
-                        ON CONFLICT(id) DO UPDATE SET 
+                        ON CONFLICT(id) DO UPDATE SET
                             full_name=excluded.full_name,
                             first_name=excluded.first_name,
                             last_name=excluded.last_name,
@@ -1977,35 +1972,35 @@ class NFLDatabase:
                         team_id, position, status, updated_at, raw_json
                     ))
                     processed_count += 1
-                
+
                 await conn.commit()
                 logger.info(f"Successfully processed {processed_count} athletes (async)")
                 return processed_count
-                
+
             except Exception as e:
                 await conn.rollback()
                 logger.error(f"Error upserting athletes (async): {e}")
                 raise
-    
-    async def async_upsert_teams(self, teams_data: List[Dict]) -> int:
+
+    async def async_upsert_teams(self, teams_data: list[dict]) -> int:
         """
         Async version: Insert or update team records.
-        
+
         Args:
             teams_data: List of team dictionaries from ESPN API
-            
+
         Returns:
             Number of teams processed
         """
         if not ASYNC_SUPPORT:
             raise RuntimeError("Async operations require aiosqlite")
-        
+
         if not teams_data:
             return 0
-        
+
         updated_at = datetime.now(UTC).isoformat()
         processed_count = 0
-        
+
         async with self._get_async_connection() as conn:
             try:
                 for team in teams_data:
@@ -2019,17 +2014,17 @@ class NFLDatabase:
                     color = team.get('color', '') or ''
                     alternate_color = team.get('alternateColor', '') or ''
                     logo = team.get('logo', '') or ''
-                    
+
                     # Store the complete raw data as JSON
                     raw_json = json.dumps(team)
-                    
+
                     # Upsert the team record
                     await conn.execute("""
                         INSERT INTO teams(
                             id, abbreviation, name, display_name, short_display_name,
                             location, color, alternate_color, logo, updated_at, raw
                         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?))
-                        ON CONFLICT(id) DO UPDATE SET 
+                        ON CONFLICT(id) DO UPDATE SET
                             abbreviation=excluded.abbreviation,
                             name=excluded.name,
                             display_name=excluded.display_name,
@@ -2045,32 +2040,32 @@ class NFLDatabase:
                         location, color, alternate_color, logo, updated_at, raw_json
                     ))
                     processed_count += 1
-                
+
                 await conn.commit()
                 logger.info(f"Successfully processed {processed_count} teams (async)")
                 return processed_count
-                
+
             except Exception as e:
                 await conn.rollback()
                 logger.error(f"Error upserting teams (async): {e}")
                 raise
-    
-    def upsert_athletes(self, athletes_data: List[Dict]) -> int:
+
+    def upsert_athletes(self, athletes_data: list[dict]) -> int:
         """
         Insert or update athlete records.
-        
+
         Args:
             athletes_data: List of athlete dictionaries from Sleeper API
-            
+
         Returns:
             Number of athletes processed
         """
         if not athletes_data:
             return 0
-        
+
         updated_at = datetime.now(UTC).isoformat()
         processed_count = 0
-        
+
         with self._get_connection() as conn:
             try:
                 for athlete_id, athlete in athletes_data.items():
@@ -2081,17 +2076,17 @@ class NFLDatabase:
                     team_id = athlete.get('team', '') or ''
                     position = athlete.get('position', '') or ''
                     status = athlete.get('status', '') or ''
-                    
+
                     # Store the complete raw data as JSON
                     raw_json = json.dumps(athlete)
-                    
+
                     # Upsert the athlete record
                     conn.execute("""
                         INSERT INTO athletes(
-                            id, full_name, first_name, last_name, 
+                            id, full_name, first_name, last_name,
                             team_id, position, status, updated_at, raw
                         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, json(?))
-                        ON CONFLICT(id) DO UPDATE SET 
+                        ON CONFLICT(id) DO UPDATE SET
                             full_name=excluded.full_name,
                             first_name=excluded.first_name,
                             last_name=excluded.last_name,
@@ -2105,77 +2100,77 @@ class NFLDatabase:
                         team_id, position, status, updated_at, raw_json
                     ))
                     processed_count += 1
-                
+
                 conn.commit()
                 logger.info(f"Successfully processed {processed_count} athletes")
                 return processed_count
-                
+
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error upserting athletes: {e}")
                 raise
-    
-    def get_athlete_by_id(self, athlete_id: str) -> Optional[Dict]:
+
+    def get_athlete_by_id(self, athlete_id: str) -> dict | None:
         """
         Get athlete by ID.
-        
+
         Args:
             athlete_id: The athlete's unique identifier
-            
+
         Returns:
             Athlete dictionary or None if not found
         """
         with self._get_connection() as conn:
             cursor = conn.execute(
-                "SELECT * FROM athletes WHERE id = ?", 
+                "SELECT * FROM athletes WHERE id = ?",
                 (athlete_id,)
             )
             row = cursor.fetchone()
-            
+
             if row:
                 return dict(row)
             return None
-    
-    def search_athletes_by_name(self, name: str, limit: int = 10) -> List[Dict]:
+
+    def search_athletes_by_name(self, name: str, limit: int = 10) -> list[dict]:
         """
         Search athletes by name (partial match).
-        
+
         Args:
             name: Name to search for (partial match supported)
             limit: Maximum number of results to return
-            
+
         Returns:
             List of matching athlete dictionaries
         """
         search_term = f"%{name}%"
-        
+
         with self._get_connection() as conn:
             cursor = conn.execute("""
-                SELECT * FROM athletes 
+                SELECT * FROM athletes
                 WHERE full_name LIKE ? OR first_name LIKE ? OR last_name LIKE ?
                 ORDER BY full_name
                 LIMIT ?
             """, (search_term, search_term, search_term, limit))
-            
+
             return [dict(row) for row in cursor.fetchall()]
-    
-    def get_athletes_by_ids(self, athlete_ids: List[str]) -> Dict[str, Dict]:
+
+    def get_athletes_by_ids(self, athlete_ids: list[str]) -> dict[str, dict]:
         """
         Batch get multiple athletes by their IDs in a single query.
-        
+
         Args:
             athlete_ids: List of athlete IDs to fetch
-            
+
         Returns:
             Dictionary mapping athlete_id -> athlete dict (only found athletes included)
         """
         if not athlete_ids:
             return {}
-        
+
         # SQLite has a limit on parameters, so chunk if needed
         chunk_size = 500
         results = {}
-        
+
         with self._get_connection() as conn:
             for i in range(0, len(athlete_ids), chunk_size):
                 chunk = athlete_ids[i:i + chunk_size]
@@ -2187,16 +2182,16 @@ class NFLDatabase:
                 for row in cursor.fetchall():
                     athlete_dict = dict(row)
                     results[athlete_dict['id']] = athlete_dict
-        
+
         return results
 
-    def get_athletes_by_team(self, team_id: str) -> List[Dict]:
+    def get_athletes_by_team(self, team_id: str) -> list[dict]:
         """
         Get all athletes for a specific team.
-        
+
         Args:
             team_id: The team identifier
-            
+
         Returns:
             List of athlete dictionaries for the team
         """
@@ -2206,22 +2201,22 @@ class NFLDatabase:
                 (team_id,)
             )
             return [dict(row) for row in cursor.fetchall()]
-    
+
     def get_athlete_count(self) -> int:
         """
         Get the total number of athletes in the database.
-        
+
         Returns:
             Total count of athletes
         """
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM athletes")
             return cursor.fetchone()[0]
-    
-    def get_last_updated(self) -> Optional[str]:
+
+    def get_last_updated(self) -> str | None:
         """
         Get the timestamp of the most recent update.
-        
+
         Returns:
             ISO timestamp string or None if no data
         """
@@ -2231,11 +2226,11 @@ class NFLDatabase:
             )
             result = cursor.fetchone()[0]
             return result
-    
+
     def clear_athletes(self) -> int:
         """
         Clear all athlete data from the database.
-        
+
         Returns:
             Number of records deleted
         """
@@ -2247,23 +2242,23 @@ class NFLDatabase:
             return count
 
     # Teams-related methods
-    
-    def upsert_teams(self, teams_data: List[Dict]) -> int:
+
+    def upsert_teams(self, teams_data: list[dict]) -> int:
         """
         Insert or update team records.
-        
+
         Args:
             teams_data: List of team dictionaries from ESPN API
-            
+
         Returns:
             Number of teams processed
         """
         if not teams_data:
             return 0
-        
+
         updated_at = datetime.now(UTC).isoformat()
         processed_count = 0
-        
+
         with self._get_connection() as conn:
             try:
                 for team in teams_data:
@@ -2277,17 +2272,17 @@ class NFLDatabase:
                     color = team.get('color', '') or ''
                     alternate_color = team.get('alternateColor', '') or ''
                     logo = team.get('logo', '') or ''
-                    
+
                     # Store the complete raw data as JSON
                     raw_json = json.dumps(team)
-                    
+
                     # Upsert the team record
                     conn.execute("""
                         INSERT INTO teams(
                             id, abbreviation, name, display_name, short_display_name,
                             location, color, alternate_color, logo, updated_at, raw
                         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?))
-                        ON CONFLICT(id) DO UPDATE SET 
+                        ON CONFLICT(id) DO UPDATE SET
                             abbreviation=excluded.abbreviation,
                             name=excluded.name,
                             display_name=excluded.display_name,
@@ -2303,84 +2298,84 @@ class NFLDatabase:
                         location, color, alternate_color, logo, updated_at, raw_json
                     ))
                     processed_count += 1
-                
+
                 conn.commit()
                 logger.info(f"Successfully processed {processed_count} teams")
                 return processed_count
-                
+
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error upserting teams: {e}")
                 raise
-    
-    def get_team_by_id(self, team_id: str) -> Optional[Dict]:
+
+    def get_team_by_id(self, team_id: str) -> dict | None:
         """
         Get team by ID.
-        
+
         Args:
             team_id: The team's unique identifier
-            
+
         Returns:
             Team dictionary or None if not found
         """
         with self._get_connection() as conn:
             cursor = conn.execute(
-                "SELECT * FROM teams WHERE id = ?", 
+                "SELECT * FROM teams WHERE id = ?",
                 (team_id,)
             )
             row = cursor.fetchone()
-            
+
             if row:
                 return dict(row)
             return None
-    
-    def get_team_by_abbreviation(self, abbreviation: str) -> Optional[Dict]:
+
+    def get_team_by_abbreviation(self, abbreviation: str) -> dict | None:
         """
         Get team by abbreviation (e.g., 'KC', 'TB').
-        
+
         Args:
             abbreviation: The team's abbreviation
-            
+
         Returns:
             Team dictionary or None if not found
         """
         with self._get_connection() as conn:
             cursor = conn.execute(
-                "SELECT * FROM teams WHERE abbreviation = ?", 
+                "SELECT * FROM teams WHERE abbreviation = ?",
                 (abbreviation,)
             )
             row = cursor.fetchone()
-            
+
             if row:
                 return dict(row)
             return None
-    
-    def get_all_teams(self) -> List[Dict]:
+
+    def get_all_teams(self) -> list[dict]:
         """
         Get all teams from the database.
-        
+
         Returns:
             List of all team dictionaries
         """
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT * FROM teams ORDER BY name")
             return [dict(row) for row in cursor.fetchall()]
-    
+
     def get_team_count(self) -> int:
         """
         Get the total number of teams in the database.
-        
+
         Returns:
             Total count of teams
         """
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM teams")
             return cursor.fetchone()[0]
-    
-    def get_teams_last_updated(self) -> Optional[str]:
+
+    def get_teams_last_updated(self) -> str | None:
         """
         Get the timestamp of the most recent teams update.
-        
+
         Returns:
             ISO timestamp string or None if no data
         """
@@ -2390,11 +2385,11 @@ class NFLDatabase:
             )
             result = cursor.fetchone()[0]
             return result
-    
+
     def clear_teams(self) -> int:
         """
         Clear all team data from the database.
-        
+
         Returns:
             Number of records deleted
         """

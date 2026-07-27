@@ -29,7 +29,7 @@ class TestPlayerAnalysis:
             team="KC",
             opponent="LV"
         )
-        
+
         assert analysis.matchup_rank == 16
         assert analysis.matchup_tier == "neutral"
         assert analysis.decision == "start"
@@ -47,9 +47,9 @@ class TestPlayerAnalysis:
             confidence=75.5,
             decision="must_start"
         )
-        
+
         d = analysis.to_dict()
-        
+
         assert d["player_name"] == "Test Player"
         assert d["confidence"] == 75.5
         assert d["decision"] == "must_start"
@@ -99,9 +99,9 @@ class TestLineupOptimizer:
             projected_points=18.0,
             usage_trend="upward"
         )
-        
+
         confidence, level, reasoning = optimizer.calculate_confidence(analysis)
-        
+
         assert confidence >= 70  # Should be high confidence
         assert level == "high"
         assert len(reasoning) > 0
@@ -122,9 +122,9 @@ class TestLineupOptimizer:
             projected_points=10.0,
             usage_trend="stable"
         )
-        
-        confidence, level, reasoning = optimizer.calculate_confidence(analysis)
-        
+
+        confidence, _level, reasoning = optimizer.calculate_confidence(analysis)
+
         assert confidence < 60  # Lower confidence due to injury
         assert any("injury" in r.lower() or "practice" in r.lower() for r in reasoning)
 
@@ -181,7 +181,7 @@ class TestStartSitRecommendation:
             practice_status="full",
             projected_points=22.5
         )
-        
+
         assert result["success"] is True
         assert "recommendation" in result
         assert "confidence" in result
@@ -196,7 +196,7 @@ class TestStartSitRecommendation:
             team="KC",
             opponent="LV"
         )
-        
+
         assert result["success"] is True
         assert "recommendation" in result
 
@@ -208,7 +208,7 @@ class TestGetRosterRecommendations:
     async def test_roster_recommendations_empty_list(self):
         """Test with empty player list."""
         result = await get_roster_recommendations([])
-        
+
         assert result["success"] is False
         assert "validation" in result["error_type"].lower()
 
@@ -224,9 +224,9 @@ class TestGetRosterRecommendations:
                 "projection": {"projected_points": 25.0}
             }
         ]
-        
+
         result = await get_roster_recommendations(players)
-        
+
         assert result["success"] is True
         assert "recommendations" in result
         assert len(result["recommendations"]) == 1
@@ -243,9 +243,9 @@ class TestGetRosterRecommendations:
             }
             for i in range(4)
         ]
-        
+
         result = await get_roster_recommendations(players)
-        
+
         assert result["success"] is True
         assert result["total_analyzed"] == 4
 
@@ -259,7 +259,7 @@ class TestComparePlayersForSlot:
         result = await compare_players_for_slot([
             {"name": "Player 1", "position": "WR", "team": "KC", "opponent": "LV"}
         ])
-        
+
         assert result["success"] is False
 
     @pytest.mark.asyncio
@@ -269,9 +269,9 @@ class TestComparePlayersForSlot:
             {"name": "Tyreek Hill", "position": "WR", "team": "MIA", "opponent": "NE"},
             {"name": "Stefon Diggs", "position": "WR", "team": "BUF", "opponent": "PHI"}
         ]
-        
+
         result = await compare_players_for_slot(players)
-        
+
         assert result["success"] is True
         assert "winner" in result
         assert "comparison" in result
@@ -286,7 +286,7 @@ class TestAnalyzeFullLineup:
     async def test_analyze_lineup_empty(self):
         """Test with empty lineup."""
         result = await analyze_full_lineup({})
-        
+
         assert result["success"] is False
 
     @pytest.mark.asyncio
@@ -299,9 +299,9 @@ class TestAnalyzeFullLineup:
             "TE": [{"name": "Travis Kelce", "position": "TE", "team": "KC", "opponent": "LV"}],
             "BENCH": [{"name": "Bench Player", "position": "RB", "team": "KC", "opponent": "LV"}]
         }
-        
+
         result = await analyze_full_lineup(lineup)
-        
+
         assert result["success"] is True
         assert "starters" in result
         assert "bench" in result
@@ -315,9 +315,9 @@ class TestAnalyzeFullLineup:
             "QB": [{"name": "Mahomes", "position": "QB", "team": "KC", "opponent": "LV"}],
             "FLEX": [{"name": "Pacheco", "position": "RB", "team": "KC", "opponent": "LV"}],
         }
-        
+
         result = await analyze_full_lineup(lineup)
-        
+
         assert result["success"] is True
         assert "starters" in result
 

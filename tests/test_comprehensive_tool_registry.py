@@ -320,27 +320,27 @@ class TestToolRegistry:
     async def test_comprehensive_tool_coverage(self):
         """Test that we have coverage for all major tool categories."""
         # Test a good sampling of different tool types to ensure comprehensive coverage
-        
+
         # News and Info tools
         result = await get_nfl_news(limit=5)
         assert isinstance(result, dict)
-        
+
         # Athlete tools
         result = search_athletes(name="Jones", limit=3)
         assert isinstance(result, dict)
-        
+
         # Fantasy tools
         result = await get_trending_players(limit=5)
         assert isinstance(result, dict)
-        
+
         # Vegas tools
         result = await get_vegas_lines(teams=["KC", "BUF"])
         assert isinstance(result, dict)
-        
+
         # Coaching tools
         result = await get_coaching_staff(team_id="KC")
         assert isinstance(result, dict)
-        
+
         # CBS tools
         result = await get_cbs_player_news(limit=3)
         assert isinstance(result, dict)

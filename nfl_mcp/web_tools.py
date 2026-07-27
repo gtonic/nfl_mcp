@@ -5,7 +5,6 @@ This module contains MCP tools for crawling and extracting content from web page
 """
 
 import re
-from typing import Optional
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -22,17 +21,17 @@ from .errors import create_success_response, handle_http_errors, handle_validati
     default_data={"url": None, "title": None, "content": "", "content_length": 0},
     operation_name="crawling URL"
 )
-async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
+async def crawl_url(url: str, max_length: int | None = 10000) -> dict:
     """
     Crawl a URL and extract its text content in a format understandable by LLMs.
-    
+
     This tool fetches a web page, extracts the main text content, and returns
     it in a clean, structured format suitable for LLM processing.
-    
+
     Args:
         url: The URL to crawl (must include http:// or https://)
         max_length: Maximum length of extracted text (default: 10000 characters)
-        
+
     Returns:
         A dictionary containing:
         - url: The crawled URL
@@ -81,30 +80,30 @@ async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
 
         # Parse HTML content
         soup = BeautifulSoup(response.text, 'lxml')
-        
+
         # Extract title
         title_tag = soup.find('title')
         title = title_tag.get_text().strip() if title_tag else None
-        
+
         # Remove script and style elements
         for script in soup(["script", "style", "nav", "footer", "aside", "form"]):
             script.extract()
-        
+
         # Get text content
         text = soup.get_text()
-        
+
         # Clean up the text
         lines = (line.strip() for line in text.splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         text = ' '.join(chunk for chunk in chunks if chunk)
-        
+
         # Remove excessive whitespace and normalize
         text = re.sub(r'\s+', ' ', text).strip()
-        
+
         # Apply length limit if specified
         if max_length and len(text) > max_length:
             text = text[:max_length] + "..."
-        
+
         return create_success_response({
             "url": url,
             "title": title,

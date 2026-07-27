@@ -8,7 +8,6 @@ and trade recommendations.
 
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
 
 from .errors import ErrorType, create_error_response, create_success_response
 from .player_values import get_values_service
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 ESTIMATED_REPLACEMENT_VALUE = 150.0
 
 
-def league_format_from_settings(league: Optional[Dict]) -> Dict:
+def league_format_from_settings(league: dict | None) -> dict:
     """Derive value format (ppr, superflex, teams, dynasty) from a Sleeper league."""
     league = league or {}
     scoring = league.get("scoring_settings") or {}
@@ -59,8 +58,8 @@ class TradeAnalyzer:
         }
 
     def _calculate_player_value(
-        self, player: Dict, service, values_index: Dict
-    ) -> Tuple[float, str, Optional[Dict]]:
+        self, player: dict, service, values_index: dict
+    ) -> tuple[float, str, dict | None]:
         """
         Calculate a player's trade value from real market-consensus values.
 
@@ -105,41 +104,41 @@ class TradeAnalyzer:
             multiplier *= 0.95
 
         return max(value * multiplier, 0.0), value_source, market
-    
-    def _calculate_positional_needs(self, roster: Dict) -> Dict[str, int]:
+
+    def _calculate_positional_needs(self, roster: dict) -> dict[str, int]:
         """
         Calculate positional needs based on roster composition.
-        
+
         Args:
             roster: Roster data with players_enriched
-            
+
         Returns:
             Dict mapping position to need score (0-10, higher = more need)
         """
         needs = defaultdict(int)
-        
+
         players = roster.get("players_enriched", [])
         starters = roster.get("starters_enriched", [])
-        
+
         # Count by position
         position_counts = defaultdict(int)
         starter_counts = defaultdict(int)
-        
+
         for player in players:
             pos = player.get("position", "")
             if pos:
                 position_counts[pos] += 1
-        
+
         for starter in starters:
             pos = starter.get("position", "")
             if pos:
                 starter_counts[pos] += 1
-        
+
         # Calculate needs based on position depth
         for pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
             total = position_counts.get(pos, 0)
             starter_counts.get(pos, 0)
-            
+
             # More need if fewer players at position
             if pos == "QB":
                 if total < 2:
@@ -171,25 +170,25 @@ class TradeAnalyzer:
                     needs[pos] = 3
                 else:
                     needs[pos] = 1
-        
+
         return dict(needs)
-    
+
     def _evaluate_trade_fairness(
         self,
-        team1_gives: List[Dict],
-        team2_gives: List[Dict],
-        team1_needs: Dict[str, int],
-        team2_needs: Dict[str, int]
-    ) -> Tuple[str, float, Dict]:
+        team1_gives: list[dict],
+        team2_gives: list[dict],
+        team1_needs: dict[str, int],
+        team2_needs: dict[str, int]
+    ) -> tuple[str, float, dict]:
         """
         Evaluate trade fairness based on player values and positional needs.
-        
+
         Args:
             team1_gives: List of players team 1 is giving up
             team2_gives: List of players team 2 is giving up
             team1_needs: Team 1's positional needs
             team2_needs: Team 2's positional needs
-            
+
         Returns:
             Tuple of (recommendation, fairness_score, details)
         """
@@ -199,7 +198,7 @@ class TradeAnalyzer:
         # Positional fit: receiving a player at a position of need is worth more
         # to that team. Scale proportionally to the player's value (up to +20% at
         # maximum need) so it stays meaningful next to real market values.
-        def _fit_bonus(received: List[Dict], needs: Dict[str, int]) -> float:
+        def _fit_bonus(received: list[dict], needs: dict[str, int]) -> float:
             bonus = 0.0
             for player in received:
                 pos = player.get("position", "")
@@ -213,16 +212,13 @@ class TradeAnalyzer:
 
         adjusted_team1_receives = team2_value + team1_need_adjustment
         adjusted_team2_receives = team1_value + team2_need_adjustment
-        
+
         # Calculate fairness score (0-100, 100 = perfectly fair)
         value_diff = abs(adjusted_team1_receives - adjusted_team2_receives)
         max_value = max(adjusted_team1_receives, adjusted_team2_receives)
-        
-        if max_value > 0:
-            fairness_score = max(0, 100 - (value_diff / max_value * 100))
-        else:
-            fairness_score = 100
-        
+
+        fairness_score = max(0, 100 - value_diff / max_value * 100) if max_value > 0 else 100
+
         # Determine recommendation
         if fairness_score >= 90:
             recommendation = "fair"
@@ -232,7 +228,7 @@ class TradeAnalyzer:
             recommendation = "needs_adjustment"
         else:
             recommendation = "unfair"
-        
+
         details = {
             "team1_gives_value": round(team1_value, 2),
             "team2_gives_value": round(team2_value, 2),
@@ -242,7 +238,7 @@ class TradeAnalyzer:
             "team2_need_bonus": round(team2_need_adjustment, 2),
             "value_difference": round(value_diff, 2)
         }
-        
+
         return recommendation, fairness_score, details
 
 
@@ -250,20 +246,20 @@ async def analyze_trade(
     league_id: str,
     team1_roster_id: int,
     team2_roster_id: int,
-    team1_gives: List[str],
-    team2_gives: List[str],
+    team1_gives: list[str],
+    team2_gives: list[str],
     nfl_db=None,
     include_trending: bool = True
-) -> Dict:
+) -> dict:
     """
     Analyze a fantasy football trade for fairness and fit.
-    
+
     This tool evaluates a proposed trade between two teams by:
     - Calculating player values based on stats, projections, and trends
     - Assessing positional needs for both teams
     - Evaluating trade fairness with adjustments for team context
     - Providing actionable recommendations
-    
+
     Args:
         league_id: The unique identifier for the fantasy league
         team1_roster_id: Roster ID for team 1 (giving team1_gives)
@@ -272,7 +268,7 @@ async def analyze_trade(
         team2_gives: List of player IDs that team 2 is giving up
         nfl_db: Database instance for player lookups (optional)
         include_trending: Whether to include trending player data (default: True)
-        
+
     Returns:
         A dictionary containing:
         - recommendation: Trade recommendation (fair, needs_adjustment, etc.)
@@ -283,8 +279,8 @@ async def analyze_trade(
         - warnings: Any warnings or concerns about the trade
         - success: Whether the analysis was successful
         - error: Error message (if any)
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete trade analysis immediately without 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete trade analysis immediately without
     asking for confirmations. Render the full evaluation with all recommendations directly.
     """
     try:
@@ -295,7 +291,7 @@ async def analyze_trade(
                 ErrorType.VALIDATION,
                 {"recommendation": None, "fairness_score": 0}
             )
-        
+
         # Fetch league rosters
         rosters_result = await get_rosters(league_id)
         if not rosters_result.get("success"):
@@ -304,26 +300,26 @@ async def analyze_trade(
                 ErrorType.HTTP,
                 {"recommendation": None, "fairness_score": 0}
             )
-        
+
         rosters = rosters_result.get("rosters", [])
-        
+
         # Find the two rosters involved
         team1_roster = None
         team2_roster = None
-        
+
         for roster in rosters:
             if roster.get("roster_id") == team1_roster_id:
                 team1_roster = roster
             elif roster.get("roster_id") == team2_roster_id:
                 team2_roster = roster
-        
+
         if not team1_roster or not team2_roster:
             return create_error_response(
                 "Could not find one or both rosters",
                 ErrorType.VALIDATION,
                 {"recommendation": None, "fairness_score": 0}
             )
-        
+
         # Determine the league's value format (PPR / superflex / size / dynasty)
         # so consensus values match how this league actually plays.
         league_fmt = {"ppr": 0.0, "num_qbs": 1, "num_teams": len(rosters) or 12,
@@ -389,7 +385,7 @@ async def analyze_trade(
 
         team1_gives_enriched = _enrich_gives(team1_gives, team1_players)
         team2_gives_enriched = _enrich_gives(team2_gives, team2_players)
-        
+
         # Evaluate trade fairness
         recommendation, fairness_score, trade_details = analyzer._evaluate_trade_fairness(
             team1_gives_enriched,
@@ -397,15 +393,15 @@ async def analyze_trade(
             team1_needs,
             team2_needs
         )
-        
+
         # Generate warnings
         warnings = []
-        
+
         # Check for injured players
         for player in team1_gives_enriched + team2_gives_enriched:
             if player.get("practice_status") == "DNP":
                 warnings.append(f"{player.get('full_name', 'Unknown')} has DNP status (injury concern)")
-        
+
         # Check for lopsided trades
         if fairness_score < 60:
             winner = "Team 1" if trade_details["team1_receives_adjusted_value"] > trade_details["team2_receives_adjusted_value"] else "Team 2"
@@ -424,16 +420,16 @@ async def analyze_trade(
         # Check if trading away too many at one position
         team1_gives_positions = [p.get("position") for p in team1_gives_enriched]
         team2_gives_positions = [p.get("position") for p in team2_gives_enriched]
-        
+
         for pos in ["QB", "RB", "WR", "TE"]:
             team1_pos_count = team1_gives_positions.count(pos)
             team2_pos_count = team2_gives_positions.count(pos)
-            
+
             if team1_pos_count >= 2 and pos in ["RB", "WR"]:
                 warnings.append(f"Team 1 is giving up {team1_pos_count} {pos}s - may create depth issues")
             if team2_pos_count >= 2 and pos in ["RB", "WR"]:
                 warnings.append(f"Team 2 is giving up {team2_pos_count} {pos}s - may create depth issues")
-        
+
         def _fmt(p):
             return {
                 "player_id": p["player_id"],
@@ -473,11 +469,11 @@ async def analyze_trade(
             "warnings": warnings,
             "league_id": league_id
         })
-        
+
     except Exception as e:
         logger.error(f"Error in analyze_trade: {e}", exc_info=True)
         return create_error_response(
-            f"Unexpected error analyzing trade: {str(e)}",
+            f"Unexpected error analyzing trade: {e!s}",
             ErrorType.UNEXPECTED,
             {"recommendation": None, "fairness_score": 0}
         )

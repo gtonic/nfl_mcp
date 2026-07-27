@@ -19,7 +19,6 @@ a transparent breakdown.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .player_values import get_values_service
@@ -51,11 +50,11 @@ def _tier(pct: float) -> str:
 @handle_http_errors(default_data={"recommendation": None}, operation_name="recommending FAAB bid")
 async def recommend_faab_bid(
     league_id: str,
-    player_id: Optional[str] = None,
-    player_name: Optional[str] = None,
-    my_roster_id: Optional[int] = None,
+    player_id: str | None = None,
+    player_name: str | None = None,
+    my_roster_id: int | None = None,
     db=None,
-) -> Dict:
+) -> dict:
     """Recommend a FAAB waiver bid for a player (as % of budget, + absolute).
 
     Args:
@@ -98,7 +97,7 @@ async def recommend_faab_bid(
     position = (target.get("position") or "").upper()
     max_value = max((float(v.get("value") or 0) for v in values.get("list", [])), default=target_value or 1)
 
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     # --- Marginal upgrade vs your roster ---
     upgrade = target_value

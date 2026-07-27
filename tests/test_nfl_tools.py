@@ -34,15 +34,15 @@ class TestGetNflNews:
                 }
             ]
         }
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_nfl_news(limit=1)
-            
+
             assert result["success"] is True
             assert result["total_articles"] == 1
             assert result["articles"][0]["headline"] == "Test Article"
@@ -53,15 +53,15 @@ class TestGetNflNews:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"articles": []}
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_nfl_news()
-            
+
             assert result["success"] is True
 
 
@@ -93,15 +93,15 @@ class TestGetTeams:
                 }
             ]
         }
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_teams()
-            
+
             assert result["success"] is True
             assert result["total_teams"] == 1
             assert result["teams"][0]["abbreviation"] == "KC"
@@ -124,15 +124,15 @@ class TestGetDepthChart:
             </table>
         </html>
         """
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_depth_chart("KC")
-            
+
             assert result["success"] is True
             assert result["team_id"] == "KC"
 
@@ -166,15 +166,15 @@ class TestGetTeamInjuries:
                 }
             ]
         }
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_team_injuries("KC")
-            
+
             assert result["success"] is True
             assert result["count"] == 1
 
@@ -182,21 +182,21 @@ class TestGetTeamInjuries:
     async def test_get_team_injuries_404(self):
         """Test injury report with 404 response."""
         import httpx
-        
+
         mock_response = MagicMock()
         mock_response.status_code = 404
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "404", request=MagicMock(), response=mock_response
         )
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_team_injuries("INVALID")
-            
+
             assert result["success"] is True  # Handled gracefully
             assert result["count"] == 0
 
@@ -229,15 +229,15 @@ class TestGetTeamPlayerStats:
                 }
             ]
         }
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_team_player_stats("KC")
-            
+
             assert result["success"] is True
             assert result["count"] == 1
             assert result["season"] == 2026  # Default season
@@ -248,15 +248,15 @@ class TestGetTeamPlayerStats:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"items": []}
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_team_player_stats("KC", season=2025)
-            
+
             assert result["success"] is True
             assert result["season"] == 2025
 
@@ -284,15 +284,15 @@ class TestGetNflStandings:
                 }
             ]
         }
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_nfl_standings()
-            
+
             assert result["success"] is True
             assert result["count"] == 1
             assert result["standings"][0]["wins"] == 14
@@ -304,15 +304,15 @@ class TestGetNflStandings:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"children": []}
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_nfl_standings()
-            
+
             assert result["success"] is True
             assert result["season"] == 2026
 
@@ -349,15 +349,15 @@ class TestGetTeamSchedule:
                 }
             ]
         }
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_team_schedule("KC")
-            
+
             assert result["success"] is True
             assert result["count"] == 1
             assert result["team_id"] == "KC"
@@ -399,15 +399,15 @@ class TestGetLeagueLeaders:
                 }
             ]
         }
-        
+
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
             result = await get_league_leaders(category="pass")
-            
+
             # Should succeed (even if no leaders found)
             assert result["success"] is True
             assert result["season"] == 2026
@@ -426,13 +426,13 @@ class TestGetCurrentSeasonAndWeek:
                 "week": 5
             }
         }
-        
+
         async def mock_get_nfl_state():
             return mock_state
-        
+
         with patch('nfl_mcp.sleeper_tools.get_nfl_state', side_effect=mock_get_nfl_state):
             season, week = await get_current_season_and_week()
-            
+
             assert season == 2026
             assert week == 5
 
@@ -441,10 +441,10 @@ class TestGetCurrentSeasonAndWeek:
         """Test season/week detection failure returns defaults."""
         async def mock_get_nfl_state():
             raise Exception("API error")
-        
+
         with patch('nfl_mcp.sleeper_tools.get_nfl_state', side_effect=mock_get_nfl_state):
             season, week = await get_current_season_and_week()
-            
+
             # Should return current year and week 0
             assert season is not None
             assert week == 0

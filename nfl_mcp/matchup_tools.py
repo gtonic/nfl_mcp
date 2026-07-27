@@ -9,7 +9,6 @@ import csv
 import logging
 from datetime import UTC, datetime, timedelta
 from io import StringIO
-from typing import Dict, List, Optional
 
 import httpx
 
@@ -86,28 +85,28 @@ def _init_matchup_db():
 class DefenseRankingsAnalyzer:
     """
     Analyzer for NFL defense rankings against fantasy positions.
-    
+
     Provides matchup difficulty analysis based on points allowed
     to each position by opposing defenses.
     """
-    
+
     # Default rankings when API fails (based on historical averages)
     # Format: {position: {team: (rank, pts_allowed_avg)}}
     _fallback_rankings = None
     _cache_timestamp = None
     _cache_ttl_hours = 6
-    
+
     def __init__(self, db=None):
         self.db = db or _init_matchup_db()
         self._rankings_cache = {}
-    
-    async def fetch_defense_rankings(self, season: int = None) -> Dict[str, List[Dict]]:
+
+    async def fetch_defense_rankings(self, season: int | None = None) -> dict[str, list[dict]]:
         """
         Fetch defense vs position rankings from ESPN.
-        
+
         Args:
             season: NFL season year (defaults to current)
-            
+
         Returns:
             Dict mapping position -> list of team rankings
             Each ranking has: team, rank, points_allowed_avg, matchup_tier
@@ -117,14 +116,14 @@ class DefenseRankingsAnalyzer:
             # Adjust for NFL season (starts in September)
             if datetime.now().month < 3:
                 season -= 1
-        
+
         # Check cache first
         cache_key = f"defense_rankings_{season}"
         if cache_key in self._rankings_cache:
             cached = self._rankings_cache[cache_key]
             if datetime.now(UTC) - cached["timestamp"] < timedelta(hours=self._cache_ttl_hours):
                 return cached["data"]
-        
+
         rankings = {}
 
         # Primary source: nflverse weekly stats -> real fantasy points allowed
@@ -152,19 +151,19 @@ class DefenseRankingsAnalyzer:
             "data": rankings,
             "timestamp": datetime.now(UTC)
         }
-        
+
         # Also persist to database if available
         if self.db:
             try:
                 self._save_rankings_to_db(rankings, season)
             except Exception as e:
                 logger.debug(f"Failed to cache rankings to DB: {e}")
-        
+
         return rankings
-    
+
     async def _fetch_nflverse_rankings(
         self, client: httpx.AsyncClient, season: int
-    ) -> Optional[Dict[str, List[Dict]]]:
+    ) -> dict[str, list[dict]] | None:
         """Compute defense-vs-position rankings from nflverse weekly stats.
 
         Aggregates PPR fantasy points allowed per game by each defense to each
@@ -182,8 +181,8 @@ class DefenseRankingsAnalyzer:
             logger.debug(f"nflverse fetch failed for {season}: {e}")
             return None
 
-        weekly: Dict = {}           # (opponent, position, week) -> summed PPR points
-        weeks_seen: Dict = {}       # (opponent, position) -> set of weeks
+        weekly: dict = {}           # (opponent, position, week) -> summed PPR points
+        weeks_seen: dict = {}       # (opponent, position) -> set of weeks
         try:
             for row in csv.DictReader(StringIO(text)):
                 if (row.get("season_type") or "").upper() != "REG":
@@ -209,11 +208,11 @@ class DefenseRankingsAnalyzer:
         if not weekly:
             return None
 
-        totals: Dict = {}           # (opponent, position) -> total PPR points
+        totals: dict = {}           # (opponent, position) -> total PPR points
         for (opp, pos, _wk), pts in weekly.items():
             totals[(opp, pos)] = totals.get((opp, pos), 0.0) + pts
 
-        rankings: Dict[str, List[Dict]] = {}
+        rankings: dict[str, list[dict]] = {}
         for pos in ("QB", "RB", "WR", "TE"):
             per_team = []
             for (opp, p), total in totals.items():
@@ -243,7 +242,7 @@ class DefenseRankingsAnalyzer:
     def _normalize_team_name(self, name: str) -> str:
         """Convert team name/city to standard abbreviation."""
         name_lower = name.lower().strip()
-        
+
         team_mappings = {
             "arizona": "ARI", "cardinals": "ARI",
             "atlanta": "ATL", "falcons": "ATL",
@@ -278,27 +277,27 @@ class DefenseRankingsAnalyzer:
             "tennessee": "TEN", "titans": "TEN",
             "washington": "WSH", "commanders": "WSH",
         }
-        
+
         for key, abbr in team_mappings.items():
             if key in name_lower:
                 return abbr
-        
+
         # If already an abbreviation
         if len(name) <= 3:
             return name.upper()
-        
+
         return name[:3].upper()
-    
-    def _get_fallback_rankings(self, position: str) -> List[Dict]:
+
+    def _get_fallback_rankings(self, position: str) -> list[dict]:
         """
         Return fallback rankings when API fails.
-        
+
         Based on typical NFL defense patterns.
         """
         # Generic fallback - all teams at neutral rating
         teams = list(ESPN_TEAM_MAP.values())
         rankings = []
-        
+
         for rank, team in enumerate(sorted(teams), 1):
             rankings.append({
                 "team": team,
@@ -308,52 +307,52 @@ class DefenseRankingsAnalyzer:
                 "tier_indicator": _get_tier_color(_get_matchup_tier(rank)),
                 "is_fallback": True
             })
-        
+
         return rankings
-    
-    def _save_rankings_to_db(self, rankings: Dict, season: int) -> None:
+
+    def _save_rankings_to_db(self, rankings: dict, season: int) -> None:
         """Persist rankings to database for caching."""
         if not self.db:
             return
-        
+
         try:
             self.db.upsert_defense_rankings(rankings, season)
         except AttributeError:
             # Method might not exist yet in database
             logger.debug("Defense rankings DB method not available")
-    
+
     def get_matchup_difficulty(
         self,
         position: str,
         opponent_team: str,
-        rankings: Dict[str, List[Dict]] = None
-    ) -> Dict:
+        rankings: dict[str, list[dict]] | None = None
+    ) -> dict:
         """
         Get matchup difficulty for a player vs opponent.
-        
+
         Args:
             position: Player's position (QB, RB, WR, TE)
             opponent_team: Opponent team abbreviation
             rankings: Pre-fetched rankings (optional)
-            
+
         Returns:
             Dict with rank, tier, points_allowed, and recommendation
         """
         position = position.upper()
         opponent_team = opponent_team.upper()
-        
+
         # Normalize opponent team
         if opponent_team == "WAS":
             opponent_team = "WSH"
         elif opponent_team == "JAC":
             opponent_team = "JAX"
-        
+
         if rankings and position in rankings:
             pos_rankings = rankings[position]
         else:
             # Use cached or fallback
             pos_rankings = self._get_fallback_rankings(position)
-        
+
         # Find opponent in rankings
         for team_rank in pos_rankings:
             if team_rank["team"] == opponent_team:
@@ -388,7 +387,7 @@ class DefenseRankingsAnalyzer:
                     rec = f"⚠️ Tough matchup vs {opponent_team}"
                 else:  # elite
                     rec = f"🚫 AVOID: {opponent_team} is elite vs {position}s"
-                
+
                 return {
                     "position": position,
                     "opponent": opponent_team,
@@ -400,7 +399,7 @@ class DefenseRankingsAnalyzer:
                     "recommendation": rec,
                     "is_fallback": team_rank.get("is_fallback", False)
                 }
-        
+
         # Opponent not found
         return {
             "position": position,
@@ -431,10 +430,10 @@ def get_defense_analyzer() -> DefenseRankingsAnalyzer:
 # Mirror of the defense-vs-position aggregation, keyed by the *scoring* team.
 # ---------------------------------------------------------------------------
 
-_offense_rankings_cache: Dict[int, Dict[str, Dict]] = {}
+_offense_rankings_cache: dict[int, dict[str, dict]] = {}
 
 
-async def fetch_offense_rankings(season: int) -> Dict[str, Dict]:
+async def fetch_offense_rankings(season: int) -> dict[str, dict]:
     """Rank NFL offenses by PPR points scored per game (nflverse weekly stats).
 
     Returns ``{team: {"rank": int, "points_scored_avg": float}}`` with rank 1 =
@@ -456,8 +455,8 @@ async def fetch_offense_rankings(season: int) -> Dict[str, Dict]:
         logger.debug(f"nflverse offense fetch failed for {season}: {e}")
         return {}
 
-    weekly: Dict = {}       # (team, week) -> summed PPR points
-    weeks_seen: Dict = {}   # team -> set of weeks
+    weekly: dict = {}       # (team, week) -> summed PPR points
+    weeks_seen: dict = {}   # team -> set of weeks
     try:
         for row in csv.DictReader(StringIO(text)):
             if (row.get("season_type") or "").upper() != "REG":
@@ -483,7 +482,7 @@ async def fetch_offense_rankings(season: int) -> Dict[str, Dict]:
     if not weekly:
         return {}
 
-    totals: Dict = {}
+    totals: dict = {}
     for (team, _wk), pts in weekly.items():
         totals[team] = totals.get(team, 0.0) + pts
 
@@ -508,38 +507,38 @@ async def fetch_offense_rankings(season: int) -> Dict[str, Dict]:
     operation_name="fetching defense rankings"
 )
 async def get_defense_rankings(
-    positions: Optional[List[str]] = None,
-    season: Optional[int] = None
-) -> Dict:
+    positions: list[str] | None = None,
+    season: int | None = None
+) -> dict:
     """
     Get NFL defense rankings against fantasy positions.
-    
+
     Shows how each NFL defense performs against QBs, RBs, WRs, and TEs,
     helping identify favorable and unfavorable matchups for lineup decisions.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         positions: List of positions to get rankings for (default: all)
                   Valid: "QB", "RB", "WR", "TE"
         season: NFL season year (default: current season)
-        
+
     Returns:
         Dictionary containing:
         - rankings: Dict mapping position to list of team rankings
         - positions: List of positions included
         - season: Season year
         - tiers_explained: Explanation of matchup tiers
-        
+
     Example:
         get_defense_rankings(positions=["WR", "RB"])
         -> Shows which defenses are easiest/hardest for WRs and RBs
     """
     analyzer = get_defense_analyzer()
-    
+
     # Fetch all rankings
     all_rankings = await analyzer.fetch_defense_rankings(season)
-    
+
     # Filter to requested positions
     if positions:
         positions = [p.upper() for p in positions]
@@ -547,7 +546,7 @@ async def get_defense_rankings(
     else:
         filtered = all_rankings
         positions = list(all_rankings.keys())
-    
+
     return create_success_response({
         "rankings": filtered,
         "positions": positions,
@@ -573,31 +572,31 @@ async def get_matchup_difficulty(
     position: str,
     opponent_team: str,
     include_rankings: bool = False
-) -> Dict:
+) -> dict:
     """
     Get matchup difficulty for a specific position vs opponent.
-    
+
     Analyzes how the opponent defense performs against the given position
     and provides a recommendation for lineup decisions.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         position: Fantasy position ("QB", "RB", "WR", "TE")
         opponent_team: Opponent team abbreviation (e.g., "KC", "SF", "DAL")
         include_rankings: Whether to include full position rankings
-        
+
     Returns:
         Dictionary containing:
         - matchup: Matchup analysis with rank, tier, and recommendation
         - rankings: Full position rankings (if include_rankings=True)
-        
+
     Example:
         get_matchup_difficulty(position="WR", opponent_team="KC")
         -> Returns KC's defense ranking vs WRs and start/sit recommendation
     """
     analyzer = get_defense_analyzer()
-    
+
     # Validate position
     position = position.upper()
     if position not in ["QB", "RB", "WR", "TE"]:
@@ -606,21 +605,21 @@ async def get_matchup_difficulty(
             error_type=ErrorType.VALIDATION,
             data={"position": position}
         )
-    
+
     # Fetch rankings
     rankings = await analyzer.fetch_defense_rankings()
-    
+
     # Get matchup analysis
     matchup = analyzer.get_matchup_difficulty(position, opponent_team, rankings)
-    
+
     result = {
         "matchup": matchup,
         "message": f"{position} vs {opponent_team}: {matchup['matchup_tier'].upper()} matchup (#{matchup['rank']})"
     }
-    
+
     if include_rankings:
         result["position_rankings"] = rankings.get(position, [])
-    
+
     return create_success_response(result)
 
 
@@ -629,31 +628,31 @@ async def get_matchup_difficulty(
     operation_name="analyzing roster matchups"
 )
 async def analyze_roster_matchups(
-    players: List[Dict],
-    week: Optional[int] = None
-) -> Dict:
+    players: list[dict],
+    week: int | None = None
+) -> dict:
     """
     Analyze matchup difficulty for multiple players.
-    
+
     Takes a list of players with their positions and opponents,
     returns matchup analysis for each to help with lineup decisions.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         players: List of player dicts with at least:
                 - name: Player name
                 - position: QB, RB, WR, TE
                 - opponent: Opponent team abbreviation
         week: NFL week number (for display purposes)
-        
+
     Returns:
         Dictionary containing:
         - analysis: List of matchup analyses per player
         - summary: Aggregated recommendations
         - smash_spots: Players with excellent matchups
         - avoid_spots: Players with tough matchups
-        
+
     Example:
         analyze_roster_matchups(players=[
             {"name": "Patrick Mahomes", "position": "QB", "opponent": "LV"},
@@ -661,19 +660,19 @@ async def analyze_roster_matchups(
         ])
     """
     analyzer = get_defense_analyzer()
-    
+
     # Fetch rankings once
     rankings = await analyzer.fetch_defense_rankings()
-    
+
     analyses = []
     smash_spots = []
     avoid_spots = []
-    
+
     for player in players:
         name = player.get("name", "Unknown")
         position = player.get("position", "").upper()
         opponent = player.get("opponent", "")
-        
+
         if not position or position not in ["QB", "RB", "WR", "TE"]:
             analyses.append({
                 "player": name,
@@ -681,7 +680,7 @@ async def analyze_roster_matchups(
                 "error": "Invalid or missing position"
             })
             continue
-        
+
         if not opponent:
             analyses.append({
                 "player": name,
@@ -689,9 +688,9 @@ async def analyze_roster_matchups(
                 "error": "Missing opponent"
             })
             continue
-        
+
         matchup = analyzer.get_matchup_difficulty(position, opponent, rankings)
-        
+
         analysis = {
             "player": name,
             "position": position,
@@ -703,20 +702,20 @@ async def analyze_roster_matchups(
             "recommendation": matchup["recommendation"]
         }
         analyses.append(analysis)
-        
+
         # Categorize
         if matchup["matchup_tier"] == "smash":
             smash_spots.append(f"{name} ({position}) vs {opponent}")
         elif matchup["matchup_tier"] in ["elite", "tough"]:
             avoid_spots.append(f"{name} ({position}) vs {opponent}")
-    
+
     # Generate summary
     summary_lines = []
     if smash_spots:
         summary_lines.append(f"🎯 SMASH SPOTS: {', '.join(smash_spots)}")
     if avoid_spots:
         summary_lines.append(f"⚠️ TOUGH MATCHUPS: {', '.join(avoid_spots)}")
-    
+
     return create_success_response({
         "analysis": analyses,
         "week": week,

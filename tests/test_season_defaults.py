@@ -116,12 +116,12 @@ class TestSeasonFallback:
             # Remove from sys.modules to force reimport
             if 'nfl_mcp.sleeper_tools' in sys.modules:
                 del sys.modules['nfl_mcp.sleeper_tools']
-            
+
             # Mock the import to raise exception
             with patch.dict('sys.modules', {'nfl_mcp.sleeper_tools': None}):
                 # This will fail to import, but should still return fallback
                 result = await get_current_season_and_week()
-                season, week = result
+                season, _week = result
                 # Should fallback to current year when API fails
                 import datetime
                 assert season == datetime.datetime.now().year
@@ -136,31 +136,31 @@ class TestNoHardcoded2025:
 
     def test_nfl_tools_no_2025_fallback(self):
         """Verify nfl_tools.py has no 2025 fallbacks."""
-        with open('nfl_mcp/nfl_tools.py', 'r') as f:
+        with open('nfl_mcp/nfl_tools.py') as f:
             content = f.read()
-        
+
         # Should not have "or 2025" patterns (which would be fallback defaults)
         assert "or 2025" not in content,             "Found 'or 2025' in nfl_tools.py - should be 'or 2026'"
-        
+
         # Should not have "default: 2025" patterns in docstrings
         assert "default: 2025" not in content,             "Found 'default: 2025' in nfl_tools.py docstrings"
 
     def test_tool_registry_no_2025_fallback(self):
         """Verify tool_registry.py has no 2025 fallbacks."""
-        with open('nfl_mcp/tool_registry.py', 'r') as f:
+        with open('nfl_mcp/tool_registry.py') as f:
             content = f.read()
-        
+
         # Should not have "else 2025" patterns
         assert "else 2025" not in content,             "Found 'else 2025' in tool_registry.py"
-        
+
         # Should not have "default=2025" patterns
         assert "default=2025" not in content,             "Found 'default=2025' in tool_registry.py"
 
     def test_server_no_2025_default(self):
         """Verify server.py has no 2025 default."""
-        with open('nfl_mcp/server.py', 'r') as f:
+        with open('nfl_mcp/server.py') as f:
             content = f.read()
-        
+
         # Should not have "else 2025" patterns
         assert "else 2025" not in content,             "Found 'else 2025' in server.py"
 

@@ -86,9 +86,9 @@ class TestTradeAnalyzer:
                 {"position": "WR"},
             ]
         }
-        
+
         needs = analyzer._calculate_positional_needs(roster)
-        
+
         assert "RB" in needs
         assert "WR" in needs
         assert "QB" in needs
@@ -99,11 +99,11 @@ class TestTradeAnalyzer:
         team2_gives = [{"calculated_value": 78}]
         team1_needs = {"RB": 5, "WR": 3}
         team2_needs = {"WR": 4, "TE": 6}
-        
-        recommendation, score, details = analyzer._evaluate_trade_fairness(
+
+        recommendation, score, _details = analyzer._evaluate_trade_fairness(
             team1_gives, team2_gives, team1_needs, team2_needs
         )
-        
+
         assert recommendation in ["fair", "slightly_favors_team_1", "slightly_favors_team_2"]
         assert score >= 75
 
@@ -121,10 +121,10 @@ class TestAnalyzeTrade:
     async def test_analyze_trade_rosters_not_found(self):
         """Test with non-existent rosters."""
         mock_result = {"success": True, "rosters": [{"roster_id": "1"}, {"roster_id": "2"}]}
-        
+
         async def mock_get_rosters(league_id):
             return mock_result
-        
+
         with patch('nfl_mcp.trade_analyzer_tools.get_rosters', side_effect=mock_get_rosters):
             result = await analyze_trade("league1", 999, 888, ["1"], ["2"])
             assert result["success"] is False
@@ -148,7 +148,7 @@ class TestAnalyzeTrade:
             ],
             "starters_enriched": []
         }
-        
+
         async def mock_get_rosters(league_id):
             return {"success": True, "rosters": [mock_roster1, mock_roster2]}
 
@@ -197,7 +197,7 @@ class TestAnalyzeTrade:
             ],
             "starters_enriched": []
         }
-        
+
         async def mock_get_rosters(league_id):
             return {"success": True, "rosters": [mock_roster1, mock_roster2]}
 
