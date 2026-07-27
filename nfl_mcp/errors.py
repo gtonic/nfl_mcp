@@ -26,6 +26,10 @@ class ErrorType:
     UNEXPECTED = "unexpected_error"
     ACCESS_DENIED = "access_denied_error"
     ROSTER_PRIVATE = "roster_private_error"
+    # Referenced by sleeper_tools/nfl_tools error paths; were missing here, so
+    # hitting those paths raised AttributeError (surfaced by the mypy pass).
+    API_ERROR = "api_error"
+    NOT_FOUND = "not_found_error"
 
 
 def create_error_response(

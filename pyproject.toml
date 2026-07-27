@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nfl_mcp"
-version = "0.6.0"
+version = "0.6.5"
 description = "NFL MCP Server - Fantasy Football Analysis via Model Context Protocol"
 authors = [{name = "gtonic", email = "tom.geiger@alp54.com"}]
 license = {text = "MIT"}
@@ -99,6 +99,15 @@ ignore = [
 # same retry-loop iteration (captured vars are re-bound each pass), so they are
 # false positives. Revisit when sleeper_tools.py is split by domain.
 "nfl_mcp/sleeper_tools.py" = ["B023"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = false
+# Report-only signal, not a gate (the CI job is non-blocking). This is a
+# dict-heavy, progressively-typed codebase, so some inference noise is expected;
+# the value is catching real type bugs (e.g. attribute typos, None misuse).
+check_untyped_defs = true
 
 [tool.coverage.run]
 source = ["nfl_mcp"]
