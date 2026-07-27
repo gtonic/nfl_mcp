@@ -27,6 +27,10 @@ FLEX_ELIGIBLE = {"RB", "WR", "TE"}
 SUPERFLEX_ELIGIBLE = {"QB", "RB", "WR", "TE"}
 DEFAULT_SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1}
 _MAX_SWAP_ITERS = 50
+# Positive correlation between a QB and a same-team pass catcher (shared game
+# script): a stack widens the team's variance, which helps the underdog and
+# hurts the favorite — exactly the effect stacking is prized for.
+STACK_CORRELATION = 0.35
 
 
 def _phi(z: float) -> float:
@@ -77,11 +81,26 @@ def expand_slots(slots: Dict[str, int]) -> List[str]:
     return out
 
 
-def _team_stats(players: List[Dict]) -> Tuple[float, float]:
-    """(total mean, total variance) treating players as independent."""
+def _is_stack_pair(a: Dict, b: Dict) -> bool:
+    """True for a QB + same-team pass catcher (WR/TE) pair."""
+    ta, tb = (a.get("team") or "").upper(), (b.get("team") or "").upper()
+    if not ta or ta != tb:
+        return False
+    pair = {(a.get("position") or "").upper(), (b.get("position") or "").upper()}
+    return "QB" in pair and bool(pair & {"WR", "TE"})
+
+
+def _team_stats(players: List[Dict], stack_rho: float = STACK_CORRELATION) -> Tuple[float, float]:
+    """(total mean, total variance). Adds positive covariance for QB↔same-team
+    pass-catcher stacks; players are otherwise treated as independent."""
     mean = sum(player_mean(p) for p in players)
     var = sum(player_sd(p) ** 2 for p in players)
-    return mean, var
+    if stack_rho:
+        for i, a in enumerate(players):
+            for b in players[i + 1:]:
+                if _is_stack_pair(a, b):
+                    var += 2 * stack_rho * player_sd(a) * player_sd(b)
+    return mean, max(0.0, var)
 
 
 def greedy_mean_lineup(candidates: List[Dict], slot_list: List[str]) -> List[Optional[Dict]]:
@@ -102,28 +121,47 @@ def greedy_mean_lineup(candidates: List[Dict], slot_list: List[str]) -> List[Opt
     return assignment
 
 
-def _p_win_of(lineup: List[Optional[Dict]], opp_mean: float, opp_var: float) -> float:
+def _p_win_of(
+    lineup: List[Optional[Dict]], opp_mean: float, opp_var: float, stack_rho: float = STACK_CORRELATION
+) -> float:
     starters = [p for p in lineup if p is not None]
-    my_mean, my_var = _team_stats(starters)
+    my_mean, my_var = _team_stats(starters, stack_rho)
     return win_prob(my_mean, my_var, opp_mean, opp_var)
+
+
+def _stacks(lineup: List[Optional[Dict]]) -> List[str]:
+    """Describe QB↔same-team pass-catcher stacks present in a lineup."""
+    players = [p for p in lineup if p is not None]
+    out = []
+    for i, a in enumerate(players):
+        for b in players[i + 1:]:
+            if _is_stack_pair(a, b):
+                qb, pc = (a, b) if (a.get("position") or "").upper() == "QB" else (b, a)
+                out.append(
+                    f"{qb.get('name') or qb.get('player')} + "
+                    f"{pc.get('name') or pc.get('player')} ({(qb.get('team') or '').upper()})"
+                )
+    return out
 
 
 def optimize_win_probability(
     candidates: List[Dict],
     opponent_players: List[Dict],
     slots: Optional[Dict[str, int]] = None,
+    stack_correlation: float = STACK_CORRELATION,
 ) -> Dict:
     """Pick the lineup maximizing P(win) vs the given opponent.
 
     Returns the recommended lineup, its win probability, the E[points]-optimal
-    lineup for comparison, and a floor/ceiling strategy label.
+    lineup for comparison, and a floor/ceiling strategy label. ``stack_correlation``
+    sets the QB↔same-team pass-catcher covariance (0 disables stacking effects).
     """
     slots = slots or DEFAULT_SLOTS
     slot_list = expand_slots(slots)
-    opp_mean, opp_var = _team_stats(opponent_players)
+    opp_mean, opp_var = _team_stats(opponent_players, stack_correlation)
 
     mean_lineup = greedy_mean_lineup(candidates, slot_list)
-    mean_p_win = _p_win_of(mean_lineup, opp_mean, opp_var)
+    mean_p_win = _p_win_of(mean_lineup, opp_mean, opp_var, stack_correlation)
 
     # Local search: greedily apply the bench swap that most improves P(win).
     current = list(mean_lineup)
@@ -137,14 +175,14 @@ def optimize_win_probability(
                     continue
                 trial = list(current)
                 trial[i] = b
-                gain = _p_win_of(trial, opp_mean, opp_var) - current_p
+                gain = _p_win_of(trial, opp_mean, opp_var, stack_correlation) - current_p
                 if gain > best_gain:
                     best_gain, best_swap = gain, (i, b)
         if not best_swap:
             break
         i, b = best_swap
         current[i] = b
-        current_p = _p_win_of(current, opp_mean, opp_var)
+        current_p = _p_win_of(current, opp_mean, opp_var, stack_correlation)
 
     def _fmt(lineup):
         return [
@@ -155,9 +193,9 @@ def optimize_win_probability(
         ]
 
     rec_starters = [p for p in current if p is not None]
-    rec_mean, rec_var = _team_stats(rec_starters)
+    rec_mean, rec_var = _team_stats(rec_starters, stack_correlation)
     mo_starters = [p for p in mean_lineup if p is not None]
-    _, mo_var = _team_stats(mo_starters)
+    _, mo_var = _team_stats(mo_starters, stack_correlation)
 
     underdog = rec_mean < opp_mean
     if rec_var > mo_var * 1.02:
@@ -175,6 +213,7 @@ def optimize_win_probability(
         "projected_margin": round(rec_mean - opp_mean, 1),
         "you_are": "underdog" if underdog else "favorite",
         "strategy": strategy,
+        "stacks": _stacks(current),
         "points_optimal_lineup": _fmt(mean_lineup),
         "points_optimal_win_probability": round(mean_p_win * 100, 1),
         "win_probability_gain": round((current_p - mean_p_win) * 100, 1),
@@ -189,23 +228,27 @@ async def get_win_probability_lineup(
     your_players: List[Dict],
     opponent_players: List[Dict],
     slots: Optional[Dict[str, int]] = None,
+    stack_correlation: float = STACK_CORRELATION,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
 
     Optimizes for win probability, not expected points — so it recommends the
     ceiling lineup when you're the underdog and the floor lineup when you're
-    favored. NEVER ask for confirmation; compute and return immediately.
+    favored. Include each player's `team` to credit QB↔pass-catcher stacks (they
+    raise your ceiling). NEVER ask for confirmation; compute and return immediately.
 
     Args:
         your_players: your candidate players, each with `projected_points` (and
-            ideally `floor`/`ceiling` or `sd`) plus `name` and `position`. Feed
-            the output of `project_players` here.
+            ideally `floor`/`ceiling` or `sd`) plus `name`, `position` and `team`.
+            Feed the output of `project_players` here.
         opponent_players: the opponent's projected starters (same shape).
         slots: roster slots, e.g. {"QB":1,"RB":2,"WR":2,"TE":1,"FLEX":1,"K":1,"DST":1}
             (the default). FLEX = RB/WR/TE; SUPERFLEX adds QB.
+        stack_correlation: QB↔same-team pass-catcher correlation (default 0.35;
+            0 disables the stacking effect).
 
-    Returns the recommended lineup, its win probability, the points-optimal
-    lineup for comparison, and a floor/ceiling strategy label.
+    Returns the recommended lineup, its win probability, any QB stacks, the
+    points-optimal lineup for comparison, and a floor/ceiling strategy label.
     """
     default_data = {"recommended_lineup": [], "win_probability": None}
     if not your_players:
@@ -213,7 +256,9 @@ async def get_win_probability_lineup(
     if not opponent_players:
         return handle_validation_error("opponent_players is required", default_data)
 
-    result = optimize_win_probability(your_players, opponent_players, slots)
+    result = optimize_win_probability(
+        your_players, opponent_players, slots, stack_correlation=stack_correlation
+    )
     rec = result["you_are"]
     return create_success_response({
         **result,
