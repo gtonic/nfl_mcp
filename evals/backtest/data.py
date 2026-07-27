@@ -71,10 +71,8 @@ def load_season(season: int, use_cache: bool = True) -> List[Dict]:
         pid = row.get("player_id")
         if not (opp and wk and pid):
             continue
-        touches = (
-            _to_float(row.get("targets"))
-            + _to_float(row.get("carries") or row.get("rushing_attempts"))
-        )
+        targets = _to_float(row.get("targets"))
+        carries = _to_float(row.get("carries") or row.get("rushing_attempts"))
         records.append({
             "player_id": pid,
             "player": row.get("player_display_name") or row.get("player_name"),
@@ -84,7 +82,19 @@ def load_season(season: int, use_cache: bool = True) -> List[Dict]:
             "season": int(season),
             "week": int(wk),
             "ppr": _to_float(row.get("fantasy_points_ppr")),
-            "touches": touches,
+            "touches": targets + carries,
+            # Opportunity components (for the opportunity-based projection).
+            "targets": targets,
+            "carries": carries,
+            "attempts": _to_float(row.get("attempts")),
+            "receptions": _to_float(row.get("receptions")),
+            "receiving_yards": _to_float(row.get("receiving_yards")),
+            "receiving_tds": _to_float(row.get("receiving_tds")),
+            "rushing_yards": _to_float(row.get("rushing_yards")),
+            "rushing_tds": _to_float(row.get("rushing_tds")),
+            "passing_yards": _to_float(row.get("passing_yards")),
+            "passing_tds": _to_float(row.get("passing_tds")),
+            "interceptions": _to_float(row.get("interceptions")),
         })
     logger.info("Loaded %d REG records for %s", len(records), season)
     return records
