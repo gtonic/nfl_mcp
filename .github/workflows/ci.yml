@@ -34,6 +34,30 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
+  typecheck:
+    name: Type check (mypy, report-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -e .
+
+      # Non-blocking: mypy is a signal while the codebase is progressively
+      # typed, not a merge gate. Surfaces real type bugs without failing CI.
+      - name: mypy
+        run: mypy nfl_mcp
+        continue-on-error: true
+
   test:
     name: Tests
     runs-on: ubuntu-latest

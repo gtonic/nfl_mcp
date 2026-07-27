@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-07-27
+
 ### Added
+- **Type checking (mypy) as a report-only CI job** — added a `[tool.mypy]`
+  config (lenient, `check_untyped_defs`) and a **non-blocking** `typecheck` CI
+  job. It's a signal while the code is progressively typed, not a merge gate.
+  The first pass already caught real bugs (see Fixed).
 - **Handcuff mapping** (`nfl_mcp/handcuff_tools.py` + new MCP tool
   `get_handcuff_map`) — for each RB on your Sleeper roster it reads the team
   depth chart, identifies the contingent-value backup, and flags whether that
@@ -130,6 +136,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documented data sources.
 
 ### Fixed
+- **Missing `ErrorType.API_ERROR` / `ErrorType.NOT_FOUND`** — several error paths
+  in `sleeper_tools.py`/`nfl_tools.py` referenced these enum members, which
+  didn't exist, so hitting those paths raised `AttributeError`. Added the
+  members. Surfaced by the new mypy pass.
+- **Missing `database.get_nfl_database()`** — `nfl_tools` imported this factory
+  (advanced-enrichment cache paths) but it was never defined, raising
+  `ImportError` at runtime. Added it. Surfaced by the new mypy pass.
 - **Package `authors` metadata** — replaced the `nfl@example.com` placeholder
   with the real maintainer (`gtonic <tom.geiger@alp54.com>`).
 - **`get_draft_picks` silently returned un-enriched picks** — a duplicate,

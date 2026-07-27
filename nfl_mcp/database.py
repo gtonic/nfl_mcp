@@ -2403,3 +2403,14 @@ class NFLDatabase:
 
 # For backward compatibility
 AthleteDatabase = NFLDatabase
+
+
+def get_nfl_database() -> "NFLDatabase":
+    """Return an NFLDatabase instance.
+
+    Referenced by nfl_tools' (advanced-enrichment) cache-read paths, which
+    imported this factory before it existed — calling it raised ImportError at
+    runtime (surfaced by the mypy pass). The DB is a cache, so a fresh instance
+    is fine here.
+    """
+    return NFLDatabase()
