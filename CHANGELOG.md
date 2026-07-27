@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Multi-stage Docker build — drops `gcc`/`binutils` from the runtime image.**
+  The build stage keeps the C toolchain (to compile any sdist-only dependency)
+  and installs everything into an isolated virtualenv; the runtime stage copies
+  only that venv, so the shipped image carries no `gcc`/`binutils`. `binutils`
+  was the source of the large majority of the image scanner's findings (broad
+  CVE surface, reported across ~8 sub-packages), so this removes that entire
+  class of CVEs — and shrinks the image. The remaining findings are Debian
+  base-OS packages Debian itself rates *negligible* with no fix available
+  (`under investigation`), inherent to any Debian-based image.
+
 ## [0.6.6] - 2026-07-27
 
 ### Changed
