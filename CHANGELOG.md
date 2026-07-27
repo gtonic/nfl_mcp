@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Started splitting the `sleeper_tools.py` monolith — enrichment layer
+  extracted.** Moved the ~1,000-line enrichment/data-fetch layer (schedule,
+  snaps, injuries, practice reports and weekly-usage fetchers + the
+  usage/opponent enrichment helpers, plus `ADVANCED_ENRICH_ENABLED`) into a new
+  `nfl_mcp/sleeper_enrichment.py`. `sleeper_tools.py` re-exports it, so every
+  `sleeper_tools.<name>` reference and import is unchanged — a behavior-preserving
+  refactor (`sleeper_tools.py` drops from 3,022 → ~2,010 lines). Full suite green;
+  a few white-box tests were repointed to patch the enrichment module directly.
+  Strategic-planning and the core league/roster/transactions domains are the
+  next extractions.
+
 ## [0.6.5] - 2026-07-27
 
 ### Added
