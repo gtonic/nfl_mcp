@@ -419,7 +419,7 @@ class TestStrategicPlanningFunctions:
         func = sleeper_tools.get_season_bye_week_coordination
 
         # Mock the get_league call to avoid API calls
-        with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league:
+        with patch('nfl_mcp.sleeper_strategy.get_league') as mock_get_league:
             mock_get_league.return_value = {
                 "success": True,
                 "league": {
@@ -442,7 +442,7 @@ class TestStrategicPlanningFunctions:
         func = sleeper_tools.get_trade_deadline_analysis
 
         # Mock get_league to test validation without network calls
-        with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league:
+        with patch('nfl_mcp.sleeper_strategy.get_league') as mock_get_league:
             # First test with valid input but failed league call
             mock_get_league.return_value = {"success": False, "error": "Mock error"}
             result = await func("test_league", 10)
@@ -461,7 +461,7 @@ class TestStrategicPlanningFunctions:
         func = sleeper_tools.get_playoff_preparation_plan
 
         # Mock get_league to test without network calls
-        with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league:
+        with patch('nfl_mcp.sleeper_strategy.get_league') as mock_get_league:
             mock_get_league.return_value = {"success": False, "error": "Mock error"}
             result = await func("test_league", 10)  # Valid week
             assert "league_id" in result  # Should return structure even on API failure
@@ -472,8 +472,8 @@ class TestStrategicPlanningFunctions:
         func = sleeper_tools.get_strategic_matchup_preview
 
         # Mock get_league and get_matchups
-        with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league, \
-             patch('nfl_mcp.sleeper_tools.get_matchups') as mock_get_matchups:
+        with patch('nfl_mcp.sleeper_strategy.get_league') as mock_get_league, \
+             patch('nfl_mcp.sleeper_strategy.get_matchups') as mock_get_matchups:
 
             mock_get_league.return_value = {
                 "success": True,
@@ -498,8 +498,8 @@ class TestStrategicPlanningFunctions:
         """Test successful trade deadline analysis with mocked dependencies."""
         func = sleeper_tools.get_trade_deadline_analysis
 
-        with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league, \
-             patch('nfl_mcp.sleeper_tools.get_strategic_matchup_preview') as mock_preview:
+        with patch('nfl_mcp.sleeper_strategy.get_league') as mock_get_league, \
+             patch('nfl_mcp.sleeper_strategy.get_strategic_matchup_preview') as mock_preview:
 
             mock_get_league.return_value = {
                 "success": True,
@@ -526,3 +526,17 @@ class TestStrategicPlanningFunctions:
             assert "trade_analysis" in result
             assert result["current_week"] == 10
             assert result["league_id"] == "test_league"
+
+    @pytest.mark.asyncio
+    async def test_strategic_preview_league_failure_returns_error(self):
+        """Regression: the league-failure error path used to crash with a
+        create_error_response() argument collision — now returns a clean error."""
+        with patch('nfl_mcp.sleeper_strategy.get_league') as mock_get_league:
+            mock_get_league.return_value = {
+                "success": False, "error": "boom", "error_type": "http_error",
+            }
+            result = await sleeper_tools.get_strategic_matchup_preview("L1", 5)
+
+        assert result["success"] is False
+        assert result["error"] == "boom"
+        assert result["error_type"] == "http_error"
