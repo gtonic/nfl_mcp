@@ -1,5 +1,5 @@
 fastmcp>=3.4.4
-fastapi>=0.139.2
+fastapi>=0.140.2
 uvicorn>=0.51.0
 httpx>=0.28.1
 beautifulsoup4>=4.15.0
