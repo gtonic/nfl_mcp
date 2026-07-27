@@ -55,6 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deterministically; the same guarantees are covered by the data-source
   contracts watchdog under `evals/`.
 
+### Changed
+- **Docs split** — the README was slimmed from a ~58 KB monolith to a concise,
+  feature-oriented overview (~140 lines) with a complete grouped catalog of all
+  registered tools (including the new SOS / streaming / weather tools). Setup,
+  configuration, architecture, data sources, the eval suite, CI/CD and security
+  moved into a new **[docs/TECHNICAL.md](docs/TECHNICAL.md)**; the full per-tool
+  reference stays in `AGENT.md`. Also corrected the stale "Python 3.9+"
+  prerequisite (the package requires 3.11+) and added Open-Meteo to the
+  documented data sources.
+
 ### Fixed
 - **Package `authors` metadata** — replaced the `nfl@example.com` placeholder
   with the real maintainer (`gtonic <tom.geiger@alp54.com>`).
