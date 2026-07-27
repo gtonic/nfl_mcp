@@ -3,16 +3,19 @@ Tests for enhanced input validation functions.
 """
 
 import time
+from unittest.mock import patch
+
 import pytest
+
 from nfl_mcp.config import (
-    validate_string_input,
-    validate_numeric_input, 
-    validate_limit,
-    sanitize_content,
-    validate_url_enhanced,
-    is_valid_url,
     check_rate_limit,
-    get_rate_limit_status
+    get_rate_limit_status,
+    is_safe_public_url,
+    sanitize_content,
+    validate_limit,
+    validate_numeric_input,
+    validate_string_input,
+    validate_url_enhanced,
 )
 
 
@@ -404,3 +407,80 @@ class TestRateLimiting:
         status = get_rate_limit_status(identifier, limit, window_seconds=60)
         assert status["remaining"] == 0
         assert status["retry_after"] > 0
+
+
+class TestEnhancedUrlValidationSSRF:
+    """IP-literal SSRF ranges the offline validator must reject."""
+
+    def test_blocks_cloud_metadata_literal(self):
+        # Regression: 169.254.169.254 was NOT blocked by the old prefix checks.
+        assert validate_url_enhanced("http://169.254.169.254/latest/meta-data/") is False
+
+    def test_blocks_ipv6_loopback_literal(self):
+        assert validate_url_enhanced("http://[::1]/") is False
+
+    def test_blocks_ipv4_mapped_ipv6_literal(self):
+        assert validate_url_enhanced("http://[::ffff:127.0.0.1]/") is False
+
+    def test_public_host_still_allowed(self):
+        # Hostnames are not resolved here (offline validator), so this stays True.
+        assert validate_url_enhanced("https://example.com") is True
+
+
+class TestIsSafePublicUrl:
+    """DNS-resolving SSRF guard used before fetching user-supplied URLs."""
+
+    def test_invalid_scheme_rejected(self):
+        ok, reason = is_safe_public_url("file:///etc/passwd")
+        assert ok is False
+        assert "http://" in reason
+
+    def test_no_host_rejected(self):
+        ok, reason = is_safe_public_url("http:///nohost")
+        assert ok is False
+
+    @pytest.mark.parametrize("url", [
+        "http://127.0.0.1/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::1]/",
+        "http://10.0.0.1/",
+        "http://192.168.1.1/",
+        "http://172.16.0.1/",
+        "http://0.0.0.0/",
+    ])
+    def test_blocks_ip_literals(self, url):
+        ok, reason = is_safe_public_url(url)
+        assert ok is False
+        assert "Blocked non-public address" in reason
+
+    def test_allows_public_ip_literal(self):
+        ok, reason = is_safe_public_url("http://93.184.216.34/")
+        assert ok is True
+        assert reason is None
+
+    def test_blocks_host_resolving_to_private(self):
+        with patch("nfl_mcp.config.resolve_host_addresses", return_value=["10.0.0.5"]):
+            ok, reason = is_safe_public_url("http://internal.example.test/")
+        assert ok is False
+        assert "Blocked non-public address" in reason
+
+    def test_allows_host_resolving_to_public(self):
+        with patch("nfl_mcp.config.resolve_host_addresses", return_value=["93.184.216.34"]):
+            ok, reason = is_safe_public_url("https://example.com/page")
+        assert ok is True
+        assert reason is None
+
+    def test_unresolvable_host_rejected(self):
+        import socket
+
+        with patch("nfl_mcp.config.resolve_host_addresses", side_effect=socket.gaierror):
+            ok, reason = is_safe_public_url("https://does-not-resolve.invalid/")
+        assert ok is False
+        assert "Could not resolve host" in reason
+
+    def test_private_url_opt_in_bypass(self):
+        # Explicit opt-in (NFL_MCP_ALLOW_PRIVATE_URLS) permits private targets.
+        with patch("nfl_mcp.config.allow_private_urls", return_value=True):
+            ok, reason = is_safe_public_url("http://127.0.0.1:9000/internal")
+        assert ok is True
+        assert reason is None

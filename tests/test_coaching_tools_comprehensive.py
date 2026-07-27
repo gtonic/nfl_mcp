@@ -3,21 +3,22 @@ Comprehensive tests for Coaching tools specifically.
 These tests ensure the fixed Coaching tools work correctly.
 """
 
-import pytest
 import sys
-from unittest.mock import Mock, patch, AsyncMock
+
+import pytest
 
 # Add the project root to the Python path
 sys.path.insert(0, '/tmp/nfl_mcp')
 
 from nfl_mcp.coaching_tools import (
-    _get_espn_team_id,
     _classify_coach_role,
-    get_coaching_staff,
+    _get_espn_team_id,
     get_all_coaching_staffs,
+    get_coaching_staff,
     get_coaching_tree,
-    get_scheme_classification
+    get_scheme_classification,
 )
+
 
 class TestCoachingTools:
     """Test the Coaching tools functionality."""

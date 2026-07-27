@@ -1,6 +1,5 @@
 """Test snap and usage field name mappings from Sleeper API."""
 import pytest
-from nfl_mcp.sleeper_tools import _fetch_week_player_snaps, _fetch_weekly_usage_stats
 
 
 class TestSleeperFieldMappings:

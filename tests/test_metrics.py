@@ -1,8 +1,8 @@
 """Tests for metrics module (MetricsCollector, get_metrics_collector, timing_decorator)."""
+from unittest.mock import patch
+
 import pytest
-import time
-import asyncio
-from unittest.mock import patch, MagicMock
+
 from nfl_mcp.metrics import MetricsCollector, get_metrics_collector, timing_decorator
 
 

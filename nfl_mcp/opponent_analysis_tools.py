@@ -6,12 +6,12 @@ roster weakness identification, matchup vulnerability assessment, and strategic
 exploitation recommendations.
 """
 
-from typing import Dict, List, Optional, Tuple
-from collections import defaultdict
 import logging
+from collections import defaultdict
+from typing import Dict, List, Optional
 
-from .sleeper_tools import get_rosters, get_matchups, get_league_users
-from .errors import create_success_response, create_error_response, ErrorType
+from .errors import ErrorType, create_error_response, create_success_response
+from .sleeper_tools import get_league_users, get_matchups, get_rosters
 
 logger = logging.getLogger(__name__)
 

@@ -5,15 +5,17 @@ This module contains MCP tools for crawling and extracting content from web page
 """
 
 import re
-import httpx
 from typing import Optional
+from urllib.parse import urljoin
+
 from bs4 import BeautifulSoup
 
-from .config import get_http_headers, create_http_client, is_valid_url
-from .errors import (
-    create_error_response, create_success_response, ErrorType,
-    handle_http_errors, handle_validation_error
-)
+from .config import create_http_client, get_http_headers, is_safe_public_url
+
+# Maximum number of redirect hops crawl_url will follow (each re-validated).
+MAX_CRAWL_REDIRECTS = 5
+_REDIRECT_STATUS = {301, 302, 303, 307, 308}
+from .errors import create_success_response, handle_http_errors, handle_validation_error
 
 
 @handle_http_errors(
@@ -41,20 +43,42 @@ async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
         - error: Error message (if any)
         - error_type: Type of error (if any)
     """
-    # Validate URL format for security
-    if not is_valid_url(url):
-        return handle_validation_error(
-            "URL must start with http:// or https://",
-            {"url": url, "title": None, "content": "", "content_length": 0}
-        )
-    
+    _error_data = {"url": url, "title": None, "content": "", "content_length": 0}
+
+    # SSRF protection: validate scheme + resolved IP before contacting the host.
+    ok, reason = is_safe_public_url(url)
+    if not ok:
+        return handle_validation_error(reason, _error_data)
+
     headers = get_http_headers("web_crawler")
-    
-    async with create_http_client() as client:
-        # Fetch the URL
-        response = await client.get(url, headers=headers)
+
+    # Follow redirects manually so every hop is re-validated — otherwise a
+    # public URL could 3xx-redirect into the private network / cloud metadata.
+    async with create_http_client(follow_redirects=False) as client:
+        current_url = url
+        for _ in range(MAX_CRAWL_REDIRECTS + 1):
+            response = await client.get(current_url, headers=headers)
+
+            if response.status_code in _REDIRECT_STATUS:
+                location = response.headers.get("location")
+                if not location:
+                    break  # malformed redirect; fall through to normal handling
+                next_url = urljoin(current_url, location)
+                ok, reason = is_safe_public_url(next_url)
+                if not ok:
+                    return handle_validation_error(f"Blocked redirect: {reason}", _error_data)
+                current_url = next_url
+                continue
+
+            # Non-redirect response: process it.
+            break
+        else:
+            return handle_validation_error(
+                f"Too many redirects (>{MAX_CRAWL_REDIRECTS})", _error_data
+            )
+
         response.raise_for_status()
-        
+
         # Parse HTML content
         soup = BeautifulSoup(response.text, 'lxml')
         

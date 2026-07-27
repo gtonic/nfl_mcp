@@ -5,15 +5,15 @@ This module provides defense vs position rankings, matchup difficulty analysis,
 and game environment factors to help optimize fantasy lineups.
 """
 
-import asyncio
 import csv
-import httpx
 import logging
+from datetime import UTC, datetime, timedelta
 from io import StringIO
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, UTC, timedelta
+from typing import Dict, List, Optional
 
-from .config import create_http_client, LONG_TIMEOUT
+import httpx
+
+from .config import LONG_TIMEOUT, create_http_client
 
 # nflverse publishes weekly player stats (incl. fantasy points + opponent) as a
 # free CSV per season — the reliable source for defense-vs-position.
@@ -23,10 +23,7 @@ NFLVERSE_PLAYER_STATS_URL = (
 )
 # nflverse abbreviations -> the abbreviations used across this codebase.
 _NFLVERSE_TEAM_FIX = {"LA": "LAR", "WAS": "WSH", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LAR"}
-from .errors import (
-    create_error_response, create_success_response, ErrorType,
-    handle_http_errors
-)
+from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 
 logger = logging.getLogger(__name__)
 
@@ -606,7 +603,7 @@ async def analyze_roster_matchups(
             analyses.append({
                 "player": name,
                 "position": position,
-                "error": f"Invalid or missing position"
+                "error": "Invalid or missing position"
             })
             continue
         

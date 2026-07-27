@@ -5,14 +5,10 @@ these tests are deterministic and CI-safe.
 """
 
 import tempfile
-import os
 from unittest.mock import patch
-
-import pytest
 
 from nfl_mcp import player_values as pv
 from nfl_mcp.database import NFLDatabase
-
 
 # Raw FantasyCalc-shaped entries (subset of the real schema)
 RAW_FC = [

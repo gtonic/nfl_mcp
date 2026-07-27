@@ -2,14 +2,13 @@
 Tests for response validation module.
 """
 
-import pytest
 from nfl_mcp.response_validation import (
     ValidationResult,
-    validate_snap_count_response,
-    validate_schedule_response,
     validate_practice_report_response,
-    validate_usage_stats_response,
     validate_response_and_log,
+    validate_schedule_response,
+    validate_snap_count_response,
+    validate_usage_stats_response,
 )
 
 

@@ -4,13 +4,18 @@ Tests for the error handling utilities.
 This module tests the standardized error handling decorators and utilities.
 """
 
-import pytest
-import httpx
 from unittest.mock import AsyncMock
 
+import httpx
+import pytest
+
 from nfl_mcp.errors import (
-    create_error_response, create_success_response, ErrorType,
-    handle_http_errors, handle_database_errors, handle_validation_error
+    ErrorType,
+    create_error_response,
+    create_success_response,
+    handle_database_errors,
+    handle_http_errors,
+    handle_validation_error,
 )
 
 

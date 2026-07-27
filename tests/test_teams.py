@@ -4,13 +4,14 @@ Unit and integration tests for teams-related MCP tools.
 Tests the fetch_teams, get_teams, and get_depth_chart tools.
 """
 
-import pytest
 import tempfile
-import httpx
-from unittest.mock import patch, AsyncMock, MagicMock
 from pathlib import Path
-from nfl_mcp.server import create_app
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from nfl_mcp.database import NFLDatabase
+from nfl_mcp.server import create_app
 
 
 class TestTeamsMCPTools:

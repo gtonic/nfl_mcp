@@ -1,7 +1,14 @@
 """Tests for athlete_tools module."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from nfl_mcp.athlete_tools import fetch_athletes, lookup_athlete, search_athletes, get_athletes_by_team
+
+import pytest
+
+from nfl_mcp.athlete_tools import (
+    fetch_athletes,
+    get_athletes_by_team,
+    lookup_athlete,
+    search_athletes,
+)
 
 
 class TestFetchAthletes:

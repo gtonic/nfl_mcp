@@ -17,10 +17,12 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
+# Copy the pinned lockfile and install exact, reproducible dependencies.
+# requirements.lock is generated from requirements.txt via:
+#   uv pip compile requirements.txt --python-version 3.11 --output-file requirements.lock
+COPY requirements.lock .
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.lock
 
 # Copy project files
 COPY . .

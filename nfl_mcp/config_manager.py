@@ -8,19 +8,19 @@ This module provides flexible configuration management with support for:
 - Hot-reloading
 """
 
+import json
 import logging
 import os
-import json
-import yaml
 import threading
-import time
-from pathlib import Path
-from typing import Any, Dict, Optional, Union, List
 from dataclasses import dataclass, field
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
 import httpx
-from pydantic import BaseModel, ValidationError, Field
+import yaml
+from pydantic import BaseModel, Field, ValidationError
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ class ConfigManager:
             try:
                 self._config = ConfigurationModel(**config_dict)
             except ValidationError as e:
-                raise ValueError(f"Configuration validation failed: {e}")
+                raise ValueError(f"Configuration validation failed: {e}") from e
     
     def _load_config_file(self) -> Dict[str, Any]:
         """Load configuration from YAML or JSON file."""
@@ -176,7 +176,7 @@ class ConfigManager:
                 else:
                     raise ValueError(f"Unsupported configuration file format: {self.config_file_path.suffix}")
         except Exception as e:
-            raise ValueError(f"Failed to load configuration file {self.config_file_path}: {e}")
+            raise ValueError(f"Failed to load configuration file {self.config_file_path}: {e}") from e
     
     def _load_environment_variables(self, config_dict: Dict[str, Any]) -> Dict[str, Any]:
         """Load configuration from environment variables."""
@@ -227,7 +227,7 @@ class ConfigManager:
                     # Convert and set the value
                     config_dict[section][key] = type_converter(env_value)
                 except (ValueError, TypeError) as e:
-                    raise ValueError(f"Invalid value for environment variable {env_var}: {env_value} ({e})")
+                    raise ValueError(f"Invalid value for environment variable {env_var}: {env_value} ({e})") from e
         
         # Handle URL schemes separately (comma-separated list)
         url_schemes = os.getenv('NFL_MCP_ALLOWED_URL_SCHEMES')

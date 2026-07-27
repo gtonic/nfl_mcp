@@ -8,25 +8,25 @@ lower-is-better metrics are documented per function.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence
 
 
 def mae(pred: Sequence[float], actual: Sequence[float]) -> float:
     """Mean Absolute Error (lower is better). Average size of the miss, in points."""
     n = len(pred)
-    return sum(abs(p - a) for p, a in zip(pred, actual)) / n if n else 0.0
+    return sum(abs(p - a) for p, a in zip(pred, actual, strict=False)) / n if n else 0.0
 
 
 def rmse(pred: Sequence[float], actual: Sequence[float]) -> float:
     """Root Mean Squared Error (lower is better). Penalises big misses more."""
     n = len(pred)
-    return math.sqrt(sum((p - a) ** 2 for p, a in zip(pred, actual)) / n) if n else 0.0
+    return math.sqrt(sum((p - a) ** 2 for p, a in zip(pred, actual, strict=False)) / n) if n else 0.0
 
 
 def bias(pred: Sequence[float], actual: Sequence[float]) -> float:
     """Mean signed error pred-actual. >0 = we over-predict, <0 = we under-predict."""
     n = len(pred)
-    return sum(p - a for p, a in zip(pred, actual)) / n if n else 0.0
+    return sum(p - a for p, a in zip(pred, actual, strict=False)) / n if n else 0.0
 
 
 def pearson(pred: Sequence[float], actual: Sequence[float]) -> float:
@@ -36,7 +36,7 @@ def pearson(pred: Sequence[float], actual: Sequence[float]) -> float:
         return 0.0
     mp = sum(pred) / n
     ma = sum(actual) / n
-    cov = sum((p - mp) * (a - ma) for p, a in zip(pred, actual))
+    cov = sum((p - mp) * (a - ma) for p, a in zip(pred, actual, strict=False))
     vp = sum((p - mp) ** 2 for p in pred)
     va = sum((a - ma) ** 2 for a in actual)
     denom = math.sqrt(vp * va)
@@ -75,7 +75,7 @@ def r2(pred: Sequence[float], actual: Sequence[float]) -> float:
         return 0.0
     ma = sum(actual) / n
     ss_tot = sum((a - ma) ** 2 for a in actual)
-    ss_res = sum((a - p) ** 2 for p, a in zip(pred, actual))
+    ss_res = sum((a - p) ** 2 for p, a in zip(pred, actual, strict=False))
     return 1 - ss_res / ss_tot if ss_tot else 0.0
 
 

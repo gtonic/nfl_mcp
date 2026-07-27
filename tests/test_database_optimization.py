@@ -4,12 +4,14 @@ Unit tests for database optimization features.
 Tests connection pooling, health checks, migrations, and optimized indexing.
 """
 
-import pytest
 import tempfile
-import time
 import threading
+import time
 from pathlib import Path
-from nfl_mcp.database import NFLDatabase, ConnectionPoolConfig, DatabaseConnectionPool
+
+import pytest
+
+from nfl_mcp.database import ConnectionPoolConfig, NFLDatabase
 
 
 class TestConnectionPooling:

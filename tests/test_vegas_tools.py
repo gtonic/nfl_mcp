@@ -1,14 +1,16 @@
 """Tests for vegas_tools module."""
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+
 from nfl_mcp.vegas_tools import (
-    get_game_environment_tier,
-    calculate_implied_team_total,
-    get_game_script_projection,
-    VegasLinesAnalyzer,
-    TEAM_ABBREVIATIONS,
     ABBREVIATION_TO_FULL,
+    TEAM_ABBREVIATIONS,
+    VegasLinesAnalyzer,
+    calculate_implied_team_total,
     get_game_environment,
+    get_game_environment_tier,
+    get_game_script_projection,
 )
 
 
@@ -223,6 +225,6 @@ class TestConstants:
 
     def test_all_abbreviations_are_3_chars(self):
         """Test that all abbreviations are 3 characters."""
-        for full, abbrev in TEAM_ABBREVIATIONS.items():
+        for _full, _abbrev in TEAM_ABBREVIATIONS.items():
             # Most are 3 chars, but some may differ
             pass  # Skip this test as it may have edge cases

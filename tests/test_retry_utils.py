@@ -2,19 +2,19 @@
 Tests for retry and circuit breaker utilities.
 """
 
-import pytest
-import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
+
+import pytest
 
 from nfl_mcp.retry_utils import (
     CircuitBreaker,
-    CircuitState,
     CircuitBreakerError,
-    retry_with_backoff,
+    CircuitState,
     get_circuit_breaker,
-    get_configurable_timeout,
     get_configurable_long_timeout,
+    get_configurable_timeout,
+    retry_with_backoff,
 )
 
 
@@ -34,7 +34,7 @@ class TestCircuitBreaker:
         cb.failure_threshold = 3  # Lower threshold for testing
         
         # Simulate failures
-        for i in range(3):
+        for _i in range(3):
             try:
                 cb.call(lambda: 1/0)
             except ZeroDivisionError:

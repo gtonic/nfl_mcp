@@ -19,9 +19,9 @@ import argparse
 import asyncio
 import tempfile
 from collections import Counter
-from typing import Optional
 
-from nfl_mcp import sleeper_tools as st, draft_tools as dt
+from nfl_mcp import draft_tools as dt
+from nfl_mcp import sleeper_tools as st
 from nfl_mcp.database import NFLDatabase
 
 VBD_POS = ("QB", "RB", "WR", "TE")
@@ -113,7 +113,7 @@ async def run(draft_id: str, my_slot: int, interval: int, num: int, once: bool):
             recommended_for = n
             if once:
                 return 0
-            print(f"\n(make your pick in Sleeper; watching for the next turn — Ctrl-C to stop)")
+            print("\n(make your pick in Sleeper; watching for the next turn — Ctrl-C to stop)")
         await asyncio.sleep(interval)
 
 

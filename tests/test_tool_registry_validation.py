@@ -3,33 +3,32 @@ Validation tests to ensure the tool registry is properly fixed and complete.
 This validates that all the tools that were previously missing are now present.
 """
 
-import pytest
 import sys
-from unittest.mock import patch, AsyncMock
+
+import pytest
 
 # Add the project root to the Python path
 sys.path.insert(0, '/tmp/nfl_mcp')
 
 from nfl_mcp.tool_registry import (
-    # Vegas tools (these were the main missing ones)
-    get_vegas_lines,
-    get_game_environment,
     analyze_roster_vegas,
-    get_stack_opportunities,
-    
-    # Coaching tools (these were also missing)
-    get_coaching_staff,
     get_all_coaching_staffs,
-    get_coaching_tree,
-    get_scheme_classification,
-    
-    # Other tools that should be available
-    get_nfl_news,
-    get_teams,
+    get_cbs_expert_picks,
     get_cbs_player_news,
     get_cbs_projections,
-    get_cbs_expert_picks
+    # Coaching tools (these were also missing)
+    get_coaching_staff,
+    get_coaching_tree,
+    get_game_environment,
+    # Other tools that should be available
+    get_nfl_news,
+    get_scheme_classification,
+    get_stack_opportunities,
+    get_teams,
+    # Vegas tools (these were the main missing ones)
+    get_vegas_lines,
 )
+
 
 class TestToolRegistryValidation:
     """Validate that all tools are properly registered and callable."""
@@ -79,13 +78,13 @@ class TestToolRegistryValidation:
         # Test Vegas functions
         vegas_funcs = [get_vegas_lines, get_game_environment, analyze_roster_vegas, get_stack_opportunities]
         for func in vegas_funcs:
-            sig = inspect.signature(func)
+            inspect.signature(func)
             assert callable(func)
             
         # Test Coaching functions
         coaching_funcs = [get_coaching_staff, get_all_coaching_staffs, get_coaching_tree, get_scheme_classification]
         for func in coaching_funcs:
-            sig = inspect.signature(func)
+            inspect.signature(func)
             assert callable(func)
 
     def test_no_missing_tools(self):

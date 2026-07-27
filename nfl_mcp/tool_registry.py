@@ -7,14 +7,38 @@ Database access uses a ContextVar for async-safe dependency injection instead
 of a mutable global, eliminating race conditions and making the code testable.
 """
 from __future__ import annotations
+
 from contextvars import ContextVar
-from typing import Optional, List, Callable, Any
-import json
-import httpx
-from .metrics import timing_decorator
-from . import nfl_tools, sleeper_tools, waiver_tools, web_tools, athlete_tools, trade_analyzer_tools, cbs_fantasy_tools, opponent_analysis_tools, matchup_tools, lineup_optimizer_tools, vegas_tools, coaching_tools, player_values, draft_tools, projections, faab_tools, playoff_tools
-from .config import FEATURE_LEAGUE_LEADERS, validate_string_input, validate_limit, validate_numeric_input, LIMITS
+from typing import Callable, List, Optional
+
+from . import (
+    athlete_tools,
+    cbs_fantasy_tools,
+    coaching_tools,
+    draft_tools,
+    faab_tools,
+    lineup_optimizer_tools,
+    matchup_tools,
+    nfl_tools,
+    opponent_analysis_tools,
+    player_values,
+    playoff_tools,
+    projections,
+    sleeper_tools,
+    trade_analyzer_tools,
+    vegas_tools,
+    waiver_tools,
+    web_tools,
+)
+from .config import (
+    FEATURE_LEAGUE_LEADERS,
+    LIMITS,
+    validate_limit,
+    validate_numeric_input,
+    validate_string_input,
+)
 from .database import NFLDatabase
+from .metrics import timing_decorator
 
 # Async-safe database instance via ContextVar (replaces mutable global get_db())
 _db_token: ContextVar[NFLDatabase | None] = ContextVar("nfl_db", default=None)
@@ -1765,7 +1789,7 @@ async def get_injury_report(
     Example: get_injury_report(team_ids=["KC", "PHI"])
     Example: get_injury_report(player_ids=["4428633", "4241479"])
     """
-    from .injury_service import InjuryAggregator, get_injury_reports, get_player_injury_report
+    from .injury_service import InjuryAggregator, get_injury_reports
     
     try:
         use_cache_val = bool(use_cache) if use_cache is not None else True

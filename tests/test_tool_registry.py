@@ -5,35 +5,76 @@ This file contains unit tests for all the tools in the tool_registry module
 to ensure they function correctly and handle edge cases properly.
 """
 
-import pytest
 import sys
-from unittest.mock import Mock, patch, AsyncMock
+
+import pytest
 
 # Add the project root to the Python path
 sys.path.insert(0, '/tmp/nfl_mcp')
 
 from nfl_mcp.tool_registry import (
-    get_nfl_news, get_teams, fetch_teams, get_depth_chart,
-    get_team_injuries, get_team_player_stats, get_nfl_standings,
-    get_team_schedule, get_cbs_player_news, get_cbs_projections,
-    get_cbs_expert_picks, crawl_url, fetch_athletes, lookup_athlete,
-    search_athletes, get_athletes_by_team, get_league, get_rosters,
-    get_league_users, get_matchups, get_playoff_bracket, get_transactions,
-    get_traded_picks, get_nfl_state, get_trending_players,
-    get_fantasy_context, get_strategic_matchup_preview,
-    get_season_bye_week_coordination, get_trade_deadline_analysis,
-    get_playoff_preparation_plan, get_user, get_user_leagues,
-    get_league_drafts, get_draft, get_draft_picks, get_draft_traded_picks,
-    fetch_all_players, get_waiver_log, check_re_entry_status,
-    get_waiver_wire_dashboard, analyze_trade, analyze_opponent,
-    get_defense_rankings, get_matchup_difficulty, analyze_roster_matchups,
-    get_start_sit_recommendation, get_roster_recommendations,
-    compare_players_for_slot, analyze_full_lineup, get_vegas_lines,
-    get_game_environment, analyze_roster_vegas, get_stack_opportunities,
-    get_injury_report, get_high_confidence_injuries, get_gameday_inactives,
-    get_coaching_staff, get_all_coaching_staffs, get_coaching_tree,
-    get_scheme_classification, get_league_leaders
+    analyze_full_lineup,
+    analyze_opponent,
+    analyze_roster_matchups,
+    analyze_roster_vegas,
+    analyze_trade,
+    check_re_entry_status,
+    compare_players_for_slot,
+    crawl_url,
+    fetch_all_players,
+    fetch_athletes,
+    fetch_teams,
+    get_all_coaching_staffs,
+    get_athletes_by_team,
+    get_cbs_expert_picks,
+    get_cbs_player_news,
+    get_cbs_projections,
+    get_coaching_staff,
+    get_coaching_tree,
+    get_defense_rankings,
+    get_depth_chart,
+    get_draft,
+    get_draft_picks,
+    get_draft_traded_picks,
+    get_fantasy_context,
+    get_game_environment,
+    get_gameday_inactives,
+    get_high_confidence_injuries,
+    get_injury_report,
+    get_league,
+    get_league_drafts,
+    get_league_users,
+    get_matchup_difficulty,
+    get_matchups,
+    get_nfl_news,
+    get_nfl_standings,
+    get_nfl_state,
+    get_playoff_bracket,
+    get_playoff_preparation_plan,
+    get_roster_recommendations,
+    get_rosters,
+    get_scheme_classification,
+    get_season_bye_week_coordination,
+    get_stack_opportunities,
+    get_start_sit_recommendation,
+    get_strategic_matchup_preview,
+    get_team_injuries,
+    get_team_player_stats,
+    get_team_schedule,
+    get_teams,
+    get_trade_deadline_analysis,
+    get_traded_picks,
+    get_transactions,
+    get_trending_players,
+    get_user,
+    get_user_leagues,
+    get_vegas_lines,
+    get_waiver_log,
+    get_waiver_wire_dashboard,
+    lookup_athlete,
+    search_athletes,
 )
+
 
 def test_tool_registry_functions_exist():
     """Test that all tool functions exist in the registry."""

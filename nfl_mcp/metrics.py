@@ -3,12 +3,16 @@
 Provides: MetricsCollector, get_metrics_collector, timing_decorator.
 """
 from __future__ import annotations
-import time, threading, asyncio
-from functools import wraps
-from dataclasses import dataclass
+
+import asyncio
+import threading
+import time
 from collections import defaultdict, deque
-from datetime import datetime, UTC
-from typing import Dict, Any, Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from functools import wraps
+from typing import Any, Callable, Dict
+
 
 @dataclass
 class MetricPoint:

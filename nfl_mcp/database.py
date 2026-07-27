@@ -6,18 +6,18 @@ the Sleeper API and teams information from ESPN API, providing caching and looku
 Features connection pooling, health checks, optimized indexing, migration support, and async operations.
 """
 
-import sqlite3
+import asyncio
 import json
 import logging
+import sqlite3
 import threading
 import time
-import asyncio
-from datetime import datetime, UTC, timedelta
-from pathlib import Path
-from typing import Dict, List, Optional, Union, AsyncContextManager
-from contextlib import contextmanager, asynccontextmanager
-from queue import Queue, Empty
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from queue import Empty, Queue
+from typing import Dict, List, Optional, Union
 
 try:
     import aiosqlite
@@ -148,9 +148,8 @@ class DatabaseConnectionPool:
                 conn.execute("SELECT 1").fetchone()
                 
                 # Get database stats
-                stats = {}
                 cursor = conn.execute("PRAGMA database_list")
-                db_info = cursor.fetchall()
+                cursor.fetchall()
                 
                 # Check if database file exists and is accessible
                 db_size = 0
@@ -689,7 +688,8 @@ class NFLDatabase:
     def save_roster_snapshot(self, league_id: str, rosters) -> None:
         """Persist latest roster payload snapshot (JSON serialized)."""
         try:
-            import json, datetime
+            import datetime
+            import json
             with self._pool.get_connection() as conn:
                 conn.execute(
                     "INSERT INTO roster_snapshots (league_id, payload_json, fetched_at) VALUES (?,?,?)",
@@ -702,7 +702,8 @@ class NFLDatabase:
     def load_roster_snapshot(self, league_id: str, ttl_minutes: int = 15):
         """Load most recent roster snapshot; mark stale if beyond TTL."""
         try:
-            import json, datetime
+            import datetime
+            import json
             with self._pool.get_connection() as conn:
                 cur = conn.execute(
                     "SELECT payload_json, fetched_at FROM roster_snapshots WHERE league_id=? ORDER BY fetched_at DESC LIMIT 1",
@@ -726,7 +727,8 @@ class NFLDatabase:
     def save_transaction_snapshot(self, league_id: str, week: int, transactions) -> None:
         """Persist latest transactions payload snapshot keyed by league/week."""
         try:
-            import json, datetime
+            import datetime
+            import json
             with self._pool.get_connection() as conn:
                 conn.execute(
                     "INSERT INTO transaction_snapshots (league_id, week, payload_json, fetched_at) VALUES (?,?,?,?)",
@@ -739,7 +741,8 @@ class NFLDatabase:
     def load_transaction_snapshot(self, league_id: str, week: Optional[int] = None, ttl_minutes: int = 15):
         """Load most recent transactions snapshot for league (and week if provided)."""
         try:
-            import json, datetime
+            import datetime
+            import json
             with self._pool.get_connection() as conn:
                 if week is not None:
                     cur = conn.execute(
@@ -768,7 +771,8 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     def save_matchup_snapshot(self, league_id: str, week: int, matchups) -> None:
         try:
-            import json, datetime
+            import datetime
+            import json
             with self._pool.get_connection() as conn:
                 conn.execute(
                     "INSERT INTO matchup_snapshots (league_id, week, payload_json, fetched_at) VALUES (?,?,?,?)",
@@ -780,7 +784,8 @@ class NFLDatabase:
 
     def load_matchup_snapshot(self, league_id: str, week: int, ttl_minutes: int = 15):
         try:
-            import json, datetime
+            import datetime
+            import json
             with self._pool.get_connection() as conn:
                 cur = conn.execute(
                     "SELECT payload_json, fetched_at FROM matchup_snapshots WHERE league_id=? AND week=? ORDER BY fetched_at DESC LIMIT 1",

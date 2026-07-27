@@ -4,9 +4,9 @@ Unit tests for NFL MCP Server
 Tests the basic server functionality and tool logic including URL crawling.
 """
 
+
 import pytest
-import httpx
-from unittest.mock import AsyncMock, patch, MagicMock
+
 from nfl_mcp.server import create_app
 
 
@@ -126,14 +126,13 @@ class TestServerIntegration:
     def test_import_all_modules(self):
         """Test that all modules can be imported successfully."""
         try:
-            import nfl_mcp
-            import nfl_mcp.server
+            import nfl_mcp  # noqa: F401  (smoke-import the top-level package)
             from nfl_mcp.server import create_app, main
-            
+
             # All imports should work
             assert create_app is not None
             assert main is not None
-            
+
         except ImportError as e:
             pytest.fail(f"Module import failed: {e}")
 
@@ -587,8 +586,9 @@ class TestUrlCrawlingLogic:
     async def test_crawl_url_text_extraction_logic(self):
         """Test HTML text extraction and cleaning logic."""
         # Test the text processing logic
-        from bs4 import BeautifulSoup
         import re
+
+        from bs4 import BeautifulSoup
         
         test_html = """
         <html>
@@ -660,8 +660,6 @@ class TestUrlCrawlingLogic:
     @pytest.mark.asyncio
     async def test_crawl_url_mock_successful_request(self):
         """Test successful request with mocked HTTP client."""
-        import httpx
-        from unittest.mock import AsyncMock, MagicMock, patch
         
         # Test HTML content
         mock_html = """
@@ -685,8 +683,9 @@ class TestUrlCrawlingLogic:
             
             try:
                 # Simulate successful request
-                from bs4 import BeautifulSoup
                 import re
+
+                from bs4 import BeautifulSoup
                 
                 soup = BeautifulSoup(mock_html, 'lxml')
                 title_tag = soup.find('title')

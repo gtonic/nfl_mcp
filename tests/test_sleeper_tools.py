@@ -2,8 +2,9 @@
 Test the sleeper_tools module to ensure functions are properly extracted.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from nfl_mcp import sleeper_tools
 
@@ -26,7 +27,7 @@ class TestSleeperToolsModule:
     @pytest.mark.asyncio
     async def test_get_league_function_exists(self):
         """Test that get_league function exists and has correct signature."""
-        func = getattr(sleeper_tools, 'get_league')
+        func = sleeper_tools.get_league
         assert callable(func)
         
         # Test with mock to avoid actual API call
@@ -51,7 +52,7 @@ class TestRosterAccessPermissions:
     @pytest.mark.asyncio
     async def test_get_rosters_access_denied_403(self):
         """Test handling of 403 Forbidden response (private rosters)."""
-        func = getattr(sleeper_tools, 'get_rosters')
+        func = sleeper_tools.get_rosters
         
         with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
             mock_response = MagicMock()
@@ -77,7 +78,7 @@ class TestRosterAccessPermissions:
     @pytest.mark.asyncio
     async def test_get_rosters_authentication_required_401(self):
         """Test handling of 401 Unauthorized response."""
-        func = getattr(sleeper_tools, 'get_rosters')
+        func = sleeper_tools.get_rosters
         
         with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
             mock_response = MagicMock()
@@ -100,7 +101,7 @@ class TestRosterAccessPermissions:
     @pytest.mark.asyncio
     async def test_get_rosters_league_not_found_404(self):
         """Test handling of 404 Not Found response."""
-        func = getattr(sleeper_tools, 'get_rosters')
+        func = sleeper_tools.get_rosters
         
         with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
             mock_response = MagicMock()
@@ -123,10 +124,10 @@ class TestRosterAccessPermissions:
     @pytest.mark.asyncio
     async def test_get_rosters_rate_limit_429(self):
         """Test handling of 429 Rate Limit response."""
-        func = getattr(sleeper_tools, 'get_rosters')
+        func = sleeper_tools.get_rosters
         
         with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
-            from httpx import HTTPStatusError, Response, Request
+            from httpx import HTTPStatusError, Request, Response
             
             # Create a mock request and response for HTTPStatusError
             mock_request = MagicMock(spec=Request)
@@ -151,7 +152,7 @@ class TestRosterAccessPermissions:
     @pytest.mark.asyncio
     async def test_get_rosters_empty_but_league_exists(self):
         """Test case where league exists but no rosters are returned (privacy setting)."""
-        func = getattr(sleeper_tools, 'get_rosters')
+        func = sleeper_tools.get_rosters
         
         with patch('nfl_mcp.sleeper_tools.create_http_client') as mock_create_client:
             # Mock successful roster request with empty array
@@ -184,7 +185,7 @@ class TestRosterAccessPermissions:
     @pytest.mark.asyncio
     async def test_get_rosters_successful_with_data(self):
         """Test successful roster retrieval with data."""
-        func = getattr(sleeper_tools, 'get_rosters')
+        func = sleeper_tools.get_rosters
         
         mock_rosters_data = [
             {
@@ -222,7 +223,7 @@ class TestRosterAccessPermissions:
     @pytest.mark.asyncio
     async def test_get_matchups_parameter_validation(self):
         """Test that get_matchups validates week parameter correctly."""
-        func = getattr(sleeper_tools, 'get_matchups')
+        func = sleeper_tools.get_matchups
         
         # Test invalid week (too low)
         result = await func("test_league", 0)
@@ -239,7 +240,7 @@ class TestRosterAccessPermissions:
     @pytest.mark.asyncio
     async def test_get_transactions_parameter_validation(self):
         """Test that get_transactions validates required week (round) parameter bounds."""
-        func = getattr(sleeper_tools, 'get_transactions')
+        func = sleeper_tools.get_transactions
 
         # Too low
         result = await func("test_league", 0)
@@ -256,7 +257,7 @@ class TestRosterAccessPermissions:
     @pytest.mark.asyncio
     async def test_get_trending_players_parameter_validation(self):
         """Test that get_trending_players validates parameters correctly."""
-        func = getattr(sleeper_tools, 'get_trending_players')
+        func = sleeper_tools.get_trending_players
         
         # Test invalid trend_type
         result = await func(None, "invalid_type", 24, 25)
@@ -269,7 +270,7 @@ class TestRosterAccessPermissions:
         """Test that get_trending_players handles dict responses from API."""
         from unittest.mock import MagicMock
         
-        func = getattr(sleeper_tools, 'get_trending_players')
+        func = sleeper_tools.get_trending_players
         
         # Mock response that returns dict objects instead of string IDs
         mock_response = MagicMock()
@@ -297,7 +298,7 @@ class TestRosterAccessPermissions:
         """Test backward compatibility with string ID responses."""
         from unittest.mock import MagicMock
         
-        func = getattr(sleeper_tools, 'get_trending_players')
+        func = sleeper_tools.get_trending_players
         
         # Mock response with string IDs (original format)
         mock_response = MagicMock()
@@ -321,7 +322,7 @@ class TestRosterAccessPermissions:
         """Test handling of mixed response formats."""
         from unittest.mock import MagicMock
         
-        func = getattr(sleeper_tools, 'get_trending_players')
+        func = sleeper_tools.get_trending_players
         
         # Mock response with mixed formats
         mock_response = MagicMock()
@@ -353,12 +354,13 @@ class TestSleeperToolsIntegration:
     async def test_trending_players_dict_response_integration(self):
         """Integration test to ensure dict responses work with server tooling."""
         from unittest.mock import MagicMock
+
         from nfl_mcp.server import create_app
         
         # This test simulates the real server environment where the function
         # is called through the MCP tool interface
         
-        app = create_app()
+        create_app()
         
         # Mock the HTTP response to return dict objects
         mock_response = MagicMock()
@@ -399,7 +401,7 @@ class TestStrategicPlanningFunctions:
     @pytest.mark.asyncio
     async def test_strategic_matchup_preview_validation(self):
         """Test parameter validation for strategic matchup preview."""
-        func = getattr(sleeper_tools, 'get_strategic_matchup_preview')
+        func = sleeper_tools.get_strategic_matchup_preview
         
         # Test invalid week (too low)
         result = await func("test_league", 0, 4)
@@ -414,7 +416,7 @@ class TestStrategicPlanningFunctions:
     @pytest.mark.asyncio
     async def test_season_bye_week_coordination_validation(self):
         """Test parameter validation for season bye week coordination."""
-        func = getattr(sleeper_tools, 'get_season_bye_week_coordination')
+        func = sleeper_tools.get_season_bye_week_coordination
         
         # Mock the get_league call to avoid API calls
         with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league:
@@ -437,7 +439,7 @@ class TestStrategicPlanningFunctions:
     @pytest.mark.asyncio
     async def test_trade_deadline_analysis_validation(self):
         """Test parameter validation for trade deadline analysis.""" 
-        func = getattr(sleeper_tools, 'get_trade_deadline_analysis')
+        func = sleeper_tools.get_trade_deadline_analysis
         
         # Mock get_league to test validation without network calls
         with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league:
@@ -456,7 +458,7 @@ class TestStrategicPlanningFunctions:
     @pytest.mark.asyncio 
     async def test_playoff_preparation_plan_validation(self):
         """Test parameter validation for playoff preparation plan."""
-        func = getattr(sleeper_tools, 'get_playoff_preparation_plan')
+        func = sleeper_tools.get_playoff_preparation_plan
         
         # Mock get_league to test without network calls
         with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league:
@@ -467,7 +469,7 @@ class TestStrategicPlanningFunctions:
     @pytest.mark.asyncio
     async def test_strategic_matchup_preview_mock_success(self):
         """Test successful strategic matchup preview with mocked dependencies."""
-        func = getattr(sleeper_tools, 'get_strategic_matchup_preview')
+        func = sleeper_tools.get_strategic_matchup_preview
         
         # Mock get_league and get_matchups
         with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league, \
@@ -494,7 +496,7 @@ class TestStrategicPlanningFunctions:
     @pytest.mark.asyncio
     async def test_trade_deadline_analysis_mock_success(self):
         """Test successful trade deadline analysis with mocked dependencies."""
-        func = getattr(sleeper_tools, 'get_trade_deadline_analysis')
+        func = sleeper_tools.get_trade_deadline_analysis
         
         with patch('nfl_mcp.sleeper_tools.get_league') as mock_get_league, \
              patch('nfl_mcp.sleeper_tools.get_strategic_matchup_preview') as mock_preview:

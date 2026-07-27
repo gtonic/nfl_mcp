@@ -2,8 +2,9 @@
 Test the trade_analyzer_tools module functionality.
 """
 
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from nfl_mcp import trade_analyzer_tools
 from nfl_mcp.trade_analyzer_tools import ESTIMATED_REPLACEMENT_VALUE
@@ -406,7 +407,7 @@ class TestTradeAnalyzerToolRegistry:
         from nfl_mcp import tool_registry
         
         assert hasattr(tool_registry, 'analyze_trade')
-        func = getattr(tool_registry, 'analyze_trade')
+        func = tool_registry.analyze_trade
         assert callable(func)
     
     @pytest.mark.asyncio

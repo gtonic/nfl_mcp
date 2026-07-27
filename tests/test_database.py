@@ -4,10 +4,10 @@ Unit tests for the AthleteDatabase module.
 Tests the SQLite database operations for athlete data management.
 """
 
-import pytest
-import tempfile
 import json
+import tempfile
 from pathlib import Path
+
 from nfl_mcp.database import NFLDatabase
 
 

@@ -2,26 +2,25 @@
 Tests for the configuration management system.
 """
 
-import os
 import json
-import yaml
-import pytest
+import os
 import tempfile
-from pathlib import Path
-from unittest.mock import patch
-import time
+
+import pytest
+import yaml
+from pydantic import ValidationError
 
 from nfl_mcp.config_manager import (
-    ConfigManager, 
-    ConfigurationModel, 
-    TimeoutConfig, 
+    ConfigManager,
+    ConfigurationModel,
     LongTimeoutConfig,
-    ServerConfig,
-    ValidationLimits,
     RateLimitConfig,
     SecurityConfig,
+    ServerConfig,
+    TimeoutConfig,
+    ValidationLimits,
     get_config_manager,
-    set_config_manager
+    set_config_manager,
 )
 
 
@@ -94,7 +93,7 @@ class TestConfigurationValidation:
     
     def test_invalid_configuration_type(self):
         """Test that invalid configuration types fail validation."""
-        with pytest.raises(Exception):  # pydantic ValidationError
+        with pytest.raises(ValidationError):
             ConfigurationModel(timeout={"total": "invalid"})
     
     def test_partial_configuration(self):

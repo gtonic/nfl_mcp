@@ -1,8 +1,12 @@
 """Tests for trade_analyzer_tools module."""
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+
 from nfl_mcp.trade_analyzer_tools import (
-    TradeAnalyzer, analyze_trade, ESTIMATED_REPLACEMENT_VALUE,
+    ESTIMATED_REPLACEMENT_VALUE,
+    TradeAnalyzer,
+    analyze_trade,
 )
 
 

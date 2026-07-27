@@ -2,9 +2,11 @@
 Tests for CBS Fantasy Football tools.
 """
 
-import pytest
+from unittest.mock import AsyncMock, Mock, patch
+
 import httpx
-from unittest.mock import Mock, patch, AsyncMock
+import pytest
+
 from nfl_mcp import cbs_fantasy_tools
 
 

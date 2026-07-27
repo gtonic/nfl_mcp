@@ -6,14 +6,13 @@ trade fairness evaluation, player value assessment, positional need analysis,
 and trade recommendations.
 """
 
-from typing import Dict, List, Optional, Tuple
-from collections import defaultdict
 import logging
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 
-from .sleeper_tools import get_rosters, get_league, get_trending_players
-from .athlete_tools import lookup_athlete
+from .errors import ErrorType, create_error_response, create_success_response
 from .player_values import get_values_service
-from .errors import create_success_response, create_error_response, ErrorType
+from .sleeper_tools import get_league, get_rosters, get_trending_players
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +138,7 @@ class TradeAnalyzer:
         # Calculate needs based on position depth
         for pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
             total = position_counts.get(pos, 0)
-            starters_at_pos = starter_counts.get(pos, 0)
+            starter_counts.get(pos, 0)
             
             # More need if fewer players at position
             if pos == "QB":

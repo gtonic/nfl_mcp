@@ -18,12 +18,12 @@ Every factor is reported in a `breakdown` so the number is explainable, and a
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
-from .player_values import get_values_service, scoring_to_ppr
+from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .matchup_tools import get_defense_analyzer
+from .player_values import get_values_service, scoring_to_ppr
 from .vegas_tools import get_vegas_analyzer
-from .errors import create_success_response, create_error_response, ErrorType, handle_http_errors
 
 logger = logging.getLogger(__name__)
 

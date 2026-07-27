@@ -14,16 +14,11 @@ actionable recommendations for fantasy lineup decisions.
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, UTC
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Dict, List, Optional, Tuple
 
-from .config import create_http_client, LONG_TIMEOUT
-from .errors import (
-    create_error_response, create_success_response, ErrorType,
-    handle_http_errors
-)
+from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 
 logger = logging.getLogger(__name__)
 
@@ -281,9 +276,9 @@ class LineupOptimizer:
         scores["trend"] = trend_score
         
         if trend_score >= 80:
-            reasoning.append(f"📈 Usage trending up")
+            reasoning.append("📈 Usage trending up")
         elif trend_score <= 40:
-            reasoning.append(f"📉 Usage trending down")
+            reasoning.append("📉 Usage trending down")
         
         # Calculate weighted confidence
         total_confidence = sum(
@@ -693,7 +688,7 @@ async def get_roster_recommendations(
     must_starts = []
     sits = []
     
-    for position, analyses in analyses_by_position.items():
+    for _position, analyses in analyses_by_position.items():
         for analysis in analyses:
             rec = analysis.to_dict()
             if not include_reasoning:

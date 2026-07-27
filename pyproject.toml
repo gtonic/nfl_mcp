@@ -6,17 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "nfl_mcp"
 version = "0.6.0"
 description = "NFL MCP Server - Fantasy Football Analysis via Model Context Protocol"
-authors = [{name = "NFL MCP Team", email = "nfl@example.com"}]
+authors = [{name = "gtonic", email = "tom.geiger@alp54.com"}]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
@@ -55,6 +54,30 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 python_files = ["test_*.py", "*_test.py"]
 addopts = ["--strict-markers", "--strict-config", "-v"]
+markers = [
+    "live: test hits a real external API (Sleeper/ESPN); skipped unless --run-live is passed",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["FastMCP.txt", "*.egg-info", "docs", "examples"]
+
+[tool.ruff.lint]
+# Start with the high-signal correctness core: pyflakes (F), bugbear (B) and
+# import sorting (I). Stylistic/volume debt (blind-except BLE001, try-except-pass
+# SIM105, line length E501, whitespace W29x, annotation-style UP006/UP045) is
+# deliberately deferred to a follow-up cleanup so this gate stays green on the
+# existing code while still catching real regressions. See CHANGELOG.
+select = ["F", "B", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py re-exports are intentional, not dead imports.
+"__init__.py" = ["F401"]
+# All B023 hits here are enrichment closures defined AND consumed within the
+# same retry-loop iteration (captured vars are re-bound each pass), so they are
+# false positives. Revisit when sleeper_tools.py is split by domain.
+"nfl_mcp/sleeper_tools.py" = ["B023"]
 
 [tool.coverage.run]
 source = ["nfl_mcp"]

@@ -7,17 +7,28 @@ matchups, transactions, and more.
 """
 
 import asyncio
-import httpx
 import json
 import logging
 import os
-from typing import Optional, Dict, List, Tuple
-from datetime import datetime, UTC
+from datetime import UTC, datetime
+from typing import Dict, List, Optional, Tuple
 
-from .config import get_http_headers, create_http_client, validate_limit, LIMITS, LONG_TIMEOUT, DEFAULT_TIMEOUT
+import httpx
+
+from .config import (
+    DEFAULT_TIMEOUT,
+    LIMITS,
+    LONG_TIMEOUT,
+    create_http_client,
+    get_http_headers,
+    validate_limit,
+)
 from .errors import (
-    create_error_response, create_success_response, ErrorType,
-    handle_http_errors, handle_validation_error
+    ErrorType,
+    create_error_response,
+    create_success_response,
+    handle_http_errors,
+    handle_validation_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -302,7 +313,7 @@ async def get_rosters(league_id: str) -> dict:
     snap = nfl_db.load_roster_snapshot(league_id)
     if snap:
         return create_error_response(
-            f"Roster fetch failed after retries (serving snapshot)",
+            "Roster fetch failed after retries (serving snapshot)",
             ErrorType.NETWORK if last_error and last_error.startswith("network") else ErrorType.UNEXPECTED,
             {
                 "rosters": snap["rosters"],
@@ -364,7 +375,7 @@ async def get_league_users(league_id: str) -> dict:
 async def get_matchups(league_id: str, week: int) -> dict:
     """Get matchups for a week with robustness (retry + snapshot fallback)."""
     try:
-        from .param_validator import validate_params, format_errors
+        from .param_validator import format_errors, validate_params
         schema = {"week": {"type": int, "required": True, "min": LIMITS["week_min"], "max": LIMITS["week_max"]}}
         validated, errors = validate_params(schema, {"week": week})
         if errors:
@@ -557,7 +568,7 @@ async def get_playoff_bracket(league_id: str, bracket_type: str = "winners") -> 
         - bracket_type: which bracket was fetched
     """
     try:
-        from .param_validator import validate_params, format_errors
+        from .param_validator import format_errors, validate_params
         schema = {"bracket_type": {"type": str, "required": True, "choices": ["winners", "losers"]}}
         normalized = bracket_type.lower().strip() if isinstance(bracket_type, str) else bracket_type
         validated, errors = validate_params(schema, {"bracket_type": normalized})
@@ -604,7 +615,7 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
     auto_inferred = False
     # Central param schema validation (except league_id which is positional)
     try:
-        from .param_validator import validate_params, format_errors
+        from .param_validator import format_errors, validate_params
         schema = {
             "round": {"type": (int, type(None)), "required": False, "min": LIMITS["round_min"], "max": LIMITS["round_max"], "nullable": True},
             "week": {"type": (int, type(None)), "required": False, "min": LIMITS["round_min"], "max": LIMITS["round_max"], "nullable": True},
@@ -924,7 +935,7 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
     """
     # Central validation via param_validator (preserve legacy messages)
     try:
-        from .param_validator import validate_params, format_errors
+        from .param_validator import format_errors, validate_params
         schema = {
             "trend_type": {"type": str, "required": True, "choices": ["add", "drop"]},
             "lookback_hours": {"type": (int, type(None)), "required": False, "min": LIMITS["trending_lookback_min"], "max": LIMITS["trending_lookback_max"], "nullable": True, "default": 24},
@@ -1072,11 +1083,11 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
     default_data={"picks": [], "count": 0},
     operation_name="fetching draft picks"
 )
-async def get_draft_picks(draft_id: str) -> dict:  # type: ignore[override]
-    """Override earlier definition to add enrichment (keeps same name).
+async def get_draft_picks(draft_id: str) -> dict:
+    """Fetch all picks in a draft, with additive enrichment.
 
-    Returns picks with additive `player_enriched` for each pick containing
-    player_id if available.
+    Returns picks with an additive `player_enriched` field for each pick that
+    carries a player_id, when the athlete is known locally.
     """
     headers = get_http_headers("sleeper_draft_picks")
     url = f"https://api.sleeper.app/v1/draft/{draft_id}/picks"
@@ -1136,7 +1147,7 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
     """
     # Validate parameters via param_validator
     try:
-        from .param_validator import validate_params, format_errors
+        from .param_validator import format_errors, validate_params
         schema = {
             "current_week": {"type": int, "required": True, "min": LIMITS["week_min"], "max": LIMITS["week_max"]},
             "weeks_ahead": {"type": int, "required": False, "min": 1, "max": 8, "default": 4},
@@ -1611,9 +1622,9 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
     settings = league_data.get("settings", {})
     
     playoff_start = settings.get("playoff_week_start", 14)
-    playoff_weeks = settings.get("playoff_week_start", 14)
-    total_teams = league_data.get("total_rosters", 12)
-    playoff_teams = settings.get("playoff_teams", 6)
+    settings.get("playoff_week_start", 14)
+    league_data.get("total_rosters", 12)
+    settings.get("playoff_teams", 6)
     
     playoff_plan = {
         "timeline": {
@@ -1835,21 +1846,6 @@ async def get_draft(draft_id: str) -> dict:
 
 
 @handle_http_errors(
-    default_data={"picks": [], "count": 0},
-    operation_name="fetching draft picks"
-)
-async def get_draft_picks(draft_id: str) -> dict:
-    """Fetch all picks in a draft."""
-    headers = get_http_headers("sleeper_league")
-    url = f"https://api.sleeper.app/v1/draft/{draft_id}/picks"
-    async with create_http_client() as client:
-        response = await client.get(url, headers=headers, follow_redirects=True)
-        response.raise_for_status()
-        data = response.json()
-        return create_success_response({"picks": data, "count": len(data)})
-
-
-@handle_http_errors(
     default_data={"traded_picks": [], "count": 0},
     operation_name="fetching draft traded picks"
 )
@@ -1967,7 +1963,7 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
     # Execute parallel tasks
     if parallel_tasks:
         results = await asyncio.gather(*parallel_tasks, return_exceptions=True)
-        for key, result in zip(task_keys, results):
+        for key, result in zip(task_keys, results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(f"[Fantasy Context] Failed to fetch {key}: {result}")
             elif result.get("success"):
@@ -2001,7 +1997,7 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
     # Execute week-dependent parallel tasks
     if week_tasks:
         results = await asyncio.gather(*week_tasks, return_exceptions=True)
-        for key, result in zip(week_keys, results):
+        for key, result in zip(week_keys, results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(f"[Fantasy Context] Failed to fetch {key}: {result}")
             elif result.get("success"):
@@ -2027,7 +2023,7 @@ async def _fetch_week_player_snaps(season: int, week: int):
     Includes response validation to ensure data quality.
     """
     if not ADVANCED_ENRICH_ENABLED:
-        logger.debug(f"[Fetch Snaps] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+        logger.debug("[Fetch Snaps] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
     
     logger.info(f"[Fetch Snaps] Starting fetch for season={season}, week={week}")
@@ -2043,13 +2039,13 @@ async def _fetch_week_player_snaps(season: int, week: int):
                 return []
             data = resp.json() or {}
             if not isinstance(data, dict):
-                logger.warning(f"[Fetch Snaps] Invalid data format (not dict)")
+                logger.warning("[Fetch Snaps] Invalid data format (not dict)")
                 return []
             
             # Validate response
             from .response_validation import validate_response_and_log, validate_snap_count_response
             if not validate_response_and_log(data, validate_snap_count_response, "Snaps", allow_partial=True):
-                logger.error(f"[Fetch Snaps] Response validation failed, returning empty list")
+                logger.error("[Fetch Snaps] Response validation failed, returning empty list")
                 return []
             
             logger.debug(f"[Fetch Snaps] Received data for {len(data)} players")
@@ -2076,7 +2072,7 @@ async def _fetch_week_player_snaps(season: int, week: int):
             return rows
     
     try:
-        from .retry_utils import retry_with_backoff, CircuitBreakerError
+        from .retry_utils import CircuitBreakerError, retry_with_backoff
         # Use retry with circuit breaker for snap fetches
         return await retry_with_backoff(
             _fetch,
@@ -2099,7 +2095,7 @@ async def _fetch_week_schedule(season: int, week: int):
     Includes response validation to ensure data quality.
     """
     if not ADVANCED_ENRICH_ENABLED:
-        logger.debug(f"[Fetch Schedule] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+        logger.debug("[Fetch Schedule] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
     
     logger.info(f"[Fetch Schedule] Starting fetch for season={season}, week={week}")
@@ -2137,14 +2133,14 @@ async def _fetch_week_schedule(season: int, week: int):
             # Validate response
             from .response_validation import validate_response_and_log, validate_schedule_response
             if not validate_response_and_log(games, validate_schedule_response, "Schedule", allow_partial=True):
-                logger.error(f"[Fetch Schedule] Response validation failed, returning empty list")
+                logger.error("[Fetch Schedule] Response validation failed, returning empty list")
                 return []
             
             logger.info(f"[Fetch Schedule] Successfully fetched {len(games)} game records ({len(events)} events, season={season}, week={week})")
             return games
     
     try:
-        from .retry_utils import retry_with_backoff, CircuitBreakerError
+        from .retry_utils import CircuitBreakerError, retry_with_backoff
         # Use retry with circuit breaker for schedule fetches
         return await retry_with_backoff(
             _fetch,
@@ -2170,7 +2166,7 @@ async def _fetch_all_team_schedules(season: int):
         List of game dicts for upsert_schedule_games (bidirectional rows)
     """
     if not ADVANCED_ENRICH_ENABLED:
-        logger.debug(f"[Fetch All Schedules] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+        logger.debug("[Fetch All Schedules] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
     
     # All 32 NFL team abbreviations
@@ -2278,10 +2274,10 @@ async def _fetch_injuries():
     injury_status, injury_type, injury_description, date_reported.
     """
     if not ADVANCED_ENRICH_ENABLED:
-        logger.debug(f"[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+        logger.debug("[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
     
-    logger.info(f"[Fetch Injuries] Starting fetch for all teams")
+    logger.info("[Fetch Injuries] Starting fetch for all teams")
     
     # NFL team abbreviations
     teams = [
@@ -2294,9 +2290,11 @@ async def _fetch_injuries():
     all_injuries = []
     
     try:
-        import httpx
         import re
-        from .config import get_http_headers, create_http_client
+
+        import httpx
+
+        from .config import create_http_client, get_http_headers
         
         headers = get_http_headers("nfl_teams")
         
@@ -2441,7 +2439,7 @@ async def _fetch_practice_reports(season: int, week: int):
     Includes response validation to ensure data quality.
     """
     if not ADVANCED_ENRICH_ENABLED:
-        logger.debug(f"[Fetch Practice] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+        logger.debug("[Fetch Practice] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
     
     logger.info(f"[Fetch Practice] Starting fetch for season={season}, week={week}")
@@ -2452,7 +2450,7 @@ async def _fetch_practice_reports(season: int, week: int):
         injuries = await _fetch_injuries()
         
         if not injuries:
-            logger.warning(f"[Fetch Practice] No injury data available to extract practice status")
+            logger.warning("[Fetch Practice] No injury data available to extract practice status")
             return []
         
         # Convert injury status to practice status format
@@ -2482,16 +2480,19 @@ async def _fetch_practice_reports(season: int, week: int):
                 })
         
         # Validate response
-        from .response_validation import validate_response_and_log, validate_practice_report_response
+        from .response_validation import (
+            validate_practice_report_response,
+            validate_response_and_log,
+        )
         if not validate_response_and_log(practice_reports, validate_practice_report_response, "Practice", allow_partial=True):
-            logger.error(f"[Fetch Practice] Response validation failed, returning empty list")
+            logger.error("[Fetch Practice] Response validation failed, returning empty list")
             return []
         
         logger.info(f"[Fetch Practice] Extracted {len(practice_reports)} practice status records from {len(injuries)} injuries")
         return practice_reports
     
     try:
-        from .retry_utils import retry_with_backoff, CircuitBreakerError
+        from .retry_utils import CircuitBreakerError, retry_with_backoff
         # Use retry with circuit breaker for practice fetches
         return await retry_with_backoff(
             _fetch,
@@ -2513,7 +2514,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
     Includes response validation to ensure data quality.
     """
     if not ADVANCED_ENRICH_ENABLED:
-        logger.debug(f"[Fetch Usage] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+        logger.debug("[Fetch Usage] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
     
     logger.info(f"[Fetch Usage] Starting fetch for season={season}, week={week}")
@@ -2585,7 +2586,6 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             rz_rush = 0
                         
                         rz_touches = rz_tgt + rz_rush
-                        rz_touches_source = "api" if rz_touches > 0 else None
                         
                         # If no explicit RZ data, estimate from TDs (TDs often happen in RZ)
                         if rz_touches == 0:
@@ -2595,10 +2595,9 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             
                             if td_total > 0:
                                 rz_touches = td_total
-                                rz_touches_source = "estimated_from_tds"
                             else:
                                 # Truly 0 or data missing
-                                rz_touches_source = "zero_or_missing"
+                                pass
                         
                         # Calculate total touches
                         rush_att = player_stats.get("rush_att", 0)
@@ -2621,7 +2620,6 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             snap_share = player_stats.get("snap_percentage")
                         if snap_share is None:
                             snap_share = player_stats.get("snaps_pct")
-                        snap_share_source = "api" if snap_share is not None else None
                         
                         # Calculate from absolute snaps if percentage not provided
                         if snap_share is None:
@@ -2632,9 +2630,8 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             
                             if off_snp is not None and team_snp is not None and team_snp > 0:
                                 snap_share = round((off_snp / team_snp) * 100, 1)
-                                snap_share_source = "calculated_from_snaps"
                             else:
-                                snap_share_source = "zero_or_missing"
+                                pass
                         
                         # Only include if at least one usage metric present
                         if any([targets, routes, rz_touches, touches]):
@@ -2652,9 +2649,12 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                     
                     if stats:
                         # Validate response
-                        from .response_validation import validate_response_and_log, validate_usage_stats_response
+                        from .response_validation import (
+                            validate_response_and_log,
+                            validate_usage_stats_response,
+                        )
                         if not validate_response_and_log(stats, validate_usage_stats_response, "Usage", allow_partial=True):
-                            logger.error(f"[Fetch Usage] Response validation failed, returning empty list")
+                            logger.error("[Fetch Usage] Response validation failed, returning empty list")
                             return []
                         
                         # Log diagnostic summary about routes data availability
@@ -2669,7 +2669,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         )
                         return stats
                     else:
-                        logger.warning(f"[Fetch Usage] No valid usage stats found in response")
+                        logger.warning("[Fetch Usage] No valid usage stats found in response")
             else:
                 logger.warning(f"[Fetch Usage] Sleeper API returned status {resp.status_code}")
         
@@ -2680,7 +2680,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
         return []
     
     try:
-        from .retry_utils import retry_with_backoff, CircuitBreakerError
+        from .retry_utils import CircuitBreakerError, retry_with_backoff
         # Use retry with circuit breaker for usage fetches
         return await retry_with_backoff(
             _fetch,

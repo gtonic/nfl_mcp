@@ -20,16 +20,14 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
-
-import httpx
 
 from .config import create_http_client, get_rate_limiter
 from .errors import (
-    create_success_response,
-    create_error_response,
     ErrorType,
+    create_error_response,
+    create_success_response,
     handle_http_errors,
 )
 

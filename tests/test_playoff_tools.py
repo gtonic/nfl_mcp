@@ -1,10 +1,8 @@
 """Tests for the Monte-Carlo playoff odds tool (offline, mocked Sleeper)."""
 
-import random
 import contextlib
+import random
 from unittest.mock import patch
-
-import pytest
 
 from nfl_mcp import playoff_tools as pt
 

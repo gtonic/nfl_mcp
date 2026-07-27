@@ -2,20 +2,19 @@
 Tests for matchup_tools module - defense vs position rankings and matchup difficulty analysis.
 """
 
-import pytest
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from nfl_mcp import matchup_tools
 from nfl_mcp.matchup_tools import (
+    ESPN_TEAM_MAP,
     DefenseRankingsAnalyzer,
     _get_matchup_tier,
     _get_tier_color,
-    ESPN_TEAM_MAP,
-    MATCHUP_TIERS,
+    analyze_roster_matchups,
     get_defense_rankings,
     get_matchup_difficulty,
-    analyze_roster_matchups,
 )
 
 
@@ -286,7 +285,6 @@ class TestToolRegistryIntegration:
     
     def test_matchup_tools_import(self):
         """Test matchup_tools module imports cleanly."""
-        from nfl_mcp import matchup_tools
         
         assert hasattr(matchup_tools, 'get_defense_rankings')
         assert hasattr(matchup_tools, 'get_matchup_difficulty')

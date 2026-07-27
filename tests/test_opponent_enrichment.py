@@ -1,5 +1,4 @@
 """Test opponent enrichment for offensive and defensive players."""
-import pytest
 from nfl_mcp.database import NFLDatabase
 from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
 

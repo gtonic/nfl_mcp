@@ -1,6 +1,5 @@
 """Test that zero routes values are properly handled."""
 import pytest
-from nfl_mcp.sleeper_tools import _fetch_weekly_usage_stats
 
 
 class TestRoutesZeroHandling:
