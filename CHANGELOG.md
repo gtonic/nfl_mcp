@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local search over bench swaps, which **automatically recommends the ceiling
   lineup when you're the underdog and the floor lineup when you're favored**, and
   reports the win-probability gain over the points-optimal lineup. Composes with
-  `project_players`. (Independent players for now — QB/WR stacking correlation is
-  a future refinement.)
+  `project_players`. Credits **QB↔same-team pass-catcher (WR/TE) stacks** with a
+  positive covariance (default ρ=0.35), so a stack's wider ceiling is valued when
+  you're the underdog; the recommendation reports any stacks it used.
 - **Opportunity-based projection baseline** (`nfl_mcp/opportunity.py` + new MCP
   tool `get_opportunity_projections`) — projects next-week PPR points from
   recency-weighted trailing **volume** (targets/carries; QB pass attempts) ×

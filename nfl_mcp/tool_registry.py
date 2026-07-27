@@ -1861,6 +1861,7 @@ async def get_win_probability_lineup(
     your_players: List[dict],
     opponent_players: List[dict],
     slots: Optional[dict] = None,
+    stack_correlation: float = 0.35,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
 
@@ -1892,6 +1893,7 @@ async def get_win_probability_lineup(
         your_players=your_players,
         opponent_players=opponent_players,
         slots=slots,
+        stack_correlation=stack_correlation,
     )
 
 

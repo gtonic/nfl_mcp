@@ -2,6 +2,7 @@
 import pytest
 
 from nfl_mcp.win_probability import (
+    _team_stats,
     get_win_probability_lineup,
     optimize_win_probability,
     player_sd,
@@ -101,3 +102,39 @@ class TestGetWinProbabilityLineupTool:
         r2 = await get_win_probability_lineup(your_players=[{"x": 1}], opponent_players=[])
         assert r1["success"] is False and "your_players" in r1["error"]
         assert r2["success"] is False and "opponent_players" in r2["error"]
+
+
+class TestStackCorrelation:
+    def test_same_team_qb_wr_raises_variance(self):
+        qb = {"name": "QB", "position": "QB", "team": "BUF", "projected_points": 20, "sd": 6}
+        wr = {"name": "WR", "position": "WR", "team": "BUF", "projected_points": 14, "sd": 6}
+        _, var = _team_stats([qb, wr], stack_rho=0.35)
+        _, indep = _team_stats([qb, wr], stack_rho=0.0)
+        assert var == pytest.approx(indep + 2 * 0.35 * 6 * 6)   # +covariance
+        assert var > indep
+
+    def test_no_covariance_for_different_teams(self):
+        qb = {"name": "QB", "position": "QB", "team": "BUF", "projected_points": 20, "sd": 6}
+        wr = {"name": "WR", "position": "WR", "team": "MIA", "projected_points": 14, "sd": 6}
+        _, var = _team_stats([qb, wr], stack_rho=0.35)
+        _, indep = _team_stats([qb, wr], stack_rho=0.0)
+        assert var == indep
+
+    def test_underdog_prefers_the_stack(self):
+        # Same-team QB+WR stack widens variance; as a big underdog that beats a
+        # marginally-higher-mean non-stacked WR on P(win).
+        candidates = [
+            {"name": "QB_BUF", "position": "QB", "team": "BUF", "projected_points": 20, "sd": 7},
+            {"name": "WR_BUF", "position": "WR", "team": "BUF", "projected_points": 12, "sd": 7},
+            {"name": "WR_MIA", "position": "WR", "team": "MIA", "projected_points": 12.5, "sd": 7},
+        ]
+        opp = [{"name": "O", "position": "QB", "projected_points": 45, "sd": 9}]
+        res = optimize_win_probability(candidates, opp, slots={"QB": 1, "WR": 1})
+
+        rec_wr = next(r for r in res["recommended_lineup"] if r["slot"] == "WR")
+        mo_wr = next(r for r in res["points_optimal_lineup"] if r["slot"] == "WR")
+        assert mo_wr["player"] == "WR_MIA"          # higher mean, no stack
+        assert rec_wr["player"] == "WR_BUF"         # stack chosen for its ceiling
+        assert res["stacks"]                        # QB+WR stack reported
+        assert res["win_probability"] > res["points_optimal_win_probability"]
+        assert "ceiling" in res["strategy"]
