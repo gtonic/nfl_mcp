@@ -52,7 +52,21 @@ task all          # full pipeline
 The SQLite database is only a **cache** (athletes, schedules, enrichment). It
 lives inside the container and repopulates from the source APIs on demand (e.g.
 `fetch_athletes` or background prefetch), so losing it on restart is harmless —
-**no volume required**.
+**no volume required**. If you'd rather *not* re-warm on every restart, set
+`NFL_MCP_DB_PATH` to a path on a mounted volume to persist it:
+
+```bash
+docker volume create nfl-mcp-data
+docker run -d --name nfl-mcp -p 9000:9000 \
+  -e NFL_MCP_DB_PATH=/data/nfl_data.db \
+  -v nfl-mcp-data:/data \
+  ghcr.io/gtonic/nfl_mcp:latest
+```
+
+A **named volume** is recommended over a host bind-mount — SQLite needs proper
+file locking, which named volumes provide reliably on Docker Desktop (macOS/
+Windows). The container runs as non-root uid 1000, so a bind-mounted host
+directory would need to be writable by that uid.
 
 ## Going live: connect your AI client
 
@@ -121,6 +135,7 @@ variables take precedence.
 |---|---|
 | `ODDS_API_KEY` | Enables live Vegas lines/totals ([the-odds-api.com](https://the-odds-api.com)). Without it, Vegas tools return neutral placeholders. Player values (FantasyCalc) need **no** key. |
 | `NFL_MCP_ADVANCED_ENRICH` | `1` enables snap%, opponent, practice status and usage-trend enrichment (Schema v8). Also lets schedule fetches run. |
+| `NFL_MCP_DB_PATH` | Path to the SQLite cache file (default `nfl_data.db`, relative to the working dir). Point it at a mounted volume — e.g. `/data/nfl_data.db` — to persist the warmed cache across restarts. |
 | `NFL_MCP_ALLOW_PRIVATE_URLS` | `1` lets `crawl_url` reach private/loopback addresses. Off by default (SSRF protection — see [SECURITY.md](../SECURITY.md)). |
 | `NFL_MCP_PREFETCH` | `1` enables background data prefetch (cache warming). |
 | `NFL_MCP_PREFETCH_INTERVAL` | Prefetch interval, seconds (default 900). |

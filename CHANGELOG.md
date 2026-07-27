@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Configurable database path via `NFL_MCP_DB_PATH`.** The SQLite cache path now
+  falls back to the `NFL_MCP_DB_PATH` environment variable (default
+  `nfl_data.db`). The default is resolved inside `NFLDatabase.__init__`, so
+  *every* `NFLDatabase()` call in the codebase honors it — point it at a mounted
+  volume (e.g. `NFL_MCP_DB_PATH=/data/nfl_data.db` + `-v nfl-mcp-data:/data`) to
+  persist the warmed cache across container restarts instead of re-initializing
+  each time. An explicit `db_path` argument (e.g. a test's temp file) still wins.
+
 ## [0.6.7] - 2026-07-27
 
 ### Security
