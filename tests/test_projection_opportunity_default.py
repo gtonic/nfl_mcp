@@ -65,3 +65,23 @@ def test_name_normalization_matches_suffix_and_punctuation():
     )
     # Query without the punctuation/suffix should still resolve.
     assert opportunity_tools.opportunity_base_for(idx, "AJ Brown", "WR", week=6) is not None
+
+
+def test_weather_factor_applied_only_when_provided():
+    eng = _engine()
+    base_player = {"name": "WR", "position": "WR", "team": "BUF", "opponent": "MIA"}
+    windy = {**base_player, "weather": {"wind_mph": 28, "is_dome": False}}
+
+    calm_out = eng._project_one(dict(base_player), {}, {}, {})
+    windy_out = eng._project_one(windy, {}, {}, {})
+
+    assert calm_out["breakdown"]["weather_mult"] == 1.0          # opt-in: neutral by default
+    assert windy_out["breakdown"]["weather_mult"] < 1.0          # wind fades passing
+    assert windy_out["projected_points"] < calm_out["projected_points"]
+
+
+def test_dome_weather_is_neutral():
+    eng = _engine()
+    p = {"name": "WR", "position": "WR", "team": "MIN", "opponent": "X",
+         "weather": {"wind_mph": 30, "is_dome": True}}
+    assert eng._project_one(p, {}, {}, {})["breakdown"]["weather_mult"] == 1.0

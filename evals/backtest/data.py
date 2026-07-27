@@ -24,6 +24,8 @@ NFLVERSE_URL = (
     "https://github.com/nflverse/nflverse-data/releases/download/"
     "player_stats/player_stats_{season}.csv"
 )
+# Per-game schedule with recorded wind / roof / temp (nflverse `nfldata`).
+GAMES_URL = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
 # nflverse abbreviations -> the abbreviations used across this codebase.
 _TEAM_FIX = {"LA": "LAR", "WAS": "WSH", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LAR"}
@@ -98,3 +100,44 @@ def load_season(season: int, use_cache: bool = True) -> List[Dict]:
         })
     logger.info("Loaded %d REG records for %s", len(records), season)
     return records
+
+
+def load_games(season: int, use_cache: bool = True) -> Dict:
+    """Return per-game weather keyed by both teams.
+
+    ``{(season, week, team): {"wind": float, "roof": str}}`` for regular-season
+    games, from the nflverse schedule (recorded wind mph + roof).
+    """
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(_CACHE_DIR, "games.csv")
+
+    text: Optional[str] = None
+    if use_cache and os.path.exists(cache_path):
+        with open(cache_path, encoding="utf-8") as f:
+            text = f.read()
+    if text is None:
+        logger.info("Downloading %s", GAMES_URL)
+        resp = httpx.get(GAMES_URL, follow_redirects=True, timeout=60)
+        resp.raise_for_status()
+        text = resp.text
+        with open(cache_path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    out: Dict = {}
+    for row in csv.DictReader(StringIO(text)):
+        if str(row.get("season")) != str(season):
+            continue
+        if (row.get("game_type") or "").upper() != "REG":
+            continue
+        wk = row.get("week")
+        if not wk:
+            continue
+        wind_raw = (row.get("wind") or "").strip()
+        wind = _to_float(wind_raw) if wind_raw else None
+        roof = (row.get("roof") or "").strip().lower()
+        info = {"wind": wind, "roof": roof}
+        for side in ("home_team", "away_team"):
+            team = _TEAM_FIX.get((row.get(side) or "").upper(), (row.get(side) or "").upper())
+            if team:
+                out[(int(season), int(wk), team)] = info
+    return out

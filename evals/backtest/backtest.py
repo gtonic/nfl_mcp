@@ -43,11 +43,14 @@ from typing import Dict, List, Optional
 from nfl_mcp.matchup_tools import _get_matchup_tier
 from nfl_mcp.opportunity import project_opportunity
 
-# Import the LIVE constants so the backtest evaluates production behaviour.
+# Import the LIVE constants/functions so the backtest evaluates production behaviour.
 from nfl_mcp.projections import _MATCHUP_TIER_DEV, _usage_mult, matchup_multiplier
+from nfl_mcp.weather_tools import weather_multiplier
 
-from .data import load_season
+from .data import load_games, load_season
 from .metrics import evaluate, mae
+
+_DOME_ROOFS = {"dome", "closed"}
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +103,10 @@ def _touch_trend(prior: List[Dict]) -> str:
 
 def build_samples(
     records: List[Dict], start_week: int, min_prior: int, min_trailing: float,
-    positions: Optional[List[str]] = None,
+    positions: Optional[List[str]] = None, games: Optional[Dict] = None,
 ) -> List[Dict]:
-    """Build leak-free prediction samples with base / matchup / usage / full."""
+    """Build leak-free prediction samples with base / matchup / usage / full / weather."""
+    games = games or {}
     games_by_player: Dict[str, Dict[int, Dict]] = defaultdict(dict)
     for r in records:
         games_by_player[r["player_id"]][r["week"]] = r
@@ -136,6 +140,12 @@ def build_samples(
         if opp is None:
             opp = trailing
 
+        # Weather: this week's recorded wind/roof for the player's game.
+        g = games.get((r["season"], wk, r["team"])) or {}
+        wind = g.get("wind")
+        is_dome = (g.get("roof") or "") in _DOME_ROOFS
+        w_mult = weather_multiplier(r["position"], wind or 0.0, is_dome=is_dome)
+
         samples.append({
             "position": r["position"],
             "actual": r["ppr"],
@@ -144,8 +154,11 @@ def build_samples(
             "matchup": trailing * m_mult,
             "usage": trailing * u_mult,
             "full": trailing * m_mult * u_mult,
+            "weather": trailing * w_mult,
             "matchup_mult": m_mult,
             "tier_dev": tier_dev,
+            "wind": wind,
+            "is_dome": is_dome,
         })
     return samples
 
@@ -160,13 +173,29 @@ def run_backtest(
 ) -> Dict:
     """Run the backtest and return structured results."""
     records: List[Dict] = []
+    games: Dict = {}
     for s in seasons:
         records.extend(load_season(s))
+        try:
+            games.update(load_games(s))
+        except Exception as e:
+            logger.warning("Could not load games/weather for %s: %s", s, e)
 
-    samples = build_samples(records, start_week, min_prior, min_trailing, positions)
+    samples = build_samples(records, start_week, min_prior, min_trailing, positions, games)
 
-    models = ["base", "opportunity", "matchup", "usage", "full"]
+    models = ["base", "opportunity", "matchup", "usage", "full", "weather"]
     results = {m: evaluate(*_series(samples, m)) for m in models}
+
+    # Weather only bites in windy, outdoor games — measure it where it applies:
+    # passing positions (QB/WR/TE) in games with wind >= 15 mph.
+    windy = [s for s in samples
+             if s["position"] in ("QB", "WR", "TE")
+             and not s["is_dome"] and (s["wind"] or 0) >= 15]
+    weather_effect = {"n_windy_passing": len(windy),
+                      "n_with_wind_data": sum(1 for s in samples if s["wind"] is not None)}
+    if windy:
+        weather_effect["base"] = evaluate(*_series(windy, "base"))
+        weather_effect["weather"] = evaluate(*_series(windy, "weather"))
 
     # Per-position breakdown: base (trailing PPG) vs opportunity vs full.
     per_pos: Dict[str, Dict] = {}
@@ -224,6 +253,7 @@ def run_backtest(
         "per_position": per_pos,
         "tuning": {"sweep": tuning, "best_strength": best["strength"], "best_mae": best["mae"]},
         "per_position_tuning": per_pos_tuning,
+        "weather_effect": weather_effect,
     }
 
 
@@ -238,7 +268,7 @@ def print_report(res: Dict) -> None:
           f"trailing≥{res['min_trailing']} pts, n={res['n_samples']} player-weeks")
     print("=" * 78)
     print("\nModels (base = trailing PPG; opportunity = volume×shrunk-efficiency):")
-    for name in ("base", "opportunity", "matchup", "usage", "full"):
+    for name in ("base", "opportunity", "matchup", "usage", "full", "weather"):
         print(_fmt_row(name, res["models"][name]))
 
     b, f = res["models"]["base"]["mae"], res["models"]["full"]["mae"]
@@ -258,6 +288,18 @@ def print_report(res: Dict) -> None:
         bm, om = d["base"]["mae"], d["opportunity"]["mae"]
         print(f"  {pos}: n={d['n']:<4} MAE {bm} -> {om} ({(bm-om)/bm*100:+.1f}%)  "
               f"Spearman {d['base']['spearman']} -> {d['opportunity']['spearman']}")
+
+    we = res.get("weather_effect", {})
+    print("\nWeather (wind) effect on passing (QB/WR/TE) in windy outdoor games "
+          f"[wind>=15 mph, n={we.get('n_windy_passing', 0)} of "
+          f"{we.get('n_with_wind_data', 0)} with wind data]:")
+    if we.get("n_windy_passing") and "base" in we:
+        b_, w_ = we["base"], we["weather"]
+        verdict = ("weather HELPS here" if w_["mae"] < b_["mae"] else "weather does NOT help — keep it out of projections")
+        print(f"  base    MAE={b_['mae']} Spearman={b_['spearman']}")
+        print(f"  weather MAE={w_['mae']} Spearman={w_['spearman']}   [{verdict}]")
+    else:
+        print("  (no windy-passing samples in range)")
 
     print("\nMatchup-strength tuning (effective_mult = 1 + s·(mult−1)):")
     for t in res["tuning"]["sweep"]:

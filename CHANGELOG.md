@@ -44,10 +44,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Open-Meteo** (free, no API key) using static stadium coordinates + dome
   flags, and flags passing/kicking/running impact (wind ≥15 mph fades passing;
   kickers hit hardest; dome games neutral), worst-weather-first. Ships a
-  reusable `weather_multiplier` heuristic. Deliberately **not** wired into the
-  projection engine yet — per the project's backtest-before-trust philosophy,
-  the weather factor should earn its place in `environment_multiplier` via a
-  backtest first. Live-verified against Open-Meteo.
+  reusable `weather_multiplier` heuristic. Live-verified against Open-Meteo.
+- **Weather backtested and wired opt-in.** Added a `weather` model to
+  `evals/backtest` (joins nflverse per-game recorded wind/roof to each
+  player-week) to answer whether wind actually improves projections. Finding on
+  2024: on the full slate the effect is within noise (MAE 5.783 → 5.782), but on
+  the subset where it applies — passing (QB/WR/TE) in windy outdoor games,
+  wind ≥ 15 mph, n=90 — it helps directionally (MAE 5.138 → 5.115, Spearman
+  0.4938 → 0.4963). So the weather factor is **opt-in, not always-on**:
+  `project_player`/`project_players` apply it only when the caller supplies
+  `wind_mph`/`is_dome` (e.g. from `get_weather_forecast`), reported as
+  `breakdown.weather_mult`. Small and rare, but real where it bites — and it
+  never hurts.
 - **Streaming planner** (`nfl_mcp/streaming_tools.py`) — new MCP tool
   `get_streaming_options` ranks weekly streaming options per position over the
   next 1-4 weeks: QB/RB/WR/TE by opponent defense-vs-position ease, **DST by

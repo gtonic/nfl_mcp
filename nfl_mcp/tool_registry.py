@@ -1146,6 +1146,8 @@ async def project_player(
     superflex: bool = False,
     season: Optional[int] = None,
     week: Optional[int] = None,
+    wind_mph: Optional[float] = None,
+    is_dome: bool = False,
 ) -> dict:
     """Project weekly fantasy points for one player (transparent, no scraping).
 
@@ -1172,7 +1174,7 @@ async def project_player(
         player_name=player_name, position=position.upper(), team=team.upper(),
         opponent=opponent.upper(), snap_percentage=snap_percentage, usage_trend=usage_trend,
         injury_status=injury_status, scoring=scoring, superflex=superflex,
-        season=season, week=week, db=get_db(),
+        season=season, week=week, wind_mph=wind_mph, is_dome=is_dome, db=get_db(),
     )
 
 

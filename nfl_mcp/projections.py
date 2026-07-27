@@ -25,6 +25,7 @@ from .errors import ErrorType, create_error_response, create_success_response, h
 from .matchup_tools import get_defense_analyzer
 from .player_values import get_values_service, scoring_to_ppr
 from .vegas_tools import get_vegas_analyzer
+from .weather_tools import weather_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,17 @@ class ProjectionEngine:
         )
         inj_mult = _injury_mult(injury.get("status"))
 
-        projected = round(base * matchup_mult * env_mult * usage_mult * inj_mult, 1)
+        # 6) Weather (opt-in): only applied when the caller supplies wind/roof
+        #    (e.g. from get_weather_forecast). The backtest shows the effect is
+        #    small and rare — real in windy games, ~noise otherwise — so it is
+        #    deliberately not always-on. Neutral (1.0) when no weather given.
+        weather = player.get("weather") or {}
+        weather_mult = weather_multiplier(
+            position, weather.get("wind_mph") or 0.0, weather.get("precip_in") or 0.0,
+            weather.get("temp_f"), bool(weather.get("is_dome")),
+        ) if weather else 1.0
+
+        projected = round(base * matchup_mult * env_mult * usage_mult * weather_mult * inj_mult, 1)
         vol = _VOLATILITY.get(position, 0.35)
         if inj_mult == 0.0:
             floor = ceiling = 0.0
@@ -213,6 +224,7 @@ class ProjectionEngine:
                 "matchup_mult": round(matchup_mult, 3),
                 "environment_mult": round(env_mult, 3),
                 "usage_mult": round(usage_mult, 3),
+                "weather_mult": round(weather_mult, 3),
                 "injury_mult": round(inj_mult, 3),
             },
             "value_source": (
@@ -323,13 +335,17 @@ async def project_player(
     superflex: bool = False,
     season: Optional[int] = None,
     week: Optional[int] = None,
+    wind_mph: Optional[float] = None,
+    is_dome: bool = False,
     db=None,
 ) -> Dict:
     """Project weekly fantasy points for a single player.
 
     Pass season + week (week > 1) to use the opportunity-based baseline (trailing
     nflverse volume, backtested to beat rank-bucket PPG); omit either to use the
-    positional-rank baseline.
+    positional-rank baseline. Optionally pass wind_mph / is_dome (e.g. from
+    get_weather_forecast) to apply the weather factor — small but real in windy
+    games; neutral otherwise.
 
     Returns: {projection: {projected_points, floor, ceiling, confidence, breakdown, ...}}
     """
@@ -338,6 +354,8 @@ async def project_player(
         "usage": {"snap_percentage": snap_percentage, "usage_trend": usage_trend},
         "injury": {"status": injury_status},
     }
+    if wind_mph is not None or is_dome:
+        player["weather"] = {"wind_mph": wind_mph, "is_dome": is_dome}
     engine = get_projection_engine(db)
     result = await engine.project_many([player], scoring=scoring, superflex=superflex,
                                        season=season, week=week)
