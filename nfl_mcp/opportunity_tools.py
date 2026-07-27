@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 from io import StringIO
 from typing import Dict, List, Optional
 
@@ -87,6 +88,44 @@ async def _fetch_game_logs(season: int) -> Dict[str, Dict]:
 def _match(entry: Dict, query: str) -> bool:
     q = query.strip().lower()
     return q == entry["player_id"].lower() or q in (entry["name"] or "").lower()
+
+
+_SUFFIX_RE = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b")
+
+
+def norm_name(s: Optional[str]) -> str:
+    """Normalize a player name for cross-source matching (nflverse ↔ league)."""
+    s = (s or "").lower()
+    s = re.sub(r"[.',]", "", s)
+    s = _SUFFIX_RE.sub("", s)
+    return " ".join(s.split())
+
+
+def build_name_index(logs: Dict[str, Dict]) -> Dict[str, Dict]:
+    """Index game logs by normalized player name for O(1) projection lookup."""
+    return {norm_name(e["name"]): e for e in logs.values()}
+
+
+def opportunity_base_for(
+    name_index: Dict[str, Dict],
+    name: str,
+    position: str,
+    week: int,
+    lookback: int = opportunity.DEFAULT_LOOKBACK,
+    min_games: int = 2,
+) -> Optional[float]:
+    """Opportunity projection for a player (by name) usable as a projection base.
+
+    Returns None when the player isn't found, the position isn't a skill/QB
+    position, or there aren't enough prior games — callers then fall back.
+    """
+    entry = name_index.get(norm_name(name))
+    if not entry or (position or "").upper() not in opportunity.OPPORTUNITY_POSITIONS:
+        return None
+    prior = [g for g in entry["games"] if g["week"] < week]
+    if len(prior) < min_games:
+        return None
+    return opportunity.project_opportunity(prior, position, lookback=lookback)
 
 
 def _project_entry(entry: Dict, week: int, lookback: int, min_games: int) -> Optional[Dict]:
