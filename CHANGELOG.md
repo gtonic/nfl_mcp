@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Win-probability lineup optimizer** (`nfl_mcp/win_probability.py` + new MCP
+  tool `get_win_probability_lineup`) — optimizes **P(beating a specific
+  opponent)** instead of E[points], the biggest strategic edge left in
+  season-long fantasy. Each player is a `Normal(mean, sd)` (sd from the
+  floor/ceiling band or position volatility); team totals combine so
+  `P(win) = Φ(Δmean / √Σvar)` (exact). Lineup selection maximizes P(win) via
+  local search over bench swaps, which **automatically recommends the ceiling
+  lineup when you're the underdog and the floor lineup when you're favored**, and
+  reports the win-probability gain over the points-optimal lineup. Composes with
+  `project_players`. (Independent players for now — QB/WR stacking correlation is
+  a future refinement.)
 - **Opportunity-based projection baseline** (`nfl_mcp/opportunity.py` + new MCP
   tool `get_opportunity_projections`) — projects next-week PPR points from
   recency-weighted trailing **volume** (targets/carries; QB pass attempts) ×

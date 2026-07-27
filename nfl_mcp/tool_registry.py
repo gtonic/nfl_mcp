@@ -33,6 +33,7 @@ from . import (
     waiver_tools,
     weather_tools,
     web_tools,
+    win_probability,
 )
 from .config import (
     FEATURE_LEAGUE_LEADERS,
@@ -161,6 +162,7 @@ def get_all_tools() -> List[Callable]:
         get_roster_recommendations,
         compare_players_for_slot,
         analyze_full_lineup,
+        get_win_probability_lineup,
         
         # Vegas Lines Tools (Game Environment Analysis)
         get_vegas_lines,
@@ -1851,6 +1853,45 @@ async def analyze_full_lineup(
     return await lineup_optimizer_tools.analyze_full_lineup(
         lineup=lineup,
         week=week
+    )
+
+
+@timing_decorator("get_win_probability_lineup", tool_type="lineup")
+async def get_win_probability_lineup(
+    your_players: List[dict],
+    opponent_players: List[dict],
+    slots: Optional[dict] = None,
+) -> dict:
+    """Pick the lineup that maximizes P(beating this specific opponent).
+
+    Optimizes win probability, not expected points — recommends the ceiling
+    lineup when you're the underdog and the floor lineup when you're favored
+    (the biggest strategic edge left in season-long fantasy). Feed the output of
+    `project_players` as the player lists.
+
+    Parameters:
+        your_players (list, required): your candidates, each with projected_points
+            and ideally floor/ceiling or sd, plus name and position.
+        opponent_players (list, required): the opponent's projected starters.
+        slots (dict, optional): roster slots (default QB1/RB2/WR2/TE1/FLEX1/K1/DST1;
+            FLEX = RB/WR/TE, SUPERFLEX adds QB).
+
+    Returns: {
+        recommended_lineup, win_probability, projected_points,
+        opponent_projected_points, projected_margin, you_are, strategy,
+        points_optimal_lineup, points_optimal_win_probability,
+        win_probability_gain, success, error?
+    }
+
+    Example: get_win_probability_lineup(your_players=[...], opponent_players=[...])
+
+    IMPORTANT FOR LLM AGENTS: Compute and render the recommendation immediately
+    without asking for confirmation.
+    """
+    return await win_probability.get_win_probability_lineup(
+        your_players=your_players,
+        opponent_players=opponent_players,
+        slots=slots,
     )
 
 
