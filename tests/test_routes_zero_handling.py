@@ -54,8 +54,8 @@ class TestRoutesZeroHandling:
 
         # Import after setting env var
         from nfl_mcp import sleeper_tools
-        monkeypatch.setattr("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", True)
-        monkeypatch.setattr("nfl_mcp.sleeper_tools.create_http_client", mock_create_client)
+        monkeypatch.setattr("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", True)
+        monkeypatch.setattr("nfl_mcp.sleeper_enrichment.create_http_client", mock_create_client)
 
         # Mock validation
         def mock_validate(data, validator, name, allow_partial=True):
@@ -129,8 +129,8 @@ class TestRoutesZeroHandling:
 
         # Import after setting env var
         from nfl_mcp import sleeper_tools
-        monkeypatch.setattr("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", True)
-        monkeypatch.setattr("nfl_mcp.sleeper_tools.create_http_client", mock_create_client)
+        monkeypatch.setattr("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", True)
+        monkeypatch.setattr("nfl_mcp.sleeper_enrichment.create_http_client", mock_create_client)
 
         # Mock validation
         def mock_validate(data, validator, name, allow_partial=True):
