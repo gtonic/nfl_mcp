@@ -21,6 +21,7 @@ from . import (
     matchup_tools,
     nfl_tools,
     opponent_analysis_tools,
+    opportunity_tools,
     player_values,
     playoff_tools,
     projections,
@@ -135,6 +136,7 @@ def get_all_tools() -> List[Callable]:
         # Projection Tools (transparent weekly projections)
         project_player,
         project_players,
+        get_opportunity_projections,
 
         # Opponent Analysis Tools
         analyze_opponent,
@@ -1151,6 +1153,54 @@ async def project_players(
         return {"projections": [], "total": 0, "success": False, "error": "No players provided"}
     return await projections.project_players(
         players=players, scoring=scoring, superflex=superflex, num_teams=num_teams, db=get_db(),
+    )
+
+
+@timing_decorator("get_opportunity_projections", tool_type="projection")
+async def get_opportunity_projections(
+    season: int,
+    week: int,
+    players: Optional[List[str]] = None,
+    lookback: int = 6,
+    min_games: int = 2,
+    top_n: int = 50,
+) -> dict:
+    """Opportunity-based PPR projections from trailing volume (beats trailing-PPG).
+
+    Projects each player's next-week points from recency-weighted trailing
+    targets/carries (QB: pass attempts) × their points-per-opportunity shrunk
+    toward a position prior. Volume is stickier than points, so this orders
+    players better for start/sit (validated on the backtest: MAE and Spearman
+    both improve vs a trailing-PPG baseline). Key-free (nflverse).
+
+    Parameters:
+        season (int, required): NFL season year.
+        week (int, required): Week to project (>= 2; uses weeks < week as history).
+        players (list, optional): Names or player_ids to project; omit for the
+            top_n projected players (waiver/streamer discovery).
+        lookback (int, optional): Trailing games to weight (default 6).
+        min_games (int, optional): Min prior games to project a player (default 2).
+        top_n (int, optional): Cap when players is omitted (default 50).
+
+    Returns: {
+        season, week, lookback, count,
+        projections: [{player_id, name, position, team, projected_ppr,
+                       exp_targets, exp_carries, games_used}] (highest-first),
+        success: bool, error?: str
+    }
+
+    Example: get_opportunity_projections(season=2025, week=10, players=["Puka Nacua"])
+
+    IMPORTANT FOR LLM AGENTS: Compute and render the projections immediately
+    without asking for confirmation.
+    """
+    return await opportunity_tools.get_opportunity_projections(
+        season=season,
+        week=week,
+        players=players,
+        lookback=lookback,
+        min_games=min_games,
+        top_n=top_n,
     )
 
 

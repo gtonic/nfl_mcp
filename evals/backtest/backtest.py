@@ -41,6 +41,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional
 
 from nfl_mcp.matchup_tools import _get_matchup_tier
+from nfl_mcp.opportunity import project_opportunity
 
 # Import the LIVE constants so the backtest evaluates production behaviour.
 from nfl_mcp.projections import _MATCHUP_TIER_DEV, _usage_mult, matchup_multiplier
@@ -130,10 +131,16 @@ def build_samples(
         tier_dev = _MATCHUP_TIER_DEV.get(tier, 0.0)        # raw ±dev for sweeps
         u_mult = _usage_mult(None, _touch_trend(prior))
 
+        # Opportunity-based baseline (volume × shrunk efficiency), leak-free.
+        opp = project_opportunity(prior, r["position"])
+        if opp is None:
+            opp = trailing
+
         samples.append({
             "position": r["position"],
             "actual": r["ppr"],
             "base": trailing,
+            "opportunity": opp,
             "matchup": trailing * m_mult,
             "usage": trailing * u_mult,
             "full": trailing * m_mult * u_mult,
@@ -158,10 +165,10 @@ def run_backtest(
 
     samples = build_samples(records, start_week, min_prior, min_trailing, positions)
 
-    models = ["base", "matchup", "usage", "full"]
+    models = ["base", "opportunity", "matchup", "usage", "full"]
     results = {m: evaluate(*_series(samples, m)) for m in models}
 
-    # Per-position breakdown for base vs full.
+    # Per-position breakdown: base (trailing PPG) vs opportunity vs full.
     per_pos: Dict[str, Dict] = {}
     for pos in ("QB", "RB", "WR", "TE"):
         sub = [s for s in samples if s["position"] == pos]
@@ -170,6 +177,7 @@ def run_backtest(
         per_pos[pos] = {
             "n": len(sub),
             "base": evaluate(*_series(sub, "base")),
+            "opportunity": evaluate(*_series(sub, "opportunity")),
             "full": evaluate(*_series(sub, "full")),
         }
 
@@ -229,8 +237,8 @@ def print_report(res: Dict) -> None:
     print(f"PROJECTION BACKTEST — seasons {res['seasons']}, weeks {res['start_week']}+, "
           f"trailing≥{res['min_trailing']} pts, n={res['n_samples']} player-weeks")
     print("=" * 78)
-    print("\nModels (base = trailing PPG; then × live multipliers):")
-    for name in ("base", "matchup", "usage", "full"):
+    print("\nModels (base = trailing PPG; opportunity = volume×shrunk-efficiency):")
+    for name in ("base", "opportunity", "matchup", "usage", "full"):
         print(_fmt_row(name, res["models"][name]))
 
     b, f = res["models"]["base"]["mae"], res["models"]["full"]["mae"]
@@ -238,11 +246,18 @@ def print_report(res: Dict) -> None:
     verdict = ("adjustments HELP" if f < b else "adjustments do NOT help — revisit")
     print(f"\n  => full vs base: MAE {b} -> {f} ({delta:+.1f}%)  [{verdict}]")
 
-    print("\nPer position (base MAE -> full MAE):")
+    o = res["models"]["opportunity"]
+    bs, os_ = res["models"]["base"]["spearman"], o["spearman"]
+    od = (b - o["mae"]) / b * 100 if b else 0
+    ov = ("opportunity HELPS" if o["mae"] < b else "opportunity does NOT help — revisit")
+    print(f"  => opportunity vs base: MAE {b} -> {o['mae']} ({od:+.1f}%), "
+          f"Spearman {bs} -> {os_}  [{ov}]")
+
+    print("\nPer position (base -> opportunity, MAE & Spearman):")
     for pos, d in res["per_position"].items():
-        bm, fm = d["base"]["mae"], d["full"]["mae"]
-        print(f"  {pos}: n={d['n']:<4} {bm} -> {fm} ({(bm-fm)/bm*100:+.1f}%)  "
-              f"Spearman {d['base']['spearman']} -> {d['full']['spearman']}")
+        bm, om = d["base"]["mae"], d["opportunity"]["mae"]
+        print(f"  {pos}: n={d['n']:<4} MAE {bm} -> {om} ({(bm-om)/bm*100:+.1f}%)  "
+              f"Spearman {d['base']['spearman']} -> {d['opportunity']['spearman']}")
 
     print("\nMatchup-strength tuning (effective_mult = 1 + s·(mult−1)):")
     for t in res["tuning"]["sweep"]:

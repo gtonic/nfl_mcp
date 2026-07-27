@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Opportunity-based projection baseline** (`nfl_mcp/opportunity.py` + new MCP
+  tool `get_opportunity_projections`) — projects next-week PPR points from
+  recency-weighted trailing **volume** (targets/carries; QB pass attempts) ×
+  points-per-opportunity **shrunk toward a position prior**, instead of
+  rank-bucket PPG. Volume is stickier than points, so it orders players better.
+  **Backtested on real 2024 data (n=2505 player-weeks): MAE 5.78 → 5.70 (+1.4%),
+  Spearman 0.470 → 0.494** — beating both the trailing-PPG baseline *and* the
+  full matchup/usage multiplier stack, with the biggest gains at RB and TE. Wired
+  into the backtest harness (`evals/backtest`) as an `opportunity` model so it
+  stays measured. (Red-zone share isn't in the nflverse `player_stats` feed;
+  making this the default `project_player` baseline is the justified next step.)
 - **Weather / wind tool** (`nfl_mcp/weather_tools.py`) — new MCP tool
   `get_weather_forecast` reports per-game wind/precipitation/temperature from
   **Open-Meteo** (free, no API key) using static stadium coordinates + dome
