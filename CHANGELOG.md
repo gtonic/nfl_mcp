@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Pinned dependency lockfile for reproducible Docker builds** — added
+  `requirements.lock` (228 fully-pinned transitive deps, generated via
+  `uv pip compile requirements.txt --python-version 3.11`). The Dockerfile now
+  installs from the lockfile instead of the floor-pinned `requirements.txt`, so
+  image builds are deterministic. Regenerate with the command in the lockfile
+  header when bumping `requirements.txt`.
+- **Ruff linting with a CI gate** — added `[tool.ruff]` config (rule families
+  `F`/`B`/`I`) and a `lint` job to CI that blocks the Docker build. This freezes
+  the current quality: unused imports, undefined names, real bug patterns and
+  import order now fail CI. The initial pass auto-removed ~150 unused imports and
+  sorted imports across the codebase. Higher-volume stylistic debt (blind-except
+  `BLE001`, `try/except/pass`, line length, whitespace, annotation style) is
+  intentionally deferred to a follow-up cleanup so the gate lands green; a
+  type-checker (mypy/pyright) is the planned next step.
+- **`live` pytest marker** — tests that hit real external APIs (Sleeper/ESPN) are
+  tagged `@pytest.mark.live` and skipped by default (opt in with `--run-live`,
+  wired via `tests/conftest.py`). The unit suite now runs fully offline and
+  deterministically; the same guarantees are covered by the data-source
+  contracts watchdog under `evals/`.
+
+### Fixed
+- **Package `authors` metadata** — replaced the `nfl@example.com` placeholder
+  with the real maintainer (`gtonic <tom.geiger@alp54.com>`).
+- **`get_draft_picks` silently returned un-enriched picks** — a duplicate,
+  non-enriching definition later in `sleeper_tools.py` shadowed the intended
+  enriched implementation (Python keeps the last definition), so callers never
+  got the additive `player_enriched` field. Surfaced by the new lint gate
+  (`F811`); removed the duplicate so enrichment is active again.
+- **`requires-python` now correctly declares `>=3.11`** — the package imports
+  `datetime.UTC` (Python 3.11+) across ~9 modules and `tomllib` in `health.py`,
+  so it never actually ran on 3.10 despite `pyproject.toml` advertising `>=3.10`.
+  CI only tests 3.11/3.12, so the mismatch went unnoticed. Dropped the stale
+  `Programming Language :: Python :: 3.10` classifier; README badge, CI matrix
+  and Dockerfile (`python:3.11-slim`) were already on 3.11.
+
+### Security
+- **SSRF hardening for `crawl_url`** — the only tool fetching arbitrary,
+  caller-supplied URLs previously validated the scheme only. It now resolves
+  the host and refuses any request to a loopback, private, link-local (incl.
+  the `169.254.169.254` cloud-metadata endpoint), multicast, reserved or
+  otherwise non-global address, normalizing decimal/octal/IPv6/IPv4-mapped IP
+  literals. Redirects are followed manually (max 5 hops) with **every hop
+  re-validated**, closing the redirect-into-private-network bypass. An
+  intentional `NFL_MCP_ALLOW_PRIVATE_URLS` opt-in is available for trusted,
+  isolated deployments. `validate_url_enhanced()` now uses the same
+  `ipaddress`-based check for IP literals instead of brittle string prefixes.
+  See [SECURITY.md](SECURITY.md) for the residual DNS-rebinding note and the
+  network-exposure/authentication guidance.
+
 ## [0.6.0] - 2026-07-26
 
 ### Fixed
