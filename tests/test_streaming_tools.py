@@ -7,6 +7,7 @@ from nfl_mcp import matchup_tools
 from nfl_mcp.streaming_tools import (
     _resolve_offense,
     _strength_score,
+    _unit_availability,
     compute_streaming_scores,
     get_streaming_options,
 )
@@ -28,14 +29,18 @@ def _offense(entries):
 
 
 class _StubDB:
-    def __init__(self, schedule):
+    def __init__(self, schedule, athletes_by_team=None):
         self._schedule = schedule
+        self._athletes = athletes_by_team or {}
 
     def get_opponent(self, season, week, team):
         return self._schedule.get((season, week, team))
 
     def upsert_schedule_games(self, games):
         return len(games)
+
+    def get_athletes_by_team(self, team):
+        return self._athletes.get(team, [])
 
 
 class _StubAnalyzer:
@@ -209,3 +214,51 @@ class TestGetStreamingOptions:
             bad_ahead = await get_streaming_options(season=2026, start_week=10, weeks_ahead=9)
         assert bad_week["success"] is False and "start_week" in bad_week["error"]
         assert bad_ahead["success"] is False and "weeks_ahead" in bad_ahead["error"]
+
+
+class TestStreamingAvailability:
+    def test_unit_availability_dst_maps_to_team_abbrev(self):
+        free = _unit_availability("DST", "SF", rostered=set(), db=None)
+        assert free["status"] == "free_agent" and free["has_free_agent"] is True
+        taken = _unit_availability("DST", "SF", rostered={"SF"}, db=None)
+        assert taken["status"] == "rostered" and taken["has_free_agent"] is False
+
+    def test_unit_availability_kicker_from_athletes(self):
+        db = _StubDB({}, athletes_by_team={"SF": [
+            {"id": "k1", "full_name": "The Kicker", "position": "K"},
+            {"id": "wr9", "full_name": "A Receiver", "position": "WR"},  # ignored for K
+        ]})
+        avail = _unit_availability("K", "SF", rostered=set(), db=db)
+        assert avail["has_free_agent"] is True
+        assert [p["name"] for p in avail["players"]] == ["The Kicker"]
+        assert _unit_availability("K", "SF", rostered={"k1"}, db=db)["has_free_agent"] is False
+
+    @pytest.mark.asyncio
+    async def test_tool_annotates_and_filters_dst_availability(self):
+        def_by_season = {2026: _def_rankings({"QB": [("KC", 32, False), ("SF", 1, False)]})}
+        schedule = {(2026, 10, "BUF"): "KC", (2026, 10, "MIA"): "SF"}
+        analyzer = _StubAnalyzer(def_by_season, db=_StubDB(schedule))
+        offense = _offense({"KC": 1, "SF": 30, "BUF": 5, "MIA": 20})
+
+        async def fake_offense(season):
+            return offense if season == 2026 else {}
+
+        rosters = {"rosters": [{"roster_id": 1, "players": ["BUF"]}]}  # BUF DST taken, MIA free
+        with patch("nfl_mcp.matchup_tools.get_defense_analyzer", return_value=analyzer), \
+                patch("nfl_mcp.matchup_tools.fetch_offense_rankings", side_effect=fake_offense), \
+                patch("nfl_mcp.sleeper_tools.get_rosters", new=AsyncMock(return_value=rosters)):
+            annotated = await get_streaming_options(
+                season=2026, start_week=10, weeks_ahead=1, positions=["DST"], league_id="123"
+            )
+            filtered = await get_streaming_options(
+                season=2026, start_week=10, weeks_ahead=1, positions=["DST"],
+                league_id="123", only_available=True,
+            )
+
+        assert annotated["availability_active"] is True
+        by_team = {r["team"]: r for r in annotated["streaming_options"]["DST"]}
+        assert by_team["MIA"]["availability"]["status"] == "free_agent"
+        assert by_team["BUF"]["availability"]["status"] == "rostered"
+
+        teams = {r["team"] for r in filtered["streaming_options"]["DST"]}
+        assert "MIA" in teams and "BUF" not in teams   # only_available dropped the rostered DST

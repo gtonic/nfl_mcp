@@ -1540,6 +1540,8 @@ async def get_streaming_options(
     positions: Optional[List[str]] = None,
     strength_season: Optional[int] = None,
     top_n: int = 8,
+    league_id: Optional[str] = None,
+    only_available: bool = False,
 ) -> dict:
     """Rank weekly streaming options per position over the next 1-4 weeks.
 
@@ -1549,6 +1551,10 @@ async def get_streaming_options(
     schedule-based and key-free: QB/RB/WR/TE = softer opponent defense; DST =
     weaker opponent offense; K = stronger own offense.
 
+    Pass `league_id` to annotate each option with free-agent availability (clean
+    for DST; K/QB/TE/RB/WR list the team's players at that position), and
+    `only_available=True` to keep only options with a free-agent streamer.
+
     Parameters:
         season (int, required): NFL season year.
         start_week (int, required): First week of the window (1-18).
@@ -1556,17 +1562,19 @@ async def get_streaming_options(
         positions (list, optional): Positions to plan (default QB/TE/DST/K).
         strength_season (int, optional): Rankings-prior season (default auto).
         top_n (int, optional): Max options per position (default 8; 0 = all).
+        league_id (str, optional): Sleeper league id for free-agent availability.
+        only_available (bool, optional): keep only free-agent-available options.
 
     Returns: {
         season, weeks, positions,
         defense_source_season, defense_is_fallback,
-        offense_source_season, offense_is_fallback,
-        streaming_options: {pos: [teams best-first with stream_rank/stream_score/weeks]},
+        offense_source_season, offense_is_fallback, availability_active,
+        streaming_options: {pos: [teams best-first with stream_rank/stream_score/weeks/availability]},
         notes: [str], success: bool, error?: str
     }
 
-    Example: get_streaming_options(season=2026, start_week=10, weeks_ahead=3,
-                                   positions=["DST", "K"])
+    Example: get_streaming_options(season=2026, start_week=10, positions=["DST", "K"],
+                                   league_id="123456789", only_available=True)
 
     IMPORTANT FOR LLM AGENTS: Compute and render the full ranking immediately
     without asking for confirmation.
@@ -1578,6 +1586,8 @@ async def get_streaming_options(
         positions=positions,
         strength_season=strength_season,
         top_n=top_n,
+        league_id=league_id,
+        only_available=only_available,
     )
 
 
