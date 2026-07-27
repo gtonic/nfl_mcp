@@ -1,5 +1,6 @@
-# Use Python 3.11 slim image as base
-FROM python:3.11-slim
+# Use Python 3.13 slim image as base (bumped from 3.11 to clear the CPython
+# stdlib CVEs the image scanner flagged, which are fixed only in 3.13+).
+FROM python:3.13-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -9,19 +10,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies. `apt-get upgrade` pulls the latest Debian
+# security patches (glibc/ncurses/sqlite/zlib/... CVEs). `curl` is intentionally
+# NOT installed — the health check uses Python's stdlib instead, so the image
+# carries no curl/libcurl. gcc is only needed to build C-extension wheels.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        gcc \
-        curl \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends gcc \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the pinned lockfile and install exact, reproducible dependencies.
 # requirements.lock is generated from requirements.txt via:
-#   uv pip compile requirements.txt --python-version 3.11 --output-file requirements.lock
+#   uv pip compile requirements.txt --python-version 3.13 --output-file requirements.lock
 COPY requirements.lock .
-RUN pip install --no-cache-dir --upgrade pip \
+# Upgrade the bundled build tooling too (wheel/setuptools) — the base image ships
+# older versions flagged by image scanners (e.g. wheel GHSA-8rrh-rw8j-w5fx).
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements.lock
 
 # Copy project files
@@ -38,9 +43,9 @@ USER app
 # Expose the port
 EXPOSE 9000
 
-# Health check
+# Health check (Python stdlib — avoids depending on curl in the image)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9000/health || exit 1
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9000/health', timeout=5).status == 200 else 1)" || exit 1
 
 # Run the server
 CMD ["python", "-m", "nfl_mcp.server"]

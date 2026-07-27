@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-07-27
+
 ### Changed
 - **Started splitting the `sleeper_tools.py` monolith — enrichment layer
   extracted.** Moved the ~1,000-line enrichment/data-fetch layer (schedule,
@@ -41,6 +43,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collided with the `error_type=` keyword (`TypeError: got multiple values`).
   The branch was never exercised until the split's tests hit it. Fixed (pass
   `data=`) and added a regression test.
+
+### Security
+- **Container-image hardening (CVE reduction).** The Docker build now runs
+  `apt-get upgrade` to pull Debian security patches (glibc/ncurses/sqlite/zlib/…),
+  upgrades the bundled pip build tooling (`wheel`/`setuptools` — clears the
+  `wheel` advisory), and **drops `curl` from the image** (the health check now
+  uses Python's stdlib), removing the curl/libcurl findings. `requirements.lock`
+  already pins a fixed `jaraco-context` (6.1.2).
+- **Docker base bumped to `python:3.13-slim`** (from 3.11-slim) to clear the
+  CPython stdlib CVEs the scanner flagged (fixed only in 3.13+). `requirements.lock`
+  was regenerated for 3.13 (drops the 3.11-only backports), and the CI test matrix
+  now includes **3.13** so the container's runtime is actually tested. The app
+  still supports 3.11+ (`requires-python >=3.11`). Remaining image findings are
+  Debian packages still "under upstream investigation" — mitigated by rebuilding
+  regularly.
 
 ## [0.6.5] - 2026-07-27
 

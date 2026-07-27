@@ -22,7 +22,7 @@ pip install -e ".[dev]"
 ```
 
 For reproducible installs, `requirements.lock` pins every transitive dependency
-(generated with `uv pip compile requirements.txt --python-version 3.11`); the
+(generated with `uv pip compile requirements.txt --python-version 3.13`); the
 Docker image installs from it.
 
 ## Running the server
