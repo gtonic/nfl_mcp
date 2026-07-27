@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Streaming planner** (`nfl_mcp/streaming_tools.py`) — new MCP tool
+  `get_streaming_options` ranks weekly streaming options per position over the
+  next 1-4 weeks: QB/RB/WR/TE by opponent defense-vs-position ease, **DST by
+  opponent-offense weakness**, **K by own-offense strength**. Schedule-based and
+  key-free. Adds `matchup_tools.fetch_offense_rankings` (nflverse points-scored
+  per team, mirror of the defense rankings) to power the DST/K signals, with the
+  same prior-season fallback (`offense_source_season` / `*_is_fallback`).
+  Verified end-to-end against real 2025 data (Lions the #1 K stream, as
+  expected). K improves further once the weather/wind factor lands.
 - **Strength-of-schedule tools** (`nfl_mcp/sos_tools.py`) — new MCP tools
   `get_strength_of_schedule` (arbitrary week range) and `get_playoff_sos`
   (fantasy weeks 15-17) that rank NFL teams by schedule difficulty per position
