@@ -67,6 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contracts watchdog under `evals/`.
 
 ### Changed
+- **`project_player`/`project_players` default to the opportunity baseline** when
+  `season` + `week` are supplied — the backtested opportunity projection
+  (trailing nflverse volume × shrunk efficiency) replaces rank-bucket PPG as the
+  base. The usage multiplier is skipped in that path (volume trend is already in
+  the base) while matchup / environment / injury still apply. Players without
+  enough nflverse history (rookies, preseason, K/DST) and calls that omit
+  season/week transparently fall back to the rank-bucket baseline — fully
+  backward compatible. The breakdown now reports `base_source`. This wires the
+  measured EV win (PR #116) into the tools start/sit and lineups already use.
 - **Docs split** — the README was slimmed from a ~58 KB monolith to a concise,
   feature-oriented overview (~140 lines) with a complete grouped catalog of all
   registered tools (including the new SOS / streaming / weather tools). Setup,

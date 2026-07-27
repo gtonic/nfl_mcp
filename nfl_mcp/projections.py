@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
+from . import opportunity_tools
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .matchup_tools import get_defense_analyzer
 from .player_values import get_values_service, scoring_to_ppr
@@ -118,7 +119,10 @@ class ProjectionEngine:
         self.defense = get_defense_analyzer()
         self.vegas = get_vegas_analyzer()
 
-    def _project_one(self, player: Dict, values_index: Dict, rankings: Dict, lines: Dict) -> Dict:
+    def _project_one(
+        self, player: Dict, values_index: Dict, rankings: Dict, lines: Dict,
+        opp_index: Optional[Dict] = None, week: Optional[int] = None,
+    ) -> Dict:
         name = player.get("name") or player.get("player_name")
         position = (player.get("position") or "").upper()
         team = (player.get("team") or "").upper()
@@ -127,10 +131,18 @@ class ProjectionEngine:
         usage = player.get("usage") or {}
         injury = player.get("injury") or {}
 
-        # 1) Baseline from positional rank (real market data when available)
+        # 1) Baseline. Prefer the opportunity-based projection (backtested to beat
+        #    rank-bucket PPG) when we have this player's trailing nflverse volume;
+        #    otherwise fall back to the positional-rank baseline.
         market = self.values.lookup(values_index, player_id=player_id, name=name, position=position)
         pos_rank = (market or {}).get("position_rank")
         base = base_ppg(position, pos_rank)
+        base_source = "rank_bucket"
+        if opp_index and week and name:
+            opp_base = opportunity_tools.opportunity_base_for(opp_index, name, position, week)
+            if opp_base is not None:
+                base = round(opp_base, 1)
+                base_source = "opportunity"
 
         # 2) Matchup vs opponent defense
         matchup_tier = "unknown"
@@ -155,8 +167,12 @@ class ProjectionEngine:
                 pass
         env_mult = _environment_mult(implied_total, env_is_fallback)
 
-        # 4) Usage & 5) injury
-        usage_mult = _usage_mult(usage.get("snap_percentage"), usage.get("usage_trend"))
+        # 4) Usage & 5) injury. The opportunity base already embeds volume/usage
+        #    trend, so skip the usage multiplier there to avoid double-counting.
+        usage_mult = (
+            1.0 if base_source == "opportunity"
+            else _usage_mult(usage.get("snap_percentage"), usage.get("usage_trend"))
+        )
         inj_mult = _injury_mult(injury.get("status"))
 
         projected = round(base * matchup_mult * env_mult * usage_mult * inj_mult, 1)
@@ -169,11 +185,11 @@ class ProjectionEngine:
 
         # Confidence = how many real signals we had
         conf = 50
-        if market:
+        if market or base_source == "opportunity":
             conf += 20
         if not env_is_fallback:
             conf += 15
-        if usage:
+        if usage or base_source == "opportunity":
             conf += 15
         conf = min(conf, 100)
         conf_level = "high" if conf >= 80 else "medium" if conf >= 60 else "low"
@@ -192,17 +208,22 @@ class ProjectionEngine:
             "implied_total": implied_total,
             "breakdown": {
                 "base_ppg": base,
+                "base_source": base_source,
                 "position_rank": pos_rank,
                 "matchup_mult": round(matchup_mult, 3),
                 "environment_mult": round(env_mult, 3),
                 "usage_mult": round(usage_mult, 3),
                 "injury_mult": round(inj_mult, 3),
             },
-            "value_source": "fantasycalc" if market else "baseline",
+            "value_source": (
+                "opportunity" if base_source == "opportunity"
+                else "fantasycalc" if market else "baseline"
+            ),
         }
 
     async def project_many(
-        self, players: List[Dict], scoring: str = "ppr", superflex: bool = False, num_teams: int = 12
+        self, players: List[Dict], scoring: str = "ppr", superflex: bool = False,
+        num_teams: int = 12, season: Optional[int] = None, week: Optional[int] = None,
     ) -> Dict:
         values_index = await self.values.get_values(
             scoring_to_ppr(scoring), 2 if superflex else 1, num_teams, False
@@ -215,11 +236,27 @@ class ProjectionEngine:
             lines = await self.vegas.fetch_current_lines()
         except Exception:
             lines = {}
-        projections = [self._project_one(p, values_index, rankings, lines) for p in players]
+
+        # Opportunity baseline: fetch this season's trailing volume once and index
+        # by name. Requires season + week (>1); otherwise the rank-bucket baseline
+        # is used (backward compatible).
+        opp_index: Dict = {}
+        if season and week and week > 1:
+            try:
+                logs = await opportunity_tools._fetch_game_logs(season)
+                opp_index = opportunity_tools.build_name_index(logs)
+            except Exception:
+                opp_index = {}
+
+        projections = [
+            self._project_one(p, values_index, rankings, lines, opp_index, week)
+            for p in players
+        ]
         return {
             "projections": projections,
             "values_source": values_index.get("source"),
             "vegas_active": bool(lines),
+            "opportunity_active": bool(opp_index),
         }
 
 
@@ -243,6 +280,8 @@ async def project_players(
     scoring: str = "ppr",
     superflex: bool = False,
     num_teams: int = 12,
+    season: Optional[int] = None,
+    week: Optional[int] = None,
     db=None,
 ) -> Dict:
     """Project weekly fantasy points for multiple players (transparent, no scraping).
@@ -251,13 +290,19 @@ async def project_players(
         players: list of dicts with name, position, team, opponent, and optional
             usage {snap_percentage, usage_trend} and injury {status}.
         scoring/superflex/num_teams: league format for the value baseline.
+        season, week: pass both to use the opportunity-based baseline (trailing
+            nflverse volume, backtested to beat rank-bucket PPG); week must be >1.
+            Omit either to use the positional-rank baseline.
 
     Returns: {projections:[{projected_points, floor, ceiling, confidence, breakdown, ...}]}
     """
     if not players:
         return create_error_response("No players provided", ErrorType.VALIDATION, {"projections": []})
     engine = get_projection_engine(db)
-    result = await engine.project_many(players, scoring=scoring, superflex=superflex, num_teams=num_teams)
+    result = await engine.project_many(
+        players, scoring=scoring, superflex=superflex, num_teams=num_teams,
+        season=season, week=week,
+    )
     return create_success_response({
         **result,
         "total": len(result["projections"]),
@@ -276,9 +321,15 @@ async def project_player(
     injury_status: Optional[str] = None,
     scoring: str = "ppr",
     superflex: bool = False,
+    season: Optional[int] = None,
+    week: Optional[int] = None,
     db=None,
 ) -> Dict:
     """Project weekly fantasy points for a single player.
+
+    Pass season + week (week > 1) to use the opportunity-based baseline (trailing
+    nflverse volume, backtested to beat rank-bucket PPG); omit either to use the
+    positional-rank baseline.
 
     Returns: {projection: {projected_points, floor, ceiling, confidence, breakdown, ...}}
     """
@@ -288,7 +339,8 @@ async def project_player(
         "injury": {"status": injury_status},
     }
     engine = get_projection_engine(db)
-    result = await engine.project_many([player], scoring=scoring, superflex=superflex)
+    result = await engine.project_many([player], scoring=scoring, superflex=superflex,
+                                       season=season, week=week)
     proj = result["projections"][0] if result["projections"] else None
     return create_success_response({
         "projection": proj,

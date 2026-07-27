@@ -1106,16 +1106,21 @@ async def project_player(
     injury_status: Optional[str] = None,
     scoring: str = "ppr",
     superflex: bool = False,
+    season: Optional[int] = None,
+    week: Optional[int] = None,
 ) -> dict:
     """Project weekly fantasy points for one player (transparent, no scraping).
 
-    Combines market-value baseline × matchup × Vegas game environment × usage ×
-    injury into a projection with floor/ceiling, confidence and a full breakdown.
+    Combines a baseline × matchup × Vegas game environment × usage × injury into a
+    projection with floor/ceiling, confidence and a full breakdown. Pass season +
+    week (week > 1) to use the opportunity-based baseline (trailing nflverse
+    volume, backtested to beat rank-bucket PPG); omit either for the rank baseline.
 
     Parameters:
         player_name, position (QB/RB/WR/TE), team, opponent (all required abbreviations).
         snap_percentage (float, optional), usage_trend ("up"/"down", optional),
-        injury_status (optional), scoring ("ppr"/"half-ppr"/"standard"), superflex (bool).
+        injury_status (optional), scoring ("ppr"/"half-ppr"/"standard"), superflex (bool),
+        season (int, optional), week (int, optional) — pass both for opportunity baseline.
     Returns: {projection:{projected_points, floor, ceiling, confidence, breakdown,...}, success}
     """
     try:
@@ -1128,7 +1133,8 @@ async def project_player(
     return await projections.project_player(
         player_name=player_name, position=position.upper(), team=team.upper(),
         opponent=opponent.upper(), snap_percentage=snap_percentage, usage_trend=usage_trend,
-        injury_status=injury_status, scoring=scoring, superflex=superflex, db=get_db(),
+        injury_status=injury_status, scoring=scoring, superflex=superflex,
+        season=season, week=week, db=get_db(),
     )
 
 
@@ -1138,6 +1144,8 @@ async def project_players(
     scoring: str = "ppr",
     superflex: bool = False,
     num_teams: int = 12,
+    season: Optional[int] = None,
+    week: Optional[int] = None,
 ) -> dict:
     """Project weekly fantasy points for multiple players at once.
 
@@ -1145,6 +1153,9 @@ async def project_players(
         players (list, required): dicts with name, position, team, opponent and
             optional usage {snap_percentage, usage_trend} and injury {status}.
         scoring/superflex/num_teams: league format for the value baseline.
+        season (int, optional), week (int, optional): pass both (week > 1) to use
+            the opportunity-based baseline (trailing nflverse volume, backtested to
+            beat rank-bucket PPG); omit either for the positional-rank baseline.
     Returns: {projections:[...], total, success}
 
     IMPORTANT FOR LLM AGENTS: Return projections immediately without asking for confirmation.
@@ -1152,7 +1163,8 @@ async def project_players(
     if not players:
         return {"projections": [], "total": 0, "success": False, "error": "No players provided"}
     return await projections.project_players(
-        players=players, scoring=scoring, superflex=superflex, num_teams=num_teams, db=get_db(),
+        players=players, scoring=scoring, superflex=superflex, num_teams=num_teams,
+        season=season, week=week, db=get_db(),
     )
 
 
