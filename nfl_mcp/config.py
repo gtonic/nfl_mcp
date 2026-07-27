@@ -8,19 +8,21 @@ This module now uses the new ConfigManager for flexible configuration
 while maintaining backward compatibility with existing code.
 """
 
-import re
-import html
-import urllib.parse
-import time
 import asyncio
-from collections import defaultdict, deque
-import httpx
-from typing import Dict, Any, Optional, Union
+import html
+import ipaddress
 import os
+import re
+import socket
+import time
+import urllib.parse
+from collections import defaultdict, deque
+from typing import Any, Dict
+
+import httpx
 
 # Import the new configuration manager
 from .config_manager import get_config_manager
-
 
 # Rate limiting storage (in production, use Redis or similar)
 _rate_limit_storage = defaultdict(lambda: deque())
@@ -328,19 +330,26 @@ def get_http_headers(service_name: str) -> Dict[str, str]:
     }
 
 
-def create_http_client(timeout: httpx.Timeout = None) -> httpx.AsyncClient:
+def create_http_client(
+    timeout: httpx.Timeout = None,
+    follow_redirects: bool = True,
+) -> httpx.AsyncClient:
     """
     Create a configured HTTP client with standard settings.
-    
+
     Args:
         timeout: Optional custom timeout, uses DEFAULT_TIMEOUT if not provided
-        
+        follow_redirects: Whether httpx should transparently follow redirects.
+            Callers that fetch *user-supplied* URLs should pass ``False`` and
+            follow redirects manually so each hop can be re-validated against
+            :func:`is_safe_public_url` (SSRF protection).
+
     Returns:
         Configured httpx.AsyncClient
     """
     return httpx.AsyncClient(
         timeout=timeout or DEFAULT_TIMEOUT,
-        follow_redirects=True
+        follow_redirects=follow_redirects
     )
 
 
@@ -367,8 +376,105 @@ def is_valid_url(url: str) -> bool:
     """
     if not url or not isinstance(url, str):
         return False
-    
+
     return any(url.startswith(scheme) for scheme in ALLOWED_URL_SCHEMES)
+
+
+def allow_private_urls() -> bool:
+    """
+    Whether requests to private / non-public IP ranges are permitted.
+
+    Off by default. Set ``NFL_MCP_ALLOW_PRIVATE_URLS=1`` (or true/yes/on) to
+    opt in — only do this when the server runs in a trusted, isolated network
+    and you intentionally need to crawl internal hosts.
+    """
+    return os.getenv("NFL_MCP_ALLOW_PRIVATE_URLS", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _ip_is_disallowed(ip: "ipaddress._BaseAddress") -> bool:
+    """Return True if an IP address must not be contacted (SSRF protection)."""
+    # Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) to its IPv4 form so the
+    # underlying private/loopback address is inspected rather than the wrapper.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    # Belt-and-suspenders: ``is_global`` semantics have shifted across CPython
+    # releases, so OR the individual special-range flags as well.
+    return (
+        not ip.is_global
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_private
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def resolve_host_addresses(hostname: str) -> list:
+    """
+    Resolve a hostname to the list of unique IP addresses it maps to.
+
+    Wrapped in its own function so it can be mocked in tests without touching
+    the network. Raises ``socket.gaierror`` when resolution fails.
+    """
+    infos = socket.getaddrinfo(hostname, None)
+    return list({info[4][0] for info in infos})
+
+
+def is_safe_public_url(url):
+    """
+    SSRF-hardened URL check used before fetching *user-supplied* URLs.
+
+    Validates the scheme and then resolves the host, blocking the request if
+    any resolved address is loopback, private, link-local (incl. the
+    ``169.254.169.254`` cloud-metadata endpoint), multicast, reserved or
+    otherwise non-global. IP literals (decimal/octal/IPv6 forms are normalized
+    by :mod:`ipaddress`) are checked directly.
+
+    Returns:
+        Tuple ``(ok, reason)`` where ``reason`` is ``None`` when ``ok`` is True
+        and a human-readable block reason otherwise.
+    """
+    if not is_valid_url(url):
+        return False, "URL must start with http:// or https://"
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False, "Malformed URL"
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "URL has no host"
+
+    if allow_private_urls():
+        return True, None
+
+    # If the host is an IP literal, check it directly; otherwise resolve DNS
+    # and check every address it maps to.
+    try:
+        ipaddress.ip_address(hostname)
+        candidates = [hostname]
+    except ValueError:
+        try:
+            candidates = resolve_host_addresses(hostname)
+        except socket.gaierror:
+            return False, f"Could not resolve host: {hostname}"
+        if not candidates:
+            return False, f"Could not resolve host: {hostname}"
+
+    for ip_str in candidates:
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False, f"Invalid resolved address: {ip_str}"
+        if _ip_is_disallowed(ip):
+            return False, f"Blocked non-public address: {ip_str} (host {hostname})"
+
+    return True, None
 
 
 # Parameter Validation Limits - now loaded from ConfigManager
@@ -561,7 +667,7 @@ def validate_numeric_input(value: Any, min_val: int = None, max_val: int = None,
     except (ValueError, TypeError):
         if default is not None:
             return default
-        raise ValueError(f"Cannot convert '{value}' to integer")
+        raise ValueError(f"Cannot convert '{value}' to integer") from None
     
     # Range validation
     if min_val is not None and int_value < min_val:
@@ -660,7 +766,7 @@ def validate_url_enhanced(url: str, allowed_schemes: list = None, allowed_domain
         
         # Check for dangerous patterns
         url_lower = url.lower()
-        for pattern_type, patterns in DANGEROUS_PATTERNS.items():
+        for _pattern_type, patterns in DANGEROUS_PATTERNS.items():
             for pattern in patterns:
                 if re.search(pattern, url_lower):
                     return False
@@ -674,17 +780,22 @@ def validate_url_enhanced(url: str, allowed_schemes: list = None, allowed_domain
             if not domain_allowed:
                 return False
         
-        # Prevent local/private network access
+        # Prevent local/private network access (syntactic / offline check).
+        # This does NOT resolve DNS — callers that actually fetch user-supplied
+        # URLs must additionally gate on is_safe_public_url() at the fetch site.
         if parsed.hostname:
-            if parsed.hostname in ['localhost', '127.0.0.1', '0.0.0.0']:
+            if parsed.hostname.lower() in ('localhost', 'localhost.localdomain'):
                 return False
-            if parsed.hostname.startswith('192.168.') or parsed.hostname.startswith('10.'):
+            # IP literals (incl. decimal/octal/IPv6 forms) are normalized by the
+            # ipaddress module, so 169.254.169.254, ::1, ::ffff:127.0.0.1 etc.
+            # are all caught here rather than by brittle string prefixes.
+            try:
+                ip = ipaddress.ip_address(parsed.hostname)
+            except ValueError:
+                ip = None
+            if ip is not None and _ip_is_disallowed(ip):
                 return False
-            if parsed.hostname.startswith('172.') and parsed.hostname.split('.')[1].isdigit():
-                second_octet = int(parsed.hostname.split('.')[1])
-                if 16 <= second_octet <= 31:  # 172.16.0.0/12
-                    return False
-        
+
         return True
         
     except Exception:
