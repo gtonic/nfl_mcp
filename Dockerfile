@@ -1,5 +1,6 @@
-# Use Python 3.11 slim image as base
-FROM python:3.11-slim
+# Use Python 3.13 slim image as base (bumped from 3.11 to clear the CPython
+# stdlib CVEs the image scanner flagged, which are fixed only in 3.13+).
+FROM python:3.13-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -21,7 +22,7 @@ RUN apt-get update \
 
 # Copy the pinned lockfile and install exact, reproducible dependencies.
 # requirements.lock is generated from requirements.txt via:
-#   uv pip compile requirements.txt --python-version 3.11 --output-file requirements.lock
+#   uv pip compile requirements.txt --python-version 3.13 --output-file requirements.lock
 COPY requirements.lock .
 # Upgrade the bundled build tooling too (wheel/setuptools) — the base image ships
 # older versions flagged by image scanners (e.g. wheel GHSA-8rrh-rw8j-w5fx).
