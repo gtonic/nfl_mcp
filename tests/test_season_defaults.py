@@ -4,9 +4,10 @@ Tests for season defaults and year-agnostic functionality.
 This module verifies that the NFL MCP Server correctly uses 2026 as the
 default season across all tools and properly handles season detection.
 """
-import pytest
 import inspect
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
+
+import pytest
 
 
 class TestSeasonDefaults:
@@ -106,10 +107,10 @@ class TestSeasonFallback:
     @pytest.mark.asyncio
     async def test_get_current_season_and_week_handles_api_failure(self):
         """Verify get_current_season_and_week handles API failures gracefully."""
-        from nfl_mcp.nfl_tools import get_current_season_and_week
-        
         # Mock the sleeper_tools import to raise an exception
         import sys
+
+        from nfl_mcp.nfl_tools import get_current_season_and_week
         original_module = sys.modules.get('nfl_mcp.sleeper_tools')
         try:
             # Remove from sys.modules to force reimport
@@ -164,8 +165,14 @@ class TestNoHardcoded2025:
         assert "else 2025" not in content,             "Found 'else 2025' in server.py"
 
 
+@pytest.mark.live
 class TestAPIYearAgility:
-    """Test that the server properly handles year transitions."""
+    """Test that the server properly handles year transitions.
+
+    These hit live external APIs and are skipped by default (run with
+    ``--run-live``). The same guarantees are covered offline by the
+    data-source contracts watchdog under ``evals/``.
+    """
 
     @pytest.mark.asyncio
     async def test_sleeper_state_returns_2026(self):
