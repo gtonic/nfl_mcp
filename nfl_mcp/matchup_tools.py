@@ -426,6 +426,81 @@ def get_defense_analyzer() -> DefenseRankingsAnalyzer:
     return _defense_analyzer
 
 
+# ---------------------------------------------------------------------------
+# Offense strength (points scored per team) — powers DST/K streaming signals.
+# Mirror of the defense-vs-position aggregation, keyed by the *scoring* team.
+# ---------------------------------------------------------------------------
+
+_offense_rankings_cache: Dict[int, Dict[str, Dict]] = {}
+
+
+async def fetch_offense_rankings(season: int) -> Dict[str, Dict]:
+    """Rank NFL offenses by PPR points scored per game (nflverse weekly stats).
+
+    Returns ``{team: {"rank": int, "points_scored_avg": float}}`` with rank 1 =
+    highest-scoring (strongest) offense. Returns ``{}`` when the season's data
+    isn't available yet (preseason) so callers can fall back to a prior season.
+    """
+    if season in _offense_rankings_cache:
+        return _offense_rankings_cache[season]
+
+    url = NFLVERSE_PLAYER_STATS_URL.format(season=season)
+    try:
+        async with create_http_client(timeout=LONG_TIMEOUT) as client:
+            resp = await client.get(url)
+            if resp.status_code == 404:
+                return {}
+            resp.raise_for_status()
+            text = resp.text
+    except Exception as e:
+        logger.debug(f"nflverse offense fetch failed for {season}: {e}")
+        return {}
+
+    weekly: Dict = {}       # (team, week) -> summed PPR points
+    weeks_seen: Dict = {}   # team -> set of weeks
+    try:
+        for row in csv.DictReader(StringIO(text)):
+            if (row.get("season_type") or "").upper() != "REG":
+                continue
+            pos = (row.get("position") or row.get("position_group") or "").upper()
+            if pos not in ("QB", "RB", "WR", "TE"):
+                continue
+            team = (row.get("team") or row.get("recent_team") or "").upper()
+            team = _NFLVERSE_TEAM_FIX.get(team, team)
+            wk = row.get("week")
+            if not team or not wk:
+                continue
+            try:
+                pts = float(row.get("fantasy_points_ppr") or 0)
+            except (TypeError, ValueError):
+                pts = 0.0
+            weekly[(team, wk)] = weekly.get((team, wk), 0.0) + pts
+            weeks_seen.setdefault(team, set()).add(wk)
+    except Exception as e:
+        logger.debug(f"nflverse offense parse failed: {e}")
+        return {}
+
+    if not weekly:
+        return {}
+
+    totals: Dict = {}
+    for (team, _wk), pts in weekly.items():
+        totals[team] = totals.get(team, 0.0) + pts
+
+    per_team = [
+        (team, round(total / max(1, len(weeks_seen.get(team, {1}))), 1))
+        for team, total in totals.items()
+    ]
+    # Most points scored per game = strongest offense = rank 1.
+    per_team.sort(key=lambda x: x[1], reverse=True)
+    rankings = {
+        team: {"rank": rank, "points_scored_avg": ppg}
+        for rank, (team, ppg) in enumerate(per_team, 1)
+    }
+    _offense_rankings_cache[season] = rankings
+    return rankings
+
+
 # MCP Tool Functions
 
 @handle_http_errors(

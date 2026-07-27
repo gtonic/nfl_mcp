@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Weather / wind tool** (`nfl_mcp/weather_tools.py`) — new MCP tool
+  `get_weather_forecast` reports per-game wind/precipitation/temperature from
+  **Open-Meteo** (free, no API key) using static stadium coordinates + dome
+  flags, and flags passing/kicking/running impact (wind ≥15 mph fades passing;
+  kickers hit hardest; dome games neutral), worst-weather-first. Ships a
+  reusable `weather_multiplier` heuristic. Deliberately **not** wired into the
+  projection engine yet — per the project's backtest-before-trust philosophy,
+  the weather factor should earn its place in `environment_multiplier` via a
+  backtest first. Live-verified against Open-Meteo.
+- **Streaming planner** (`nfl_mcp/streaming_tools.py`) — new MCP tool
+  `get_streaming_options` ranks weekly streaming options per position over the
+  next 1-4 weeks: QB/RB/WR/TE by opponent defense-vs-position ease, **DST by
+  opponent-offense weakness**, **K by own-offense strength**. Schedule-based and
+  key-free. Adds `matchup_tools.fetch_offense_rankings` (nflverse points-scored
+  per team, mirror of the defense rankings) to power the DST/K signals, with the
+  same prior-season fallback (`offense_source_season` / `*_is_fallback`).
+  Verified end-to-end against real 2025 data (Lions the #1 K stream, as
+  expected). K improves further once the weather/wind factor lands.
 - **Strength-of-schedule tools** (`nfl_mcp/sos_tools.py`) — new MCP tools
   `get_strength_of_schedule` (arbitrary week range) and `get_playoff_sos`
   (fantasy weeks 15-17) that rank NFL teams by schedule difficulty per position
@@ -36,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wired via `tests/conftest.py`). The unit suite now runs fully offline and
   deterministically; the same guarantees are covered by the data-source
   contracts watchdog under `evals/`.
+
+### Changed
+- **Docs split** — the README was slimmed from a ~58 KB monolith to a concise,
+  feature-oriented overview (~140 lines) with a complete grouped catalog of all
+  registered tools (including the new SOS / streaming / weather tools). Setup,
+  configuration, architecture, data sources, the eval suite, CI/CD and security
+  moved into a new **[docs/TECHNICAL.md](docs/TECHNICAL.md)**; the full per-tool
+  reference stays in `AGENT.md`. Also corrected the stale "Python 3.9+"
+  prerequisite (the package requires 3.11+) and added Open-Meteo to the
+  documented data sources.
 
 ### Fixed
 - **Package `authors` metadata** — replaced the `nfl@example.com` placeholder

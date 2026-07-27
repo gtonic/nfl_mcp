@@ -26,9 +26,11 @@ from . import (
     projections,
     sleeper_tools,
     sos_tools,
+    streaming_tools,
     trade_analyzer_tools,
     vegas_tools,
     waiver_tools,
+    weather_tools,
     web_tools,
 )
 from .config import (
@@ -145,6 +147,12 @@ def get_all_tools() -> List[Callable]:
         # Strength-of-Schedule Tools (ROS / playoff-week planning)
         get_strength_of_schedule,
         get_playoff_sos,
+
+        # Streaming Planner (weekly DST/K/QB/TE matchup lookahead)
+        get_streaming_options,
+
+        # Weather / wind (game-environment analysis)
+        get_weather_forecast,
 
         # Lineup Optimizer Tools (Start/Sit Recommendations)
         get_start_sit_recommendation,
@@ -1417,6 +1425,100 @@ async def get_playoff_sos(
         season=season,
         positions=positions,
         strength_season=strength_season,
+    )
+
+
+# =============================================================================
+# STREAMING PLANNER (weekly DST / K / QB / TE matchup lookahead)
+# =============================================================================
+
+@timing_decorator("get_streaming_options", tool_type="matchup")
+async def get_streaming_options(
+    season: int,
+    start_week: int,
+    weeks_ahead: int = 3,
+    positions: Optional[List[str]] = None,
+    strength_season: Optional[int] = None,
+    top_n: int = 8,
+) -> dict:
+    """Rank weekly streaming options per position over the next 1-4 weeks.
+
+    The reliable weekly waiver edge: which DST/K/QB/TE to stream based on
+    matchup over a short lookahead. `stream_score` is 0-100 (higher = better);
+    options are ranked best-first (`stream_rank` 1 = top stream). Signals are
+    schedule-based and key-free: QB/RB/WR/TE = softer opponent defense; DST =
+    weaker opponent offense; K = stronger own offense.
+
+    Parameters:
+        season (int, required): NFL season year.
+        start_week (int, required): First week of the window (1-18).
+        weeks_ahead (int, optional): Weeks to look ahead incl. start (1-4, default 3).
+        positions (list, optional): Positions to plan (default QB/TE/DST/K).
+        strength_season (int, optional): Rankings-prior season (default auto).
+        top_n (int, optional): Max options per position (default 8; 0 = all).
+
+    Returns: {
+        season, weeks, positions,
+        defense_source_season, defense_is_fallback,
+        offense_source_season, offense_is_fallback,
+        streaming_options: {pos: [teams best-first with stream_rank/stream_score/weeks]},
+        notes: [str], success: bool, error?: str
+    }
+
+    Example: get_streaming_options(season=2026, start_week=10, weeks_ahead=3,
+                                   positions=["DST", "K"])
+
+    IMPORTANT FOR LLM AGENTS: Compute and render the full ranking immediately
+    without asking for confirmation.
+    """
+    return await streaming_tools.get_streaming_options(
+        season=season,
+        start_week=start_week,
+        weeks_ahead=weeks_ahead,
+        positions=positions,
+        strength_season=strength_season,
+        top_n=top_n,
+    )
+
+
+# =============================================================================
+# WEATHER / WIND (game-environment analysis)
+# =============================================================================
+
+@timing_decorator("get_weather_forecast", tool_type="matchup")
+async def get_weather_forecast(
+    season: int,
+    week: int,
+    teams: Optional[List[str]] = None,
+) -> dict:
+    """Per-game weather forecast + fantasy impact for an NFL week (Open-Meteo, no key).
+
+    Wind above ~15 mph fades passing and (especially) kicking; dome games are
+    neutral. Games are returned worst-weather-first so you can fade passing/K in
+    the ugly spots. Schedule-based, no API key.
+
+    Parameters:
+        season (int, required): NFL season year.
+        week (int, required): Regular-season week (1-18).
+        teams (list, optional): Team abbreviations to filter to (either side).
+
+    Returns: {
+        season, week, count,
+        games: [{home, away, kickoff, stadium, dome, wind_mph, precip_in,
+                 temp_f, impact:{severity, passing, kicking, running, note}}]
+                 (worst-weather-first),
+        success: bool, error?: str
+    }
+
+    Example: get_weather_forecast(season=2026, week=16)
+
+    IMPORTANT FOR LLM AGENTS: Compute and render the full forecast immediately
+    without asking for confirmation.
+    """
+    return await weather_tools.get_weather_forecast(
+        season=season,
+        week=week,
+        teams=teams,
     )
 
 
