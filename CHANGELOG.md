@@ -24,8 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sleeper_tools.py` re-exports them at the end of the module (after the core
   tools exist) to keep the imports acyclic. With enrichment + strategy out,
   `sleeper_tools.py` is now ~1,370 lines (from 3,022). Behavior-preserving; a few
-  white-box tests were repointed to patch the strategy module. Remaining: the
-  core league/roster/transactions domains.
+  white-box tests were repointed to patch the strategy module.
+- **Split the `sleeper_tools.py` monolith — transactions extracted.** Moved
+  `get_transactions` (week-inferring, robust) and `get_traded_picks` into a new
+  `nfl_mcp/sleeper_transactions.py`, importing the primitives they need
+  (`get_nfl_state`, `_init_db`, `_enrich_single`, `_enrich_usage_and_opponent`)
+  and re-exported from `sleeper_tools`. With enrichment + strategy + transactions
+  out, **`sleeper_tools.py` is now ~1,110 lines (from 3,022 — a 63% reduction)**;
+  league/roster is the remaining core. Behavior-preserving; the transactions
+  white-box tests were repointed to the new module.
 
 ### Fixed
 - **Strategic-planning error paths crashed on an upstream failure.** All four

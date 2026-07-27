@@ -44,7 +44,7 @@ async def test_fantasy_context_subset_and_explicit_week():
 @pytest.mark.asyncio
 async def test_transactions_auto_inference_failure():
     # Force nfl state failure path
-    with patch('nfl_mcp.sleeper_tools.get_nfl_state') as mock_state:
+    with patch('nfl_mcp.sleeper_transactions.get_nfl_state') as mock_state:
         mock_state.return_value = {"success": False}
         # Direct call to lower-level function to test validation path when inference fails
         result = await sleeper_tools.get_transactions("L1")
