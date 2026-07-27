@@ -67,6 +67,13 @@ RUN apt-get update \
 COPY --from=builder /opt/venv /opt/venv
 COPY . .
 
+# Smoke test: fail the build if the copied venv can't import the full app graph
+# in this clean, toolchain-free runtime. `import nfl_mcp.server` transitively
+# imports the tool registry -> every tool module -> every (compiled) dependency
+# (lxml, pydantic-core, ...), so a broken venv copy or a missing wheel is caught
+# here rather than at container start. Side-effect-free (no server bind, no DB).
+RUN python -c "import nfl_mcp.server"
+
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash app \
     && chown -R app:app /app
