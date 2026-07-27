@@ -9,6 +9,7 @@ Features connection pooling, health checks, optimized indexing, migration suppor
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -190,14 +191,22 @@ class NFLDatabase:
     # Database schema version for migrations
     CURRENT_SCHEMA_VERSION = 12
 
-    def __init__(self, db_path: str = "nfl_data.db", pool_config: ConnectionPoolConfig | None = None):
+    def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
         Initialize the NFL database.
 
         Args:
-            db_path: Path to the SQLite database file
+            db_path: Path to the SQLite database file. When ``None`` (the
+                default), falls back to the ``NFL_MCP_DB_PATH`` environment
+                variable, or ``nfl_data.db`` if that is unset. Resolving the
+                default here means *every* ``NFLDatabase()`` call in the codebase
+                honors the configured path, so a persistent volume can be pointed
+                at (e.g. ``NFL_MCP_DB_PATH=/data/nfl_data.db``) without code
+                changes. An explicit ``db_path`` (e.g. a test's temp file) wins.
             pool_config: Configuration for connection pooling
         """
+        if db_path is None:
+            db_path = os.getenv("NFL_MCP_DB_PATH", "nfl_data.db")
         self.db_path = Path(db_path)
         self.pool_config = pool_config or ConnectionPoolConfig()
         self._pool = DatabaseConnectionPool(str(self.db_path), self.pool_config)
