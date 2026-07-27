@@ -42,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The branch was never exercised until the split's tests hit it. Fixed (pass
   `data=`) and added a regression test.
 
+### Security
+- **Container-image hardening (CVE reduction).** The Docker build now runs
+  `apt-get upgrade` to pull Debian security patches (glibc/ncurses/sqlite/zlib/…),
+  upgrades the bundled pip build tooling (`wheel`/`setuptools` — clears the
+  `wheel` advisory), and **drops `curl` from the image** (the health check now
+  uses Python's stdlib), removing the curl/libcurl findings. `requirements.lock`
+  already pins a fixed `jaraco-context` (6.1.2). Remaining image findings are
+  inherited from the `python:3.11-slim` base — CPython 3.11.15 stdlib CVEs (fixed
+  only in 3.13+/3.14+, low real-world exposure) and Debian packages still "under
+  investigation" upstream — mitigated by rebuilding regularly; a move to
+  `python:3.13-slim` (with a lock regen) is tracked as a follow-up.
+
 ## [0.6.5] - 2026-07-27
 
 ### Added
