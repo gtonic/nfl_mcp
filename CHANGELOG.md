@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Strength-of-schedule tools** (`nfl_mcp/sos_tools.py`) — new MCP tools
+  `get_strength_of_schedule` (arbitrary week range) and `get_playoff_sos`
+  (fantasy weeks 15-17) that rank NFL teams by schedule difficulty per position
+  using the existing defense-vs-position rankings. Reports a 0-100 ease score
+  (higher = softer schedule), ranks teams easiest-first, and — before a season
+  has live data — transparently falls back to the prior season's defense
+  rankings (`strength_source_season` / `strength_is_fallback`). Purely additive;
+  does not touch the projection engine. Verified end-to-end against real 2025
+  playoff-week schedules.
 - **Pinned dependency lockfile for reproducible Docker builds** — added
   `requirements.lock` (228 fully-pinned transitive deps, generated via
   `uv pip compile requirements.txt --python-version 3.11`). The Dockerfile now

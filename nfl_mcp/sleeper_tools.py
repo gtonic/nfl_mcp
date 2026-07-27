@@ -2085,16 +2085,23 @@ async def _fetch_week_player_snaps(season: int, week: int):
         logger.error(f"[Fetch Snaps] Failed for season={season}, week={week}: {e}", exc_info=True)
         return []
 
-async def _fetch_week_schedule(season: int, week: int):
+async def _fetch_week_schedule(season: int, week: int, force: bool = False):
     """Fetch weekly schedule from ESPN scoreboard API (best-effort).
 
     Returns list of bidirectional game rows for upsert_schedule_games.
     If advanced enrichment disabled or failure occurs, returns empty list.
-    
+
+    Args:
+        season: NFL season year.
+        week: Regular-season week (1-18).
+        force: Fetch even when NFL_MCP_ADVANCED_ENRICH is off. Used by callers
+            (e.g. strength-of-schedule) for which the schedule *is* the product,
+            not opportunistic enrichment.
+
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
     """
-    if not ADVANCED_ENRICH_ENABLED:
+    if not ADVANCED_ENRICH_ENABLED and not force:
         logger.debug("[Fetch Schedule] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
     
