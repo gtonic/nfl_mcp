@@ -7,10 +7,11 @@ Tests cover:
 - Enrichment field generation
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
-import sys
 import os
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -260,8 +261,9 @@ class TestOutboundRateLimiter:
     @pytest.mark.asyncio
     async def test_acquire_waits_for_tokens(self):
         """Test that acquire waits for tokens to replenish."""
-        from nfl_mcp.config import OutboundRateLimiter
         import asyncio
+
+        from nfl_mcp.config import OutboundRateLimiter
         
         limiter = OutboundRateLimiter(calls_per_minute=60, burst_capacity=2)
         
@@ -293,7 +295,7 @@ class TestCircuitBreakerStatus:
     
     def test_get_all_circuit_breaker_status_empty(self):
         """Test status when no breakers exist."""
-        from nfl_mcp.retry_utils import get_all_circuit_breaker_status, _circuit_breakers
+        from nfl_mcp.retry_utils import _circuit_breakers, get_all_circuit_breaker_status
         
         # Clear existing breakers
         _circuit_breakers.clear()
@@ -303,7 +305,7 @@ class TestCircuitBreakerStatus:
     
     def test_get_all_circuit_breaker_status_with_breakers(self):
         """Test status with active breakers."""
-        from nfl_mcp.retry_utils import get_circuit_breaker, get_all_circuit_breaker_status
+        from nfl_mcp.retry_utils import get_all_circuit_breaker_status, get_circuit_breaker
         
         # Create some breakers
         get_circuit_breaker("test_api_1")
@@ -322,8 +324,9 @@ class TestBatchDatabaseQueries:
     
     def test_get_athletes_by_ids_empty(self):
         """Test batch query with empty list."""
-        from nfl_mcp.database import NFLDatabase
         import tempfile
+
+        from nfl_mcp.database import NFLDatabase
         
         with tempfile.NamedTemporaryFile(suffix=".db", delete=True) as tmp:
             db = NFLDatabase(tmp.name)
@@ -333,8 +336,9 @@ class TestBatchDatabaseQueries:
     
     def test_get_athletes_by_ids_not_found(self):
         """Test batch query when athletes don't exist."""
-        from nfl_mcp.database import NFLDatabase
         import tempfile
+
+        from nfl_mcp.database import NFLDatabase
         
         with tempfile.NamedTemporaryFile(suffix=".db", delete=True) as tmp:
             db = NFLDatabase(tmp.name)
@@ -344,8 +348,9 @@ class TestBatchDatabaseQueries:
     
     def test_get_athletes_by_ids_found(self):
         """Test batch query finds existing athletes."""
-        from nfl_mcp.database import NFLDatabase
         import tempfile
+
+        from nfl_mcp.database import NFLDatabase
         
         with tempfile.NamedTemporaryFile(suffix=".db", delete=True) as tmp:
             db = NFLDatabase(tmp.name)
@@ -373,8 +378,9 @@ class TestSnapshotCleanup:
     
     def test_cleanup_old_snapshots_empty_db(self):
         """Test cleanup on empty database."""
-        from nfl_mcp.database import NFLDatabase
         import tempfile
+
+        from nfl_mcp.database import NFLDatabase
         
         with tempfile.NamedTemporaryFile(suffix=".db", delete=True) as tmp:
             db = NFLDatabase(tmp.name)
@@ -386,9 +392,10 @@ class TestSnapshotCleanup:
     
     def test_cleanup_old_snapshots_with_data(self):
         """Test cleanup removes old snapshots."""
-        from nfl_mcp.database import NFLDatabase
-        from datetime import datetime, timedelta
         import tempfile
+        from datetime import datetime, timedelta
+
+        from nfl_mcp.database import NFLDatabase
         
         with tempfile.NamedTemporaryFile(suffix=".db", delete=True) as tmp:
             db = NFLDatabase(tmp.name)

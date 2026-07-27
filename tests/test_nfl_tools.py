@@ -1,17 +1,18 @@
 """Tests for nfl_tools module."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from nfl_mcp.nfl_tools import (
-    get_nfl_news,
-    get_teams,
-    fetch_teams,
+    get_current_season_and_week,
     get_depth_chart,
+    get_league_leaders,
+    get_nfl_news,
+    get_nfl_standings,
     get_team_injuries,
     get_team_player_stats,
-    get_nfl_standings,
     get_team_schedule,
-    get_league_leaders,
-    get_current_season_and_week,
+    get_teams,
 )
 
 

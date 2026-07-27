@@ -6,12 +6,9 @@ Values and Sleeper draft calls are patched so tests are deterministic/offline.
 import tempfile
 from unittest.mock import patch
 
-import pytest
-
 from nfl_mcp import draft_tools as dt
 from nfl_mcp import player_values as pv
 from nfl_mcp.database import NFLDatabase
-
 
 # A small but position-diverse value pool.
 POOL = [

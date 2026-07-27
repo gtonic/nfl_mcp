@@ -5,14 +5,16 @@ This module contains MCP tools for fetching coaching staff data,
 coach records, and coaching tree information from ESPN API.
 """
 
-import httpx
-from typing import Optional, Dict, Any, List
 import logging
+from typing import Any, Dict
 
-from .config import get_http_headers, create_http_client, validate_limit, LIMITS
+import httpx
+
+from .config import create_http_client, get_http_headers
 from .errors import (
-    create_error_response, create_success_response, ErrorType,
-    handle_http_errors, handle_validation_error
+    create_success_response,
+    handle_http_errors,
+    handle_validation_error,
 )
 
 logger = logging.getLogger(__name__)

@@ -4,16 +4,20 @@ NFL-related MCP tools for the NFL MCP Server.
 This module contains MCP tools for fetching NFL news, teams data, and depth charts.
 """
 
-import httpx
-from typing import Optional, Dict, Any, List
 import asyncio
 import logging
+from typing import Any, Dict, List, Optional
+
+import httpx
 from bs4 import BeautifulSoup
 
-from .config import get_http_headers, create_http_client, validate_limit, LIMITS
+from .config import LIMITS, create_http_client, get_http_headers, validate_limit
 from .errors import (
-    create_error_response, create_success_response, ErrorType,
-    handle_http_errors, handle_validation_error
+    ErrorType,
+    create_error_response,
+    create_success_response,
+    handle_http_errors,
+    handle_validation_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -978,8 +982,6 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
             return ''.join(ch for ch in name.lower() if ch.isalnum())
 
         # Select best matching category
-        chosen = None
-        chosen_display = None
         # Build map token -> fragments list
         token_frag_map = {tok: target_fragments[tok] for tok in requested_tokens}
         # Iterate categories once, fill matches

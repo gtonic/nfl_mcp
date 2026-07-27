@@ -1,8 +1,10 @@
 """Tests for practice status enrichment logic."""
 
+from datetime import UTC, datetime
+from unittest.mock import Mock
+
 import pytest
-from unittest.mock import Mock, MagicMock
-from datetime import datetime, UTC
+
 from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
 
 

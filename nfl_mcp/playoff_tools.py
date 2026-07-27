@@ -17,8 +17,8 @@ import logging
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
-from .sleeper_tools import get_league, get_rosters, get_league_users, get_matchups, get_nfl_state
-from .errors import create_success_response, create_error_response, ErrorType, handle_http_errors
+from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
+from .sleeper_tools import get_league, get_league_users, get_matchups, get_nfl_state, get_rosters
 
 logger = logging.getLogger(__name__)
 

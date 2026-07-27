@@ -1,5 +1,7 @@
 import pytest
+
 from nfl_mcp import nfl_tools
+
 
 class DummyResponse:
     def __init__(self, json_data):

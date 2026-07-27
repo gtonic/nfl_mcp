@@ -1,6 +1,8 @@
 """Tests for opponent_analysis_tools module."""
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+
 from nfl_mcp.opponent_analysis_tools import OpponentAnalyzer, analyze_opponent
 
 

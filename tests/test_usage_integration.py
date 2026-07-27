@@ -1,7 +1,9 @@
 """Integration tests for usage stats and trend calculation."""
-import pytest
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
+import pytest
+
 from nfl_mcp.database import NFLDatabase
 from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
 

@@ -2,8 +2,9 @@
 Test the opponent_analysis_tools module functionality.
 """
 
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from nfl_mcp import opponent_analysis_tools
 
@@ -494,7 +495,7 @@ class TestOpponentAnalysisToolRegistry:
                 "vulnerability_score": 60.0
             }
             
-            result = await analyze_opponent(
+            await analyze_opponent(
                 league_id="12345",
                 opponent_roster_id=2,
                 current_week=10

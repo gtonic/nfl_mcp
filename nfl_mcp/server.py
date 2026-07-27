@@ -23,15 +23,14 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
 from fastmcp import FastMCP
 
-from .config import get_all_rate_limiter_status as _get_all_rate_limiter_status
-from .health import health_check as _health_check
+from . import tool_registry
 from .config_manager import get_config_manager
 from .database import NFLDatabase
-from . import tool_registry
+from .health import health_check as _health_check
 
 # Configure logging with INFO level by default
 LOG_LEVEL = os.getenv("NFL_MCP_LOG_LEVEL", "INFO").upper()
@@ -70,13 +69,13 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
 
     # Import late to avoid circular
     from .sleeper_tools import (
-        get_nfl_state,
-        _fetch_week_schedule,
-        _fetch_week_player_snaps,
+        ADVANCED_ENRICH_ENABLED,
         _fetch_injuries,
         _fetch_practice_reports,
+        _fetch_week_player_snaps,
+        _fetch_week_schedule,
         _fetch_weekly_usage_stats,
-        ADVANCED_ENRICH_ENABLED,
+        get_nfl_state,
     )
 
     if not ADVANCED_ENRICH_ENABLED:

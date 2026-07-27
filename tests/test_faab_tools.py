@@ -1,6 +1,5 @@
 """Tests for the FAAB bid recommender (offline, mocked Sleeper + values)."""
 
-import pytest
 from unittest.mock import patch
 
 from nfl_mcp import faab_tools as ft

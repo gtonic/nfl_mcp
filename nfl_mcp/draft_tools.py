@@ -24,14 +24,14 @@ import logging
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
-from .player_values import get_values_service, scoring_to_ppr
-from .sleeper_tools import get_draft, get_draft_picks
 from .errors import (
-    create_success_response,
-    create_error_response,
     ErrorType,
+    create_error_response,
+    create_success_response,
     handle_http_errors,
 )
+from .player_values import get_values_service, scoring_to_ppr
+from .sleeper_tools import get_draft, get_draft_picks
 
 logger = logging.getLogger(__name__)
 
@@ -557,7 +557,7 @@ def _simulate_one(
 ) -> Dict[str, Any]:
     """Run one full snake draft. Returns per-slot rosters and my team's detail."""
     available = list(pool)  # already VBD-sorted; shallow copy of dict refs
-    by_id = {str(p["player_id"]): p for p in available}
+    {str(p["player_id"]): p for p in available}
     drafted_ids: set = set()
     counts: Dict[int, Dict[str, int]] = {s: {} for s in range(1, num_teams + 1)}
     rosters: Dict[int, List[Dict]] = {s: [] for s in range(1, num_teams + 1)}

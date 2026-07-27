@@ -5,17 +5,14 @@ This module contains MCP tools for fetching CBS Fantasy Football content includi
 player news, projections, and expert picks.
 """
 
-import httpx
-from typing import Optional, Dict, Any, List
 import logging
-from bs4 import BeautifulSoup
 import re
+from typing import Optional
 
-from .config import get_http_headers, create_http_client, validate_limit, LIMITS
-from .errors import (
-    create_error_response, create_success_response, ErrorType,
-    handle_http_errors, handle_validation_error
-)
+from bs4 import BeautifulSoup
+
+from .config import create_http_client, get_http_headers, validate_limit
+from .errors import create_success_response, handle_http_errors, handle_validation_error
 
 logger = logging.getLogger(__name__)
 

@@ -1,6 +1,5 @@
 """Tests for param_validator module (validate_params, format_errors)."""
-import pytest
-from nfl_mcp.param_validator import validate_params, format_errors
+from nfl_mcp.param_validator import format_errors, validate_params
 
 
 class TestValidateParams:

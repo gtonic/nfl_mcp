@@ -1,11 +1,11 @@
 """Tests for new fantasy intelligence APIs."""
 
-import pytest
-import pytest_asyncio
-from unittest.mock import AsyncMock, patch, MagicMock
-import httpx
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from nfl_mcp.nfl_tools import get_team_injuries, get_team_player_stats, get_nfl_standings
+import httpx
+import pytest
+
+from nfl_mcp.nfl_tools import get_nfl_standings, get_team_injuries, get_team_player_stats
 
 
 class TestTeamInjuries:

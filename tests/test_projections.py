@@ -1,6 +1,5 @@
 """Tests for the weekly projection engine (offline, no network)."""
 
-import pytest
 
 from nfl_mcp import projections as pj
 

@@ -1,8 +1,8 @@
 """Integration test to demonstrate practice status fix."""
 
-import pytest
+from datetime import UTC, datetime
 from unittest.mock import Mock
-from datetime import datetime, UTC
+
 from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
 
 

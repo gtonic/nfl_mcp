@@ -1,15 +1,17 @@
 """Tests for coaching_tools module."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from nfl_mcp.coaching_tools import (
-    _get_espn_team_id,
-    _classify_coach_role,
-    get_coaching_staff,
-    get_all_coaching_staffs,
-    get_coaching_tree,
-    get_scheme_classification,
     COACHING_TREES,
     TEAM_SCHEMES,
+    _classify_coach_role,
+    _get_espn_team_id,
+    get_all_coaching_staffs,
+    get_coaching_staff,
+    get_coaching_tree,
+    get_scheme_classification,
 )
 
 
@@ -276,7 +278,7 @@ class TestConstants:
 
     def test_coaching_trees_have_required_keys(self):
         """Test coaching trees have required structure."""
-        for coach_name, tree_data in COACHING_TREES.items():
+        for _coach_name, tree_data in COACHING_TREES.items():
             assert "mentors" in tree_data
             assert "proteges" in tree_data
             assert "scheme_family" in tree_data
@@ -284,6 +286,6 @@ class TestConstants:
 
     def test_team_schemes_have_required_keys(self):
         """Test team schemes have required structure."""
-        for team_id, scheme_data in TEAM_SCHEMES.items():
+        for _team_id, scheme_data in TEAM_SCHEMES.items():
             assert "offense" in scheme_data
             assert "defense" in scheme_data

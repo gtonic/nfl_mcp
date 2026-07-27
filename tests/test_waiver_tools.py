@@ -1,7 +1,14 @@
 """Tests for waiver_tools module."""
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from nfl_mcp.waiver_tools import WaiverAnalyzer, get_waiver_log, check_re_entry_status, get_waiver_wire_dashboard
+
+from nfl_mcp.waiver_tools import (
+    WaiverAnalyzer,
+    check_re_entry_status,
+    get_waiver_log,
+    get_waiver_wire_dashboard,
+)
 
 
 class TestWaiverAnalyzer:

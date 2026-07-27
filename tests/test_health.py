@@ -1,8 +1,10 @@
 """Tests for health module (health_check, _get_version, _get_prefetch_config)."""
-import pytest
 import os
-from unittest.mock import patch, MagicMock
-from nfl_mcp.health import health_check, _get_version, _get_prefetch_config
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from nfl_mcp.health import _get_prefetch_config, _get_version, health_check
 
 
 class TestGetVersion:

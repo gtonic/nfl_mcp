@@ -1,5 +1,6 @@
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from nfl_mcp import sleeper_tools
 

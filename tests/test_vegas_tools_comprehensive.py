@@ -3,24 +3,23 @@ Comprehensive tests for Vegas tools specifically.
 These tests ensure the fixed Vegas tools work correctly.
 """
 
-import pytest
 import sys
-from unittest.mock import Mock, patch, AsyncMock
-import asyncio
+
+import pytest
 
 # Add the project root to the Python path
 sys.path.insert(0, '/tmp/nfl_mcp')
 
 from nfl_mcp.vegas_tools import (
-    get_game_environment_tier,
-    calculate_implied_team_total,
-    get_game_script_projection,
-    VegasLinesAnalyzer,
-    get_vegas_lines,
-    get_game_environment,
     analyze_roster_vegas,
-    get_stack_opportunities
+    calculate_implied_team_total,
+    get_game_environment,
+    get_game_environment_tier,
+    get_game_script_projection,
+    get_stack_opportunities,
+    get_vegas_lines,
 )
+
 
 class TestVegasTools:
     """Test the Vegas tools functionality."""

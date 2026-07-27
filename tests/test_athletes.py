@@ -4,11 +4,12 @@ Unit and integration tests for athlete-related MCP tools.
 Tests the fetch_athletes, lookup_athlete, search_athletes, and get_athletes_by_team tools.
 """
 
-import pytest
 import tempfile
-import httpx
-from unittest.mock import patch, AsyncMock, MagicMock
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from nfl_mcp.server import create_app
 
 

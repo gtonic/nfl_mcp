@@ -1,6 +1,6 @@
-import os
-import pytest
 from importlib import reload
+
+import pytest
 
 
 async def _count_tools(app):

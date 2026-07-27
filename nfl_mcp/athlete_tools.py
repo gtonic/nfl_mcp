@@ -4,14 +4,10 @@ Athlete-related MCP tools for the NFL MCP Server.
 This module contains MCP tools for fetching, searching, and managing NFL athlete data.
 """
 
-import httpx
 from typing import Optional
 
-from .config import get_http_headers, create_http_client, validate_limit, LIMITS, LONG_TIMEOUT
-from .errors import (
-    create_error_response, create_success_response, ErrorType,
-    handle_http_errors, handle_database_errors
-)
+from .config import LIMITS, LONG_TIMEOUT, create_http_client, get_http_headers, validate_limit
+from .errors import create_success_response, handle_database_errors, handle_http_errors
 
 
 @handle_http_errors(

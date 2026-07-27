@@ -1,17 +1,19 @@
 """Tests for lineup_optimizer_tools module."""
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+
 from nfl_mcp.lineup_optimizer_tools import (
-    LineupOptimizer, PlayerAnalysis,
-    get_lineup_optimizer,
-    get_start_sit_recommendation,
-    get_roster_recommendations,
-    compare_players_for_slot,
-    analyze_full_lineup,
     CONFIDENCE_WEIGHTS,
     INJURY_STATUS_SCORES,
-    PRACTICE_STATUS_SCORES,
     MATCHUP_TIER_SCORES,
+    LineupOptimizer,
+    PlayerAnalysis,
+    analyze_full_lineup,
+    compare_players_for_slot,
+    get_lineup_optimizer,
+    get_roster_recommendations,
+    get_start_sit_recommendation,
 )
 
 
@@ -326,7 +328,6 @@ class TestAutoProjection:
     def _fresh_defense(self):
         # Own analyzer instance (NOT the global singleton) with a no-network fetch,
         # so mutating it can't leak into other tests.
-        from unittest.mock import AsyncMock
         from nfl_mcp.matchup_tools import DefenseRankingsAnalyzer
         da = DefenseRankingsAnalyzer(db=None)
         da.fetch_defense_rankings = AsyncMock(return_value={})
@@ -334,7 +335,6 @@ class TestAutoProjection:
 
     @pytest.mark.asyncio
     async def test_analyze_player_auto_projects(self):
-        from unittest.mock import patch
         from nfl_mcp import lineup_optimizer_tools as lo
 
         opt = lo.LineupOptimizer(db=None, auto_project=True, defense_analyzer=self._fresh_defense())

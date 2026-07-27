@@ -4,19 +4,19 @@ Integration tests for API robustness features.
 Tests the retry, circuit breaker, and validation features working together.
 """
 
-import pytest
 import time
-from unittest.mock import AsyncMock, patch
-from nfl_mcp.retry_utils import (
-    CircuitBreaker,
-    CircuitState,
-    CircuitBreakerError,
-    retry_with_backoff,
-    get_circuit_breaker,
-)
+
+import pytest
+
 from nfl_mcp.response_validation import (
     validate_snap_count_response,
-    validate_response_and_log,
+)
+from nfl_mcp.retry_utils import (
+    CircuitBreaker,
+    CircuitBreakerError,
+    CircuitState,
+    get_circuit_breaker,
+    retry_with_backoff,
 )
 
 
@@ -116,7 +116,7 @@ class TestCircuitBreakerIntegration:
         
         # Execute multiple times until circuit opens
         # Need to catch the exception from retry_with_backoff
-        for i in range(3):
+        for _i in range(3):
             try:
                 # Use circuit breaker directly, not retry_with_backoff
                 await cb.call_async(failing_fetch)
@@ -211,7 +211,7 @@ class TestEndToEndScenarios:
             raise ConnectionError("API down")
         
         # Try multiple times
-        for i in range(3):
+        for _i in range(3):
             try:
                 await retry_with_backoff(
                     always_fails,

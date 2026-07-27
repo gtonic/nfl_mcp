@@ -20,7 +20,8 @@ import asyncio
 import tempfile
 from typing import List, Optional
 
-from nfl_mcp import sleeper_tools as st, draft_tools as dt
+from nfl_mcp import draft_tools as dt
+from nfl_mcp import sleeper_tools as st
 from nfl_mcp.database import NFLDatabase
 
 _results: List[dict] = []

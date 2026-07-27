@@ -6,10 +6,10 @@ response formats to ensure consistent error management across all tools.
 """
 
 import logging
-import httpx
 from functools import wraps
-from typing import Any, Dict, Optional, Callable, Union
+from typing import Any, Callable, Dict, Optional
 
+import httpx
 
 # Configure logging for error tracking
 logger = logging.getLogger(__name__)

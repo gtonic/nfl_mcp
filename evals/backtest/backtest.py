@@ -40,9 +40,10 @@ import logging
 from collections import defaultdict
 from typing import Dict, List, Optional
 
-# Import the LIVE constants so the backtest evaluates production behaviour.
-from nfl_mcp.projections import matchup_multiplier, _MATCHUP_TIER_DEV, _usage_mult
 from nfl_mcp.matchup_tools import _get_matchup_tier
+
+# Import the LIVE constants so the backtest evaluates production behaviour.
+from nfl_mcp.projections import _MATCHUP_TIER_DEV, _usage_mult, matchup_multiplier
 
 from .data import load_season
 from .metrics import evaluate, mae

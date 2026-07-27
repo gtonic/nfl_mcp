@@ -1,5 +1,4 @@
 """Tests for usage trend calculation."""
-import pytest
 from nfl_mcp.sleeper_tools import _calculate_usage_trend
 
 

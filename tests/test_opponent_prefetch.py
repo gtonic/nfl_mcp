@@ -1,7 +1,6 @@
 """
 Tests for opponent prefetch functionality to ensure schedules are fetched for multiple weeks.
 """
-import pytest
 from nfl_mcp.server import PREFETCH_SCHEDULE_WEEKS
 
 

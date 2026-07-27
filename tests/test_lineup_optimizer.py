@@ -2,26 +2,23 @@
 Tests for lineup_optimizer_tools module - start/sit recommendations.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-from dataclasses import asdict
 
 from nfl_mcp import lineup_optimizer_tools
 from nfl_mcp.lineup_optimizer_tools import (
+    CONFIDENCE_WEIGHTS,
+    INJURY_STATUS_SCORES,
+    MATCHUP_TIER_SCORES,
+    ConfidenceLevel,
     LineupOptimizer,
     PlayerAnalysis,
     StartSitDecision,
-    ConfidenceLevel,
-    CONFIDENCE_WEIGHTS,
-    MATCHUP_TIER_SCORES,
-    INJURY_STATUS_SCORES,
-    PRACTICE_STATUS_SCORES,
-    USAGE_TREND_SCORES,
-    get_start_sit_recommendation,
-    get_roster_recommendations,
-    compare_players_for_slot,
     analyze_full_lineup,
+    compare_players_for_slot,
+    get_roster_recommendations,
+    get_start_sit_recommendation,
 )
 
 
@@ -426,7 +423,6 @@ class TestToolRegistryIntegration:
     
     def test_lineup_tools_import(self):
         """Test lineup_optimizer_tools module imports cleanly."""
-        from nfl_mcp import lineup_optimizer_tools
         
         assert hasattr(lineup_optimizer_tools, 'get_start_sit_recommendation')
         assert hasattr(lineup_optimizer_tools, 'get_roster_recommendations')

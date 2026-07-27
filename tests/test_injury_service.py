@@ -8,17 +8,15 @@ Tests the InjuryAggregator class and related functionality:
 """
 
 import asyncio
-import pytest
-import json
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, UTC
+
+import pytest
 
 from nfl_mcp.injury_service import (
     InjuryAggregator,
     InjuryReport,
     InjurySeverity,
-    STATUS_NORMALIZATIONS,
-    STATUS_SEVERITY,
     get_injury_reports,
     get_player_injury_report,
 )
@@ -317,7 +315,7 @@ class TestInjuryAggregatorAsync:
         aggregator = InjuryAggregator()
         aggregator.fetch_all_injuries = AsyncMock(return_value=[])
         
-        result = await aggregator.get_team_injuries("KC")
+        await aggregator.get_team_injuries("KC")
         
         aggregator.fetch_all_injuries.assert_called_once_with(["KC"], True, None)
     
@@ -524,7 +522,6 @@ class TestConcurrencyConfiguration:
     
     def test_semaphores_created(self):
         """Test that semaphores are created with correct limits."""
-        from nfl_mcp.injury_service import MAX_CONCURRENT_TEAMS, MAX_CONCURRENT_INJURIES
         
         aggregator = InjuryAggregator()
         
@@ -539,10 +536,10 @@ class TestConcurrencyConfiguration:
     def test_configuration_constants(self):
         """Test that configuration constants have reasonable values."""
         from nfl_mcp.injury_service import (
-            MAX_CONCURRENT_TEAMS,
-            MAX_CONCURRENT_INJURIES,
             ATHLETE_CACHE_SIZE,
-            REQUEST_TIMEOUT
+            MAX_CONCURRENT_INJURIES,
+            MAX_CONCURRENT_TEAMS,
+            REQUEST_TIMEOUT,
         )
         
         assert 1 <= MAX_CONCURRENT_TEAMS <= 32  # Not more than total teams

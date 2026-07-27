@@ -19,12 +19,12 @@ a transparent breakdown.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
-from .sleeper_tools import get_league, get_rosters, get_trending_players, get_nfl_state
+from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .player_values import get_values_service
+from .sleeper_tools import get_league, get_nfl_state, get_rosters, get_trending_players
 from .trade_analyzer_tools import league_format_from_settings
-from .errors import create_success_response, create_error_response, ErrorType, handle_http_errors
 
 logger = logging.getLogger(__name__)
 
