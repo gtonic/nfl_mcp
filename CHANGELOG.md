@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Handcuff mapping** (`nfl_mcp/handcuff_tools.py` + new MCP tool
+  `get_handcuff_map`) — for each RB on your Sleeper roster it reads the team
+  depth chart, identifies the contingent-value backup, and flags whether that
+  handcuff is a **free agent** (grab it), **yours** (secured) or an
+  **opponent's**, listing securable free agents first. Turns the usual "secure
+  your handcuffs" advice into an actionable list. Verified live (CMC → Jordan
+  James, Saquon Barkley → Tank Bigsby); the depth-chart parsing was corrected to
+  ESPN's real grid shape (each row is a starter + backups, injury tags stripped).
 - **Win-probability lineup optimizer** (`nfl_mcp/win_probability.py` + new MCP
   tool `get_win_probability_lineup`) — optimizes **P(beating a specific
   opponent)** instead of E[points], the biggest strategic edge left in
