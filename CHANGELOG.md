@@ -14,10 +14,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   usage/opponent enrichment helpers, plus `ADVANCED_ENRICH_ENABLED`) into a new
   `nfl_mcp/sleeper_enrichment.py`. `sleeper_tools.py` re-exports it, so every
   `sleeper_tools.<name>` reference and import is unchanged — a behavior-preserving
-  refactor (`sleeper_tools.py` drops from 3,022 → ~2,010 lines). Full suite green;
-  a few white-box tests were repointed to patch the enrichment module directly.
-  Strategic-planning and the core league/roster/transactions domains are the
-  next extractions.
+  refactor. Full suite green; a few white-box tests were repointed to patch the
+  enrichment module directly.
+- **Split the `sleeper_tools.py` monolith — strategic-planning cluster
+  extracted.** Moved the ~670-line strategic-planning tools
+  (`get_strategic_matchup_preview`, `get_season_bye_week_coordination`,
+  `get_trade_deadline_analysis`, `get_playoff_preparation_plan`) into a new
+  `nfl_mcp/sleeper_strategy.py`. These are top-level *consumers*, so
+  `sleeper_tools.py` re-exports them at the end of the module (after the core
+  tools exist) to keep the imports acyclic. With enrichment + strategy out,
+  `sleeper_tools.py` is now ~1,370 lines (from 3,022). Behavior-preserving; a few
+  white-box tests were repointed to patch the strategy module. Remaining: the
+  core league/roster/transactions domains.
+
+### Fixed
+- **Strategic-planning error paths crashed on an upstream failure.** All four
+  strategic tools passed their fallback `data` dict positionally to
+  `create_error_response()`, which landed in the `error_type` parameter and
+  collided with the `error_type=` keyword (`TypeError: got multiple values`).
+  The branch was never exercised until the split's tests hit it. Fixed (pass
+  `data=`) and added a regression test.
 
 ## [0.6.5] - 2026-07-27
 
