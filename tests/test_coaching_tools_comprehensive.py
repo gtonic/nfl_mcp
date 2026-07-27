@@ -29,10 +29,10 @@ class TestCoachingTools:
         assert _get_espn_team_id("KC") == "12"
         assert _get_espn_team_id("BUF") == "2"
         assert _get_espn_team_id("NE") == "17"
-        
+
         # Test numeric ID stays the same
         assert _get_espn_team_id("12") == "12"
-        
+
         # Test unknown team returns original
         assert _get_espn_team_id("UNKNOWN") == "UNKNOWN"
 
@@ -41,22 +41,22 @@ class TestCoachingTools:
         # Head coach
         result = _classify_coach_role("Head Coach")
         assert result["category"] == "head_coach"
-        
+
         # Offensive coordinator
         result = _classify_coach_role("Offensive Coordinator")
         assert result["category"] == "coordinator"
         assert result["side"] == "offense"
-        
+
         # Defensive coordinator
         result = _classify_coach_role("Defensive Coordinator")
         assert result["category"] == "coordinator"
         assert result["side"] == "defense"
-        
+
         # Position coach
         result = _classify_coach_role("Quarterback Coach")
         assert result["category"] == "position_coach"
         assert result["side"] == "offense"
-        
+
         # Assistant
         result = _classify_coach_role("Special Teams Assistant")
         assert result["category"] == "assistant"
@@ -82,7 +82,7 @@ class TestCoachingTools:
         result = await get_coaching_tree(coach_name="Andy Reid")
         assert isinstance(result, dict)
         assert 'coach_name' in result or 'success' in result or 'error' in result
-        
+
         # Test unknown coach
         result = await get_coaching_tree(coach_name="Unknown Coach")
         assert isinstance(result, dict)
@@ -100,11 +100,11 @@ class TestCoachingTools:
         # Test with invalid team ID
         result = await get_coaching_staff(team_id="")
         assert isinstance(result, dict)
-        
+
         # Test with invalid coach name
         result = await get_coaching_tree(coach_name="")
         assert isinstance(result, dict)
-        
+
         # Test with invalid team for scheme classification
         result = await get_scheme_classification(team_id="")
         assert isinstance(result, dict)

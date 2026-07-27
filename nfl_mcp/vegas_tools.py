@@ -9,8 +9,8 @@ Phase 4: Final phase of lineup optimization feature set.
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Team name mapping from full names to abbreviations
 TEAM_ABBREVIATIONS = {
     "Arizona Cardinals": "ARI",
-    "Atlanta Falcons": "ATL", 
+    "Atlanta Falcons": "ATL",
     "Baltimore Ravens": "BAL",
     "Buffalo Bills": "BUF",
     "Carolina Panthers": "CAR",
@@ -59,13 +59,13 @@ TEAM_ABBREVIATIONS = {
 ABBREVIATION_TO_FULL = {v: k for k, v in TEAM_ABBREVIATIONS.items()}
 
 
-def get_game_environment_tier(total: float) -> Dict[str, Any]:
+def get_game_environment_tier(total: float) -> dict[str, Any]:
     """
     Categorize game environment based on total points line.
-    
+
     Args:
         total: Vegas over/under total
-        
+
     Returns:
         Dict with tier info and fantasy impact
     """
@@ -124,16 +124,16 @@ def get_game_environment_tier(total: float) -> Dict[str, Any]:
 def calculate_implied_team_total(total: float, spread: float, is_favorite: bool) -> float:
     """
     Calculate implied team total from game total and spread.
-    
-    Formula: 
+
+    Formula:
     - Favorite implied = (total + abs(spread)) / 2
     - Underdog implied = (total - abs(spread)) / 2
-    
+
     Args:
         total: Vegas over/under total
         spread: Point spread (negative = favorite)
         is_favorite: Whether the team is the favorite
-        
+
     Returns:
         Implied team total points
     """
@@ -144,18 +144,18 @@ def calculate_implied_team_total(total: float, spread: float, is_favorite: bool)
         return round((total - spread_abs) / 2, 1)
 
 
-def get_game_script_projection(spread: float) -> Dict[str, Any]:
+def get_game_script_projection(spread: float) -> dict[str, Any]:
     """
     Project likely game script based on spread.
-    
+
     Args:
         spread: Point spread (negative = favorite)
-        
+
     Returns:
         Dict with game script projection and fantasy implications
     """
     spread_abs = abs(spread)
-    
+
     if spread_abs >= 10:
         if spread < 0:
             return {
@@ -167,7 +167,7 @@ def get_game_script_projection(spread: float) -> Dict[str, Any]:
             }
         else:
             return {
-                "projection": "likely_blowout_loss", 
+                "projection": "likely_blowout_loss",
                 "indicator": "⚠️",
                 "description": "Heavy underdog - may abandon run early",
                 "rb_impact": "Negative - game script unfavorable",
@@ -219,32 +219,32 @@ def get_game_script_projection(spread: float) -> Dict[str, Any]:
 
 class VegasLinesAnalyzer:
     """Fetches and analyzes Vegas lines for NFL games."""
-    
+
     ODDS_API_BASE = "https://api.the-odds-api.com/v4"
     SPORT_KEY = "americanfootball_nfl"
     CACHE_TTL_HOURS = 2  # Lines can change, refresh more frequently
-    
-    def __init__(self, db: Optional[NFLDatabase] = None, api_key: Optional[str] = None):
+
+    def __init__(self, db: NFLDatabase | None = None, api_key: str | None = None):
         """
         Initialize the Vegas lines analyzer.
-        
+
         Args:
             db: Database for caching
             api_key: The Odds API key (defaults to env var ODDS_API_KEY)
         """
         self.db = db
         self.api_key = api_key or os.getenv("ODDS_API_KEY")
-        self._lines_cache: Dict[str, Dict] = {}
-        self._cache_time: Optional[datetime] = None
-    
+        self._lines_cache: dict[str, dict] = {}
+        self._cache_time: datetime | None = None
+
     def _get_team_abbrev(self, full_name: str) -> str:
         """Convert full team name to abbreviation."""
         return TEAM_ABBREVIATIONS.get(full_name, full_name[:3].upper())
-    
+
     def _normalize_team(self, team: str) -> str:
         """Normalize team name to standard abbreviation."""
         team = team.upper().strip()
-        
+
         # Handle common variations
         if team in ("WAS", "WSH", "WASHINGTON"):
             return "WSH"
@@ -254,36 +254,36 @@ class VegasLinesAnalyzer:
             return "LAR"
         elif team in ("LV", "OAK", "RAIDERS"):
             return "LV"
-        
+
         # Check if it's already an abbreviation
         if team in ABBREVIATION_TO_FULL:
             return team
-        
+
         # Check full names
         for full_name, abbrev in TEAM_ABBREVIATIONS.items():
             if team in full_name.upper():
                 return abbrev
-        
+
         return team
-    
-    async def fetch_current_lines(self) -> Dict[str, Dict]:
+
+    async def fetch_current_lines(self) -> dict[str, dict]:
         """
         Fetch current NFL lines from The Odds API.
-        
+
         Returns:
             Dict mapping game keys to line data
         """
         # Check cache
         if self._cache_time and self._lines_cache:
-            age = datetime.now(timezone.utc) - self._cache_time
+            age = datetime.now(UTC) - self._cache_time
             if age < timedelta(hours=self.CACHE_TTL_HOURS):
                 logger.debug("Using cached Vegas lines")
                 return self._lines_cache
-        
+
         if not self.api_key:
             logger.warning("No ODDS_API_KEY configured, using fallback data")
             return self._get_fallback_lines()
-        
+
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 # Fetch spreads and totals in one call (costs 2 API credits)
@@ -294,37 +294,37 @@ class VegasLinesAnalyzer:
                     "markets": "spreads,totals",
                     "oddsFormat": "american"
                 }
-                
+
                 response = await client.get(url, params=params)
-                
+
                 if response.status_code == 401:
                     logger.error("Invalid Odds API key")
                     return self._get_fallback_lines()
                 elif response.status_code == 429:
                     logger.warning("Odds API rate limited, using fallback")
                     return self._get_fallback_lines()
-                
+
                 response.raise_for_status()
                 games = response.json()
-                
+
                 # Log remaining quota
                 remaining = response.headers.get("x-requests-remaining", "unknown")
                 logger.info(f"Odds API: {remaining} requests remaining this month")
-                
+
                 lines = {}
                 for game in games:
                     home_team = self._get_team_abbrev(game.get("home_team", ""))
                     away_team = self._get_team_abbrev(game.get("away_team", ""))
                     commence_time = game.get("commence_time", "")
-                    
+
                     if not home_team or not away_team:
                         continue
-                    
+
                     # Parse bookmaker odds - use consensus (average of major books)
                     spreads_home = []
                     spreads_away = []
                     totals = []
-                    
+
                     for bookmaker in game.get("bookmakers", []):
                         for market in bookmaker.get("markets", []):
                             if market.get("key") == "spreads":
@@ -335,23 +335,23 @@ class VegasLinesAnalyzer:
                                         spreads_home.append(point)
                                     elif team_abbrev == away_team:
                                         spreads_away.append(point)
-                            
+
                             elif market.get("key") == "totals":
                                 for outcome in market.get("outcomes", []):
                                     if outcome.get("name") == "Over":
                                         totals.append(outcome.get("point", 0))
-                    
+
                     # Calculate consensus
                     home_spread = round(sum(spreads_home) / len(spreads_home), 1) if spreads_home else 0
                     total = round(sum(totals) / len(totals), 1) if totals else 45.0
-                    
+
                     # Determine favorite
                     home_is_favorite = home_spread < 0
-                    
+
                     # Calculate implied totals
                     home_implied = calculate_implied_team_total(total, home_spread, home_is_favorite)
                     away_implied = calculate_implied_team_total(total, home_spread, not home_is_favorite)
-                    
+
                     game_key = f"{away_team}@{home_team}"
                     lines[game_key] = {
                         "home_team": home_team,
@@ -366,55 +366,55 @@ class VegasLinesAnalyzer:
                         "game_environment": get_game_environment_tier(total),
                         "home_game_script": get_game_script_projection(home_spread),
                         "away_game_script": get_game_script_projection(-home_spread),
-                        "last_updated": datetime.now(timezone.utc).isoformat()
+                        "last_updated": datetime.now(UTC).isoformat()
                     }
-                    
+
                     # Also index by individual teams
                     lines[home_team] = lines[game_key]
                     lines[away_team] = lines[game_key]
-                
+
                 self._lines_cache = lines
-                self._cache_time = datetime.now(timezone.utc)
-                
+                self._cache_time = datetime.now(UTC)
+
                 logger.info(f"Fetched Vegas lines for {len(games)} NFL games")
                 return lines
-                
+
         except httpx.HTTPError as e:
             logger.error(f"HTTP error fetching odds: {e}")
             return self._get_fallback_lines()
         except Exception as e:
             logger.error(f"Error fetching odds: {e}")
             return self._get_fallback_lines()
-    
-    def _get_fallback_lines(self) -> Dict[str, Dict]:
+
+    def _get_fallback_lines(self) -> dict[str, dict]:
         """
         Return fallback/placeholder lines when API is unavailable.
         Uses league average total of 45 points.
         """
         logger.info("Using fallback Vegas lines (neutral)")
-        
+
         # Return empty - will use defaults when looking up specific teams
         return {}
-    
-    def get_game_lines(self, team: str, lines: Optional[Dict] = None) -> Dict:
+
+    def get_game_lines(self, team: str, lines: dict | None = None) -> dict:
         """
         Get Vegas lines for a specific team's game.
-        
+
         Args:
             team: Team abbreviation
             lines: Pre-fetched lines (optional)
-            
+
         Returns:
             Dict with line data for the team's game
         """
         team = self._normalize_team(team)
-        
+
         if lines and team in lines:
             return lines[team]
-        
+
         if self._lines_cache and team in self._lines_cache:
             return self._lines_cache[team]
-        
+
         # Return neutral defaults
         return {
             "home_team": team,
@@ -429,7 +429,7 @@ class VegasLinesAnalyzer:
             "home_game_script": get_game_script_projection(0),
             "away_game_script": get_game_script_projection(0),
             "is_fallback": True,
-            "last_updated": datetime.now(timezone.utc).isoformat()
+            "last_updated": datetime.now(UTC).isoformat()
         }
 
 
@@ -453,62 +453,62 @@ def get_vegas_analyzer() -> VegasLinesAnalyzer:
     operation_name="fetching Vegas lines"
 )
 async def get_vegas_lines(
-    teams: Optional[List[str]] = None
-) -> Dict:
+    teams: list[str] | None = None
+) -> dict:
     """
     Get current Vegas lines for NFL games.
-    
+
     Provides spreads, totals, and implied team totals to help
     identify favorable game environments for fantasy scoring.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         teams: Optional list of team abbreviations to filter
                If not provided, returns all available games
-               
+
     Returns:
         Dictionary containing:
         - games: List of games with Vegas lines
         - summary: Quick summary of best game environments
-        
+
     Example:
         get_vegas_lines()
         -> Returns all NFL games with spreads and totals
-        
+
         get_vegas_lines(teams=["KC", "BUF", "MIA"])
         -> Returns only games involving those teams
     """
     analyzer = get_vegas_analyzer()
     lines = await analyzer.fetch_current_lines()
-    
+
     # Collect unique games
     seen_games = set()
     games = []
-    
+
     for key, game_data in lines.items():
         if "@" not in key:  # Skip team-indexed entries
             continue
-        
+
         if key in seen_games:
             continue
         seen_games.add(key)
-        
+
         # Filter by teams if specified
         if teams:
             teams_normalized = [analyzer._normalize_team(t) for t in teams]
             if game_data["home_team"] not in teams_normalized and game_data["away_team"] not in teams_normalized:
                 continue
-        
+
         games.append(game_data)
-    
+
     # Sort by total (highest scoring games first)
     games.sort(key=lambda x: x.get("total", 0), reverse=True)
-    
+
     # Generate summary
     shootout_games = [g for g in games if g.get("game_environment", {}).get("tier") == "shootout"]
     high_scoring = [g for g in games if g.get("game_environment", {}).get("tier") == "high_scoring"]
-    
+
     summary = []
     if not games and not analyzer.api_key:
         summary.append(
@@ -520,7 +520,7 @@ async def get_vegas_lines(
     if high_scoring:
         matchups = [f"{g['away_team']}@{g['home_team']}" for g in high_scoring[:3]]
         summary.append(f"📈 High-scoring: {', '.join(matchups)}")
-    
+
     return create_success_response({
         "games": games,
         "total_games": len(games),
@@ -537,37 +537,37 @@ async def get_vegas_lines(
 )
 async def get_game_environment(
     team: str
-) -> Dict:
+) -> dict:
     """
     Get game environment analysis for a specific team's matchup.
-    
+
     Analyzes the Vegas total and spread to determine if the game
     environment is favorable for fantasy scoring.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         team: Team abbreviation (e.g., "KC", "BUF", "DAL")
-        
+
     Returns:
         Dictionary containing:
         - game: Full game data with Vegas lines
         - environment: Game environment tier and fantasy impact
         - game_script: Projected game script implications
         - implied_total: Team's implied point total
-        
+
     Example:
         get_game_environment(team="KC")
         -> Returns game environment for Kansas City's matchup
     """
     analyzer = get_vegas_analyzer()
     lines = await analyzer.fetch_current_lines()
-    
+
     team_norm = analyzer._normalize_team(team)
     game = analyzer.get_game_lines(team_norm, lines)
-    
+
     is_home = game.get("home_team") == team_norm
-    
+
     result = {
         "team": team_norm,
         "opponent": game.get("away_team") if is_home else game.get("home_team"),
@@ -581,12 +581,12 @@ async def get_game_environment(
         "commence_time": game.get("commence_time"),
         "is_fallback": game.get("is_fallback", False)
     }
-    
+
     # Generate recommendation
     env_tier = result["environment"].get("tier", "average")
     implied = result["implied_total"]
     spread = result["spread"]
-    
+
     recommendations = []
 
     # Honesty: without real lines (no ODDS_API_KEY / API down) everything is a
@@ -600,20 +600,20 @@ async def get_game_environment(
         recommendations.append(f"🔥 GREAT game environment (O/U {result['total']})")
     elif env_tier == "defensive_battle":
         recommendations.append(f"⚠️ Low-scoring game expected (O/U {result['total']})")
-    
+
     if implied and implied >= 25:
         recommendations.append(f"✅ High implied team total ({implied} pts)")
     elif implied and implied <= 18:
         recommendations.append(f"⚠️ Low implied team total ({implied} pts)")
-    
+
     if spread and spread <= -7:
         recommendations.append("📈 Heavy favorite - positive game script for RBs")
     elif spread and spread >= 7:
         recommendations.append("📉 Heavy underdog - may need to throw to catch up")
-    
+
     result["recommendations"] = recommendations
     result["message"] = f"{team_norm} game environment: {env_tier.upper()} (O/U {result['total']}, implied {implied})"
-    
+
     return create_success_response(result)
 
 
@@ -622,29 +622,29 @@ async def get_game_environment(
     operation_name="analyzing roster game environments"
 )
 async def analyze_roster_vegas(
-    players: List[Dict]
-) -> Dict:
+    players: list[dict]
+) -> dict:
     """
     Analyze Vegas lines impact for multiple players.
-    
+
     Takes a list of players with their teams and returns
     game environment analysis for each, identifying the best
     and worst game environments on your roster.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         players: List of player dicts with keys:
             - name: Player name
             - team: Team abbreviation
             - position: Player position (optional)
-            
+
     Returns:
         Dictionary containing:
         - analysis: List of player game environment analyses
         - best_environments: Players in the best game environments
         - worst_environments: Players in concerning game environments
-        
+
     Example:
         analyze_roster_vegas(players=[
             {"name": "Patrick Mahomes", "team": "KC", "position": "QB"},
@@ -657,19 +657,19 @@ async def analyze_roster_vegas(
             error_type=ErrorType.VALIDATION,
             data={"players": []}
         )
-    
+
     analyzer = get_vegas_analyzer()
     lines = await analyzer.fetch_current_lines()
-    
+
     analyses = []
     best_environments = []
     worst_environments = []
-    
+
     for player in players:
         name = player.get("name", "Unknown")
         team = player.get("team", "")
         position = player.get("position", "")
-        
+
         if not team:
             analyses.append({
                 "player": name,
@@ -677,14 +677,14 @@ async def analyze_roster_vegas(
                 "error": "Missing team"
             })
             continue
-        
+
         team_norm = analyzer._normalize_team(team)
         game = analyzer.get_game_lines(team_norm, lines)
-        
+
         is_home = game.get("home_team") == team_norm
         env = game.get("game_environment", {})
         env_tier = env.get("tier", "average")
-        
+
         analysis = {
             "player": name,
             "team": team_norm,
@@ -697,7 +697,7 @@ async def analyze_roster_vegas(
             "environment_indicator": env.get("indicator", "➡️"),
             "is_fallback": game.get("is_fallback", False)
         }
-        
+
         # Position-specific boost
         if position.upper() == "QB":
             analysis["boost"] = env.get("qb_boost", "0%")
@@ -705,22 +705,22 @@ async def analyze_roster_vegas(
             analysis["boost"] = env.get("pass_catchers_boost", "0%")
         elif position.upper() == "RB":
             analysis["boost"] = env.get("rb_boost", "0%")
-        
+
         analyses.append(analysis)
-        
+
         # Categorize
         if env_tier in ["shootout", "high_scoring"]:
             best_environments.append(f"{name} ({team_norm}) - O/U {game.get('total')}")
         elif env_tier == "defensive_battle":
             worst_environments.append(f"{name} ({team_norm}) - O/U {game.get('total')}")
-    
+
     # Generate summary
     summary_lines = []
     if best_environments:
         summary_lines.append(f"🔥 BEST ENVIRONMENTS: {', '.join(best_environments[:3])}")
     if worst_environments:
         summary_lines.append(f"⚠️ CONCERNING: {', '.join(worst_environments[:3])}")
-    
+
     return create_success_response({
         "analysis": analyses,
         "best_environments": best_environments,
@@ -737,54 +737,54 @@ async def analyze_roster_vegas(
 )
 async def get_stack_opportunities(
     min_total: float = 48.0
-) -> Dict:
+) -> dict:
     """
     Identify high-total games for stacking opportunities.
-    
+
     Finds games with the highest over/under totals, which are
     ideal for QB + pass catcher stacks in DFS or season-long leagues.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         min_total: Minimum total to consider (default 48.0)
-        
+
     Returns:
         Dictionary containing:
         - stacks: List of high-total games with stack recommendations
         - summary: Quick summary of best stacking opportunities
-        
+
     Example:
         get_stack_opportunities()
         -> Returns games with O/U >= 48 for stacking
-        
+
         get_stack_opportunities(min_total=50)
         -> Returns only games with O/U >= 50
     """
     analyzer = get_vegas_analyzer()
     lines = await analyzer.fetch_current_lines()
-    
+
     # Collect unique games above threshold
     seen_games = set()
     stacks = []
-    
+
     for key, game_data in lines.items():
         if "@" not in key:
             continue
-        
+
         if key in seen_games:
             continue
         seen_games.add(key)
-        
+
         total = game_data.get("total", 0)
         if total < min_total:
             continue
-        
+
         home_team = game_data.get("home_team")
         away_team = game_data.get("away_team")
         home_implied = game_data.get("home_implied_total", 0)
         away_implied = game_data.get("away_implied_total", 0)
-        
+
         # Determine which team is better to stack
         if home_implied > away_implied:
             primary_stack = home_team
@@ -796,7 +796,7 @@ async def get_stack_opportunities(
             primary_implied = away_implied
             bring_back = home_team
             bring_back_implied = home_implied
-        
+
         stack = {
             "game": f"{away_team}@{home_team}",
             "total": total,
@@ -808,21 +808,21 @@ async def get_stack_opportunities(
             "recommendation": f"Stack {primary_stack} QB + WR/TE, bring back {bring_back} WR"
         }
         stacks.append(stack)
-    
+
     # Sort by total
     stacks.sort(key=lambda x: x.get("total", 0), reverse=True)
-    
+
     # Generate summary
     summary = []
     if stacks:
         top_games = [f"{s['game']} (O/U {s['total']})" for s in stacks[:3]]
         summary.append(f"🎯 TOP STACKS: {', '.join(top_games)}")
-        
-        primary_teams = list(set(s["primary_stack_team"] for s in stacks[:3]))
+
+        primary_teams = list({s["primary_stack_team"] for s in stacks[:3]})
         summary.append(f"📈 Target: {', '.join(primary_teams)} pass games")
     else:
         summary.append(f"⚠️ No games with O/U >= {min_total} found")
-    
+
     return create_success_response({
         "stacks": stacks,
         "total_opportunities": len(stacks),

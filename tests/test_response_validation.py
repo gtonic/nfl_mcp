@@ -14,44 +14,44 @@ from nfl_mcp.response_validation import (
 
 class TestValidationResult:
     """Test ValidationResult class."""
-    
+
     def test_valid_result(self):
         """Test valid result."""
         result = ValidationResult()
         assert result.is_valid()
         assert len(result.errors) == 0
         assert len(result.warnings) == 0
-    
+
     def test_add_error(self):
         """Test adding errors makes result invalid."""
         result = ValidationResult()
         result.add_error("Test error")
         assert not result.is_valid()
         assert "Test error" in result.errors
-    
+
     def test_add_warning(self):
         """Test adding warnings doesn't make result invalid."""
         result = ValidationResult()
         result.add_warning("Test warning")
         assert result.is_valid()
         assert "Test warning" in result.warnings
-    
+
     def test_string_representation(self):
         """Test string representation."""
         result = ValidationResult()
         assert "Valid" in str(result)
-        
+
         result.add_warning("Warning")
         assert "Valid" in str(result)
         assert "warning" in str(result)
-        
+
         result.add_error("Error")
         assert "Invalid" in str(result)
 
 
 class TestSnapCountValidation:
     """Test snap count response validation."""
-    
+
     def test_valid_snap_count_response(self):
         """Test validation of valid snap count data."""
         data = {
@@ -61,19 +61,19 @@ class TestSnapCountValidation:
         }
         result = validate_snap_count_response(data)
         assert result.is_valid()
-    
+
     def test_invalid_type(self):
         """Test validation fails for non-dict."""
         result = validate_snap_count_response([])
         assert not result.is_valid()
         assert any("dictionary" in err.lower() for err in result.errors)
-    
+
     def test_empty_data(self):
         """Test empty data produces warning."""
         result = validate_snap_count_response({})
         assert result.is_valid()
         assert len(result.warnings) > 0
-    
+
     def test_low_snap_coverage(self):
         """Test warning for low snap data coverage."""
         # Create data with mostly empty stats
@@ -81,7 +81,7 @@ class TestSnapCountValidation:
         result = validate_snap_count_response(data)
         assert result.is_valid()
         assert any("coverage" in warn.lower() for warn in result.warnings)
-    
+
     def test_invalid_player_stats(self):
         """Test error for non-dict player stats."""
         data = {
@@ -94,7 +94,7 @@ class TestSnapCountValidation:
 
 class TestScheduleValidation:
     """Test schedule response validation."""
-    
+
     def test_valid_schedule_response(self):
         """Test validation of valid schedule data."""
         games = [
@@ -103,18 +103,18 @@ class TestScheduleValidation:
         ]
         result = validate_schedule_response(games)
         assert result.is_valid()
-    
+
     def test_invalid_type(self):
         """Test validation fails for non-list."""
         result = validate_schedule_response({})
         assert not result.is_valid()
-    
+
     def test_empty_schedule(self):
         """Test empty schedule produces warning."""
         result = validate_schedule_response([])
         assert result.is_valid()
         assert len(result.warnings) > 0
-    
+
     def test_missing_required_fields(self):
         """Test error for missing required fields."""
         games = [
@@ -123,7 +123,7 @@ class TestScheduleValidation:
         result = validate_schedule_response(games)
         assert not result.is_valid()
         assert any("missing" in err.lower() for err in result.errors)
-    
+
     def test_invalid_game_format(self):
         """Test error for non-dict games."""
         games = ["not a dict"]
@@ -133,7 +133,7 @@ class TestScheduleValidation:
 
 class TestPracticeReportValidation:
     """Test practice report validation."""
-    
+
     def test_valid_practice_reports(self):
         """Test validation of valid practice reports."""
         reports = [
@@ -142,18 +142,18 @@ class TestPracticeReportValidation:
         ]
         result = validate_practice_report_response(reports)
         assert result.is_valid()
-    
+
     def test_invalid_type(self):
         """Test validation fails for non-list."""
         result = validate_practice_report_response({})
         assert not result.is_valid()
-    
+
     def test_empty_reports(self):
         """Test empty reports produce warning."""
         result = validate_practice_report_response([])
         assert result.is_valid()
         assert len(result.warnings) > 0
-    
+
     def test_missing_required_fields(self):
         """Test error for missing required fields."""
         reports = [
@@ -161,7 +161,7 @@ class TestPracticeReportValidation:
         ]
         result = validate_practice_report_response(reports)
         assert not result.is_valid()
-    
+
     def test_unusual_status_warning(self):
         """Test warning for unusual status values."""
         reports = [
@@ -174,7 +174,7 @@ class TestPracticeReportValidation:
 
 class TestUsageStatsValidation:
     """Test usage stats validation."""
-    
+
     def test_valid_usage_stats(self):
         """Test validation of valid usage stats."""
         stats = [
@@ -183,18 +183,18 @@ class TestUsageStatsValidation:
         ]
         result = validate_usage_stats_response(stats)
         assert result.is_valid()
-    
+
     def test_invalid_type(self):
         """Test validation fails for non-list."""
         result = validate_usage_stats_response({})
         assert not result.is_valid()
-    
+
     def test_empty_stats(self):
         """Test empty stats produce warning."""
         result = validate_usage_stats_response([])
         assert result.is_valid()
         assert len(result.warnings) > 0
-    
+
     def test_missing_required_fields(self):
         """Test error for missing required fields."""
         stats = [
@@ -202,7 +202,7 @@ class TestUsageStatsValidation:
         ]
         result = validate_usage_stats_response(stats)
         assert not result.is_valid()
-    
+
     def test_low_usage_data_coverage(self):
         """Test warning for low usage data coverage."""
         # Create stats with no actual usage metrics
@@ -217,7 +217,7 @@ class TestUsageStatsValidation:
 
 class TestValidateResponseAndLog:
     """Test validate_response_and_log helper."""
-    
+
     def test_accept_valid_data(self):
         """Test valid data is accepted."""
         data = {
@@ -229,7 +229,7 @@ class TestValidateResponseAndLog:
             "Test"
         )
         assert result is True
-    
+
     def test_reject_invalid_data(self):
         """Test invalid data is rejected."""
         data = []  # Wrong type
@@ -239,7 +239,7 @@ class TestValidateResponseAndLog:
             "Test"
         )
         assert result is False
-    
+
     def test_accept_partial_data_with_warnings(self):
         """Test partial data with warnings is accepted when allowed."""
         data = {}  # Empty but valid structure
@@ -250,9 +250,8 @@ class TestValidateResponseAndLog:
             allow_partial=True
         )
         assert result is True
-    
+
     def test_reject_partial_data_when_not_allowed(self):
         """Test partial data with warnings is rejected when not allowed."""
         # This test depends on implementation details
         # For now we'll skip as the function always accepts warnings
-        pass

@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Any, Dict, List
+from typing import Any
 
 from .scenarios import SCENARIOS
 from .tools import anthropic_tools_from_registry
@@ -33,11 +33,11 @@ SYSTEM = (
 DEFAULT_MODEL = os.getenv("AGENT_EVAL_MODEL", "claude-sonnet-5")
 
 
-def _tool_calls(resp) -> List[Any]:
+def _tool_calls(resp) -> list[Any]:
     return [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
 
 
-def _check_args(call_input: Dict[str, Any], expected: Dict[str, Any]) -> List[str]:
+def _check_args(call_input: dict[str, Any], expected: dict[str, Any]) -> list[str]:
     """Return a list of arg problems (empty = all good)."""
     problems = []
     for key, want in (expected or {}).items():
@@ -48,7 +48,7 @@ def _check_args(call_input: Dict[str, Any], expected: Dict[str, Any]) -> List[st
     return problems
 
 
-def run(model: str = DEFAULT_MODEL) -> List[Dict[str, Any]]:
+def run(model: str = DEFAULT_MODEL) -> list[dict[str, Any]]:
     import anthropic  # lazy: only needed for the live run
 
     client = anthropic.Anthropic()
@@ -74,7 +74,7 @@ def run(model: str = DEFAULT_MODEL) -> List[Dict[str, Any]]:
             else:
                 problems = _check_args(hit.input or {}, sc.get("args"))
                 entry.update(ok=not problems, reason="; ".join(problems) if problems else "ok")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             entry.update(ok=False, called=[], reason=f"error: {type(e).__name__}: {e}")
         results.append(entry)
     return results

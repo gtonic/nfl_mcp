@@ -18,10 +18,11 @@ Design:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .config import create_http_client, get_rate_limiter
 from .errors import (
@@ -44,7 +45,7 @@ DB_FRESH_HOURS = 24
 _NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 
-def scoring_to_ppr(scoring: Optional[str]) -> float:
+def scoring_to_ppr(scoring: str | None) -> float:
     """Map a scoring label to a PPR value (points per reception)."""
     if scoring is None:
         return 1.0
@@ -67,7 +68,7 @@ def build_format_key(ppr: float, num_qbs: int, num_teams: int, is_dynasty: bool)
     return f"ppr{ppr:g}:qb{int(num_qbs)}:tm{int(num_teams)}:{'dyn' if is_dynasty else 'redraft'}"
 
 
-def normalize_name(name: Optional[str]) -> str:
+def normalize_name(name: str | None) -> str:
     """Normalize a player name for fuzzy matching (lowercase, no punctuation/suffix)."""
     if not name:
         return ""
@@ -76,7 +77,7 @@ def normalize_name(name: Optional[str]) -> str:
     return " ".join(parts)
 
 
-def _normalize_fantasycalc_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _normalize_fantasycalc_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
     """Convert a FantasyCalc value object into our normalized value dict."""
     player = entry.get("player") or {}
     sleeper_id = player.get("sleeperId")
@@ -111,36 +112,34 @@ class PlayerValuesService:
                 logger.debug(f"PlayerValuesService DB init failed: {e}")
                 self.db = None
         # format_key -> {"list": [...], "by_id": {...}, "by_name": {...}, "fetched_at": dt}
-        self._mem: Dict[str, Dict[str, Any]] = {}
+        self._mem: dict[str, dict[str, Any]] = {}
 
     # -- fetching -----------------------------------------------------------
     async def _fetch_from_fantasycalc(
         self, ppr: float, num_qbs: int, num_teams: int, is_dynasty: bool
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         params = {
             "isDynasty": "true" if is_dynasty else "false",
             "numQbs": int(num_qbs),
             "numTeams": int(num_teams),
             "ppr": ppr,
         }
-        try:
+        with contextlib.suppress(Exception):
             await get_rate_limiter("fantasycalc").acquire()
-        except Exception:
-            pass
         async with create_http_client() as client:
             resp = await client.get(FANTASYCALC_URL, params=params)
             resp.raise_for_status()
             raw = resp.json()
-        values: List[Dict[str, Any]] = []
+        values: list[dict[str, Any]] = []
         for entry in raw or []:
             norm = _normalize_fantasycalc_entry(entry)
             if norm:
                 values.append(norm)
         return values
 
-    def _index(self, values: List[Dict[str, Any]]) -> Dict[str, Any]:
-        by_id: Dict[str, Dict] = {}
-        by_name: Dict[str, Dict] = {}
+    def _index(self, values: list[dict[str, Any]]) -> dict[str, Any]:
+        by_id: dict[str, dict] = {}
+        by_name: dict[str, dict] = {}
         for v in values:
             if v.get("player_id"):
                 by_id[str(v["player_id"])] = v
@@ -157,7 +156,7 @@ class PlayerValuesService:
         num_teams: int = 12,
         is_dynasty: bool = False,
         force_refresh: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Return values for a format with caching and stale-fallback.
 
         Returns a dict: {format_key, list, by_id, by_name, source, stale,
@@ -210,11 +209,11 @@ class PlayerValuesService:
 
     def lookup(
         self,
-        indexed: Dict[str, Any],
-        player_id: Optional[str] = None,
-        name: Optional[str] = None,
-        position: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        indexed: dict[str, Any],
+        player_id: str | None = None,
+        name: str | None = None,
+        position: str | None = None,
+    ) -> dict[str, Any] | None:
         """Look up a single player's value from an indexed values dict."""
         if player_id:
             hit = indexed.get("by_id", {}).get(str(player_id))
@@ -228,7 +227,7 @@ class PlayerValuesService:
 
 
 # Module-level singleton so all callers share the cache.
-_service: Optional[PlayerValuesService] = None
+_service: PlayerValuesService | None = None
 
 
 def get_values_service(db=None) -> PlayerValuesService:
@@ -254,10 +253,10 @@ async def get_player_values(
     superflex: bool = False,
     num_teams: int = 12,
     dynasty: bool = False,
-    position: Optional[str] = None,
-    limit: Optional[int] = 100,
+    position: str | None = None,
+    limit: int | None = 100,
     db=None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Get consensus player market values (FantasyCalc), ordered best-first.
 
     Real market values you can trust for trades and draft ordering — not a
@@ -307,14 +306,14 @@ async def get_player_values(
     operation_name="looking up player value",
 )
 async def get_player_value(
-    player_id: Optional[str] = None,
-    name: Optional[str] = None,
+    player_id: str | None = None,
+    name: str | None = None,
     scoring: str = "ppr",
     superflex: bool = False,
     num_teams: int = 12,
     dynasty: bool = False,
     db=None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Get the consensus market value for a single player by Sleeper id or name.
 
     Args:

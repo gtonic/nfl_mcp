@@ -38,7 +38,6 @@ from __future__ import annotations
 import argparse
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional
 
 from nfl_mcp.matchup_tools import _get_matchup_tier
 from nfl_mcp.opportunity import project_opportunity
@@ -55,35 +54,35 @@ _DOME_ROOFS = {"dome", "closed"}
 logger = logging.getLogger(__name__)
 
 
-def _defense_ranks(records: List[Dict], upto_week: int) -> Dict[str, Dict[str, int]]:
+def _defense_ranks(records: list[dict], upto_week: int) -> dict[str, dict[str, int]]:
     """{position: {team: rank}} from weeks < upto_week. rank 1 = toughest defense."""
-    bywk: Dict = defaultdict(float)
-    weeks: Dict = defaultdict(set)
+    bywk: dict = defaultdict(float)
+    weeks: dict = defaultdict(set)
     for r in records:
         if r["week"] >= upto_week:
             continue
         key = (r["opponent"], r["position"])
         bywk[(r["opponent"], r["position"], r["week"])] += r["ppr"]
         weeks[key].add(r["week"])
-    totals: Dict = defaultdict(float)
+    totals: dict = defaultdict(float)
     for (opp, pos, _wk), v in bywk.items():
         totals[(opp, pos)] += v
-    pos_teams: Dict = defaultdict(list)
+    pos_teams: dict = defaultdict(list)
     for (opp, pos), tot in totals.items():
         games = max(1, len(weeks[(opp, pos)]))
         pos_teams[pos].append((opp, tot / games))
-    ranks: Dict[str, Dict[str, int]] = {}
+    ranks: dict[str, dict[str, int]] = {}
     for pos, lst in pos_teams.items():
         lst.sort(key=lambda x: x[1])  # fewest allowed first -> rank 1 (toughest)
         ranks[pos] = {team: i + 1 for i, (team, _) in enumerate(lst)}
     return ranks
 
 
-def _tier_for(rank: Optional[int]) -> str:
+def _tier_for(rank: int | None) -> str:
     return _get_matchup_tier(rank) if rank else "unknown"
 
 
-def _touch_trend(prior: List[Dict]) -> str:
+def _touch_trend(prior: list[dict]) -> str:
     """up/down/flat from recent (last 2) vs earlier touches."""
     if len(prior) < 3:
         return "flat"
@@ -102,17 +101,17 @@ def _touch_trend(prior: List[Dict]) -> str:
 
 
 def build_samples(
-    records: List[Dict], start_week: int, min_prior: int, min_trailing: float,
-    positions: Optional[List[str]] = None, games: Optional[Dict] = None,
-) -> List[Dict]:
+    records: list[dict], start_week: int, min_prior: int, min_trailing: float,
+    positions: list[str] | None = None, games: dict | None = None,
+) -> list[dict]:
     """Build leak-free prediction samples with base / matchup / usage / full / weather."""
     games = games or {}
-    games_by_player: Dict[str, Dict[int, Dict]] = defaultdict(dict)
+    games_by_player: dict[str, dict[int, dict]] = defaultdict(dict)
     for r in records:
         games_by_player[r["player_id"]][r["week"]] = r
 
-    dcache: Dict[int, Dict[str, Dict[str, int]]] = {}
-    samples: List[Dict] = []
+    dcache: dict[int, dict[str, dict[str, int]]] = {}
+    samples: list[dict] = []
 
     for r in records:
         wk = r["week"]
@@ -163,17 +162,17 @@ def build_samples(
     return samples
 
 
-def _series(samples: List[Dict], key: str):
+def _series(samples: list[dict], key: str):
     return [s[key] for s in samples], [s["actual"] for s in samples]
 
 
 def run_backtest(
-    seasons: List[int], start_week: int = 5, min_prior: int = 3, min_trailing: float = 5.0,
-    positions: Optional[List[str]] = None,
-) -> Dict:
+    seasons: list[int], start_week: int = 5, min_prior: int = 3, min_trailing: float = 5.0,
+    positions: list[str] | None = None,
+) -> dict:
     """Run the backtest and return structured results."""
-    records: List[Dict] = []
-    games: Dict = {}
+    records: list[dict] = []
+    games: dict = {}
     for s in seasons:
         records.extend(load_season(s))
         try:
@@ -198,7 +197,7 @@ def run_backtest(
         weather_effect["weather"] = evaluate(*_series(windy, "weather"))
 
     # Per-position breakdown: base (trailing PPG) vs opportunity vs full.
-    per_pos: Dict[str, Dict] = {}
+    per_pos: dict[str, dict] = {}
     for pos in ("QB", "RB", "WR", "TE"):
         sub = [s for s in samples if s["position"] == pos]
         if not sub:
@@ -224,7 +223,7 @@ def run_backtest(
 
     # Per-position best matchup strength (drives position-specific multipliers).
     grid = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25]
-    per_pos_tuning: Dict[str, Dict] = {}
+    per_pos_tuning: dict[str, dict] = {}
     for pos in ("QB", "RB", "WR", "TE"):
         sub = [smp for smp in samples if smp["position"] == pos]
         if not sub:
@@ -257,12 +256,12 @@ def run_backtest(
     }
 
 
-def _fmt_row(name: str, m: Dict) -> str:
+def _fmt_row(name: str, m: dict) -> str:
     return (f"  {name:<9} n={m['n']:<5} MAE={m['mae']:<7} RMSE={m['rmse']:<7} "
             f"Spearman={m['spearman']:<8} bias={m['bias']:<7} R2={m['r2']}")
 
 
-def print_report(res: Dict) -> None:
+def print_report(res: dict) -> None:
     print("=" * 78)
     print(f"PROJECTION BACKTEST — seasons {res['seasons']}, weeks {res['start_week']}+, "
           f"trailing≥{res['min_trailing']} pts, n={res['n_samples']} player-weeks")

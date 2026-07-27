@@ -6,7 +6,7 @@ This module contains MCP tools for fetching NFL news, teams data, and depth char
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
@@ -27,16 +27,16 @@ logger = logging.getLogger(__name__)
     default_data={"articles": [], "total_articles": 0},
     operation_name="fetching NFL news"
 )
-async def get_nfl_news(limit: Optional[int] = 50) -> dict:
+async def get_nfl_news(limit: int | None = 50) -> dict:
     """
     Get the latest NFL news from ESPN API.
-    
+
     This tool fetches current NFL news articles from ESPN's API and returns
     them in a structured format suitable for LLM processing.
-    
+
     Args:
         limit: Maximum number of news articles to retrieve (default: 50, max: 50)
-        
+
     Returns:
         A dictionary containing:
         - articles: List of news articles with title, description, published date, etc.
@@ -47,28 +47,28 @@ async def get_nfl_news(limit: Optional[int] = 50) -> dict:
     """
     # Validate and cap the limit
     limit = validate_limit(
-        limit, 
-        LIMITS["nfl_news_min"], 
-        LIMITS["nfl_news_max"], 
+        limit,
+        LIMITS["nfl_news_min"],
+        LIMITS["nfl_news_max"],
         LIMITS["nfl_news_max"]
     )
-        
+
     headers = get_http_headers("nfl_news")
-    
+
     # Build the ESPN API URL
     url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?limit={limit}"
-    
+
     async with create_http_client() as client:
         # Fetch the news from ESPN API
         response = await client.get(url, headers=headers)
         response.raise_for_status()
-        
+
         # Parse JSON response
         data = response.json()
-        
+
         # Extract articles from the response
         articles = data.get('articles', [])
-        
+
         # Process articles to extract key information
         processed_articles = []
         for article in articles:
@@ -82,7 +82,7 @@ async def get_nfl_news(limit: Optional[int] = 50) -> dict:
                 "links": article.get('links', {})
             }
             processed_articles.append(processed_article)
-        
+
         return create_success_response({
             "articles": processed_articles,
             "total_articles": len(processed_articles)
@@ -96,10 +96,10 @@ async def get_nfl_news(limit: Optional[int] = 50) -> dict:
 async def get_teams() -> dict:
     """
     Get all NFL teams from ESPN API.
-    
+
     This tool fetches the current NFL teams from ESPN's API and returns
     them in a structured format with team names and IDs.
-    
+
     Returns:
         A dictionary containing:
         - teams: List of teams with name and id
@@ -109,21 +109,21 @@ async def get_teams() -> dict:
         - error_type: Type of error (if any)
     """
     headers = get_http_headers("nfl_teams")
-    
+
     # Build the ESPN API URL for teams (fixed to use correct endpoint)
     url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
-    
+
     async with create_http_client() as client:
         # Fetch the teams from ESPN API
         response = await client.get(url, headers=headers)
         response.raise_for_status()
-        
+
         # Parse JSON response
         data = response.json()
-        
+
         # Extract teams from the response
         teams_data = data.get('sports', [{}])[0].get('leagues', [{}])[0].get('teams', [])
-        
+
         # Process teams to extract key information
         processed_teams = []
         for team in teams_data:
@@ -140,7 +140,7 @@ async def get_teams() -> dict:
                 "logo": team_info.get('logo', '')
             }
             processed_teams.append(processed_team)
-        
+
         return create_success_response({
             "teams": processed_teams,
             "total_teams": len(processed_teams)
@@ -154,13 +154,13 @@ async def get_teams() -> dict:
 async def fetch_teams(nfl_db) -> dict:
     """
     Fetch all NFL teams from ESPN API and store them in the local database.
-    
-    This tool fetches the complete teams data from ESPN's API and 
+
+    This tool fetches the complete teams data from ESPN's API and
     upserts the data into the SQLite database for fast local lookups.
-    
+
     Args:
         nfl_db: The NFLDatabase instance to store data in
-    
+
     Returns:
         A dictionary containing:
         - teams_count: Number of teams processed
@@ -170,31 +170,31 @@ async def fetch_teams(nfl_db) -> dict:
         - error_type: Type of error (if any)
     """
     headers = get_http_headers("nfl_teams")
-    
+
     # ESPN API endpoint for teams
     url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
-    
+
     async with create_http_client() as client:
         # Fetch the teams from ESPN API
         response = await client.get(url, headers=headers)
         response.raise_for_status()
-        
+
         # Parse JSON response
         data = response.json()
-        
+
         # Extract teams from the response
         teams_data = data.get('sports', [{}])[0].get('leagues', [{}])[0].get('teams', [])
-        
+
         # Process teams to get the team info
         processed_teams = []
         for team in teams_data:
             team_info = team.get('team', {})
             processed_teams.append(team_info)
-        
+
         # Store in database
         count = nfl_db.upsert_teams(processed_teams)
         last_updated = nfl_db.get_teams_last_updated()
-        
+
         return create_success_response({
             "teams_count": count,
             "last_updated": last_updated
@@ -208,13 +208,13 @@ async def fetch_teams(nfl_db) -> dict:
 async def get_depth_chart(team_id: str) -> dict:
     """
     Get the depth chart for a specific NFL team.
-    
+
     This tool fetches the depth chart from ESPN for the specified team,
     showing player positions and depth ordering.
-    
+
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE')
-        
+
     Returns:
         A dictionary containing:
         - team_id: The team identifier used
@@ -230,37 +230,37 @@ async def get_depth_chart(team_id: str) -> dict:
             "Team ID is required and must be a string",
             {"team_id": team_id, "team_name": None, "depth_chart": []}
         )
-    
+
     headers = get_http_headers("depth_chart")
-    
+
     # Build the ESPN depth chart URL
     url = f"https://www.espn.com/nfl/team/depth/_/name/{team_id.upper()}"
-    
+
     async with create_http_client() as client:
         # Fetch the depth chart page
         response = await client.get(url, headers=headers)
         response.raise_for_status()
-        
+
         # Parse HTML content
         soup = BeautifulSoup(response.text, 'html.parser')
-        
+
         # Extract team name
         team_name = None
         team_header = soup.find('h1')
         if team_header:
             team_name = team_header.get_text(strip=True)
-        
+
         # Extract depth chart information
         depth_chart = []
-        
+
         # Look for depth chart tables or sections
         # ESPN depth chart structure may vary, so we'll look for common patterns
         depth_sections = soup.find_all(['table', 'div'], class_=lambda x: x and 'depth' in x.lower() if x else False)
-        
+
         if not depth_sections:
             # Try alternative selectors
             depth_sections = soup.find_all('table')
-        
+
         for section in depth_sections:
             # Extract position and players
             rows = section.find_all('tr')
@@ -273,13 +273,13 @@ async def get_depth_chart(team_id: str) -> dict:
                         player_text = cell.get_text(strip=True)
                         if player_text and player_text != position:
                             players.append(player_text)
-                    
+
                     if position and players:
                         depth_chart.append({
                             "position": position,
                             "players": players
                         })
-        
+
         return create_success_response({
             "team_id": team_id.upper(),
             "team_name": team_name,
@@ -291,23 +291,23 @@ async def get_depth_chart(team_id: str) -> dict:
     default_data={"team_id": None, "team_name": None, "injuries": []},
     operation_name="fetching team injuries"
 )
-async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
+async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
     """
     Get the current injury report for a specific NFL team.
-    
+
     This tool fetches injury information from ESPN's Core API for the specified team,
     providing critical information for fantasy lineup decisions.
-    
+
     Cache-first strategy: Checks database cache (12h TTL) before fetching from ESPN API.
-    
+
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE') or ESPN team ID
         limit: Maximum number of injuries to return (1-100, defaults to 50)
-        
+
     Returns:
         A dictionary containing:
         - team_id: The team identifier used
-        - team_name: The team's full name  
+        - team_name: The team's full name
         - injuries: List of injured players with status and details
         - count: Number of injuries returned
         - cache_source: 'database' or 'api' to indicate data source
@@ -321,11 +321,11 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
             "Team ID is required and must be a string",
             {"team_id": team_id, "team_name": None, "injuries": []}
         )
-    
+
     # Validate limit
     limit = validate_limit(limit or 50, 1, 100, 50)
     team_id_upper = team_id.upper()
-    
+
     # Try cache first (if advanced enrichment is enabled)
     from .sleeper_tools import ADVANCED_ENRICH_ENABLED
     if ADVANCED_ENRICH_ENABLED:
@@ -333,10 +333,10 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
             from .database import get_nfl_database
             nfl_db = get_nfl_database()
             cached_injuries = nfl_db.get_team_injuries_from_cache(team_id_upper, max_age_hours=12)
-            
+
             if cached_injuries:
                 logger.info(f"[Cache Hit] Team injuries for {team_id_upper}: {len(cached_injuries)} injuries from cache")
-                
+
                 # Convert cached format to API response format
                 processed_injuries = []
                 for inj in cached_injuries[:limit]:  # Respect limit
@@ -350,7 +350,7 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
                         'date': inj.get('date_reported', 'Unknown'),
                         'severity': 'Unknown'
                     }
-                    
+
                     # Calculate severity
                     status_lower = injury['status'].lower()
                     if 'out' in status_lower or 'ir' in status_lower:
@@ -359,9 +359,9 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
                         injury['severity'] = 'Medium'
                     elif 'probable' in status_lower or 'limited' in status_lower or 'dnp' in status_lower:
                         injury['severity'] = 'Low'
-                    
+
                     processed_injuries.append(injury)
-                
+
                 return create_success_response({
                     "team_id": team_id_upper,
                     "team_name": f"{team_id_upper} (from cache)",
@@ -371,15 +371,15 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
                 })
         except Exception as e:
             logger.debug(f"[Cache Miss] Failed to get team injuries from cache: {e}")
-    
+
     # Cache miss or disabled - fetch from ESPN API
     logger.info(f"[API Fetch] Team injuries for {team_id_upper}: fetching from ESPN")
-    
+
     headers = get_http_headers("nfl_teams")  # Reuse existing config
-    
+
     # ESPN Core API endpoint for team injuries
     url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team_id_upper}/injuries?limit={limit}"
-    
+
     async with create_http_client() as client:
         try:
             # First attempt with team abbreviation as-is
@@ -398,39 +398,39 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
                 })
             else:
                 raise  # Re-raise other HTTP errors
-        
+
         # Parse JSON response
         data = response.json()
-        
+
         # Extract injuries from the response
         injuries_data = data.get('items', [])
-        
+
         # Process injuries to extract relevant information
         processed_injuries = []
         team_name = None
-        
+
         for injury_item in injuries_data:
             injury = {}
-            
+
             # Get athlete information
             athlete_ref = injury_item.get('athlete', {})
             if athlete_ref and isinstance(athlete_ref, dict):
                 injury['player_name'] = athlete_ref.get('displayName', 'Unknown')
                 injury['player_id'] = athlete_ref.get('id')
                 injury['position'] = athlete_ref.get('position', {}).get('abbreviation', 'N/A')
-            
+
             # Get team information (should be consistent across all items)
             if not team_name:
                 team_ref = injury_item.get('team', {})
                 if team_ref and isinstance(team_ref, dict):
                     team_name = team_ref.get('displayName', 'Unknown Team')
-            
+
             # Get injury details
             injury['status'] = injury_item.get('status', {}).get('name', 'Unknown')
             injury['description'] = injury_item.get('description', 'No description available')
             injury['date'] = injury_item.get('date', 'Unknown')
             injury['type'] = injury_item.get('type', {}).get('name', 'Unknown')
-            
+
             # Fantasy relevance indicators
             injury['severity'] = 'Unknown'
             status_lower = injury['status'].lower()
@@ -440,9 +440,9 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
                 injury['severity'] = 'Medium'
             elif 'probable' in status_lower or 'limited' in status_lower:
                 injury['severity'] = 'Low'
-                
+
             processed_injuries.append(injury)
-        
+
         return create_success_response({
             "team_id": team_id_upper,
             "team_name": team_name,
@@ -456,19 +456,19 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
     default_data={"team_id": None, "team_name": None, "player_stats": []},
     operation_name="fetching team player statistics"
 )
-async def get_team_player_stats(team_id: str, season: Optional[int] = 2026, season_type: Optional[int] = 2, limit: Optional[int] = 50) -> dict:
+async def get_team_player_stats(team_id: str, season: int | None = 2026, season_type: int | None = 2, limit: int | None = 50) -> dict:
     """
     Get current season player statistics for a specific NFL team.
-    
+
     This tool fetches individual player performance data from ESPN's Core API,
     providing key metrics for fantasy football analysis and decision making.
-    
+
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE') or ESPN team ID
         season: Season year (defaults to 2026)
         season_type: 1=Pre, 2=Regular, 3=Post, 4=Off (defaults to 2)
         limit: Maximum number of player stats to return (1-100, defaults to 50)
-        
+
     Returns:
         A dictionary containing:
         - team_id: The team identifier used
@@ -487,17 +487,17 @@ async def get_team_player_stats(team_id: str, season: Optional[int] = 2026, seas
             "Team ID is required and must be a string",
             {"team_id": team_id, "team_name": None, "player_stats": []}
         )
-    
+
     # Validate and set defaults
     season = season or 2026
     season_type = season_type or 2
     limit = validate_limit(limit or 50, 1, 100, 50)
-    
+
     headers = get_http_headers("nfl_teams")  # Reuse existing config
-    
+
     # ESPN Core API endpoint for team player statistics
     url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/teams/{team_id.upper()}/athletes?limit={limit}"
-    
+
     async with create_http_client() as client:
         try:
             response = await client.get(url, headers=headers)
@@ -515,17 +515,17 @@ async def get_team_player_stats(team_id: str, season: Optional[int] = 2026, seas
                 })
             else:
                 raise
-        
+
         # Parse JSON response
         data = response.json()
-        
+
         # Extract athletes from the response
         athletes_data = data.get('items', [])
-        
+
         # Process athlete statistics
         processed_stats = []
         team_name = None
-        
+
         for athlete_item in athletes_data:
             # Extract basic athlete info
             player_stat = {
@@ -536,34 +536,34 @@ async def get_team_player_stats(team_id: str, season: Optional[int] = 2026, seas
                 'age': athlete_item.get('age'),
                 'experience': athlete_item.get('experience', {}).get('years')
             }
-            
+
             # Get position info
             position_ref = athlete_item.get('position', {})
             if position_ref and isinstance(position_ref, dict):
                 player_stat['position'] = position_ref.get('abbreviation', 'N/A')
-            
+
             # Get team info (should be consistent)
             if not team_name:
                 team_ref = athlete_item.get('team', {})
                 if team_ref and isinstance(team_ref, dict):
                     team_name = team_ref.get('displayName', 'Unknown Team')
-            
+
             # Try to get statistics if available (this may require additional API calls)
             # For now, we'll include basic info and note that detailed stats may need separate calls
             player_stat['stats_note'] = 'Detailed statistics require additional API calls per player'
-            
+
             # Check if player is active
             player_stat['active'] = athlete_item.get('active', True)
-            
+
             # Fantasy relevance indicators
             position = player_stat.get('position', '').upper()
             if position in ['QB', 'RB', 'WR', 'TE', 'K', 'DST']:
                 player_stat['fantasy_relevant'] = True
             else:
                 player_stat['fantasy_relevant'] = False
-            
+
             processed_stats.append(player_stat)
-        
+
         return create_success_response({
             "team_id": team_id.upper(),
             "team_name": team_name,
@@ -578,18 +578,18 @@ async def get_team_player_stats(team_id: str, season: Optional[int] = 2026, seas
     default_data={"standings": [], "season": None, "season_type": None},
     operation_name="fetching NFL standings"
 )
-async def get_nfl_standings(season: Optional[int] = 2026, season_type: Optional[int] = 2, group: Optional[int] = None) -> dict:
+async def get_nfl_standings(season: int | None = 2026, season_type: int | None = 2, group: int | None = None) -> dict:
     """
     Get current NFL standings from ESPN's Core API.
-    
+
     This tool fetches league standings which provide critical context for fantasy
     decisions, such as which teams might rest players or be more motivated.
-    
+
     Args:
         season: Season year (defaults to 2026)
         season_type: 1=Pre, 2=Regular, 3=Post, 4=Off (defaults to 2)
         group: Conference group (1=AFC, 2=NFC, None=both, defaults to None for all)
-        
+
     Returns:
         A dictionary containing:
         - standings: List of team standings with records and playoff implications
@@ -604,9 +604,9 @@ async def get_nfl_standings(season: Optional[int] = 2026, season_type: Optional[
     # Validate and set defaults
     season = season or 2026
     season_type = season_type or 2
-    
+
     headers = get_http_headers("nfl_teams")  # Reuse existing config
-    
+
     # ESPN Core API endpoint for NFL standings
     if group is not None and group in [1, 2]:
         # Get specific conference standings
@@ -614,36 +614,36 @@ async def get_nfl_standings(season: Optional[int] = 2026, season_type: Optional[
     else:
         # Get all standings
         url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/standings"
-    
+
     async with create_http_client() as client:
         response = await client.get(url, headers=headers)
         response.raise_for_status()
-        
+
         # Parse JSON response
         data = response.json()
-        
+
         # Extract standings from the response
         standings_items = data.get('children', []) or data.get('items', [])
-        
+
         processed_standings = []
-        
+
         for standing_item in standings_items:
             # Try to get team info from the standing entry
             team_info = {}
-            
+
             # Extract team reference
             team_ref = standing_item.get('team', {})
             if team_ref and isinstance(team_ref, dict):
                 team_info['team_id'] = team_ref.get('id')
                 team_info['team_name'] = team_ref.get('displayName', 'Unknown')
                 team_info['abbreviation'] = team_ref.get('abbreviation', 'UNK')
-            
+
             # Extract standings statistics
             stats = standing_item.get('stats', [])
             for stat in stats:
                 stat_name = stat.get('name', '').lower()
                 stat_value = stat.get('value')
-                
+
                 if 'wins' in stat_name or stat_name == 'wins':
                     team_info['wins'] = stat_value
                 elif 'losses' in stat_name or stat_name == 'losses':
@@ -656,12 +656,12 @@ async def get_nfl_standings(season: Optional[int] = 2026, season_type: Optional[
                     team_info['playoff_rank'] = stat_value
                 elif 'divisionrank' in stat_name or 'division' in stat_name:
                     team_info['division_rank'] = stat_value
-            
+
             # Calculate fantasy implications
             wins = team_info.get('wins', 0)
             losses = team_info.get('losses', 0)
             total_games = wins + losses
-            
+
             # Determine team motivation level for fantasy purposes
             if wins >= 12 or (total_games >= 14 and wins / total_games > 0.8):
                 team_info['fantasy_context'] = 'May rest starters in late season'
@@ -672,9 +672,9 @@ async def get_nfl_standings(season: Optional[int] = 2026, season_type: Optional[
             else:
                 team_info['fantasy_context'] = 'Fighting for playoffs - full effort expected'
                 team_info['motivation_level'] = 'High (Playoff hunt)'
-            
+
             processed_standings.append(team_info)
-        
+
         return create_success_response({
             "standings": processed_standings,
             "season": season,
@@ -688,19 +688,19 @@ async def get_nfl_standings(season: Optional[int] = 2026, season_type: Optional[
     default_data={"team_id": None, "team_name": None, "schedule": []},
     operation_name="fetching team schedule"
 )
-async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
+async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
     """
     Get the schedule for a specific NFL team from ESPN's Site API.
-    
+
     This tool fetches the team's schedule which provides critical context for fantasy
     decisions, including upcoming matchups, strength of schedule, and bye weeks.
-    
+
     Cache-first strategy: Checks database cache before fetching from ESPN API.
-    
+
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE') or ESPN team ID
         season: Season year (defaults to 2026)
-        
+
     Returns:
         A dictionary containing:
         - team_id: The team identifier used
@@ -719,11 +719,11 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
             "Team ID is required and must be a string",
             {"team_id": team_id, "team_name": None, "schedule": []}
         )
-    
+
     # Validate season
     season = season or 2026
     team_id_upper = team_id.upper()
-    
+
     # Try cache first (if advanced enrichment is enabled)
     from .sleeper_tools import ADVANCED_ENRICH_ENABLED
     if ADVANCED_ENRICH_ENABLED:
@@ -731,10 +731,10 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
             from .database import get_nfl_database
             nfl_db = get_nfl_database()
             cached_schedule = nfl_db.get_team_schedule_from_cache(team_id_upper, season)
-            
+
             if cached_schedule and len(cached_schedule) > 0:
                 logger.info(f"[Cache Hit] Team schedule for {team_id_upper} season {season}: {len(cached_schedule)} games from cache")
-                
+
                 # Convert cached format to API response format
                 processed_schedule = []
                 for game in cached_schedule:
@@ -750,16 +750,16 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
                         'result': 'scheduled',  # Cache doesn't track results yet
                         'fantasy_implications': []
                     }
-                    
+
                     # Add basic fantasy implications
                     opp_abbr = game.get('opponent', 'UNK')
                     if processed_game['is_home']:
                         processed_game['fantasy_implications'].append(f"Home game vs {opp_abbr}")
                     else:
                         processed_game['fantasy_implications'].append(f"Away game at {opp_abbr}")
-                    
+
                     processed_schedule.append(processed_game)
-                
+
                 return create_success_response({
                     "team_id": team_id_upper,
                     "team_name": f"{team_id_upper} (from cache)",
@@ -770,15 +770,15 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
                 })
         except Exception as e:
             logger.debug(f"[Cache Miss] Failed to get team schedule from cache: {e}")
-    
+
     # Cache miss or disabled - fetch from ESPN API
     logger.info(f"[API Fetch] Team schedule for {team_id_upper} season {season}: fetching from ESPN")
-    
+
     headers = get_http_headers("nfl_teams")  # Reuse existing config
-    
+
     # ESPN Site API endpoint for team schedule
     url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id_upper}/schedule?season={season}"
-    
+
     async with create_http_client() as client:
         try:
             response = await client.get(url, headers=headers)
@@ -795,19 +795,19 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
                 })
             else:
                 raise
-        
+
         # Parse JSON response
         data = response.json()
-        
+
         # Extract team info
         team_info = data.get('team', {})
         team_name = team_info.get('displayName', 'Unknown Team')
-        
+
         # Extract events (games) from the response
         events = data.get('events', [])
-        
+
         processed_schedule = []
-        
+
         for event in events:
             game = {
                 'game_id': event.get('id'),
@@ -819,24 +819,24 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
                 'result': None,
                 'fantasy_implications': []
             }
-            
+
             # Extract week information
             week_info = event.get('week', {})
             if week_info:
                 game['week'] = week_info.get('number')
-            
+
             # Extract season type
             season_info = event.get('season', {})
             if season_info:
                 season_type_info = season_info.get('type', {})
                 if season_type_info:
                     game['season_type'] = season_type_info.get('name', 'Regular Season')
-            
+
             # Extract competition details
             competitions = event.get('competitions', [])
             if competitions:
                 competition = competitions[0]  # Usually just one competition per event
-                
+
                 # Find opponent and home/away status
                 competitors = competition.get('competitors', [])
                 for competitor in competitors:
@@ -851,7 +851,7 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
                     elif team_ref and team_ref.get('abbreviation', '').upper() == team_id.upper():
                         # This is our team - check if home or away
                         game['is_home'] = competitor.get('homeAway') == 'home'
-                
+
                 # Get game result if available
                 status = competition.get('status', {})
                 if status:
@@ -868,30 +868,30 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
                         game['result'] = 'scheduled'
                     else:
                         game['result'] = 'in_progress'
-            
+
             # Add fantasy implications
             if game['opponent']:
                 opp_name = game['opponent']['name']
-                
+
                 # Add basic matchup context
                 if game['is_home']:
                     game['fantasy_implications'].append(f"Home game vs {opp_name} - typically favorable for offense")
                 else:
                     game['fantasy_implications'].append(f"Away game at {opp_name} - consider road performance")
-                
+
                 # Add week-specific context
                 if game['week']:
                     if game['week'] <= 3:
                         game['fantasy_implications'].append("Early season - sample size considerations")
                     elif game['week'] >= 15:
                         game['fantasy_implications'].append("Late season - potential rest concerns for playoff teams")
-                
+
                 # Add bye week identification
                 if game['season_type'] == 'Bye Week':
                     game['fantasy_implications'].append("BYE WEEK - No fantasy points available")
-            
+
             processed_schedule.append(game)
-        
+
         return create_success_response({
             "team_id": team_id_upper,
             "team_name": team_name,
@@ -906,7 +906,7 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
     default_data={"players": [], "season": None, "category": None},
     operation_name="fetching league leaders"
 )
-async def get_league_leaders(category: str, season: int = 2026, season_type: int = 2, week: Optional[int] = None) -> dict:
+async def get_league_leaders(category: str, season: int = 2026, season_type: int = 2, week: int | None = None) -> dict:
     """Fetch current NFL statistical leaders for a single category.
 
     Instead of returning all categories, this focuses on one requested category.
@@ -1008,7 +1008,7 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
         # Build players per matched token
         cache_stats = {"hits": 0, "misses": 0}
 
-        async def _fetch_json(url: str, client, headers, cache: Dict[str, Any]) -> Any:
+        async def _fetch_json(url: str, client, headers, cache: dict[str, Any]) -> Any:
             if not url:
                 return None
             if url in cache:
@@ -1024,9 +1024,9 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
             except Exception:
                 return None
 
-        async def extract_players(cat_obj, client, headers) -> List[Dict[str, Any]]:
-            players_local: List[Dict[str, Any]] = []
-            cache: Dict[str, Any] = {}
+        async def extract_players(cat_obj, client, headers) -> list[dict[str, Any]]:
+            players_local: list[dict[str, Any]] = []
+            cache: dict[str, Any] = {}
 
             # Collect leader groups (dereference group if needed)
             leader_groups = cat_obj.get('leaders', []) or []
@@ -1045,7 +1045,7 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
             expanded = await asyncio.gather(*expanded_lists) if expanded_lists else []
 
             # Flatten entries
-            entries: List[Dict[str, Any]] = []
+            entries: list[dict[str, Any]] = []
             for lst in expanded:
                 entries.extend(lst)
 
@@ -1120,9 +1120,9 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
 # Helper: current season and week detection
 # ============================================================================
 
-async def get_current_season_and_week() -> tuple[Optional[int], Optional[int]]:
+async def get_current_season_and_week() -> tuple[int | None, int | None]:
     """Fetch current NFL season and week from Sleeper API.
-    
+
     Returns:
         Tuple of (season: int, week: int) or (None, None) on failure.
     """

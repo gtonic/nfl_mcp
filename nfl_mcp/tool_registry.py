@@ -8,8 +8,8 @@ of a mutable global, eliminating race conditions and making the code testable.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextvars import ContextVar
-from typing import Callable, List, Optional
 
 from . import (
     athlete_tools,
@@ -62,7 +62,7 @@ def get_db() -> NFLDatabase | None:
     """Return the current request's database instance (or None)."""
     return _db_token.get()
 
-def get_all_tools() -> List[Callable]:
+def get_all_tools() -> list[Callable]:
     """Get list of all tool functions to register with FastMCP server."""
     tools = [
         # NFL News and Info
@@ -74,21 +74,21 @@ def get_all_tools() -> List[Callable]:
         get_team_player_stats,
         get_nfl_standings,
         get_team_schedule,
-        
+
         # CBS Fantasy Tools
         get_cbs_player_news,
         get_cbs_projections,
         get_cbs_expert_picks,
-        
+
         # Web Tools
         crawl_url,
-        
+
         # Athlete Tools
         fetch_athletes,
         lookup_athlete,
         search_athletes,
         get_athletes_by_team,
-        
+
         # Sleeper API Tools - Basic
         get_league,
         get_rosters,
@@ -100,7 +100,7 @@ def get_all_tools() -> List[Callable]:
         get_nfl_state,
         get_trending_players,
     get_fantasy_context,
-        
+
         # Sleeper API Tools - Strategic Planning (New from main)
         get_strategic_matchup_preview,
         get_season_bye_week_coordination,
@@ -116,14 +116,14 @@ def get_all_tools() -> List[Callable]:
     get_draft_picks,
     get_draft_traded_picks,
     fetch_all_players,
-        
+
         # Waiver Wire Analysis Tools (New from main)
         get_waiver_log,
         check_re_entry_status,
         get_waiver_wire_dashboard,
         recommend_faab_bid,
         get_handcuff_map,
-        
+
         # Trade Analyzer Tools
         analyze_trade,
 
@@ -143,7 +143,7 @@ def get_all_tools() -> List[Callable]:
 
         # Opponent Analysis Tools
         analyze_opponent,
-        
+
         # Matchup Analysis Tools (Lineup Optimization)
         get_defense_rankings,
         get_matchup_difficulty,
@@ -165,29 +165,29 @@ def get_all_tools() -> List[Callable]:
         compare_players_for_slot,
         analyze_full_lineup,
         get_win_probability_lineup,
-        
+
         # Vegas Lines Tools (Game Environment Analysis)
         get_vegas_lines,
         get_game_environment,
         analyze_roster_vegas,
         get_stack_opportunities,
-        
+
         # Injury Report Tools (Multi-source with confidence scoring)
         get_injury_report,
         get_high_confidence_injuries,
         get_gameday_inactives,
-        
+
         # Coaching Intelligence Tools
         get_coaching_staff,
         get_all_coaching_staffs,
         get_coaching_tree,
         get_scheme_classification,
     ]
-    
+
     # Add feature-flagged tools
     if FEATURE_LEAGUE_LEADERS:
         tools.append(get_league_leaders)
-    
+
     return tools
 
 
@@ -196,7 +196,7 @@ def get_all_tools() -> List[Callable]:
 # =============================================================================
 
 @timing_decorator("get_nfl_news", tool_type="nfl")
-async def get_nfl_news(limit: Optional[int] = 50) -> dict:
+async def get_nfl_news(limit: int | None = 50) -> dict:
     """Fetch latest NFL news headlines from ESPN.
 
     Parameters:
@@ -210,7 +210,7 @@ async def get_nfl_news(limit: Optional[int] = 50) -> dict:
 @timing_decorator("get_teams", tool_type="nfl")
 async def get_teams() -> dict:
     """Get all NFL teams from ESPN API.
-    
+
     Returns: {teams: [...], total_teams, success, error?}
     Example: get_teams()
     """
@@ -220,7 +220,7 @@ async def get_teams() -> dict:
 @timing_decorator("fetch_teams", tool_type="nfl")
 async def fetch_teams() -> dict:
     """Fetch all NFL teams from ESPN API and store them in database.
-    
+
     Returns: {teams_count, last_updated, success, error?}
     Example: fetch_teams()
     """
@@ -240,7 +240,7 @@ async def get_depth_chart(team_id: str) -> dict:
 
 
 @timing_decorator("get_team_injuries", tool_type="nfl")
-async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
+async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
     """Fetch current injury report for a team (ESPN Core API).
 
     Parameters:
@@ -259,7 +259,7 @@ async def get_team_injuries(team_id: str, limit: Optional[int] = 50) -> dict:
 
 
 @timing_decorator("get_team_player_stats", tool_type="nfl")
-async def get_team_player_stats(team_id: str, season: Optional[int] = 2026, season_type: Optional[int] = 2, limit: Optional[int] = 50) -> dict:
+async def get_team_player_stats(team_id: str, season: int | None = 2026, season_type: int | None = 2, limit: int | None = 50) -> dict:
     """Fetch current season player summary stats for a team.
 
     Parameters:
@@ -286,7 +286,7 @@ async def get_team_player_stats(team_id: str, season: Optional[int] = 2026, seas
 
 
 @timing_decorator("get_nfl_standings", tool_type="nfl")
-async def get_nfl_standings(season: Optional[int] = 2026, season_type: Optional[int] = 2, group: Optional[int] = None) -> dict:
+async def get_nfl_standings(season: int | None = 2026, season_type: int | None = 2, group: int | None = None) -> dict:
     """Fetch NFL standings (league or conference) from ESPN Core API.
 
     Parameters:
@@ -312,7 +312,7 @@ async def get_nfl_standings(season: Optional[int] = 2026, season_type: Optional[
 
 
 @timing_decorator("get_team_schedule", tool_type="nfl")
-async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
+async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
     """Fetch a team's schedule (Site API) including matchup context.
 
     Parameters:
@@ -333,7 +333,7 @@ async def get_team_schedule(team_id: str, season: Optional[int] = 2026) -> dict:
 # =============================================================================
 
 @timing_decorator("get_cbs_player_news", tool_type="cbs_fantasy")
-async def get_cbs_player_news(limit: Optional[int] = 50) -> dict:
+async def get_cbs_player_news(limit: int | None = 50) -> dict:
     """Fetch latest fantasy football player news from CBS Sports.
 
     Parameters:
@@ -347,8 +347,8 @@ async def get_cbs_player_news(limit: Optional[int] = 50) -> dict:
 @timing_decorator("get_cbs_projections", tool_type="cbs_fantasy")
 async def get_cbs_projections(
     position: str = "QB",
-    week: Optional[int] = None,
-    season: Optional[int] = 2026,
+    week: int | None = None,
+    season: int | None = 2026,
     scoring: str = "ppr"
 ) -> dict:
     """Fetch fantasy football projections from CBS Sports for a specific position and week.
@@ -376,7 +376,7 @@ async def get_cbs_projections(
 
 
 @timing_decorator("get_cbs_expert_picks", tool_type="cbs_fantasy")
-async def get_cbs_expert_picks(week: Optional[int] = None) -> dict:
+async def get_cbs_expert_picks(week: int | None = None) -> dict:
     """Fetch NFL expert picks against the spread from CBS Sports for a specific week.
 
     Parameters:
@@ -396,7 +396,7 @@ async def get_cbs_expert_picks(week: Optional[int] = None) -> dict:
 # =============================================================================
 
 @timing_decorator("crawl_url", tool_type="web")
-async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
+async def crawl_url(url: str, max_length: int | None = 10000) -> dict:
     """Crawl URL and extract text content for LLM processing.
 
     Parameters:
@@ -415,7 +415,7 @@ async def crawl_url(url: str, max_length: Optional[int] = 10000) -> dict:
 @timing_decorator("fetch_athletes", tool_type="athlete")
 async def fetch_athletes() -> dict:
     """Fetch all NFL players from Sleeper API and store in database.
-    
+
     Returns: {athletes_count, last_updated, success, error?}
     Example: fetch_athletes()
     """
@@ -425,7 +425,7 @@ async def fetch_athletes() -> dict:
 @timing_decorator("lookup_athlete", tool_type="athlete")
 def lookup_athlete(athlete_id: str) -> dict:
     """Look up an athlete by their ID.
-    
+
     Parameters:
         athlete_id (str, required): The unique identifier for the athlete.
     Returns: {athlete, found, error?}
@@ -435,9 +435,9 @@ def lookup_athlete(athlete_id: str) -> dict:
 
 
 @timing_decorator("search_athletes", tool_type="athlete")
-def search_athletes(name: str, limit: Optional[int] = 10) -> dict:
+def search_athletes(name: str, limit: int | None = 10) -> dict:
     """Search for athletes by name (partial match supported).
-    
+
     Parameters:
         name (str, required): Name or partial name to search for.
         limit (int, default 10, range 1-50): Maximum number of results.
@@ -450,7 +450,7 @@ def search_athletes(name: str, limit: Optional[int] = 10) -> dict:
 @timing_decorator("get_athletes_by_team", tool_type="athlete")
 def get_athletes_by_team(team_id: str) -> dict:
     """Get all athletes for a specific team.
-    
+
     Parameters:
         team_id (str, required): The team identifier (e.g., "SF", "DAL", "NE").
     Returns: {athletes: [...], count, team_id, error?}
@@ -470,7 +470,7 @@ async def get_league(league_id: str) -> dict:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_league(league_id)
     except ValueError as e:
-        return {"league": None, "success": False, "error": f"Invalid league_id: {str(e)}"}
+        return {"league": None, "success": False, "error": f"Invalid league_id: {e!s}"}
 
 
 @timing_decorator("get_rosters", tool_type="sleeper")
@@ -480,7 +480,7 @@ async def get_rosters(league_id: str) -> dict:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_rosters(league_id)
     except ValueError as e:
-        return {"rosters": [], "count": 0, "success": False, "error": f"Invalid league_id: {str(e)}"}
+        return {"rosters": [], "count": 0, "success": False, "error": f"Invalid league_id: {e!s}"}
 
 
 @timing_decorator("get_league_users", tool_type="sleeper")
@@ -490,7 +490,7 @@ async def get_league_users(league_id: str) -> dict:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_league_users(league_id)
     except ValueError as e:
-        return {"users": [], "count": 0, "success": False, "error": f"Invalid league_id: {str(e)}"}
+        return {"users": [], "count": 0, "success": False, "error": f"Invalid league_id: {e!s}"}
 
 
 @timing_decorator("get_matchups", tool_type="sleeper")
@@ -501,7 +501,7 @@ async def get_matchups(league_id: str, week: int) -> dict:
         week = validate_numeric_input(week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
         return await sleeper_tools.get_matchups(league_id, week)
     except ValueError as e:
-        return {"matchups": [], "week": week, "count": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"matchups": [], "week": week, "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_playoff_bracket", tool_type="sleeper")
@@ -512,11 +512,11 @@ async def get_playoff_bracket(league_id: str, bracket_type: str = "winners") -> 
         bracket_type = validate_string_input(bracket_type, 'bracket_type', max_length=10, required=False)
         return await sleeper_tools.get_playoff_bracket(league_id, bracket_type)
     except ValueError as e:
-        return {"playoff_bracket": None, "bracket_type": bracket_type, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"playoff_bracket": None, "bracket_type": bracket_type, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_transactions", tool_type="sleeper")
-async def get_transactions(league_id: str, week: Optional[int] = None, round: Optional[int] = None) -> dict:
+async def get_transactions(league_id: str, week: int | None = None, round: int | None = None) -> dict:
     """Get league transactions for a specific week (round) with validation (week required)."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
@@ -527,7 +527,7 @@ async def get_transactions(league_id: str, week: Optional[int] = None, round: Op
         effective_week = validate_numeric_input(effective_week, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=True)
         return await sleeper_tools.get_transactions(league_id, round=effective_week, week=effective_week)
     except ValueError as e:
-        return {"transactions": [], "week": week, "count": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"transactions": [], "week": week, "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_traded_picks", tool_type="sleeper")
@@ -537,7 +537,7 @@ async def get_traded_picks(league_id: str) -> dict:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         return await sleeper_tools.get_traded_picks(league_id)
     except ValueError as e:
-        return {"traded_picks": [], "count": 0, "success": False, "error": f"Invalid league_id: {str(e)}"}
+        return {"traded_picks": [], "count": 0, "success": False, "error": f"Invalid league_id: {e!s}"}
 
 
 @timing_decorator("get_nfl_state", tool_type="sleeper")
@@ -547,7 +547,7 @@ async def get_nfl_state() -> dict:
 
 
 @timing_decorator("get_trending_players", tool_type="sleeper")
-async def get_trending_players(trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
+async def get_trending_players(trend_type: str = "add", lookback_hours: int | None = 24, limit: int | None = 25) -> dict:
     """Get trending players with validation (returns objects including counts and 'enriched')."""
     try:
         trend_type = validate_string_input(trend_type, 'trend_type', max_length=10, required=True)
@@ -555,11 +555,11 @@ async def get_trending_players(trend_type: str = "add", lookback_hours: Optional
         limit = validate_numeric_input(limit, min_val=LIMITS["trending_limit_min"], max_val=LIMITS["trending_limit_max"], default=25, required=False)
         return await sleeper_tools.get_trending_players(get_db(), trend_type, lookback_hours, limit)
     except ValueError as e:
-        return {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"trending_players": [], "trend_type": trend_type, "lookback_hours": lookback_hours, "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_fantasy_context", tool_type="sleeper")
-async def get_fantasy_context(league_id: str, week: Optional[int] = None, include: Optional[str] = None) -> dict:
+async def get_fantasy_context(league_id: str, week: int | None = None, include: str | None = None) -> dict:
     """Aggregate core league context (league, rosters, users, matchups, transactions).
 
     Parameters:
@@ -568,8 +568,8 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
         include (str, optional) comma list subset
     Returns: {context:{...}, week, auto_week_inferred, success, error?}
     Example: get_fantasy_context(league_id="12345", include="league,rosters,matchups")
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete analysis immediately without asking 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete analysis immediately without asking
     for confirmations. Render the full report directly with all insights and recommendations.
     """
     try:
@@ -578,7 +578,7 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
             week = validate_numeric_input(week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=False)
         return await sleeper_tools.get_fantasy_context(league_id, week, include)
     except ValueError as e:
-        return {"context": {}, "league_id": league_id, "week": week, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"context": {}, "league_id": league_id, "week": week, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 # =============================================================================
@@ -586,10 +586,10 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
 # =============================================================================
 
 @timing_decorator("get_strategic_matchup_preview", tool_type="sleeper")
-async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks_ahead: Optional[int] = 4) -> dict:
+async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks_ahead: int | None = 4) -> dict:
     """Strategic preview of upcoming matchups for multi-week planning.
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete strategic analysis immediately without 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete strategic analysis immediately without
     asking for confirmations. Render the full preview with all recommendations directly."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
@@ -597,59 +597,59 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
         weeks_ahead = validate_numeric_input(weeks_ahead, min_val=1, max_val=8, default=4, required=False)
         return await sleeper_tools.get_strategic_matchup_preview(league_id, current_week, weeks_ahead)
     except ValueError as e:
-        return {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_season_bye_week_coordination", tool_type="sleeper")
-async def get_season_bye_week_coordination(league_id: str, season: Optional[int] = 2026) -> dict:
+async def get_season_bye_week_coordination(league_id: str, season: int | None = 2026) -> dict:
     """Season-long bye week coordination with fantasy league schedule.
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete bye week coordination plan immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete bye week coordination plan immediately
     without asking for confirmations. Render the full seasonal strategy with all recommendations directly."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
         season = validate_numeric_input(season, min_val=2020, max_val=2030, default=2026, required=False)
         return await sleeper_tools.get_season_bye_week_coordination(league_id, season)
     except ValueError as e:
-        return {"coordination_plan": {}, "season": season, "league_id": league_id, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"coordination_plan": {}, "season": season, "league_id": league_id, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_trade_deadline_analysis", tool_type="sleeper")
 async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict:
     """Strategic trade deadline timing analysis.
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete trade deadline analysis immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete trade deadline analysis immediately
     without asking for confirmations. Render the full timing strategy with all recommendations directly."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
         current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
         return await sleeper_tools.get_trade_deadline_analysis(league_id, current_week)
     except ValueError as e:
-        return {"trade_analysis": {}, "league_id": league_id, "current_week": current_week, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"trade_analysis": {}, "league_id": league_id, "current_week": current_week, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_playoff_preparation_plan", tool_type="sleeper")
 async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dict:
     """Comprehensive playoff preparation plan combining league and NFL data.
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete playoff preparation plan immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete playoff preparation plan immediately
     without asking for confirmations. Render the full strategy with all recommendations directly."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
         current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
         return await sleeper_tools.get_playoff_preparation_plan(league_id, current_week)
     except ValueError as e:
-        return {"playoff_plan": {}, "league_id": league_id, "readiness_score": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"playoff_plan": {}, "league_id": league_id, "readiness_score": 0, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_playoff_odds", tool_type="sleeper")
 async def get_playoff_odds(
     league_id: str,
-    current_week: Optional[int] = None,
-    num_sims: Optional[int] = 10000,
-    score_sd: Optional[float] = 25.0,
-    my_roster_id: Optional[int] = None,
-    seed: Optional[int] = None,
+    current_week: int | None = None,
+    num_sims: int | None = 10000,
+    score_sd: float | None = 25.0,
+    my_roster_id: int | None = None,
+    seed: int | None = None,
 ) -> dict:
     """Compute playoff probabilities via Monte-Carlo of the rest of the season.
 
@@ -676,7 +676,7 @@ async def get_playoff_odds(
         if my_roster_id is not None:
             my_roster_id = validate_numeric_input(my_roster_id, min_val=1, max_val=32, required=False)
     except ValueError as e:
-        return {"odds": [], "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"odds": [], "success": False, "error": f"Invalid input: {e!s}"}
     return await playoff_tools.get_playoff_odds(
         league_id=league_id, current_week=current_week, num_sims=num_sims or 10000,
         score_sd=score_sd or 25.0, my_roster_id=my_roster_id, seed=seed, db=get_db(),
@@ -694,7 +694,7 @@ async def get_user(user_id_or_username: str) -> dict:
         user_id_or_username = validate_string_input(user_id_or_username, 'user_id_or_username', max_length=40, required=True)
         return await sleeper_tools.get_user(user_id_or_username)
     except ValueError as e:
-        return {"user": None, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"user": None, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_user_leagues", tool_type="sleeper")
@@ -705,7 +705,7 @@ async def get_user_leagues(user_id: str, season: int) -> dict:
         season = validate_numeric_input(season, min_val=2017, max_val=2030, required=True)
         return await sleeper_tools.get_user_leagues(user_id, season)
     except ValueError as e:
-        return {"leagues": [], "count": 0, "season": season, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"leagues": [], "count": 0, "season": season, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_league_drafts", tool_type="sleeper")
@@ -715,7 +715,7 @@ async def get_league_drafts(league_id: str) -> dict:
         league_id = validate_string_input(league_id, 'league_id', max_length=40, required=True)
         return await sleeper_tools.get_league_drafts(league_id)
     except ValueError as e:
-        return {"drafts": [], "count": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"drafts": [], "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_draft", tool_type="sleeper")
@@ -725,7 +725,7 @@ async def get_draft(draft_id: str) -> dict:
         draft_id = validate_string_input(draft_id, 'draft_id', max_length=40, required=True)
         return await sleeper_tools.get_draft(draft_id)
     except ValueError as e:
-        return {"draft": None, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"draft": None, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_draft_picks", tool_type="sleeper")
@@ -735,7 +735,7 @@ async def get_draft_picks(draft_id: str) -> dict:
         draft_id = validate_string_input(draft_id, 'draft_id', max_length=40, required=True)
         return await sleeper_tools.get_draft_picks(draft_id)
     except ValueError as e:
-        return {"picks": [], "count": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"picks": [], "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_draft_traded_picks", tool_type="sleeper")
@@ -745,7 +745,7 @@ async def get_draft_traded_picks(draft_id: str) -> dict:
         draft_id = validate_string_input(draft_id, 'draft_id', max_length=40, required=True)
         return await sleeper_tools.get_draft_traded_picks(draft_id)
     except ValueError as e:
-        return {"traded_picks": [], "count": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"traded_picks": [], "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("fetch_all_players", tool_type="sleeper")
@@ -754,7 +754,7 @@ async def fetch_all_players(force_refresh: bool = False) -> dict:
     try:
         return await sleeper_tools.fetch_all_players(force_refresh)
     except ValueError as e:
-        return {"players": {}, "cached": False, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"players": {}, "cached": False, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 # =============================================================================
@@ -762,7 +762,7 @@ async def fetch_all_players(force_refresh: bool = False) -> dict:
 # =============================================================================
 
 @timing_decorator("get_waiver_log", tool_type="waiver")
-async def get_waiver_log(league_id: str, round: Optional[int] = None, dedupe: bool = True) -> dict:
+async def get_waiver_log(league_id: str, round: int | None = None, dedupe: bool = True) -> dict:
     """Get waiver wire activity log with de-duplication."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
@@ -770,11 +770,11 @@ async def get_waiver_log(league_id: str, round: Optional[int] = None, dedupe: bo
             round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
         return await waiver_tools.get_waiver_log(league_id, round, dedupe)
     except ValueError as e:
-        return {"waiver_log": [], "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"waiver_log": [], "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("check_re_entry_status", tool_type="waiver")
-async def check_re_entry_status(league_id: str, round: Optional[int] = None) -> dict:
+async def check_re_entry_status(league_id: str, round: int | None = None) -> dict:
     """Check player re-entry status on waiver wire."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
@@ -782,14 +782,14 @@ async def check_re_entry_status(league_id: str, round: Optional[int] = None) -> 
             round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
         return await waiver_tools.check_re_entry_status(league_id, round)
     except ValueError as e:
-        return {"re_entry_status": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"re_entry_status": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("get_waiver_wire_dashboard", tool_type="waiver")
-async def get_waiver_wire_dashboard(league_id: str, round: Optional[int] = None) -> dict:
+async def get_waiver_wire_dashboard(league_id: str, round: int | None = None) -> dict:
     """Get comprehensive waiver wire analysis dashboard.
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete waiver wire analysis immediately without 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete waiver wire analysis immediately without
     asking for confirmations. Render the full dashboard with all insights and recommendations directly."""
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
@@ -797,15 +797,15 @@ async def get_waiver_wire_dashboard(league_id: str, round: Optional[int] = None)
             round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
         return await waiver_tools.get_waiver_wire_dashboard(league_id, round)
     except ValueError as e:
-        return {"dashboard": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"dashboard": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {e!s}"}
 
 
 @timing_decorator("recommend_faab_bid", tool_type="waiver")
 async def recommend_faab_bid(
     league_id: str,
-    player_id: Optional[str] = None,
-    player_name: Optional[str] = None,
-    my_roster_id: Optional[int] = None,
+    player_id: str | None = None,
+    player_name: str | None = None,
+    my_roster_id: int | None = None,
 ) -> dict:
     """Recommend a FAAB waiver bid for a player (% of budget + absolute).
 
@@ -826,7 +826,7 @@ async def recommend_faab_bid(
         if my_roster_id is not None:
             my_roster_id = validate_numeric_input(my_roster_id, min_val=1, max_val=32, required=False)
     except ValueError as e:
-        return {"recommendation": None, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"recommendation": None, "success": False, "error": f"Invalid input: {e!s}"}
     return await faab_tools.recommend_faab_bid(
         league_id=league_id, player_id=player_id, player_name=player_name,
         my_roster_id=my_roster_id, db=get_db(),
@@ -861,7 +861,7 @@ async def get_handcuff_map(league_id: str, roster_id: int) -> dict:
         league_id = validate_string_input(league_id, 'league_id', max_length=32, required=True)
         roster_id = validate_numeric_input(roster_id, min_val=1, max_val=32, required=True)
     except ValueError as e:
-        return {"handcuffs": [], "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"handcuffs": [], "success": False, "error": f"Invalid input: {e!s}"}
     return await handcuff_tools.get_handcuff_map(
         league_id=league_id, roster_id=roster_id, db=get_db(),
     )
@@ -881,11 +881,11 @@ async def analyze_trade(
     include_trending: bool = True
 ) -> dict:
     """Analyze a fantasy football trade for fairness and fit.
-    
+
     This tool evaluates proposed trades between two teams by calculating player
     values, assessing positional needs, and providing fairness scores with
     actionable recommendations.
-    
+
     Parameters:
         league_id (str, required): The unique identifier for the fantasy league.
         team1_roster_id (int, required): Roster ID for team 1.
@@ -893,7 +893,7 @@ async def analyze_trade(
         team1_gives (list[str], required): List of player IDs team 1 is giving up.
         team2_gives (list[str], required): List of player IDs team 2 is giving up.
         include_trending (bool, default True): Include trending player data in analysis.
-    
+
     Returns: {
         recommendation: str (fair, needs_adjustment, unfair, etc.),
         fairness_score: float (0-100, higher = more fair),
@@ -904,7 +904,7 @@ async def analyze_trade(
         success: bool,
         error?: str
     }
-    
+
     Example: analyze_trade(
         league_id="12345",
         team1_roster_id=1,
@@ -912,21 +912,21 @@ async def analyze_trade(
         team1_gives=["4034", "4035"],
         team2_gives=["4036"]
     )
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete trade analysis immediately without 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete trade analysis immediately without
     asking for confirmations. Render the full evaluation with all recommendations directly.
     """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
         team1_roster_id = validate_numeric_input(team1_roster_id, min_val=1, max_val=20, required=True)
         team2_roster_id = validate_numeric_input(team2_roster_id, min_val=1, max_val=20, required=True)
-        
+
         if not isinstance(team1_gives, list) or not isinstance(team2_gives, list):
             raise ValueError("team1_gives and team2_gives must be lists of player IDs")
-        
+
         if not team1_gives or not team2_gives:
             raise ValueError("team1_gives and team2_gives must not be empty")
-        
+
         return await trade_analyzer_tools.analyze_trade(
             league_id=league_id,
             team1_roster_id=team1_roster_id,
@@ -941,7 +941,7 @@ async def analyze_trade(
             "recommendation": None,
             "fairness_score": 0,
             "success": False,
-            "error": f"Invalid input: {str(e)}"
+            "error": f"Invalid input: {e!s}"
         }
 
 
@@ -955,8 +955,8 @@ async def get_player_values(
     superflex: bool = False,
     num_teams: int = 12,
     dynasty: bool = False,
-    position: Optional[str] = None,
-    limit: Optional[int] = 100,
+    position: str | None = None,
+    limit: int | None = 100,
 ) -> dict:
     """Get consensus player market values (real values, not heuristics), best-first.
 
@@ -977,7 +977,7 @@ async def get_player_values(
         try:
             position = validate_string_input(position, 'position', max_length=5, required=False)
         except ValueError as e:
-            return {"values": [], "total": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+            return {"values": [], "total": 0, "success": False, "error": f"Invalid input: {e!s}"}
     return await player_values.get_player_values(
         scoring=scoring, superflex=superflex, num_teams=num_teams,
         dynasty=dynasty, position=position, limit=limit, db=get_db(),
@@ -986,8 +986,8 @@ async def get_player_values(
 
 @timing_decorator("get_player_value", tool_type="values")
 async def get_player_value(
-    player_id: Optional[str] = None,
-    name: Optional[str] = None,
+    player_id: str | None = None,
+    name: str | None = None,
     scoring: str = "ppr",
     superflex: bool = False,
     num_teams: int = 12,
@@ -1017,8 +1017,8 @@ async def get_draft_board(
     superflex: bool = False,
     num_teams: int = 12,
     dynasty: bool = False,
-    position: Optional[str] = None,
-    limit: Optional[int] = 60,
+    position: str | None = None,
+    limit: int | None = 60,
 ) -> dict:
     """Build a tiered, VBD-ranked draft board (the ordering that wins drafts).
 
@@ -1040,7 +1040,7 @@ async def get_draft_board(
         try:
             position = validate_string_input(position, 'position', max_length=5, required=False)
         except ValueError as e:
-            return {"board": [], "total": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+            return {"board": [], "total": 0, "success": False, "error": f"Invalid input: {e!s}"}
     return await draft_tools.get_draft_board(
         scoring=scoring, superflex=superflex, num_teams=num_teams,
         dynasty=dynasty, position=position, limit=limit, db=get_db(),
@@ -1050,8 +1050,8 @@ async def get_draft_board(
 @timing_decorator("recommend_draft_pick", tool_type="draft")
 async def recommend_draft_pick(
     draft_id: str,
-    my_slot: Optional[int] = None,
-    num_suggestions: Optional[int] = 5,
+    my_slot: int | None = None,
+    num_suggestions: int | None = 5,
 ) -> dict:
     """Recommend the best pick(s) right now in a live Sleeper draft.
 
@@ -1074,7 +1074,7 @@ async def recommend_draft_pick(
             my_slot = validate_numeric_input(my_slot, min_val=1, max_val=32, required=False)
         num_suggestions = validate_numeric_input(num_suggestions, min_val=1, max_val=15, default=5, required=False)
     except ValueError as e:
-        return {"suggestions": [], "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"suggestions": [], "success": False, "error": f"Invalid input: {e!s}"}
     return await draft_tools.recommend_draft_pick(
         draft_id=draft_id, my_slot=my_slot, num_suggestions=num_suggestions, db=get_db(),
     )
@@ -1090,7 +1090,7 @@ async def simulate_draft(
     dynasty: bool = False,
     randomness: float = 0.35,
     num_sims: int = 1,
-    seed: Optional[int] = None,
+    seed: int | None = None,
 ) -> dict:
     """Rehearse a full snake draft offline (solo, repeatable).
 
@@ -1121,7 +1121,7 @@ async def simulate_draft(
         if seed is not None:
             seed = validate_numeric_input(seed, min_val=0, max_val=2**31 - 1, required=False)
     except ValueError as e:
-        return {"sample": None, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"sample": None, "success": False, "error": f"Invalid input: {e!s}"}
     return await draft_tools.simulate_draft(
         my_slot=my_slot, num_teams=num_teams, rounds=rounds, scoring=scoring,
         superflex=superflex, dynasty=dynasty, randomness=randomness,
@@ -1139,14 +1139,14 @@ async def project_player(
     position: str,
     team: str,
     opponent: str,
-    snap_percentage: Optional[float] = None,
-    usage_trend: Optional[str] = None,
-    injury_status: Optional[str] = None,
+    snap_percentage: float | None = None,
+    usage_trend: str | None = None,
+    injury_status: str | None = None,
     scoring: str = "ppr",
     superflex: bool = False,
-    season: Optional[int] = None,
-    week: Optional[int] = None,
-    wind_mph: Optional[float] = None,
+    season: int | None = None,
+    week: int | None = None,
+    wind_mph: float | None = None,
     is_dome: bool = False,
 ) -> dict:
     """Project weekly fantasy points for one player (transparent, no scraping).
@@ -1169,7 +1169,7 @@ async def project_player(
         team = validate_string_input(team, 'team', max_length=5, required=True)
         opponent = validate_string_input(opponent, 'opponent', max_length=5, required=True)
     except ValueError as e:
-        return {"projection": None, "success": False, "error": f"Invalid input: {str(e)}"}
+        return {"projection": None, "success": False, "error": f"Invalid input: {e!s}"}
     return await projections.project_player(
         player_name=player_name, position=position.upper(), team=team.upper(),
         opponent=opponent.upper(), snap_percentage=snap_percentage, usage_trend=usage_trend,
@@ -1180,12 +1180,12 @@ async def project_player(
 
 @timing_decorator("project_players", tool_type="projection")
 async def project_players(
-    players: List[dict],
+    players: list[dict],
     scoring: str = "ppr",
     superflex: bool = False,
     num_teams: int = 12,
-    season: Optional[int] = None,
-    week: Optional[int] = None,
+    season: int | None = None,
+    week: int | None = None,
 ) -> dict:
     """Project weekly fantasy points for multiple players at once.
 
@@ -1212,7 +1212,7 @@ async def project_players(
 async def get_opportunity_projections(
     season: int,
     week: int,
-    players: Optional[List[str]] = None,
+    players: list[str] | None = None,
     lookback: int = 6,
     min_games: int = 2,
     top_n: int = 50,
@@ -1260,19 +1260,19 @@ async def get_opportunity_projections(
 async def analyze_opponent(
     league_id: str,
     opponent_roster_id: int,
-    current_week: Optional[int] = None
+    current_week: int | None = None
 ) -> dict:
     """Analyze an opponent's roster to identify weaknesses and exploitation opportunities.
-    
+
     This tool provides comprehensive analysis of an opponent's fantasy roster including
     position-by-position strength assessment, starter vulnerability identification,
     depth chart weakness analysis, and strategic exploitation recommendations.
-    
+
     Parameters:
         league_id (str, required): The unique identifier for the fantasy league.
         opponent_roster_id (int, required): Roster ID of the opponent to analyze.
         current_week (int, optional): Current NFL week for matchup context.
-    
+
     Returns: {
         vulnerability_score: float (0-100, higher = more vulnerable),
         vulnerability_level: str (high, moderate, low),
@@ -1284,23 +1284,23 @@ async def analyze_opponent(
         success: bool,
         error?: str
     }
-    
+
     Example: analyze_opponent(
         league_id="12345",
         opponent_roster_id=2,
         current_week=10
     )
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete opponent analysis immediately without 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete opponent analysis immediately without
     asking for confirmations. Render the full assessment with all exploitation strategies directly.
     """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
         opponent_roster_id = validate_numeric_input(opponent_roster_id, min_val=1, max_val=20, required=True)
-        
+
         if current_week is not None:
             current_week = validate_numeric_input(current_week, min_val=1, max_val=22, required=False)
-        
+
         return await opponent_analysis_tools.analyze_opponent(
             league_id=league_id,
             opponent_roster_id=opponent_roster_id,
@@ -1310,7 +1310,7 @@ async def analyze_opponent(
         return {
             "vulnerability_score": 0,
             "success": False,
-            "error": f"Invalid input: {str(e)}"
+            "error": f"Invalid input: {e!s}"
         }
 
 
@@ -1320,18 +1320,18 @@ async def analyze_opponent(
 
 @timing_decorator("get_defense_rankings", tool_type="matchup")
 async def get_defense_rankings(
-    positions: Optional[List[str]] = None,
-    season: Optional[int] = None
+    positions: list[str] | None = None,
+    season: int | None = None
 ) -> dict:
     """Get NFL defense rankings against fantasy positions for matchup analysis.
-    
+
     Shows how each NFL defense performs against QBs, RBs, WRs, and TEs,
     helping identify favorable and unfavorable matchups for lineup decisions.
-    
+
     Parameters:
         positions (list, optional): Positions to get rankings for. Valid: "QB", "RB", "WR", "TE"
         season (int, optional): NFL season year (defaults to current).
-    
+
     Returns: {
         rankings: dict mapping position to list of team rankings,
         positions: list of positions included,
@@ -1340,10 +1340,10 @@ async def get_defense_rankings(
         success: bool,
         error?: str
     }
-    
+
     Example: get_defense_rankings(positions=["WR", "RB"])
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete defense rankings immediately without 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete defense rankings immediately without
     asking for confirmations. Render the full analysis with matchup tiers directly.
     """
     return await matchup_tools.get_defense_rankings(
@@ -1359,31 +1359,31 @@ async def get_matchup_difficulty(
     include_rankings: bool = False
 ) -> dict:
     """Get matchup difficulty for a specific position vs opponent defense.
-    
+
     Analyzes how the opponent defense performs against the given position
     and provides a recommendation for lineup decisions.
-    
+
     Parameters:
         position (str, required): Fantasy position - "QB", "RB", "WR", or "TE"
         opponent_team (str, required): Opponent team abbreviation (e.g., "KC", "SF", "DAL")
         include_rankings (bool, default False): Whether to include full position rankings
-    
+
     Returns: {
         matchup: {rank, rank_display, matchup_tier, tier_indicator, recommendation},
         position_rankings?: list (if include_rankings=True),
         success: bool,
         error?: str
     }
-    
+
     Example: get_matchup_difficulty(position="WR", opponent_team="KC")
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete matchup analysis immediately without 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete matchup analysis immediately without
     asking for confirmations. Render the recommendation directly.
     """
     try:
         position = validate_string_input(position, 'position', max_length=5, required=True)
         opponent_team = validate_string_input(opponent_team, 'opponent_team', max_length=5, required=True)
-        
+
         return await matchup_tools.get_matchup_difficulty(
             position=position.upper(),
             opponent_team=opponent_team.upper(),
@@ -1393,27 +1393,27 @@ async def get_matchup_difficulty(
         return {
             "matchup": None,
             "success": False,
-            "error": f"Invalid input: {str(e)}"
+            "error": f"Invalid input: {e!s}"
         }
 
 
 @timing_decorator("analyze_roster_matchups", tool_type="matchup")
 async def analyze_roster_matchups(
-    players: List[dict],
-    week: Optional[int] = None
+    players: list[dict],
+    week: int | None = None
 ) -> dict:
     """Analyze matchup difficulty for multiple players on a roster.
-    
+
     Takes a list of players with their positions and opponents,
     returns matchup analysis for each to help with lineup decisions.
-    
+
     Parameters:
         players (list, required): List of player dicts with:
             - name (str): Player name
             - position (str): QB, RB, WR, or TE
             - opponent (str): Opponent team abbreviation
         week (int, optional): NFL week number for display
-    
+
     Returns: {
         analysis: list of matchup analyses per player,
         smash_spots: list of players with excellent matchups,
@@ -1423,13 +1423,13 @@ async def analyze_roster_matchups(
         success: bool,
         error?: str
     }
-    
+
     Example: analyze_roster_matchups(players=[
         {"name": "Patrick Mahomes", "position": "QB", "opponent": "LV"},
         {"name": "Tyreek Hill", "position": "WR", "opponent": "NE"}
     ])
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete roster matchup analysis immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete roster matchup analysis immediately
     without asking for confirmations. Render all smash spots and avoid recommendations directly.
     """
     if not players:
@@ -1442,10 +1442,10 @@ async def analyze_roster_matchups(
             "success": False,
             "error": "No players provided"
         }
-    
+
     if week is not None:
         week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
-    
+
     return await matchup_tools.analyze_roster_matchups(
         players=players,
         week=week
@@ -1461,8 +1461,8 @@ async def get_strength_of_schedule(
     season: int,
     start_week: int,
     end_week: int,
-    positions: Optional[List[str]] = None,
-    strength_season: Optional[int] = None,
+    positions: list[str] | None = None,
+    strength_season: int | None = None,
 ) -> dict:
     """Rank NFL teams by schedule difficulty over a week range, per position.
 
@@ -1503,8 +1503,8 @@ async def get_strength_of_schedule(
 @timing_decorator("get_playoff_sos", tool_type="matchup")
 async def get_playoff_sos(
     season: int,
-    positions: Optional[List[str]] = None,
-    strength_season: Optional[int] = None,
+    positions: list[str] | None = None,
+    strength_season: int | None = None,
 ) -> dict:
     """Strength of schedule for the fantasy playoff weeks (15-17).
 
@@ -1539,10 +1539,10 @@ async def get_streaming_options(
     season: int,
     start_week: int,
     weeks_ahead: int = 3,
-    positions: Optional[List[str]] = None,
-    strength_season: Optional[int] = None,
+    positions: list[str] | None = None,
+    strength_season: int | None = None,
     top_n: int = 8,
-    league_id: Optional[str] = None,
+    league_id: str | None = None,
     only_available: bool = False,
 ) -> dict:
     """Rank weekly streaming options per position over the next 1-4 weeks.
@@ -1601,7 +1601,7 @@ async def get_streaming_options(
 async def get_weather_forecast(
     season: int,
     week: int,
-    teams: Optional[List[str]] = None,
+    teams: list[str] | None = None,
 ) -> dict:
     """Per-game weather forecast + fantasy impact for an NFL week (Open-Meteo, no key).
 
@@ -1644,18 +1644,18 @@ async def get_start_sit_recommendation(
     position: str,
     team: str,
     opponent: str,
-    player_id: Optional[str] = None,
-    target_share: Optional[float] = None,
-    snap_percentage: Optional[float] = None,
-    injury_status: Optional[str] = None,
-    practice_status: Optional[str] = None,
-    projected_points: Optional[float] = None,
+    player_id: str | None = None,
+    target_share: float | None = None,
+    snap_percentage: float | None = None,
+    injury_status: str | None = None,
+    practice_status: str | None = None,
+    projected_points: float | None = None,
 ) -> dict:
     """Get a start/sit recommendation for a single player.
-    
+
     Analyzes matchup difficulty, usage trends, health status, and projections
     to provide a confidence-weighted recommendation.
-    
+
     Parameters:
         player_name (str, required): Player's full name
         position (str, required): Fantasy position (QB, RB, WR, TE)
@@ -1667,7 +1667,7 @@ async def get_start_sit_recommendation(
         injury_status (str, optional): Injury status (healthy, questionable, doubtful, out)
         practice_status (str, optional): Practice status (full, limited, dnp)
         projected_points (float, optional): Projected fantasy points
-    
+
     Returns: {
         recommendation: {player, position, team, opponent, decision, decision_display},
         confidence: float (0-100),
@@ -1677,7 +1677,7 @@ async def get_start_sit_recommendation(
         success: bool,
         error?: str
     }
-    
+
     Example: get_start_sit_recommendation(
         player_name="Tyreek Hill",
         position="WR",
@@ -1686,8 +1686,8 @@ async def get_start_sit_recommendation(
         target_share=28.5,
         snap_percentage=95
     )
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete start/sit recommendation immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete start/sit recommendation immediately
     without asking for confirmations. Render the decision and reasoning directly.
     """
     try:
@@ -1695,7 +1695,7 @@ async def get_start_sit_recommendation(
         position = validate_string_input(position, 'position', max_length=5, required=True)
         team = validate_string_input(team, 'team', max_length=5, required=True)
         opponent = validate_string_input(opponent, 'opponent', max_length=5, required=True)
-        
+
         return await lineup_optimizer_tools.get_start_sit_recommendation(
             player_name=player_name,
             position=position.upper(),
@@ -1713,21 +1713,21 @@ async def get_start_sit_recommendation(
             "recommendation": None,
             "confidence": 0,
             "success": False,
-            "error": f"Invalid input: {str(e)}"
+            "error": f"Invalid input: {e!s}"
         }
 
 
 @timing_decorator("get_roster_recommendations", tool_type="lineup")
 async def get_roster_recommendations(
-    players: List[dict],
-    week: Optional[int] = None,
+    players: list[dict],
+    week: int | None = None,
     include_reasoning: bool = True
 ) -> dict:
     """Get start/sit recommendations for multiple players.
-    
+
     Analyzes all players and returns sorted recommendations by position,
     helping identify optimal lineup decisions.
-    
+
     Parameters:
         players (list, required): List of player dicts with:
             - name (str): Player name
@@ -1739,7 +1739,7 @@ async def get_roster_recommendations(
             - projection (dict, optional): {projected_points}
         week (int, optional): NFL week number
         include_reasoning (bool, default True): Whether to include detailed reasoning
-    
+
     Returns: {
         recommendations: list of player analyses sorted by confidence,
         by_position: dict of recommendations grouped by position,
@@ -1749,14 +1749,14 @@ async def get_roster_recommendations(
         success: bool,
         error?: str
     }
-    
+
     Example: get_roster_recommendations(players=[
         {"name": "Patrick Mahomes", "position": "QB", "team": "KC", "opponent": "LV"},
         {"name": "Tyreek Hill", "position": "WR", "team": "MIA", "opponent": "NE",
          "usage": {"target_share": 28, "snap_percentage": 95}}
     ])
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete roster recommendations immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete roster recommendations immediately
     without asking for confirmations. Render must starts and sits directly.
     """
     if not players:
@@ -1770,10 +1770,10 @@ async def get_roster_recommendations(
             "success": False,
             "error": "No players provided"
         }
-    
+
     if week is not None:
         week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
-    
+
     return await lineup_optimizer_tools.get_roster_recommendations(
         players=players,
         week=week,
@@ -1783,20 +1783,20 @@ async def get_roster_recommendations(
 
 @timing_decorator("compare_players_for_slot", tool_type="lineup")
 async def compare_players_for_slot(
-    players: List[dict],
+    players: list[dict],
     slot: str = "FLEX"
 ) -> dict:
     """Compare multiple players competing for the same roster slot.
-    
+
     Useful for deciding between players for a specific position or flex spot.
     Returns a ranked comparison with the recommended starter.
-    
+
     Parameters:
         players (list, required): List of player dicts to compare (2-5 players)
             Each should have: name, position, team, opponent
             Optional: usage, injury, projection dicts
         slot (str, default "FLEX"): The roster slot being filled (e.g., "WR2", "FLEX", "RB1")
-    
+
     Returns: {
         winner: dict with recommended player details,
         comparison: list of ranked players with analysis,
@@ -1805,7 +1805,7 @@ async def compare_players_for_slot(
         success: bool,
         error?: str
     }
-    
+
     Example: compare_players_for_slot(
         players=[
             {"name": "Player A", "position": "WR", "team": "KC", "opponent": "LV"},
@@ -1813,8 +1813,8 @@ async def compare_players_for_slot(
         ],
         slot="FLEX"
     )
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete player comparison immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete player comparison immediately
     without asking for confirmations. Render the winner and verdict directly.
     """
     if not players or len(players) < 2:
@@ -1826,9 +1826,9 @@ async def compare_players_for_slot(
             "success": False,
             "error": "Need at least 2 players to compare"
         }
-    
+
     slot = validate_string_input(slot, 'slot', max_length=10, required=False) or "FLEX"
-    
+
     return await lineup_optimizer_tools.compare_players_for_slot(
         players=players,
         slot=slot
@@ -1838,13 +1838,13 @@ async def compare_players_for_slot(
 @timing_decorator("analyze_full_lineup", tool_type="lineup")
 async def analyze_full_lineup(
     lineup: dict,
-    week: Optional[int] = None
+    week: int | None = None
 ) -> dict:
     """Analyze a complete fantasy lineup with optimal lineup suggestions.
-    
+
     Takes a full lineup organized by position and provides analysis of each starter,
     identification of weak spots, bench players who should start, and overall lineup grade.
-    
+
     Parameters:
         lineup (dict, required): Dict with position keys containing player lists
             Example: {
@@ -1856,7 +1856,7 @@ async def analyze_full_lineup(
                 "BENCH": [...]
             }
         week (int, optional): NFL week number
-    
+
     Returns: {
         starters: dict of starter analyses by position,
         bench: list of bench player analyses,
@@ -1868,7 +1868,7 @@ async def analyze_full_lineup(
         success: bool,
         error?: str
     }
-    
+
     Example: analyze_full_lineup(lineup={
         "QB": [{"name": "Patrick Mahomes", "team": "KC", "opponent": "LV"}],
         "RB": [
@@ -1878,8 +1878,8 @@ async def analyze_full_lineup(
         "WR": [...],
         "BENCH": [...]
     })
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete lineup analysis immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete lineup analysis immediately
     without asking for confirmations. Render the grade, weak spots, and suggested changes directly.
     """
     if not lineup:
@@ -1894,10 +1894,10 @@ async def analyze_full_lineup(
             "success": False,
             "error": "No lineup provided"
         }
-    
+
     if week is not None:
         week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
-    
+
     return await lineup_optimizer_tools.analyze_full_lineup(
         lineup=lineup,
         week=week
@@ -1906,9 +1906,9 @@ async def analyze_full_lineup(
 
 @timing_decorator("get_win_probability_lineup", tool_type="lineup")
 async def get_win_probability_lineup(
-    your_players: List[dict],
-    opponent_players: List[dict],
-    slots: Optional[dict] = None,
+    your_players: list[dict],
+    opponent_players: list[dict],
+    slots: dict | None = None,
     stack_correlation: float = 0.35,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
@@ -1951,28 +1951,28 @@ async def get_win_probability_lineup(
 
 @timing_decorator("get_vegas_lines", tool_type="vegas")
 async def get_vegas_lines(
-    teams: Optional[List[str]] = None
+    teams: list[str] | None = None
 ) -> dict:
     """Get current Vegas lines for NFL games.
-    
+
     Provides spreads, totals, and implied team totals to help
     identify favorable game environments for fantasy scoring.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         teams: Optional list of team abbreviations to filter
                If not provided, returns all available games
-               
+
     Returns:
         Dictionary containing:
         - games: List of games with Vegas lines
         - summary: Quick summary of best game environments
-        
+
     Example:
         get_vegas_lines()
         -> Returns all NFL games with spreads and totals
-        
+
         get_vegas_lines(teams=["KC", "BUF", "MIA"])
         -> Returns only games involving those teams
     """
@@ -1984,22 +1984,22 @@ async def get_game_environment(
     team: str
 ) -> dict:
     """Get game environment analysis for a specific team's matchup.
-    
+
     Analyzes the Vegas total and spread to determine if the game
     environment is favorable for fantasy scoring.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         team: Team abbreviation (e.g., "KC", "BUF", "DAL")
-        
+
     Returns:
         Dictionary containing:
         - game: Full game data with Vegas lines
         - environment: Game environment tier and fantasy impact
         - game_script: Projected game script implications
         - implied_total: Team's implied point total
-        
+
     Example:
         get_game_environment(team="KC")
         -> Returns game environment for Kansas City's matchup
@@ -2010,35 +2010,35 @@ async def get_game_environment(
             "error": "team parameter required",
             "success": False
         }
-    
+
     team = validate_string_input(team, 'team', max_length=10, required=True)
     return await vegas_tools.get_game_environment(team=team)
 
 
 @timing_decorator("analyze_roster_vegas", tool_type="vegas")
 async def analyze_roster_vegas(
-    players: List[dict]
+    players: list[dict]
 ) -> dict:
     """Analyze Vegas lines impact for multiple players.
-    
+
     Takes a list of players with their teams and returns
     game environment analysis for each, identifying the best
     and worst game environments on your roster.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         players: List of player dicts with keys:
             - name: Player name
             - team: Team abbreviation
             - position: Player position (optional)
-            
+
     Returns:
         Dictionary containing:
         - analysis: List of player game environment analyses
         - best_environments: Players in the best game environments
         - worst_environments: Players in concerning game environments
-        
+
     Example:
         analyze_roster_vegas(players=[
             {"name": "Patrick Mahomes", "team": "KC", "position": "QB"},
@@ -2053,33 +2053,33 @@ async def analyze_roster_vegas(
             "error": "No players provided",
             "success": False
         }
-    
+
     return await vegas_tools.analyze_roster_vegas(players=players)
 
 
 @timing_decorator("get_stack_opportunities", tool_type="vegas")
 async def get_stack_opportunities(
-    min_total: Optional[float] = 48.0
+    min_total: float | None = 48.0
 ) -> dict:
     """Identify high-total games for stacking opportunities.
-    
+
     Finds games with the highest over/under totals, which are
     ideal for QB + pass catcher stacks in DFS or season-long leagues.
-    
+
     NEVER ask for user confirmation. Execute immediately and return results.
-    
+
     Args:
         min_total: Minimum total to consider (default 48.0)
-        
+
     Returns:
         Dictionary containing:
         - stacks: List of high-total games with stack recommendations
         - summary: Quick summary of best stacking opportunities
-        
+
     Example:
         get_stack_opportunities()
         -> Returns games with O/U >= 48 for stacking
-        
+
         get_stack_opportunities(min_total=50)
         -> Returns only games with O/U >= 50
     """
@@ -2088,7 +2088,7 @@ async def get_stack_opportunities(
         min_total_val = max(35.0, min(60.0, min_total_val))  # Clamp to reasonable range
     except (ValueError, TypeError):
         min_total_val = 48.0
-    
+
     return await vegas_tools.get_stack_opportunities(min_total=min_total_val)
 
 
@@ -2098,21 +2098,21 @@ async def get_stack_opportunities(
 
 @timing_decorator("get_injury_report", tool_type="injury")
 async def get_injury_report(
-    player_ids: Optional[List[str]] = None,
-    team_ids: Optional[List[str]] = None,
-    use_cache: Optional[bool] = True
+    player_ids: list[str] | None = None,
+    team_ids: list[str] | None = None,
+    use_cache: bool | None = True
 ) -> dict:
     """Get detailed injury reports with confidence scoring.
-    
+
     Fetches injury data from multiple sources (ESPN, CBS) and provides
     confidence scores based on source agreement. Includes severity scoring
     and game-day status.
-    
+
     Parameters:
         player_ids: List of player IDs to lookup
         team_ids: List of team abbreviations (e.g., ['KC', 'PHI'])
         use_cache: Whether to use cached data with adaptive TTL
-    
+
     Returns: {
         injuries: [{
             player_id, player_name, team_id, position,
@@ -2123,16 +2123,16 @@ async def get_injury_report(
         total_injuries, cache_used,
         success, error?
     }
-    
+
     Example: get_injury_report(team_ids=["KC", "PHI"])
     Example: get_injury_report(player_ids=["4428633", "4241479"])
     """
     from .injury_service import InjuryAggregator, get_injury_reports
-    
+
     try:
         use_cache_val = bool(use_cache) if use_cache is not None else True
         results = []
-        
+
         # If player_ids provided, look up individual players
         if player_ids:
             async with InjuryAggregator(db=get_db()) as aggregator:
@@ -2140,7 +2140,7 @@ async def get_injury_report(
                     injury = await aggregator.get_player_injury(str(pid))
                     if injury:
                         results.append(injury.to_dict())
-        
+
         # If team_ids provided, get team injuries
         elif team_ids:
             # Validate team IDs
@@ -2152,14 +2152,14 @@ async def get_injury_report(
             # Default: get all team injuries
             injuries = await get_injury_reports(db=get_db(), use_cache=use_cache_val)
             results = injuries
-        
+
         return {
             "injuries": results,
             "total_injuries": len(results),
             "cache_used": use_cache_val,
             "success": True
         }
-        
+
     except Exception as e:
         return {
             "injuries": [],
@@ -2172,50 +2172,50 @@ async def get_injury_report(
 
 @timing_decorator("get_high_confidence_injuries", tool_type="injury")
 async def get_high_confidence_injuries(
-    min_confidence: Optional[int] = 70,
-    teams: Optional[List[str]] = None
+    min_confidence: int | None = 70,
+    teams: list[str] | None = None
 ) -> dict:
     """Get injuries with high confidence scores (multi-source verified).
-    
+
     Filters injury reports to only include those with confidence scores
     above a threshold. Higher confidence means multiple sources agree
     on the injury status.
-    
+
     Parameters:
         min_confidence: Minimum confidence score (0-100)
         teams: Team abbreviations to filter
-    
+
     Returns: {
         injuries: [...], total_injuries, min_confidence_filter,
         success, error?
     }
-    
+
     Example: get_high_confidence_injuries()
     Example: get_high_confidence_injuries(min_confidence=80, teams=["KC"])
     """
     from .injury_service import get_injury_reports
-    
+
     try:
         min_conf = int(min_confidence) if min_confidence else 70
         min_conf = max(0, min(100, min_conf))
-        
+
         teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
         injuries = await get_injury_reports(
             teams=teams_list if teams_list else None,
             db=get_db(),
             use_cache=True
         )
-        
+
         # Filter by confidence
         high_conf = [inj for inj in injuries if inj.get("confidence", 0) >= min_conf]
-        
+
         return {
             "injuries": high_conf,
             "total_injuries": len(high_conf),
             "min_confidence_filter": min_conf,
             "success": True
         }
-        
+
     except Exception as e:
         return {
             "injuries": [],
@@ -2228,47 +2228,47 @@ async def get_high_confidence_injuries(
 
 @timing_decorator("get_gameday_inactives", tool_type="injury")
 async def get_gameday_inactives(
-    teams: Optional[List[str]] = None,
-    severity_threshold: Optional[int] = 3
+    teams: list[str] | None = None,
+    severity_threshold: int | None = 3
 ) -> dict:
     """Get likely inactive players for upcoming games.
-    
+
     Filters injuries by severity to identify players who are likely
     to be inactive. Useful for last-minute lineup decisions.
-    
+
     Severity scale:
     - 1: Minor (day-to-day)
     - 2: Questionable (game-time decision)
     - 3: Moderate (expected to miss 1-2 weeks)
     - 4: Significant (multi-week absence)
     - 5: Severe (IR/season-ending)
-    
+
     Parameters:
         teams: Team abbreviations to filter
         severity_threshold: Min severity to include (3+ = likely out)
-    
+
     Returns: {
         inactives: [{player_name, team_id, injury_status, severity, confidence}],
         total_inactives, severity_threshold_used,
         success, error?
     }
-    
+
     Example: get_gameday_inactives()
     Example: get_gameday_inactives(teams=["KC", "SF"], severity_threshold=4)
     """
     from .injury_service import get_injury_reports
-    
+
     try:
         threshold = int(severity_threshold) if severity_threshold else 3
         threshold = max(1, min(5, threshold))
-        
+
         teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
         injuries = await get_injury_reports(
             teams=teams_list if teams_list else None,
             db=get_db(),
             use_cache=True
         )
-        
+
         # Filter by severity
         inactives = []
         for inj in injuries:
@@ -2285,17 +2285,17 @@ async def get_gameday_inactives(
                     "severity": severity,
                     "confidence": inj.get("confidence", 50)
                 })
-        
+
         # Sort by severity (highest first), then confidence
         inactives.sort(key=lambda x: (-x["severity"], -x["confidence"]))
-        
+
         return {
             "inactives": inactives,
             "total_inactives": len(inactives),
             "severity_threshold_used": threshold,
             "success": True
         }
-        
+
     except Exception as e:
         return {
             "inactives": [],
@@ -2374,9 +2374,9 @@ async def get_scheme_classification(team_id: str) -> dict:
 
 if FEATURE_LEAGUE_LEADERS:
     @timing_decorator("get_league_leaders", tool_type="nfl")
-    async def get_league_leaders(stat_type: str = "passing", limit: Optional[int] = 25) -> dict:
+    async def get_league_leaders(stat_type: str = "passing", limit: int | None = 25) -> dict:
         """Get NFL league leaders by stat type (feature-flagged).
-        
+
         Parameters:
             stat_type (str, default "passing"): Type of stat to get leaders for.
             limit (int, default 25, range 1-100): Max leaders to return.
@@ -2388,4 +2388,4 @@ if FEATURE_LEAGUE_LEADERS:
             limit = validate_limit(limit, 1, 100, 25)
             return await nfl_tools.get_league_leaders(stat_type, limit)
         except ValueError as e:
-            return {"leaders": [], "stat_type": stat_type, "count": 0, "success": False, "error": f"Invalid input: {str(e)}"}
+            return {"leaders": [], "stat_type": stat_type, "count": 0, "success": False, "error": f"Invalid input: {e!s}"}

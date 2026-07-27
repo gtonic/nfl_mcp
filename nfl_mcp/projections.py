@@ -18,7 +18,6 @@ Every factor is reported in a `breakdown` so the number is explainable, and a
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
 
 from . import opportunity_tools
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
@@ -32,7 +31,7 @@ logger = logging.getLogger(__name__)
 VBD_POSITIONS = {"QB", "RB", "WR", "TE"}
 
 
-def base_ppg(position: str, pos_rank: Optional[int]) -> float:
+def base_ppg(position: str, pos_rank: int | None) -> float:
     """Baseline PPR points/game from a player's positional rank."""
     p = (position or "").upper()
     r = pos_rank if (isinstance(pos_rank, int) and pos_rank > 0) else 999
@@ -72,7 +71,7 @@ def matchup_multiplier(position: str, tier: str) -> float:
 _VOLATILITY = {"QB": 0.22, "RB": 0.30, "WR": 0.38, "TE": 0.40, "K": 0.35, "DST": 0.45, "DEF": 0.45}
 
 
-def _environment_mult(implied_total: Optional[float], is_fallback: bool) -> float:
+def _environment_mult(implied_total: float | None, is_fallback: bool) -> float:
     if is_fallback or implied_total is None:
         return 1.0
     if implied_total >= 28:
@@ -86,7 +85,7 @@ def _environment_mult(implied_total: Optional[float], is_fallback: bool) -> floa
     return 0.92
 
 
-def _usage_mult(snap_pct: Optional[float], usage_trend: Optional[str]) -> float:
+def _usage_mult(snap_pct: float | None, usage_trend: str | None) -> float:
     mult = 1.0
     if snap_pct:
         if snap_pct >= 80:
@@ -101,7 +100,7 @@ def _usage_mult(snap_pct: Optional[float], usage_trend: Optional[str]) -> float:
     return mult
 
 
-def _injury_mult(status: Optional[str]) -> float:
+def _injury_mult(status: str | None) -> float:
     s = (status or "").lower()
     if s in ("out", "ir", "suspended", "pup", "injured reserve"):
         return 0.0
@@ -121,9 +120,9 @@ class ProjectionEngine:
         self.vegas = get_vegas_analyzer()
 
     def _project_one(
-        self, player: Dict, values_index: Dict, rankings: Dict, lines: Dict,
-        opp_index: Optional[Dict] = None, week: Optional[int] = None,
-    ) -> Dict:
+        self, player: dict, values_index: dict, rankings: dict, lines: dict,
+        opp_index: dict | None = None, week: int | None = None,
+    ) -> dict:
         name = player.get("name") or player.get("player_name")
         position = (player.get("position") or "").upper()
         team = (player.get("team") or "").upper()
@@ -234,9 +233,9 @@ class ProjectionEngine:
         }
 
     async def project_many(
-        self, players: List[Dict], scoring: str = "ppr", superflex: bool = False,
-        num_teams: int = 12, season: Optional[int] = None, week: Optional[int] = None,
-    ) -> Dict:
+        self, players: list[dict], scoring: str = "ppr", superflex: bool = False,
+        num_teams: int = 12, season: int | None = None, week: int | None = None,
+    ) -> dict:
         values_index = await self.values.get_values(
             scoring_to_ppr(scoring), 2 if superflex else 1, num_teams, False
         )
@@ -252,7 +251,7 @@ class ProjectionEngine:
         # Opportunity baseline: fetch this season's trailing volume once and index
         # by name. Requires season + week (>1); otherwise the rank-bucket baseline
         # is used (backward compatible).
-        opp_index: Dict = {}
+        opp_index: dict = {}
         if season and week and week > 1:
             try:
                 logs = await opportunity_tools._fetch_game_logs(season)
@@ -272,7 +271,7 @@ class ProjectionEngine:
         }
 
 
-_engine: Optional[ProjectionEngine] = None
+_engine: ProjectionEngine | None = None
 
 
 def get_projection_engine(db=None) -> ProjectionEngine:
@@ -288,14 +287,14 @@ def get_projection_engine(db=None) -> ProjectionEngine:
 
 @handle_http_errors(default_data={"projections": []}, operation_name="projecting players")
 async def project_players(
-    players: List[Dict],
+    players: list[dict],
     scoring: str = "ppr",
     superflex: bool = False,
     num_teams: int = 12,
-    season: Optional[int] = None,
-    week: Optional[int] = None,
+    season: int | None = None,
+    week: int | None = None,
     db=None,
-) -> Dict:
+) -> dict:
     """Project weekly fantasy points for multiple players (transparent, no scraping).
 
     Args:
@@ -328,17 +327,17 @@ async def project_player(
     position: str,
     team: str,
     opponent: str,
-    snap_percentage: Optional[float] = None,
-    usage_trend: Optional[str] = None,
-    injury_status: Optional[str] = None,
+    snap_percentage: float | None = None,
+    usage_trend: str | None = None,
+    injury_status: str | None = None,
     scoring: str = "ppr",
     superflex: bool = False,
-    season: Optional[int] = None,
-    week: Optional[int] = None,
-    wind_mph: Optional[float] = None,
+    season: int | None = None,
+    week: int | None = None,
+    wind_mph: float | None = None,
     is_dome: bool = False,
     db=None,
-) -> Dict:
+) -> dict:
     """Project weekly fantasy points for a single player.
 
     Pass season + week (week > 1) to use the opportunity-based baseline (trailing

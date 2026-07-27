@@ -16,7 +16,7 @@ class TestOpponentAnalyzer:
     def test_position_strength_empty_roster(self, analyzer):
         """Test position assessment with empty roster."""
         result = analyzer._assess_position_strength([], "RB")
-        
+
         assert result["strength_score"] == 0
         assert result["depth_count"] == 0
         assert result["weakness_level"] == "critical"
@@ -30,9 +30,9 @@ class TestOpponentAnalyzer:
             {"snap_pct": 60, "practice_status": "Q", "usage_trend_overall": "up"},
             {"snap_pct": 40, "practice_status": "E", "usage_trend_overall": "stable"},
         ]
-        
+
         result = analyzer._assess_position_strength(players, "RB")
-        
+
         assert result["strength_score"] >= 50
         assert result["depth_count"] == 4
         assert result["weakness_level"] == "strong"
@@ -42,9 +42,9 @@ class TestOpponentAnalyzer:
         players = [
             {"snap_pct": 30, "practice_status": "DNP", "usage_trend_overall": "down"}
         ]
-        
+
         result = analyzer._assess_position_strength(players, "RB")
-        
+
         assert result["weakness_level"] in ["weak", "critical"]
         assert result["injury_concerns"] == 1
 
@@ -54,9 +54,9 @@ class TestOpponentAnalyzer:
             {"snap_pct": 70, "practice_status": "DNP", "usage_trend_overall": "stable"},
             {"snap_pct": 60, "practice_status": "LP", "usage_trend_overall": "stable"},
         ]
-        
+
         result = analyzer._assess_position_strength(players, "WR")
-        
+
         assert result["injury_concerns"] == 2
         assert any("injury" in c.lower() for c in result["concerns"])
 
@@ -72,9 +72,9 @@ class TestOpponentAnalyzer:
                 "snap_pct": 45.0
             }
         ]
-        
+
         weaknesses = analyzer._identify_starter_weaknesses(starters)
-        
+
         assert len(weaknesses) == 1
         assert weaknesses[0]["player_name"] == "John Smith"
         assert any("DNP" in w for w in weaknesses[0]["weaknesses"])
@@ -92,9 +92,9 @@ class TestOpponentAnalyzer:
                 "snap_pct": 90.0
             }
         ]
-        
+
         weaknesses = analyzer._identify_starter_weaknesses(starters)
-        
+
         assert len(weaknesses) == 0
 
     def test_generate_exploitation_strategies(self, analyzer):
@@ -107,9 +107,9 @@ class TestOpponentAnalyzer:
             }
         }
         starter_weaknesses = []
-        
+
         strategies = analyzer._generate_exploitation_strategies(position_assessments, starter_weaknesses)
-        
+
         assert len(strategies) > 0
         assert strategies[0]["category"] == "position_weakness"
         assert strategies[0]["priority"] == "critical"
@@ -128,9 +128,9 @@ class TestOpponentAnalyzer:
                 {"player_id": "2", "full_name": "P2", "position": "QB"},
             ]
         }
-        
+
         result = analyzer.analyze_opponent_roster(roster)
-        
+
         assert "vulnerability_score" in result
         assert "vulnerability_level" in result
         assert "position_assessments" in result
@@ -157,10 +157,10 @@ class TestAnalyzeOpponent:
     async def test_analyze_opponent_roster_not_found(self):
         """Test with non-existent roster."""
         mock_result = {"success": True, "rosters": [{"roster_id": "2"}]}
-        
+
         async def mock_get_rosets(league_id):
             return mock_result
-        
+
         with patch('nfl_mcp.opponent_analysis_tools.get_rosters', side_effect=mock_get_rosets):
             result = await analyze_opponent("league1", 999)
             assert result["success"] is False
@@ -175,17 +175,17 @@ class TestAnalyzeOpponent:
             "starters_enriched": []
         }
         mock_users = {"success": True, "users": [{"user_id": "owner1", "display_name": "Test User"}]}
-        
+
         async def mock_get_rosters(league_id):
             return {"success": True, "rosters": [mock_roster]}
-        
+
         async def mock_get_league_users(league_id):
             return mock_users
-        
+
         with patch('nfl_mcp.opponent_analysis_tools.get_rosters', side_effect=mock_get_rosters):
             with patch('nfl_mcp.opponent_analysis_tools.get_league_users', side_effect=mock_get_league_users):
                 result = await analyze_opponent("league1", 1)
-                
+
                 assert result["success"] is True
                 assert result["opponent_name"] == "Test User"
                 assert "vulnerability_score" in result

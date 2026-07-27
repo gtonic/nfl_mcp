@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import inspect
 import typing
-from typing import Any, Callable, Dict, List
+from collections.abc import Callable
+from typing import Any
 
 # Params that are injected internally, never chosen by the model.
 _SKIP_PARAMS = {"self", "db"}
 
 
-def _json_type(annotation: Any) -> Dict[str, Any]:
+def _json_type(annotation: Any) -> dict[str, Any]:
     """Map a Python annotation to a (permissive) JSON-schema type."""
     if annotation is inspect._empty:  # no annotation
         return {"type": "string"}
@@ -32,9 +33,9 @@ def _json_type(annotation: Any) -> Dict[str, Any]:
         return {"type": "integer"}
     if annotation is float:
         return {"type": "number"}
-    if origin in (list, typing.List):
+    if origin in (list, list):
         return {"type": "array"}
-    if origin in (dict, typing.Dict):
+    if origin in (dict, dict):
         return {"type": "object"}
     return {"type": "string"}
 
@@ -46,11 +47,11 @@ def _description(func: Callable) -> str:
     return para[:1024] or func.__name__
 
 
-def build_tool(func: Callable) -> Dict[str, Any]:
+def build_tool(func: Callable) -> dict[str, Any]:
     """Anthropic tool def for one registry function."""
     sig = inspect.signature(func)
-    props: Dict[str, Any] = {}
-    required: List[str] = []
+    props: dict[str, Any] = {}
+    required: list[str] = []
     for name, p in sig.parameters.items():
         if name in _SKIP_PARAMS:
             continue
@@ -64,7 +65,7 @@ def build_tool(func: Callable) -> Dict[str, Any]:
     }
 
 
-def anthropic_tools_from_registry() -> List[Dict[str, Any]]:
+def anthropic_tools_from_registry() -> list[dict[str, Any]]:
     """All registered MCP tools as Anthropic tool definitions."""
     from nfl_mcp import tool_registry
     return [build_tool(fn) for fn in tool_registry.get_all_tools()]

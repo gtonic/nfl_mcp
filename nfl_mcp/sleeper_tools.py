@@ -1,8 +1,8 @@
 """
 Sleeper API MCP tools for the NFL MCP Server.
 
-This module contains MCP tools for comprehensive fantasy league management 
-through the Sleeper API, including league information, rosters, users, 
+This module contains MCP tools for comprehensive fantasy league management
+through the Sleeper API, including league information, rosters, users,
 matchups, transactions, and more.
 """
 
@@ -11,7 +11,6 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
-from typing import Dict, List, Optional, Tuple
 
 import httpx
 
@@ -69,13 +68,13 @@ def _enrich_id_list(nfl_db, ids):
 async def get_league(league_id: str) -> dict:
     """
     Get specific league information from Sleeper API.
-    
+
     This tool fetches detailed information about a specific fantasy league
     including settings, roster positions, scoring, and other league metadata.
-    
+
     Args:
         league_id: The unique identifier for the league
-        
+
     Returns:
         A dictionary containing:
         - league: League information and settings
@@ -84,17 +83,17 @@ async def get_league(league_id: str) -> dict:
         - error_type: Type of error (if any)
     """
     headers = get_http_headers("sleeper_league")
-    
+
     # Sleeper API endpoint for specific league
     url = f"https://api.sleeper.app/v1/league/{league_id}"
-    
+
     async with create_http_client() as client:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
-        
+
         # Parse JSON response
         league_data = response.json()
-        
+
         return create_success_response({
             "league": league_data
         })
@@ -103,17 +102,17 @@ async def get_league(league_id: str) -> dict:
 async def get_rosters(league_id: str) -> dict:
     """
     Get all rosters in a fantasy league from Sleeper API.
-    
+
     This tool fetches all team rosters including player IDs, starters,
     bench players, and other roster information for the specified league.
-    
+
     Note: Some leagues may have roster privacy settings that restrict access.
     If you encounter access issues, the league owner needs to make rosters public
     or grant appropriate permissions in the league settings.
-    
+
     Args:
         league_id: The unique identifier for the league
-        
+
     Returns:
         A dictionary containing:
         - rosters: List of all rosters in the league
@@ -190,10 +189,10 @@ async def get_rosters(league_id: str) -> dict:
 
                 # Enrichment (best-effort)
                 try:
-                    cache: Dict[str, Dict] = {}
+                    cache: dict[str, dict] = {}
                     # Lazy schedule & stats fetch flags
-                    schedule_fetched: Dict[Tuple[int,int], bool] = {}
-                    stats_fetched: Dict[Tuple[int,int], bool] = {}
+                    schedule_fetched: dict[tuple[int,int], bool] = {}
+                    stats_fetched: dict[tuple[int,int], bool] = {}
 
                     async def fetch_schedule_if_needed(season: int, week_guess: int):
                         key = (season, week_guess)
@@ -230,7 +229,7 @@ async def get_rosters(league_id: str) -> dict:
                     except Exception:
                         pass
 
-                    def estimate_snap_pct_from_depth(position: Optional[str], depth_rank: Optional[int]):
+                    def estimate_snap_pct_from_depth(position: str | None, depth_rank: int | None):
                         if depth_rank is None:
                             return None
                         if depth_rank == 1:
@@ -240,7 +239,7 @@ async def get_rosters(league_id: str) -> dict:
                         return 15.0
 
                     async def enrich_players(player_ids):
-                        enriched: List[Dict] = []
+                        enriched: list[dict] = []
                         for pid in player_ids or []:
                             if pid in cache:
                                 enriched.append(cache[pid]); continue
@@ -339,13 +338,13 @@ async def get_rosters(league_id: str) -> dict:
 async def get_league_users(league_id: str) -> dict:
     """
     Get all users in a fantasy league from Sleeper API.
-    
+
     This tool fetches all users/managers in the specified league including
     their display names, usernames, and other profile information.
-    
+
     Args:
         league_id: The unique identifier for the league
-        
+
     Returns:
         A dictionary containing:
         - users: List of all users in the league
@@ -355,17 +354,17 @@ async def get_league_users(league_id: str) -> dict:
         - error_type: Type of error (if any)
     """
     headers = get_http_headers("sleeper_users")
-    
+
     # Sleeper API endpoint for league users
     url = f"https://api.sleeper.app/v1/league/{league_id}/users"
-    
+
     async with create_http_client() as client:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
-        
+
         # Parse JSON response
         users_data = response.json()
-        
+
         return create_success_response({
             "users": users_data,
             "count": len(users_data)
@@ -440,7 +439,7 @@ async def get_matchups(league_id: str, week: int) -> dict:
 
                 # Enrichment
                 try:
-                    cache: Dict[str, Dict] = {}
+                    cache: dict[str, dict] = {}
                     state = None
                     season = None
                     try:
@@ -466,7 +465,7 @@ async def get_matchups(league_id: str, week: int) -> dict:
                                         target_list.append(cache[pid]); continue
                                     athlete = nfl_db.get_athlete_by_id(pid) or {}
                                     obj = {"player_id": pid, "full_name": athlete.get("full_name"), "position": athlete.get("position")}
-                                    
+
                                     # Use _enrich_usage_and_opponent for all enrichment
                                     # This ensures injury_status and practice_status are always included
                                     try:
@@ -484,7 +483,7 @@ async def get_matchups(league_id: str, week: int) -> dict:
                                         obj.update(extra)
                                     except Exception as e:
                                         logger.debug(f"Matchup player enrichment failed for {pid}: {e}")
-                                    
+
                                     cache[pid] = obj
                                     target_list.append(obj)
                             if enriched_players:
@@ -602,7 +601,7 @@ async def get_playoff_bracket(league_id: str, bracket_type: str = "winners") -> 
         })
 
 
-async def get_transactions(league_id: str, round: Optional[int] = None, week: Optional[int] = None) -> dict:
+async def get_transactions(league_id: str, round: int | None = None, week: int | None = None) -> dict:
     """Get transactions for a specific (or inferred) week of a Sleeper league with robustness.
 
     Robustness features:
@@ -756,9 +755,9 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
                             adds = tx.get("adds") or {}
                             drops = tx.get("drops") or {}
                             if isinstance(adds, dict):
-                                tx["adds_enriched"] = [enrich_player(pid) for pid in adds.keys()]
+                                tx["adds_enriched"] = [enrich_player(pid) for pid in adds]
                             if isinstance(drops, dict):
-                                tx["drops_enriched"] = [enrich_player(pid) for pid in drops.keys()]
+                                tx["drops_enriched"] = [enrich_player(pid) for pid in drops]
                 except Exception as enrich_error:
                     logger.debug(f"Transaction enrichment skipped: {enrich_error}")
 
@@ -829,13 +828,13 @@ async def get_transactions(league_id: str, round: Optional[int] = None, week: Op
 async def get_traded_picks(league_id: str) -> dict:
     """
     Get traded draft picks for a fantasy league from Sleeper API.
-    
+
     This tool fetches information about draft picks that have been traded
     within the specified league.
-    
+
     Args:
         league_id: The unique identifier for the league
-        
+
     Returns:
         A dictionary containing:
         - traded_picks: List of traded draft picks
@@ -845,17 +844,17 @@ async def get_traded_picks(league_id: str) -> dict:
         - error_type: Type of error (if any)
     """
     headers = get_http_headers("sleeper_traded_picks")
-    
+
     # Sleeper API endpoint for league traded picks
     url = f"https://api.sleeper.app/v1/league/{league_id}/traded_picks"
-    
+
     async with create_http_client() as client:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
-        
+
         # Parse JSON response
         traded_picks_data = response.json()
-        
+
         try:
             nfl_db = _init_db()
             cache = {}
@@ -878,10 +877,10 @@ async def get_traded_picks(league_id: str) -> dict:
 async def get_nfl_state() -> dict:
     """
     Get current NFL state information from Sleeper API.
-    
+
     This tool fetches the current state of the NFL including season type,
     current week, and other league-wide information.
-    
+
     Returns:
         A dictionary containing:
         - nfl_state: Current NFL state information
@@ -890,17 +889,17 @@ async def get_nfl_state() -> dict:
         - error_type: Type of error (if any)
     """
     headers = get_http_headers("sleeper_nfl_state")
-    
+
     # Sleeper API endpoint for NFL state
     url = "https://api.sleeper.app/v1/state/nfl"
-    
+
     async with create_http_client() as client:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
-        
+
         # Parse JSON response
         nfl_state_data = response.json()
-        
+
         return create_success_response({
             "nfl_state": nfl_state_data
         })
@@ -910,19 +909,19 @@ async def get_nfl_state() -> dict:
     default_data={"trending_players": [], "trend_type": None, "lookback_hours": None, "count": 0},
     operation_name="fetching trending players"
 )
-async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_hours: Optional[int] = 24, limit: Optional[int] = 25) -> dict:
+async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_hours: int | None = 24, limit: int | None = 25) -> dict:
     """
     Get trending players from Sleeper API.
-    
+
     This tool fetches currently trending players based on adds/drops or other
     activity metrics from the Sleeper platform.
-    
+
     Args:
         nfl_db: NFLDatabase instance to use for player lookups (if None, creates new instance)
         trend_type: Type of trend to fetch ("add" or "drop", defaults to "add")
         lookback_hours: Hours to look back for trends (1-168, defaults to 24)
         limit: Maximum number of players to return (1-100, defaults to 25)
-        
+
     Returns:
         A dictionary containing:
         - trending_players: List of trending players with enriched data
@@ -980,12 +979,12 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
             )
         else:
             limit = 25
-    
+
     headers = get_http_headers("sleeper_trending")
-    
+
     # Sleeper API endpoint for trending players
     url = f"https://api.sleeper.app/v1/players/nfl/trending/{trend_type}?lookback_hours={lookback_hours}&limit={limit}"
-    
+
     async with create_http_client() as client:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
@@ -1045,7 +1044,7 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
                 "age": None,
                 "jersey": None
             }
-            
+
             # Add enrichment (injury, practice status, and advanced stats)
             # Always enrich to ensure injury and practice status are included
             try:
@@ -1064,7 +1063,7 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
                 logger.debug(f"[Trending Players] Enriched {base_info.get('full_name')} with {len(extra)} fields")
             except Exception as e:
                 logger.warning(f"[Trending Players] Failed to enrich player {player_id}: {e}")
-            
+
             enriched_players.append({
                 "player_id": player_id,
                 "count": count,
@@ -1123,16 +1122,16 @@ async def get_draft_picks(draft_id: str) -> dict:
 async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks_ahead: int = 4) -> dict:
     """
     Generate a strategic preview of upcoming matchups for multiple weeks ahead.
-    
+
     This strategic tool combines Sleeper league matchup data with NFL schedule insights
     to provide early warning about upcoming challenges, bye weeks, and opportunities.
     Helps fantasy managers plan trades, waiver claims, and lineup strategies weeks in advance.
-    
+
     Args:
         league_id: The unique identifier for the league
         current_week: The current NFL week (1-22)
         weeks_ahead: Number of weeks to analyze ahead (1-8, defaults to 4)
-        
+
     Returns:
         A dictionary containing:
         - strategic_preview: Multi-week analysis with recommendations
@@ -1141,8 +1140,8 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete strategic analysis immediately without 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete strategic analysis immediately without
     asking for confirmations. Render the full preview with all recommendations directly.
     """
     # Validate parameters via param_validator
@@ -1157,12 +1156,12 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
             # Legacy phrasing preservation
             msgs = []
             for e in errors:
-                if e.startswith("'current_week' must be >=") or e.startswith("'current_week' must be <="):
+                if e.startswith(("'current_week' must be >=", "'current_week' must be <=")):
                     return handle_validation_error(
                         f"Current week must be between {LIMITS['week_min']} and {LIMITS['week_max']}",
                         {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
                     )
-                if e.startswith("'weeks_ahead' must be >=") or e.startswith("'weeks_ahead' must be <="):
+                if e.startswith(("'weeks_ahead' must be >=", "'weeks_ahead' must be <=")):
                     return handle_validation_error(
                         "Weeks ahead must be between 1 and 8",
                         {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
@@ -1186,7 +1185,7 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
                 "Weeks ahead must be between 1 and 8",
                 {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id}
             )
-    
+
     strategic_data = {
         "analysis_period": f"Week {current_week} through Week {current_week + weeks_ahead - 1}",
         "weeks": {},
@@ -1197,10 +1196,10 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
             "trade_recommendations": []
         }
     }
-    
+
     # Import NFL tools here to avoid circular imports
     from . import nfl_tools
-    
+
     # Get league information for context
     league_info = await get_league(league_id)
     if not league_info.get("success", True):
@@ -1213,19 +1212,19 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
             },
             error_type=league_info.get("error_type", ErrorType.API_ERROR)
         )
-    
+
     # Analyze each upcoming week
     weeks_analyzed = 0
     for week_offset in range(weeks_ahead):
         target_week = current_week + week_offset
         if target_week > LIMITS["week_max"]:
             break
-            
+
         # Get matchups for this week
         matchups = await get_matchups(league_id, target_week)
         if not matchups.get("success", True):
             continue
-            
+
         week_analysis = {
             "week_number": target_week,
             "matchup_count": matchups.get("count", 0),
@@ -1233,18 +1232,18 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
             "bye_week_teams": [],
             "recommended_actions": []
         }
-        
-        # Analyze NFL bye weeks for this week (sample analysis - in real implementation 
+
+        # Analyze NFL bye weeks for this week (sample analysis - in real implementation
         # you'd analyze all 32 teams to find which have byes this week)
         sample_teams = ["KC", "BUF", "SF", "DAL", "LAR", "PHI", "MIA", "CIN"]
-        
+
         for team in sample_teams:
             try:
                 team_schedule = await nfl_tools.get_team_schedule(team, 2026)
                 if team_schedule.get("success", False):
                     schedule = team_schedule.get("schedule", [])
                     for game in schedule:
-                        if (game.get("week") == target_week and 
+                        if (game.get("week") == target_week and
                             "BYE WEEK" in game.get("fantasy_implications", [])):
                             week_analysis["bye_week_teams"].append({
                                 "team": team,
@@ -1257,7 +1256,7 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
             except Exception:
                 # Skip team if schedule unavailable
                 continue
-        
+
         # Add strategic insights based on week timing
         if target_week == current_week:
             week_analysis["strategic_insights"].append("Current week - Focus on injury reports and last-minute changes")
@@ -1267,7 +1266,7 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
             week_analysis["strategic_insights"].append("Regular season - Build for playoffs")
         else:
             week_analysis["strategic_insights"].append("Playoff push - Prioritize high-floor players")
-        
+
         # Add recommendations based on bye weeks
         if week_analysis["bye_week_teams"]:
             week_analysis["recommended_actions"].append(
@@ -1278,21 +1277,21 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
         else:
             week_analysis["recommended_actions"].append("No major bye weeks - good week to be aggressive")
             strategic_data["summary"]["high_opportunity_weeks"].append(target_week)
-        
+
         strategic_data["weeks"][f"week_{target_week}"] = week_analysis
         weeks_analyzed += 1
-    
+
     # Generate overall strategic recommendations
     if strategic_data["summary"]["critical_bye_weeks"]:
         strategic_data["summary"]["trade_recommendations"].append(
             "Consider trading for depth before major bye weeks hit your key players"
         )
-    
+
     if len(strategic_data["summary"]["challenging_weeks"]) >= 2:
         strategic_data["summary"]["trade_recommendations"].append(
             "Multiple challenging weeks ahead - prioritize roster flexibility"
         )
-    
+
     return create_success_response({
         "strategic_preview": strategic_data,
         "weeks_analyzed": weeks_analyzed,
@@ -1307,15 +1306,15 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
 async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -> dict:
     """
     Coordinate your fantasy league schedule with NFL bye weeks for season-long planning.
-    
+
     This strategic tool analyzes the entire NFL season's bye week schedule and correlates
     it with your fantasy league's playoff schedule to identify optimal trading periods,
     waiver claim timing, and roster construction strategies.
-    
+
     Args:
         league_id: The unique identifier for the league
         season: Season year (defaults to 2026)
-        
+
     Returns:
         A dictionary containing:
         - coordination_plan: Season-long strategic plan
@@ -1324,12 +1323,12 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete bye week coordination plan immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete bye week coordination plan immediately
     without asking for confirmations. Render the full seasonal strategy with all recommendations directly.
     """
     from . import nfl_tools
-    
+
     # Get league information for playoff schedule context
     league_info = await get_league(league_id)
     if not league_info.get("success", True):
@@ -1342,11 +1341,11 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -
             },
             error_type=league_info.get("error_type", ErrorType.API_ERROR)
         )
-    
+
     league_data = league_info.get("league", {})
     playoff_start = league_data.get("settings", {}).get("playoff_week_start", 14)
     regular_season_weeks = playoff_start - 1
-    
+
     coordination_plan = {
         "season_overview": {
             "regular_season_weeks": regular_season_weeks,
@@ -1357,20 +1356,20 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -
         "strategic_periods": {
             "early_season": {"weeks": [1, 2, 3], "focus": "Observe and collect data"},
             "bye_week_preparation": {"weeks": [], "focus": "Build roster depth"},
-            "trade_deadline_push": {"weeks": [], "focus": "Final roster optimization"}, 
+            "trade_deadline_push": {"weeks": [], "focus": "Final roster optimization"},
             "playoff_preparation": {"weeks": [], "focus": "Secure playoff position"}
         },
         "recommendations": []
     }
-    
+
     # Analyze bye weeks for all NFL teams (sample of major fantasy teams)
     major_fantasy_teams = [
-        "KC", "BUF", "SF", "DAL", "LAR", "PHI", "MIA", "CIN", 
+        "KC", "BUF", "SF", "DAL", "LAR", "PHI", "MIA", "CIN",
         "BAL", "GB", "MIN", "NYJ", "DEN", "LV", "ATL", "TB"
     ]
-    
+
     bye_weeks_by_week = {}
-    
+
     for team in major_fantasy_teams:
         try:
             team_schedule = await nfl_tools.get_team_schedule(team, season)
@@ -1385,7 +1384,7 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -
                             bye_weeks_by_week[week_num].append(team)
         except Exception:
             continue
-    
+
     # Organize bye weeks in calendar format
     for week, teams in bye_weeks_by_week.items():
         coordination_plan["bye_week_calendar"][f"week_{week}"] = {
@@ -1395,24 +1394,24 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -
             "strategic_impact": "High" if len(teams) >= 4 else "Medium" if len(teams) >= 2 else "Low",
             "recommended_prep_week": max(1, week - 2)
         }
-    
+
     # Identify strategic periods
     heavy_bye_weeks = [week for week, teams in bye_weeks_by_week.items() if len(teams) >= 4]
     if heavy_bye_weeks:
         prep_weeks = [max(1, week - 2) for week in heavy_bye_weeks]
         coordination_plan["strategic_periods"]["bye_week_preparation"]["weeks"] = prep_weeks
-    
+
     # Trade deadline preparation
     trade_deadline = coordination_plan["season_overview"]["trade_deadline"]
     coordination_plan["strategic_periods"]["trade_deadline_push"]["weeks"] = [
         trade_deadline - 2, trade_deadline - 1, trade_deadline
     ]
-    
+
     # Playoff preparation
     coordination_plan["strategic_periods"]["playoff_preparation"]["weeks"] = [
         playoff_start - 3, playoff_start - 2, playoff_start - 1
     ]
-    
+
     # Generate strategic recommendations
     if heavy_bye_weeks:
         coordination_plan["recommendations"].append({
@@ -1421,21 +1420,21 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -
             "timing": f"Start preparing 2-3 weeks early (weeks {', '.join(map(str, prep_weeks))})",
             "strategy": "Build roster depth through trades or strategic waiver claims"
         })
-    
+
     coordination_plan["recommendations"].append({
         "priority": "Medium",
         "action": "Trade deadline preparation",
         "timing": f"Weeks {trade_deadline - 2} through {trade_deadline}",
         "strategy": "Evaluate roster needs and make final strategic moves"
     })
-    
+
     coordination_plan["recommendations"].append({
-        "priority": "High", 
+        "priority": "High",
         "action": "Playoff preparation",
         "timing": f"Weeks {playoff_start - 3} through {playoff_start - 1}",
         "strategy": "Optimize lineup for playoff schedule and prioritize high-floor players"
     })
-    
+
     return create_success_response({
         "coordination_plan": coordination_plan,
         "season": season,
@@ -1450,14 +1449,14 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -
 async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict:
     """
     Analyze optimal trade timing based on league schedule and NFL events.
-    
+
     This strategic tool evaluates when to make trades by analyzing upcoming bye weeks,
     playoff schedules, and league transaction patterns to maximize competitive advantage.
-    
+
     Args:
         league_id: The unique identifier for the league
         current_week: Current NFL week for timing analysis
-        
+
     Returns:
         A dictionary containing:
         - trade_analysis: Strategic trade timing analysis
@@ -1466,8 +1465,8 @@ async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete trade deadline analysis immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete trade deadline analysis immediately
     without asking for confirmations. Render the full timing strategy with all recommendations directly.
     """
     # Get league information
@@ -1482,12 +1481,12 @@ async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict
             },
             error_type=league_info.get("error_type", ErrorType.API_ERROR)
         )
-    
+
     league_data = league_info.get("league", {})
     settings = league_data.get("settings", {})
     trade_deadline = settings.get("trade_deadline", 13)
     playoff_start = settings.get("playoff_week_start", 14)
-    
+
     trade_analysis = {
         "timing_analysis": {
             "current_week": current_week,
@@ -1500,10 +1499,10 @@ async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict
         "recommendations": [],
         "urgency_factors": []
     }
-    
+
     # Determine strategic windows based on timing
     weeks_to_deadline = trade_deadline - current_week
-    
+
     if weeks_to_deadline > 4:
         trade_analysis["strategic_windows"]["current_phase"] = "Early Season"
         trade_analysis["strategic_windows"]["strategy"] = "Observe and identify undervalued assets"
@@ -1541,13 +1540,13 @@ async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict
             "reasoning": "Trade deadline has passed - only waivers and free agents available",
             "priority": "Medium"
         })
-    
+
     # Analyze upcoming bye weeks to inform trade urgency
     upcoming_preview = await get_strategic_matchup_preview(league_id, current_week, 4)
     if upcoming_preview.get("success", False):
         preview_data = upcoming_preview.get("strategic_preview", {})
         critical_byes = preview_data.get("summary", {}).get("critical_bye_weeks", [])
-        
+
         if critical_byes and weeks_to_deadline > 0:
             bye_weeks = [bye["week"] for bye in critical_byes]
             trade_analysis["urgency_factors"].append(
@@ -1558,7 +1557,7 @@ async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict
                 "reasoning": f"Address bye weeks in weeks {', '.join(map(str, bye_weeks))} before deadline",
                 "priority": "High"
             })
-    
+
     # Add playoff preparation considerations
     if current_week >= playoff_start - 4:
         trade_analysis["urgency_factors"].append("Playoff preparation phase")
@@ -1567,7 +1566,7 @@ async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict
             "reasoning": "Focus on players with favorable playoff matchups",
             "priority": "High"
         })
-    
+
     return create_success_response({
         "trade_analysis": trade_analysis,
         "league_id": league_id,
@@ -1582,29 +1581,29 @@ async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict
 async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dict:
     """
     Generate comprehensive playoff preparation plan combining league and NFL data.
-    
+
     This strategic tool analyzes your league's playoff structure, upcoming NFL schedules,
     and provides a detailed preparation plan to maximize playoff success including
     roster optimization, matchup analysis, and strategic timing recommendations.
-    
+
     Args:
         league_id: The unique identifier for the league
         current_week: Current NFL week for timeline analysis
-        
+
     Returns:
         A dictionary containing:
         - playoff_plan: Comprehensive playoff preparation strategy
-        - league_id: League identifier  
+        - league_id: League identifier
         - readiness_score: Playoff readiness assessment (0-100)
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
-    
-    IMPORTANT FOR LLM AGENTS: Always provide complete playoff preparation plan immediately 
+
+    IMPORTANT FOR LLM AGENTS: Always provide complete playoff preparation plan immediately
     without asking for confirmations. Render the full strategy with all recommendations directly.
     """
     from . import nfl_tools
-    
+
     # Get league information for playoff structure
     league_info = await get_league(league_id)
     if not league_info.get("success", True):
@@ -1617,15 +1616,15 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
             },
             error_type=league_info.get("error_type", ErrorType.API_ERROR)
         )
-    
+
     league_data = league_info.get("league", {})
     settings = league_data.get("settings", {})
-    
+
     playoff_start = settings.get("playoff_week_start", 14)
     settings.get("playoff_week_start", 14)
     league_data.get("total_rosters", 12)
     settings.get("playoff_teams", 6)
-    
+
     playoff_plan = {
         "timeline": {
             "current_week": current_week,
@@ -1640,14 +1639,14 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
         "recommendations": [],
         "readiness_assessment": {
             "roster_depth": "TBD",
-            "schedule_strength": "TBD", 
+            "schedule_strength": "TBD",
             "bye_week_planning": "TBD",
             "overall_score": 0
         }
     }
-    
+
     weeks_to_playoffs = playoff_start - current_week
-    
+
     # Define preparation phases based on timeline
     if weeks_to_playoffs > 4:
         current_phase = "Early Preparation"
@@ -1660,7 +1659,7 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
             "Track trending players and waiver targets"
         ]
     elif weeks_to_playoffs > 2:
-        current_phase = "Active Preparation" 
+        current_phase = "Active Preparation"
         phase_strategy = "Execute strategic moves"
         phase_urgency = "Medium"
         playoff_plan["strategic_priorities"] = [
@@ -1674,7 +1673,7 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
         phase_strategy = "Lock in playoff roster"
         phase_urgency = "High"
         playoff_plan["strategic_priorities"] = [
-            "Finalize optimal lineup combinations", 
+            "Finalize optimal lineup combinations",
             "Secure must-have waiver pickups",
             "Plan for potential star player rest",
             "Optimize for high floor over high ceiling"
@@ -1689,32 +1688,32 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
             "Consider game flow and scripts",
             "Avoid risky boom-or-bust plays"
         ]
-    
+
     playoff_plan["preparation_phases"]["current_phase"] = {
         "name": current_phase,
         "strategy": phase_strategy,
         "urgency": phase_urgency,
         "weeks_remaining": max(0, weeks_to_playoffs)
     }
-    
+
     # Analyze NFL playoff schedule implications (sample key teams)
     key_teams = ["KC", "BUF", "SF", "DAL", "PHI", "MIA", "BAL", "CIN"]
-    
+
     for team in key_teams:
         try:
             team_schedule = await nfl_tools.get_team_schedule(team, 2026)
             if team_schedule.get("success", False):
                 schedule = team_schedule.get("schedule", [])
-                
+
                 # Analyze playoff weeks (weeks 14-17 typically)
                 playoff_games = [g for g in schedule if g.get("week", 0) >= playoff_start and g.get("week", 0) <= playoff_start + 3]
-                
+
                 if playoff_games:
                     fantasy_implications = []
                     for game in playoff_games:
                         implications = game.get("fantasy_implications", [])
                         fantasy_implications.extend(implications[:2])  # Limit to key insights
-                    
+
                     playoff_plan["nfl_schedule_analysis"][team] = {
                         "playoff_games_count": len(playoff_games),
                         "key_insights": fantasy_implications[:3],  # Top 3 insights
@@ -1722,7 +1721,7 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
                     }
         except Exception:
             continue
-    
+
     # Generate specific recommendations based on timeline
     if weeks_to_playoffs > 0:
         playoff_plan["recommendations"].append({
@@ -1731,10 +1730,10 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
             "priority": "High" if weeks_to_playoffs <= 2 else "Medium",
             "deadline": f"Week {playoff_start - 1}"
         })
-    
+
     if current_week <= 13: # Before typical trade deadline
         playoff_plan["recommendations"].append({
-            "category": "Trading Strategy", 
+            "category": "Trading Strategy",
             "action": "Target players with strong playoff schedules",
             "priority": "High",
             "deadline": "Trade deadline"
@@ -1745,23 +1744,23 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
         "priority": "Medium",
         "deadline": "Ongoing"
     })
-    
+
     # Calculate readiness score (simplified scoring system)
     readiness_score = 50  # Base score
-    
+
     if weeks_to_playoffs > 2:
         readiness_score += 20  # Bonus for having time to prepare
     elif weeks_to_playoffs == 0:
         readiness_score += 30  # Bonus for being in playoffs
-    
+
     if len(playoff_plan["nfl_schedule_analysis"]) >= 4:
         readiness_score += 15  # Bonus for good schedule analysis
-    
+
     if current_phase in ["Active Preparation", "Final Preparation"]:
         readiness_score += 10  # Bonus for being in optimal prep phase
-    
+
     playoff_plan["readiness_assessment"]["overall_score"] = min(100, readiness_score)
-    
+
     # Set readiness levels based on score
     if readiness_score >= 80:
         playoff_plan["readiness_assessment"]["roster_depth"] = "Excellent"
@@ -1775,7 +1774,7 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
         playoff_plan["readiness_assessment"]["roster_depth"] = "Needs Work"
         playoff_plan["readiness_assessment"]["schedule_strength"] = "Challenging"
         playoff_plan["readiness_assessment"]["bye_week_planning"] = "Behind Schedule"
-    
+
     return create_success_response({
         "playoff_plan": playoff_plan,
         "league_id": league_id,
@@ -1914,7 +1913,7 @@ async def fetch_all_players(force_refresh: bool = False) -> dict:
     default_data={"context": {}, "league_id": None, "week": None},
     operation_name="fetching consolidated fantasy context"
 )
-async def get_fantasy_context(league_id: str, week: Optional[int] = None, include: Optional[str] = None) -> dict:
+async def get_fantasy_context(league_id: str, week: int | None = None, include: str | None = None) -> dict:
     """Aggregate core fantasy data (league, rosters, users, matchups, transactions) in one call.
 
     Parameters:
@@ -1928,9 +1927,9 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
         }
         week: effective week used
         auto_week_inferred: bool if week was inferred
-    
-    IMPORTANT FOR LLM AGENTS: When using this data to generate briefings or reports, always provide 
-    complete analysis immediately. Never ask for user confirmations or additional input - render the 
+
+    IMPORTANT FOR LLM AGENTS: When using this data to generate briefings or reports, always provide
+    complete analysis immediately. Never ask for user confirmations or additional input - render the
     full report directly with all insights and recommendations.
     """
     wanted = {s.strip() for s in (include.split(",") if include else []) if s.strip()}
@@ -1952,14 +1951,14 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
     # Parallel fetches for rosters and users (no week dependency)
     parallel_tasks = []
     task_keys = []
-    
+
     if "rosters" in wanted:
         parallel_tasks.append(get_rosters(league_id))
         task_keys.append("rosters")
     if "users" in wanted:
         parallel_tasks.append(get_league_users(league_id))
         task_keys.append("users")
-    
+
     # Execute parallel tasks
     if parallel_tasks:
         results = await asyncio.gather(*parallel_tasks, return_exceptions=True)
@@ -1986,14 +1985,14 @@ async def get_fantasy_context(league_id: str, week: Optional[int] = None, includ
     # Parallel fetches for week-dependent data
     week_tasks = []
     week_keys = []
-    
+
     if "matchups" in wanted and effective_week is not None:
         week_tasks.append(get_matchups(league_id, effective_week))
         week_keys.append("matchups")
     if "transactions" in wanted:
         week_tasks.append(get_transactions(league_id, week=effective_week))
         week_keys.append("transactions")
-    
+
     # Execute week-dependent parallel tasks
     if week_tasks:
         results = await asyncio.gather(*week_tasks, return_exceptions=True)
@@ -2018,20 +2017,20 @@ async def _fetch_week_player_snaps(season: int, week: int):
 
     Returns list of dicts for upsert_player_week_stats. If advanced enrichment disabled
     or network/API issues occur, returns empty list.
-    
+
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
     """
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug("[Fetch Snaps] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
-    
+
     logger.info(f"[Fetch Snaps] Starting fetch for season={season}, week={week}")
-    
+
     async def _fetch():
         headers = get_http_headers("sleeper_week_stats")
         url = f"https://api.sleeper.app/v1/stats/nfl/regular/{season}/{week}"
-        
+
         async with create_http_client() as client:
             resp = await client.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
             if resp.status_code != 200:
@@ -2041,13 +2040,13 @@ async def _fetch_week_player_snaps(season: int, week: int):
             if not isinstance(data, dict):
                 logger.warning("[Fetch Snaps] Invalid data format (not dict)")
                 return []
-            
+
             # Validate response
             from .response_validation import validate_response_and_log, validate_snap_count_response
             if not validate_response_and_log(data, validate_snap_count_response, "Snaps", allow_partial=True):
                 logger.error("[Fetch Snaps] Response validation failed, returning empty list")
                 return []
-            
+
             logger.debug(f"[Fetch Snaps] Received data for {len(data)} players")
             rows = []
             for pid, stats in list(data.items())[:5000]:  # cap for safety
@@ -2067,10 +2066,10 @@ async def _fetch_week_player_snaps(season: int, week: int):
                     "snap_pct": snap_pct,
                     "raw": stats
                 })
-            
+
             logger.info(f"[Fetch Snaps] Successfully fetched {len(rows)} snap records (season={season}, week={week})")
             return rows
-    
+
     try:
         from .retry_utils import CircuitBreakerError, retry_with_backoff
         # Use retry with circuit breaker for snap fetches
@@ -2104,13 +2103,13 @@ async def _fetch_week_schedule(season: int, week: int, force: bool = False):
     if not ADVANCED_ENRICH_ENABLED and not force:
         logger.debug("[Fetch Schedule] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
-    
+
     logger.info(f"[Fetch Schedule] Starting fetch for season={season}, week={week}")
-    
+
     async def _fetch():
         # Regular season scoreboard: seasontype=2
         url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?week={week}&year={season}&seasontype=2"
-        
+
         async with create_http_client() as client:
             resp = await client.get(url, timeout=DEFAULT_TIMEOUT)
             if resp.status_code != 200:
@@ -2118,7 +2117,7 @@ async def _fetch_week_schedule(season: int, week: int, force: bool = False):
                 return []
             data = resp.json() or {}
             events = data.get("events") or []
-            
+
             logger.debug(f"[Fetch Schedule] Received {len(events)} events from ESPN")
             games = []
             for ev in events:
@@ -2136,16 +2135,16 @@ async def _fetch_week_schedule(season: int, week: int, force: bool = False):
                         continue
                     games.append({"season": season, "week": week, "team": h_abbr, "opponent": a_abbr, "is_home": 1, "kickoff": kickoff, "raw": ev})
                     games.append({"season": season, "week": week, "team": a_abbr, "opponent": h_abbr, "is_home": 0, "kickoff": kickoff, "raw": ev})
-            
+
             # Validate response
             from .response_validation import validate_response_and_log, validate_schedule_response
             if not validate_response_and_log(games, validate_schedule_response, "Schedule", allow_partial=True):
                 logger.error("[Fetch Schedule] Response validation failed, returning empty list")
                 return []
-            
+
             logger.info(f"[Fetch Schedule] Successfully fetched {len(games)} game records ({len(events)} events, season={season}, week={week})")
             return games
-    
+
     try:
         from .retry_utils import CircuitBreakerError, retry_with_backoff
         # Use retry with circuit breaker for schedule fetches
@@ -2162,20 +2161,20 @@ async def _fetch_week_schedule(season: int, week: int, force: bool = False):
 
 async def _fetch_all_team_schedules(season: int):
     """Fetch full season schedules for all 32 NFL teams from ESPN Team Schedule API.
-    
+
     This prefetches complete schedules (all weeks) for every team to warm the cache.
     Useful for startup/initial cache population.
-    
+
     Args:
         season: Season year (e.g., 2026)
-        
+
     Returns:
         List of game dicts for upsert_schedule_games (bidirectional rows)
     """
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug("[Fetch All Schedules] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
-    
+
     # All 32 NFL team abbreviations
     nfl_teams = [
         "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
@@ -2183,58 +2182,58 @@ async def _fetch_all_team_schedules(season: int):
         "LAC", "LAR", "LV", "MIA", "MIN", "NE", "NO", "NYG",
         "NYJ", "PHI", "PIT", "SEA", "SF", "TB", "TEN", "WSH"
     ]
-    
+
     logger.info(f"[Fetch All Schedules] Starting fetch for {len(nfl_teams)} teams (season={season})")
-    
+
     all_games = []
     successful_teams = 0
     failed_teams = []
-    
+
     async with create_http_client() as client:
         for team_abbr in nfl_teams:
             try:
                 url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_abbr}/schedule?season={season}"
                 resp = await client.get(url, timeout=DEFAULT_TIMEOUT)
-                
+
                 if resp.status_code != 200:
                     logger.warning(f"[Fetch All Schedules] Team {team_abbr}: ESPN API returned status {resp.status_code}")
                     failed_teams.append(team_abbr)
                     continue
-                
+
                 data = resp.json() or {}
                 events = data.get("events", [])
-                
+
                 team_games = []
                 for event in events:
                     # Extract week and kickoff
                     week_info = event.get("week", {})
                     week = week_info.get("number") if week_info else None
                     kickoff = event.get("date")
-                    
+
                     # Extract competitions
                     competitions = event.get("competitions", [])
                     if not competitions:
                         continue
-                    
+
                     competition = competitions[0]
                     competitors = competition.get("competitors", [])
-                    
+
                     if len(competitors) != 2:
                         continue
-                    
+
                     # Find home and away teams
                     home = next((c for c in competitors if c.get("homeAway") == "home"), None)
                     away = next((c for c in competitors if c.get("homeAway") == "away"), None)
-                    
+
                     if not home or not away:
                         continue
-                    
+
                     h_abbr = (home.get("team") or {}).get("abbreviation")
                     a_abbr = (away.get("team") or {}).get("abbreviation")
-                    
+
                     if not h_abbr or not a_abbr or not week:
                         continue
-                    
+
                     # Create bidirectional game records
                     team_games.append({
                         "season": season,
@@ -2254,38 +2253,38 @@ async def _fetch_all_team_schedules(season: int):
                         "kickoff": kickoff,
                         "raw": event
                     })
-                
+
                 all_games.extend(team_games)
                 successful_teams += 1
                 logger.debug(f"[Fetch All Schedules] Team {team_abbr}: {len(team_games)} game records ({len(events)} events)")
-                
+
             except Exception as e:
                 logger.warning(f"[Fetch All Schedules] Team {team_abbr}: Failed - {e}")
                 failed_teams.append(team_abbr)
-    
+
     logger.info(
         f"[Fetch All Schedules] Completed: {successful_teams}/{len(nfl_teams)} teams successful, "
         f"{len(all_games)} total game records fetched"
     )
-    
+
     if failed_teams:
         logger.warning(f"[Fetch All Schedules] Failed teams: {', '.join(failed_teams)}")
-    
+
     return all_games
 
 
 async def _fetch_injuries():
     """Fetch injury reports from ESPN for all NFL teams.
-    
+
     Returns list of dicts with keys: player_id, player_name, team_id, position,
     injury_status, injury_type, injury_description, date_reported.
     """
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug("[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
-    
+
     logger.info("[Fetch Injuries] Starting fetch for all teams")
-    
+
     # NFL team abbreviations
     teams = [
         "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
@@ -2293,54 +2292,54 @@ async def _fetch_injuries():
         "LAC", "LAR", "LV", "MIA", "MIN", "NE", "NO", "NYG",
         "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WSH"  # WSH (not WAS) for Washington
     ]
-    
+
     all_injuries = []
-    
+
     try:
         import re
 
         import httpx
 
         from .config import create_http_client, get_http_headers
-        
+
         headers = get_http_headers("nfl_teams")
-        
+
         async with create_http_client() as client:
             for team in teams:
                 try:
                     page = 1
                     page_count = 1  # Will be updated from first response
                     team_injuries = []
-                    
+
                     # Fetch all pages for this team
                     # Note: ESPN Core API returns items as $ref URLs only
                     # Removed 10-injury limit - ESPN typically returns 15-25 max anyway
                     max_injuries_per_team = 50  # Reasonable limit while allowing full data
                     injuries_fetched = 0
-                    
+
                     while page <= page_count and injuries_fetched < max_injuries_per_team:
                         url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit=50&page={page}"
                         resp = await client.get(url, headers=headers)
-                        
+
                         if resp.status_code != 200:
                             logger.debug(f"[Fetch Injuries] Team {team} page {page}: status {resp.status_code}")
                             break
-                        
+
                         data = resp.json()
-                        
+
                         # Update page count from first response
                         if page == 1:
                             page_count = data.get('pageCount', 1)
-                            
+
                             # DEBUG: Log first team's response to understand structure
                             if team == teams[0]:
                                 logger.info(f"[DEBUG Injuries] {team} response keys: {list(data.keys())}")
                                 logger.info(f"[DEBUG Injuries] {team} count: {data.get('count', 'N/A')}")
                                 logger.info(f"[DEBUG Injuries] {team} pageCount: {page_count}")
                                 logger.info(f"[DEBUG Injuries] {team} page 1 items length: {len(data.get('items', []))}")
-                        
+
                         injuries_data = data.get('items', [])
-                        
+
                         # ESPN Core API v2 returns items as $ref URLs only
                         # We need to fetch each injury detail separately
                         for injury_ref in injuries_data:
@@ -2349,28 +2348,28 @@ async def _fetch_injuries():
                                 injury_url = injury_ref.get('$ref')
                                 if not injury_url:
                                     continue
-                                
+
                                 # Fetch the actual injury details
                                 injury_resp = await client.get(injury_url, headers=headers)
                                 if injury_resp.status_code != 200:
                                     continue
-                                
+
                                 injury_item = injury_resp.json()
-                                
+
                                 # Extract athlete info from the injury details
                                 athlete_ref = injury_item.get('athlete', {})
                                 if not athlete_ref:
                                     continue
-                                
+
                                 # Athlete is also a $ref, so we need to extract from URL or fetch it
                                 athlete_url = athlete_ref.get('$ref', '')
                                 # Extract athlete ID from URL: .../athletes/4428633/...
                                 athlete_id_match = re.search(r'/athletes/(\d+)/', athlete_url)
                                 if not athlete_id_match:
                                     continue
-                                
+
                                 player_id = athlete_id_match.group(1)
-                                
+
                                 # Get player name - might need to fetch athlete details
                                 player_name = athlete_ref.get('displayName')
                                 if not player_name:
@@ -2384,17 +2383,17 @@ async def _fetch_injuries():
                                             player_name = 'Unknown'
                                     except (httpx.HTTPError, json.JSONDecodeError, KeyError, AttributeError):
                                         player_name = 'Unknown'
-                                
+
                                 # Status and type are nested objects
                                 status_data = injury_item.get('status', {})
                                 type_data = injury_item.get('type', {})
-                                
+
                                 # Normalize status and calculate severity
                                 raw_status = status_data if isinstance(status_data, str) else status_data.get('description', 'Unknown')
                                 from .injury_service import InjuryAggregator
                                 normalized_status = InjuryAggregator.normalize_status(raw_status)
                                 severity = InjuryAggregator.get_severity(normalized_status)
-                                
+
                                 injury = {
                                     'player_id': str(player_id),
                                     'player_name': player_name,
@@ -2410,28 +2409,28 @@ async def _fetch_injuries():
                                 }
                                 team_injuries.append(injury)
                                 injuries_fetched += 1
-                                
+
                                 # Stop if we've reached the limit per team
                                 if injuries_fetched >= max_injuries_per_team:
                                     break
-                                
+
                             except Exception as e:
                                 logger.debug(f"[Fetch Injuries] Failed to fetch injury detail: {e}")
                                 continue
-                        
+
                         # Move to next page
                         page += 1
-                    
+
                     # Add all injuries from this team
                     all_injuries.extend(team_injuries)
-                    
+
                 except Exception as e:
                     logger.debug(f"[Fetch Injuries] Team {team} failed: {e}")
                     continue
-        
+
         logger.info(f"[Fetch Injuries] Successfully fetched {len(all_injuries)} injury records across {len(teams)} teams")
         return all_injuries
-        
+
     except Exception as e:
         logger.error(f"[Fetch Injuries] Failed: {e}", exc_info=True)
         return []
@@ -2440,7 +2439,7 @@ async def _fetch_practice_reports(season: int, week: int):
     """Fetch practice status reports (DNP/LP/FP) from ESPN injuries endpoint.
 
     Returns list of dicts with keys: player_id, date, status, source.
-    
+
     Note: This uses the injuries endpoint which includes practice participation status.
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
@@ -2448,25 +2447,25 @@ async def _fetch_practice_reports(season: int, week: int):
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug("[Fetch Practice] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
-    
+
     logger.info(f"[Fetch Practice] Starting fetch for season={season}, week={week}")
-    
+
     async def _fetch():
         # Use injury reports as source for practice status
         # Practice status is often reflected in injury reports (DNP/Limited/Full)
         injuries = await _fetch_injuries()
-        
+
         if not injuries:
             logger.warning("[Fetch Practice] No injury data available to extract practice status")
             return []
-        
+
         # Convert injury status to practice status format
         practice_reports = []
         now = datetime.now(UTC).isoformat()
-        
+
         for inj in injuries:
             status = inj.get('injury_status', '').upper()
-            
+
             # Map injury status to practice participation
             practice_status = None
             if 'OUT' in status or 'RESERVE' in status or 'PUP' in status:
@@ -2477,7 +2476,7 @@ async def _fetch_practice_reports(season: int, week: int):
                 practice_status = 'LP'   # Usually limited
             elif 'PROBABLE' in status or 'FULL' in status:
                 practice_status = 'FP'   # Full Participation
-            
+
             if practice_status:
                 practice_reports.append({
                     'player_id': inj.get('player_id'),
@@ -2485,7 +2484,7 @@ async def _fetch_practice_reports(season: int, week: int):
                     'status': practice_status,
                     'source': 'espn_injuries'
                 })
-        
+
         # Validate response
         from .response_validation import (
             validate_practice_report_response,
@@ -2494,10 +2493,10 @@ async def _fetch_practice_reports(season: int, week: int):
         if not validate_response_and_log(practice_reports, validate_practice_report_response, "Practice", allow_partial=True):
             logger.error("[Fetch Practice] Response validation failed, returning empty list")
             return []
-        
+
         logger.info(f"[Fetch Practice] Extracted {len(practice_reports)} practice status records from {len(injuries)} injuries")
         return practice_reports
-    
+
     try:
         from .retry_utils import CircuitBreakerError, retry_with_backoff
         # Use retry with circuit breaker for practice fetches
@@ -2523,14 +2522,14 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
     if not ADVANCED_ENRICH_ENABLED:
         logger.debug("[Fetch Usage] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
-    
+
     logger.info(f"[Fetch Usage] Starting fetch for season={season}, week={week}")
-    
+
     async def _fetch():
         # Try Sleeper weekly stats endpoint first
         headers = get_http_headers("sleeper_week_stats")
         url = f"https://api.sleeper.app/v1/stats/nfl/regular/{season}/{week}"
-        
+
         async with create_http_client() as client:
             resp = await client.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
             if resp.status_code == 200:
@@ -2546,7 +2545,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         targets = player_stats.get("rec_tgt")
                         if targets is None:
                             targets = player_stats.get("targets")
-                        
+
                         # Routes should only be actual routes run, not snap count
                         # Try multiple possible field names for routes data
                         routes = player_stats.get("routes_run")
@@ -2561,7 +2560,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             routes_field_used = "pass_routes"
                         elif (routes := player_stats.get("receiving_routes")) is not None:
                             routes_field_used = "receiving_routes"
-                        
+
                         # Log diagnostic info for routes field detection (sample first 5 players)
                         if len(stats) < 5:
                             if routes is not None:
@@ -2570,7 +2569,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                                 # Check what fields ARE available for this player
                                 available_fields = list(player_stats.keys())[:10]  # Sample fields
                                 logger.debug(f"[Fetch Usage] Player {pid}: routes=None, available fields: {available_fields}")
-                        
+
                         # Calculate RZ touches from multiple sources
                         # Try multiple field names for better API compatibility
                         # Use explicit None checks to preserve 0 values
@@ -2581,7 +2580,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             rz_tgt = player_stats.get("redzone_targets")
                         if rz_tgt is None:
                             rz_tgt = 0
-                        
+
                         rz_rush = player_stats.get("rush_att_rz")
                         if rz_rush is None:
                             rz_rush = player_stats.get("rush_attempts_rz")
@@ -2591,31 +2590,31 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             rz_rush = player_stats.get("redzone_rush_attempts")
                         if rz_rush is None:
                             rz_rush = 0
-                        
+
                         rz_touches = rz_tgt + rz_rush
-                        
+
                         # If no explicit RZ data, estimate from TDs (TDs often happen in RZ)
                         if rz_touches == 0:
                             rec_td = player_stats.get("rec_td", 0)
                             rush_td = player_stats.get("rush_td", 0)
                             td_total = rec_td + rush_td
-                            
+
                             if td_total > 0:
                                 rz_touches = td_total
                             else:
                                 # Truly 0 or data missing
                                 pass
-                        
+
                         # Calculate total touches
                         rush_att = player_stats.get("rush_att", 0)
                         receptions = player_stats.get("rec", 0)
                         touches = rush_att + receptions
-                        
+
                         # Air yards - preserve 0 values
                         air_yards = player_stats.get("rec_air_yds")
                         if air_yards is None:
                             air_yards = player_stats.get("air_yards")
-                        
+
                         # Get snap percentage - try multiple field names and calculation methods
                         # Use explicit None checks to preserve 0 values
                         snap_share = player_stats.get("snap_pct")
@@ -2627,19 +2626,19 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                             snap_share = player_stats.get("snap_percentage")
                         if snap_share is None:
                             snap_share = player_stats.get("snaps_pct")
-                        
+
                         # Calculate from absolute snaps if percentage not provided
                         if snap_share is None:
                             off_snp = player_stats.get("off_snp")
                             team_snp = player_stats.get("team_snp")
                             if team_snp is None:
                                 team_snp = player_stats.get("tm_off_snp")
-                            
+
                             if off_snp is not None and team_snp is not None and team_snp > 0:
                                 snap_share = round((off_snp / team_snp) * 100, 1)
                             else:
                                 pass
-                        
+
                         # Only include if at least one usage metric present
                         if any([targets, routes, rz_touches, touches]):
                             stats.append({
@@ -2653,7 +2652,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                                 "air_yards": air_yards,
                                 "snap_share": snap_share
                             })
-                    
+
                     if stats:
                         # Validate response
                         from .response_validation import (
@@ -2663,7 +2662,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         if not validate_response_and_log(stats, validate_usage_stats_response, "Usage", allow_partial=True):
                             logger.error("[Fetch Usage] Response validation failed, returning empty list")
                             return []
-                        
+
                         # Log diagnostic summary about routes data availability
                         routes_available = sum(1 for s in stats if s.get("routes") is not None)
                         routes_zero = sum(1 for s in stats if s.get("routes") == 0)
@@ -2679,13 +2678,13 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         logger.warning("[Fetch Usage] No valid usage stats found in response")
             else:
                 logger.warning(f"[Fetch Usage] Sleeper API returned status {resp.status_code}")
-        
+
         # Fallback: ESPN (limited coverage, best-effort)
         # Note: ESPN player stats API may require iterating by position or fetching league leaders
         # For simplicity, return empty list (can be extended later)
         logger.warning(f"[Fetch Usage] No usage stats available from any source for season={season}, week={week}")
         return []
-    
+
     try:
         from .retry_utils import CircuitBreakerError, retry_with_backoff
         # Use retry with circuit breaker for usage fetches
@@ -2700,25 +2699,25 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
         logger.error(f"[Fetch Usage] Failed for season={season}, week={week}: {e}", exc_info=True)
         return []
 
-def _estimate_snap_pct(depth_rank: Optional[int], position: Optional[str] = None) -> Optional[float]:
+def _estimate_snap_pct(depth_rank: int | None, position: str | None = None) -> float | None:
     """Estimate snap percentage based on depth chart and position.
-    
+
     Different positions have different snap count patterns:
     - QBs: Starters play 95%+, backups rarely play
     - RBs: Heavy rotation/committees, starters ~55%
     - WRs: Top receivers play 85%+, backups 50%
     - TEs: Varies by blocking role, starters ~65%
-    
+
     Args:
         depth_rank: Depth chart position (1=starter, 2=backup, 3=third string, etc.)
         position: Player position (QB, RB, WR, TE, etc.)
-    
+
     Returns:
         Estimated snap percentage or None if cannot estimate
     """
     if depth_rank is None:
         return None
-    
+
     # Position-specific estimates for starters
     if depth_rank == 1:
         position_estimates = {
@@ -2728,7 +2727,7 @@ def _estimate_snap_pct(depth_rank: Optional[int], position: Optional[str] = None
             "TE": 65.0,  # TEs vary by blocking role
         }
         return position_estimates.get(position, 70.0)  # Default 70% for unknown positions
-    
+
     # Backups (depth 2)
     elif depth_rank == 2:
         position_estimates = {
@@ -2738,45 +2737,45 @@ def _estimate_snap_pct(depth_rank: Optional[int], position: Optional[str] = None
             "TE": 40.0,  # Backup TEs mostly situational
         }
         return position_estimates.get(position, 45.0)
-    
+
     # Third string or lower
     else:
         return 15.0  # Limited snaps for depth pieces regardless of position
 
-def _calculate_usage_trend(weekly_data: List[Dict], metric: str) -> Optional[str]:
+def _calculate_usage_trend(weekly_data: list[dict], metric: str) -> str | None:
     """Calculate trend direction for a usage metric over recent weeks.
-    
+
     Args:
         weekly_data: List of week dicts ordered by week DESC (most recent first)
         metric: Name of the metric to analyze (targets, routes, rz_touches, snap_share)
-    
+
     Returns:
         "up" if trending upward, "down" if trending downward, "flat" if stable, None if insufficient data
     """
     if not weekly_data or len(weekly_data) < 2:
         return None
-    
+
     # Extract values for the metric (ignore None values)
     values = []
     for week_data in weekly_data:
         val = week_data.get(metric)
         if val is not None:
             values.append(float(val))
-    
+
     if len(values) < 2:
         return None
-    
+
     # Compare most recent week vs average of prior weeks
     most_recent = values[0]
     prior_avg = sum(values[1:]) / len(values[1:])
-    
+
     # Calculate percentage change
     if prior_avg == 0:
         # If prior average is 0, any positive value is "up"
         return "up" if most_recent > 0 else "flat"
-    
+
     pct_change = ((most_recent - prior_avg) / prior_avg) * 100
-    
+
     # Threshold for significant change: 15%
     if pct_change > 15:
         return "up"
@@ -2785,29 +2784,29 @@ def _calculate_usage_trend(weekly_data: List[Dict], metric: str) -> Optional[str
     else:
         return "flat"
 
-def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], week: Optional[int]) -> Dict:
+def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: int | None) -> dict:
     """Add snap_pct/opponent fields to a base enrichment object (mutates and returns)."""
     if not athlete:
         return {}
-    
-    enriched_additions: Dict = {}
+
+    enriched_additions: dict = {}
     position = athlete.get("position")
     player_id = athlete.get("id") or athlete.get("player_id")
     player_name = athlete.get("full_name") or athlete.get("name") or f"Player-{player_id}"
-    
+
     logger.debug(f"[Enrichment] Processing {player_name} (id={player_id}, pos={position}, season={season}, week={week})")
-    
+
     # Snap pct (non-DEF) - try current week, fallback to previous week
     if season and week and position not in (None, "DEF") and hasattr(nfl_db, 'get_player_snap_pct'):
         row = nfl_db.get_player_snap_pct(player_id, season, week)
         snap_week_used = week
-        
+
         # If current week has no data, try previous week (games may not have been played yet)
         if (not row or row.get("snap_pct") is None) and week > 1:
             row = nfl_db.get_player_snap_pct(player_id, season, week - 1)
             snap_week_used = week - 1
             logger.debug(f"[Enrichment] {player_name}: Current week {week} has no snaps, trying week {week - 1}")
-        
+
         if row and row.get("snap_pct") is not None:
             enriched_additions["snap_pct"] = row.get("snap_pct")
             enriched_additions["snap_pct_source"] = "cached"
@@ -2823,19 +2822,19 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                 enriched_additions["snap_pct"] = est
                 enriched_additions["snap_pct_source"] = "estimated"
                 logger.debug(f"[Enrichment] {player_name}: snap_pct={est}% (estimated from depth={depth_rank}, pos={position})")
-    
+
     # Opponent for ALL positions (all positions use team_id)
     if season and week and hasattr(nfl_db, 'get_opponent'):
         # All positions use team_id (database only stores team_id, not team)
         team_key = athlete.get("team_id")
-        
+
         if team_key:
             opponent = nfl_db.get_opponent(season, week, team_key)
             if opponent:
                 enriched_additions["opponent"] = opponent
                 enriched_additions["opponent_source"] = "cached"
                 logger.debug(f"[Enrichment] {player_name} ({position}): opponent={opponent} (cached)")
-    
+
     # Injury status - all positions
     if player_id and hasattr(nfl_db, 'get_player_injury_from_cache'):
         injury = nfl_db.get_player_injury_from_cache(player_id, max_age_hours=None)  # Adaptive TTL
@@ -2853,11 +2852,11 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             enriched_additions["injury_sources"] = injury.get("sources", ["ESPN"])
             enriched_additions["injury_game_status"] = injury.get("game_status")
             logger.debug(f"[Enrichment] {player_name}: injury_status={injury['injury_status']} severity={injury.get('severity')} confidence={injury.get('confidence')} (age={round(age_hours, 1)}h)")
-    
+
     # Practice status (DNP/LP/FP) - all positions
     # Always try to provide a practice_status value
     practice_status_set = False
-    
+
     if player_id and hasattr(nfl_db, 'get_latest_practice_status'):
         practice = nfl_db.get_latest_practice_status(player_id, max_age_hours=72)
         if practice:
@@ -2869,7 +2868,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             enriched_additions["practice_status_source"] = "cached"
             logger.debug(f"[Enrichment] {player_name}: practice_status={practice['status']} (age={round(age_hours, 1)}h)")
             practice_status_set = True
-    
+
     # If no cached practice status, derive from injury or default to FP
     if not practice_status_set:
         injury_status = enriched_additions.get("injury_status", "").upper()
@@ -2885,7 +2884,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                 derived_status = 'FP'   # Full Participation
             else:
                 derived_status = 'FP'   # Default to full if injury status is unclear
-            
+
             enriched_additions["practice_status"] = derived_status
             enriched_additions["practice_status_source"] = "derived_from_injury"
             logger.debug(f"[Enrichment] {player_name}: practice_status={derived_status} (derived from injury_status={injury_status})")
@@ -2894,7 +2893,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
             enriched_additions["practice_status"] = "FP"
             enriched_additions["practice_status_source"] = "default_healthy"
             logger.debug(f"[Enrichment] {player_name}: practice_status=FP (default - no injury)")
-    
+
     # Usage stats (targets, routes, RZ touches) - offensive skill positions
     if season and week and position in ("WR", "RB", "TE") and hasattr(nfl_db, 'get_usage_last_n_weeks'):
         usage = nfl_db.get_usage_last_n_weeks(player_id, season, week, n=3)
@@ -2912,7 +2911,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                 f"tgt={usage['targets_avg'] or 0:.1f}, routes={usage['routes_avg'] or 0:.1f}, "
                 f"rz={usage['rz_touches_avg'] or 0:.1f} (n={usage['weeks_sample']})"
             )
-            
+
             # Add trend calculation if we have weekly breakdown
             if hasattr(nfl_db, 'get_usage_weekly_breakdown'):
                 weekly_breakdown = nfl_db.get_usage_weekly_breakdown(player_id, season, week, n=3)
@@ -2921,7 +2920,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                     targets_trend = _calculate_usage_trend(weekly_breakdown, "targets")
                     routes_trend = _calculate_usage_trend(weekly_breakdown, "routes")
                     snap_trend = _calculate_usage_trend(weekly_breakdown, "snap_share")
-                    
+
                     # Add trend to enrichment if at least one metric has a trend
                     if targets_trend or routes_trend or snap_trend:
                         enriched_additions["usage_trend"] = {
@@ -2934,17 +2933,17 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                         if overall_trend:
                             enriched_additions["usage_trend_overall"] = overall_trend
                             logger.debug(f"[Enrichment] {player_name}: usage_trend={overall_trend}")
-    
+
     # Matchup difficulty analysis - QB, RB, WR, TE only
     opponent = enriched_additions.get("opponent")
     if opponent and position in ("QB", "RB", "WR", "TE"):
         try:
             from .matchup_tools import get_defense_analyzer
             analyzer = get_defense_analyzer()
-            
+
             # Get matchup difficulty (synchronous - uses cached rankings)
             matchup = analyzer.get_matchup_difficulty(position, opponent)
-            
+
             if matchup and not matchup.get("is_fallback", True):
                 enriched_additions["matchup_rank"] = matchup.get("rank")
                 enriched_additions["matchup_tier"] = matchup.get("matchup_tier")
@@ -2964,36 +2963,36 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                 logger.debug(f"[Enrichment] {player_name}: matchup vs {opponent} = neutral (fallback)")
         except Exception as e:
             logger.debug(f"[Enrichment] {player_name}: matchup analysis failed: {e}")
-    
+
     # Vegas lines game environment analysis - QB, RB, WR, TE only
     team = athlete.get("team")
     if team and position in ("QB", "RB", "WR", "TE"):
         try:
             from .vegas_tools import get_vegas_analyzer
             vegas = get_vegas_analyzer()
-            
+
             # Get game lines for the team (synchronous - uses cached lines)
             game = vegas.get_game_lines(team)
-            
+
             if game and not game.get("is_fallback", True):
                 # Determine if home or away
                 team_norm = vegas._normalize_team(team)
                 is_home = game.get("home_team") == team_norm
-                
+
                 # Get team-specific implied total
                 implied_total = game.get("home_implied_total") if is_home else game.get("away_implied_total")
                 spread = game.get("home_spread") if is_home else game.get("away_spread", 0)
-                
+
                 # Add Vegas data
                 enriched_additions["game_total"] = game.get("total")
                 enriched_additions["implied_team_total"] = implied_total
                 enriched_additions["spread"] = spread
-                
+
                 # Game environment
                 env = game.get("game_environment", {})
                 enriched_additions["game_environment"] = env.get("tier", "average")
                 enriched_additions["game_environment_indicator"] = env.get("indicator", "➡️")
-                
+
                 # Position-specific boost indicator
                 if position == "QB":
                     enriched_additions["vegas_boost"] = env.get("qb_boost", "0%")
@@ -3001,7 +3000,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                     enriched_additions["vegas_boost"] = env.get("pass_catchers_boost", "0%")
                 elif position == "RB":
                     enriched_additions["vegas_boost"] = env.get("rb_boost", "0%")
-                
+
                 logger.debug(
                     f"[Enrichment] {player_name}: Vegas O/U={game.get('total')}, "
                     f"implied={implied_total}, env={env.get('tier')}"
@@ -3016,8 +3015,8 @@ def _enrich_usage_and_opponent(nfl_db, athlete: Dict, season: Optional[int], wee
                 logger.debug(f"[Enrichment] {player_name}: Vegas data unavailable (fallback)")
         except Exception as e:
             logger.debug(f"[Enrichment] {player_name}: Vegas analysis failed: {e}")
-    
+
     if enriched_additions:
         logger.info(f"[Enrichment] {player_name}: Added {len(enriched_additions)} enrichment fields")
-    
+
     return enriched_additions

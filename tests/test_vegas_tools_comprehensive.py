@@ -30,22 +30,22 @@ class TestVegasTools:
         result = get_game_environment_tier(52.0)
         assert result["tier"] == "shootout"
         assert result["indicator"] == "🔥"
-        
+
         # Test high scoring
         result = get_game_environment_tier(48.0)
         assert result["tier"] == "high_scoring"
         assert result["indicator"] == "📈"
-        
+
         # Test average
         result = get_game_environment_tier(43.0)
         assert result["tier"] == "average"
         assert result["indicator"] == "➡️"
-        
+
         # Test low scoring
         result = get_game_environment_tier(38.0)
         assert result["tier"] == "low_scoring"
         assert result["indicator"] == "📉"
-        
+
         # Test defensive battle
         result = get_game_environment_tier(35.0)
         assert result["tier"] == "defensive_battle"
@@ -56,7 +56,7 @@ class TestVegasTools:
         # Favorite case
         result = calculate_implied_team_total(48.0, -7.0, True)
         assert result == 27.5  # (48 + 7) / 2
-        
+
         # Underdog case
         result = calculate_implied_team_total(48.0, 7.0, False)
         assert result == 20.5  # (48 - 7) / 2
@@ -67,17 +67,17 @@ class TestVegasTools:
         result = get_game_script_projection(-12.0)
         assert result["projection"] == "likely_blowout_win"
         assert result["indicator"] == "💨"
-        
+
         # Heavy underdog
         result = get_game_script_projection(12.0)
         assert result["projection"] == "likely_blowout_loss"
         assert result["indicator"] == "⚠️"
-        
+
         # Slight favorite
         result = get_game_script_projection(-3.0)
         assert result["projection"] == "slight_favorite"
         assert result["indicator"] == "➡️"
-        
+
         # Pick'em
         result = get_game_script_projection(0.0)
         assert result["projection"] == "toss_up"
@@ -106,7 +106,7 @@ class TestVegasTools:
             {"name": "Patrick Mahomes", "team": "KC", "position": "QB"},
             {"name": "Tyreek Hill", "team": "MIA", "position": "WR"}
         ]
-        
+
         result = await analyze_roster_vegas(players=players)
         assert isinstance(result, dict)
         assert 'analysis' in result or 'success' in result or 'error' in result
@@ -124,11 +124,11 @@ class TestVegasTools:
         # Test with invalid team
         result = await get_game_environment(team="")
         assert isinstance(result, dict)
-        
+
         # Test with empty players list for roster analysis
         result = await analyze_roster_vegas(players=[])
         assert isinstance(result, dict)
-        
+
         # Test with invalid min_total for stack opportunities
         result = await get_stack_opportunities(min_total=-10.0)
         assert isinstance(result, dict)

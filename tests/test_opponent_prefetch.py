@@ -14,25 +14,25 @@ def test_prefetch_schedule_weeks_configuration():
 def test_schedule_week_range_logic():
     """Test the logic for calculating which weeks to fetch."""
     # Simulate the logic in the prefetch loop
-    
+
     # Test case 1: Week 6, should fetch 6, 7, 8, 9
     week = 6
     schedule_weeks_to_fetch = list(range(week, min(week + PREFETCH_SCHEDULE_WEEKS, 19)))
     assert schedule_weeks_to_fetch == [6, 7, 8, 9], \
         f"Expected [6, 7, 8, 9], got {schedule_weeks_to_fetch}"
-    
+
     # Test case 2: Week 17, should fetch 17, 18 (stops at 18)
     week = 17
     schedule_weeks_to_fetch = list(range(week, min(week + PREFETCH_SCHEDULE_WEEKS, 19)))
     assert schedule_weeks_to_fetch == [17, 18], \
         f"Expected [17, 18], got {schedule_weeks_to_fetch}"
-    
+
     # Test case 3: Week 18, should fetch only 18
     week = 18
     schedule_weeks_to_fetch = list(range(week, min(week + PREFETCH_SCHEDULE_WEEKS, 19)))
     assert schedule_weeks_to_fetch == [18], \
         f"Expected [18], got {schedule_weeks_to_fetch}"
-    
+
     # Test case 4: Week 1, should fetch 1, 2, 3, 4
     week = 1
     schedule_weeks_to_fetch = list(range(week, min(week + PREFETCH_SCHEDULE_WEEKS, 19)))

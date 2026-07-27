@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .errors import (
     ErrorType,
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 VBD_POSITIONS = ["QB", "RB", "WR", "TE"]
 
 
-def replacement_baselines(num_teams: int, superflex: bool) -> Dict[str, int]:
+def replacement_baselines(num_teams: int, superflex: bool) -> dict[str, int]:
     """Number of startable players per position across the league (VBD baseline).
 
     The player just past this count defines "replacement level" for the position.
@@ -53,19 +53,19 @@ def replacement_baselines(num_teams: int, superflex: bool) -> Dict[str, int]:
     }
 
 
-def compute_vbd(values: List[Dict], num_teams: int, superflex: bool) -> Dict[str, Any]:
+def compute_vbd(values: list[dict], num_teams: int, superflex: bool) -> dict[str, Any]:
     """Attach VBD (value over replacement) to each player and return metadata.
 
     Returns {"players": [...augmented...], "replacement": {pos: value}}.
     """
     baselines = replacement_baselines(num_teams, superflex)
-    by_pos: Dict[str, List[Dict]] = {}
+    by_pos: dict[str, list[dict]] = {}
     for v in values:
         pos = (v.get("position") or "").upper()
         if pos in VBD_POSITIONS and v.get("value") is not None:
             by_pos.setdefault(pos, []).append(v)
 
-    replacement: Dict[str, float] = {}
+    replacement: dict[str, float] = {}
     for pos, plist in by_pos.items():
         plist.sort(key=lambda x: x.get("value") or 0, reverse=True)
         baseline_idx = baselines.get(pos, len(plist)) - 1
@@ -89,9 +89,9 @@ def compute_vbd(values: List[Dict], num_teams: int, superflex: bool) -> Dict[str
     return {"players": augmented, "replacement": replacement, "baselines": baselines}
 
 
-def _tier_breaks(players_at_pos: List[Dict]) -> List[Dict]:
+def _tier_breaks(players_at_pos: list[dict]) -> list[dict]:
     """Group a position's players into tiers using FantasyCalc's tier field."""
-    tiers: Dict[int, List[str]] = {}
+    tiers: dict[int, list[str]] = {}
     for p in players_at_pos:
         t = p.get("tier")
         if t is None:
@@ -113,10 +113,10 @@ async def get_draft_board(
     superflex: bool = False,
     num_teams: int = 12,
     dynasty: bool = False,
-    position: Optional[str] = None,
-    limit: Optional[int] = 60,
+    position: str | None = None,
+    limit: int | None = 60,
     db=None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build a tiered, VBD-ranked draft board (consensus values).
 
     Ranked by Value-Based Drafting (value over positional replacement), the
@@ -149,7 +149,7 @@ async def get_draft_board(
     board = vbd["players"]
 
     # Tiers per position (computed before filtering so they're complete).
-    tiers_by_position: Dict[str, List[Dict]] = {}
+    tiers_by_position: dict[str, list[dict]] = {}
     for pos in VBD_POSITIONS:
         at_pos = [p for p in values if (p.get("position") or "").upper() == pos]
         at_pos.sort(key=lambda x: x.get("overall_rank") or 1e9)
@@ -191,7 +191,7 @@ async def get_draft_board(
 # recommend_draft_pick (live)
 # ==========================================================================
 
-def _starter_requirements(settings: Dict) -> Dict[str, int]:
+def _starter_requirements(settings: dict) -> dict[str, int]:
     """Extract starter slot counts from Sleeper draft settings."""
     s = settings or {}
     def g(k):
@@ -212,7 +212,7 @@ def _starter_requirements(settings: Dict) -> Dict[str, int]:
     }
 
 
-def _need_multiplier(pos: str, my_counts: Dict[str, int], reqs: Dict[str, int], flex_filled: int) -> Tuple[float, str]:
+def _need_multiplier(pos: str, my_counts: dict[str, int], reqs: dict[str, int], flex_filled: int) -> tuple[float, str]:
     """Weight a position by how badly the roster still needs it.
 
     Multipliers are deliberately decisive so roster construction actually holds:
@@ -234,7 +234,7 @@ def _need_multiplier(pos: str, my_counts: Dict[str, int], reqs: Dict[str, int], 
     return 1.0, "depth"
 
 
-def _scoring_from_draft(draft: Dict) -> str:
+def _scoring_from_draft(draft: dict) -> str:
     meta = (draft or {}).get("metadata") or {}
     st = (meta.get("scoring_type") or "").lower()
     if "half" in st:
@@ -252,10 +252,10 @@ def _scoring_from_draft(draft: Dict) -> str:
 )
 async def recommend_draft_pick(
     draft_id: str,
-    my_slot: Optional[int] = None,
+    my_slot: int | None = None,
     num_suggestions: int = 5,
     db=None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Recommend the best pick(s) right now in a live Sleeper draft.
 
     Reads the live draft (who's gone, settings, scoring), models your roster and
@@ -292,8 +292,8 @@ async def recommend_draft_pick(
     picks = picks_res.get("picks", []) if picks_res.get("success") else []
 
     drafted_ids = set()
-    my_counts: Dict[str, int] = {}
-    my_players: List[Dict] = []
+    my_counts: dict[str, int] = {}
+    my_players: list[dict] = []
     for pk in picks:
         pid = pk.get("player_id")
         if pid:
@@ -339,7 +339,7 @@ async def recommend_draft_pick(
     scored.sort(key=lambda x: x["need_weighted"], reverse=True)
 
     # Best available at each position (pure VBD)
-    best_by_pos: Dict[str, Dict] = {}
+    best_by_pos: dict[str, dict] = {}
     for p in available:
         pos = (p.get("position") or "").upper()
         if pos in VBD_POSITIONS and pos not in best_by_pos and p.get("vbd") is not None:
@@ -348,7 +348,7 @@ async def recommend_draft_pick(
 
     # Value-cliff detection: gap from #1 to #2 available at each position
     cliffs = {}
-    avail_by_pos: Dict[str, List[Dict]] = {}
+    avail_by_pos: dict[str, list[dict]] = {}
     for p in available:
         pos = (p.get("position") or "").upper()
         if pos in VBD_POSITIONS and p.get("value") is not None:
@@ -363,7 +363,7 @@ async def recommend_draft_pick(
 
     # Positional run: what went in the last ~2 rounds
     recent = picks[-(2 * num_teams):] if picks else []
-    run_counts: Dict[str, int] = {}
+    run_counts: dict[str, int] = {}
     for pk in recent:
         pos = ((pk.get("metadata") or {}).get("position") or "").upper()
         if pos in VBD_POSITIONS:
@@ -430,7 +430,7 @@ async def recommend_draft_pick(
 # simulate_draft (offline rehearsal)
 # ==========================================================================
 
-def _flex_filled(counts: Dict[str, int], reqs: Dict[str, int]) -> int:
+def _flex_filled(counts: dict[str, int], reqs: dict[str, int]) -> int:
     """RB/WR/TE drafted beyond their base starter requirements (fill FLEX)."""
     return sum(max(0, counts.get(pos, 0) - reqs.get(pos, 0)) for pos in ("RB", "WR", "TE"))
 
@@ -440,14 +440,14 @@ def _flex_filled(counts: Dict[str, int], reqs: Dict[str, int]) -> int:
 POS_BENCH_ALLOW = {"QB": 1, "TE": 2, "RB": 5, "WR": 5}
 
 
-def _position_caps(reqs: Dict[str, int]) -> Dict[str, int]:
+def _position_caps(reqs: dict[str, int]) -> dict[str, int]:
     return {pos: reqs.get(pos, 0) + POS_BENCH_ALLOW.get(pos, 4) for pos in VBD_POSITIONS}
 
 
 def _eligible_players(
-    avail: List[Dict], counts: Dict[str, int], reqs: Dict[str, int],
-    caps: Dict[str, int], picks_left: int,
-) -> List[Dict]:
+    avail: list[dict], counts: dict[str, int], reqs: dict[str, int],
+    caps: dict[str, int], picks_left: int,
+) -> list[dict]:
     """Restrict candidates so rosters fill starters and don't over-stack.
 
     - Late-round guarantee: when there are just enough picks left to fill the
@@ -475,11 +475,11 @@ def _eligible_players(
 
 
 def _need_weighted_ranking(
-    available: List[Dict], counts: Dict[str, int], reqs: Dict[str, int]
-) -> List[Tuple[Dict, float]]:
+    available: list[dict], counts: dict[str, int], reqs: dict[str, int]
+) -> list[tuple[dict, float]]:
     """Rank available players by need-weighted VBD (best first) for one roster."""
     flex = _flex_filled(counts, reqs)
-    scored: List[Tuple[Dict, float]] = []
+    scored: list[tuple[dict, float]] = []
     for p in available:
         pos = (p.get("position") or "").upper()
         vbd = p.get("vbd")
@@ -500,13 +500,13 @@ def _snake_slot(overall_index: int, num_teams: int) -> int:
     return num_teams - pos_in_round
 
 
-def _starting_lineup_value(players: List[Dict], reqs: Dict[str, int]) -> float:
+def _starting_lineup_value(players: list[dict], reqs: dict[str, int]) -> float:
     """Sum of VBD of a roster's optimal starting lineup (QB/RB/WR/TE + FLEX).
 
     This is what a draft is really graded on — starters, not deep bench. Bench
     players (often negative VBD) don't drag the number down.
     """
-    by_pos: Dict[str, List[float]] = {}
+    by_pos: dict[str, list[float]] = {}
     for p in players:
         pos = (p.get("position") or "").upper()
         if pos in VBD_POSITIONS:
@@ -515,7 +515,7 @@ def _starting_lineup_value(players: List[Dict], reqs: Dict[str, int]) -> float:
         by_pos[pos].sort(reverse=True)
 
     total = 0.0
-    leftovers: List[float] = []  # flex-eligible players not used as base starters
+    leftovers: list[float] = []  # flex-eligible players not used as base starters
     for pos in VBD_POSITIONS:
         need = reqs.get(pos, 0)
         vals = by_pos.get(pos, [])
@@ -527,7 +527,7 @@ def _starting_lineup_value(players: List[Dict], reqs: Dict[str, int]) -> float:
     return round(total, 1)
 
 
-def _grade_from_value(my_value: float, field_values: List[float]) -> str:
+def _grade_from_value(my_value: float, field_values: list[float]) -> str:
     """Letter grade from where a team's starter value sits in the field's range.
 
     Distance-based (not ordinal rank): when the field is tightly bunched, being a
@@ -552,15 +552,15 @@ def _grade_from_value(my_value: float, field_values: List[float]) -> str:
 
 
 def _simulate_one(
-    pool: List[Dict], num_teams: int, rounds: int, my_slot: int,
-    reqs: Dict[str, int], randomness: float, rng: random.Random,
-) -> Dict[str, Any]:
+    pool: list[dict], num_teams: int, rounds: int, my_slot: int,
+    reqs: dict[str, int], randomness: float, rng: random.Random,
+) -> dict[str, Any]:
     """Run one full snake draft. Returns per-slot rosters and my team's detail."""
     available = list(pool)  # already VBD-sorted; shallow copy of dict refs
     {str(p["player_id"]): p for p in available}
     drafted_ids: set = set()
-    counts: Dict[int, Dict[str, int]] = {s: {} for s in range(1, num_teams + 1)}
-    rosters: Dict[int, List[Dict]] = {s: [] for s in range(1, num_teams + 1)}
+    counts: dict[int, dict[str, int]] = {s: {} for s in range(1, num_teams + 1)}
+    rosters: dict[int, list[dict]] = {s: [] for s in range(1, num_teams + 1)}
     sigma = max(0.01, randomness * 5.0)
     caps = _position_caps(reqs)
 
@@ -598,7 +598,7 @@ def _simulate_one(
     starter_vbd = {s: _starting_lineup_value(rosters[s], reqs) for s in rosters}
     team_vbd = {s: round(sum((r.get("vbd") or 0) for r in rosters[s]), 1) for s in rosters}
     standings = sorted(starter_vbd.items(), key=lambda x: x[1], reverse=True)
-    my_rank = [i + 1 for i, (s, _) in enumerate(standings) if s == my_slot][0]
+    my_rank = next(i + 1 for i, (s, _) in enumerate(standings) if s == my_slot)
 
     starters_filled = all(counts[my_slot].get(pos, 0) >= need for pos, need in reqs.items() if pos != "FLEX")
 
@@ -640,9 +640,9 @@ async def simulate_draft(
     dynasty: bool = False,
     randomness: float = 0.35,
     num_sims: int = 1,
-    seed: Optional[int] = None,
+    seed: int | None = None,
     db=None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Rehearse a full snake draft offline (solo, repeatable).
 
     Opponents pick by need-weighted VBD with realistic ADP noise; your slot
@@ -690,14 +690,14 @@ async def simulate_draft(
     n = max(1, min(int(num_sims), 200))
     randomness = max(0.0, min(float(randomness), 1.0))
 
-    sims: List[Dict[str, Any]] = []
+    sims: list[dict[str, Any]] = []
     for i in range(n):
         rng = random.Random((seed + i) if seed is not None else None)
         sims.append(_simulate_one(pool, num_teams, rounds, my_slot, reqs, randomness, rng))
 
     sample = sims[0]
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "sample": sample,
         "format": {"scoring": scoring, "superflex": superflex, "num_teams": num_teams,
                    "dynasty": dynasty, "rounds": rounds},
@@ -709,10 +709,10 @@ async def simulate_draft(
 
     if n > 1:
         # Aggregate my roster structure across sims.
-        pos_totals: Dict[str, float] = {}
+        pos_totals: dict[str, float] = {}
         starter_vbd_sum = 0.0
         rank_sum = 0.0
-        grade_counts: Dict[str, int] = {}
+        grade_counts: dict[str, int] = {}
         for s in sims:
             for pos, c in s["my_position_counts"].items():
                 pos_totals[pos] = pos_totals.get(pos, 0) + c

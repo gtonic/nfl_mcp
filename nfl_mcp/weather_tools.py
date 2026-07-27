@@ -15,7 +15,6 @@ earn its place in ``environment_multiplier`` via a backtest first.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
 
 from .config import create_http_client
 from .errors import create_success_response, handle_http_errors, handle_validation_error
@@ -27,7 +26,7 @@ OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 # Static home-stadium data: team -> (lat, lon, dome, name). `dome=True` covers
 # fixed domes AND retractable/canopy roofs (SoFi, State Farm, …) that are
 # effectively wind-free for fantasy purposes — an approximation, flagged as such.
-STADIUMS: Dict[str, Dict] = {
+STADIUMS: dict[str, dict] = {
     "ARI": {"lat": 33.5276, "lon": -112.2626, "dome": True, "name": "State Farm Stadium"},
     "ATL": {"lat": 33.7554, "lon": -84.4008, "dome": True, "name": "Mercedes-Benz Stadium"},
     "BAL": {"lat": 39.2780, "lon": -76.6227, "dome": False, "name": "M&T Bank Stadium"},
@@ -72,7 +71,7 @@ def weather_multiplier(
     position: str,
     wind_mph: float,
     precip_in: float = 0.0,
-    temp_f: Optional[float] = None,
+    temp_f: float | None = None,
     is_dome: bool = False,
 ) -> float:
     """Heuristic per-position weather adjustment (1.0 = neutral).
@@ -103,9 +102,9 @@ def weather_multiplier(
 def weather_impact(
     wind_mph: float,
     precip_in: float,
-    temp_f: Optional[float],
+    temp_f: float | None,
     is_dome: bool,
-) -> Dict:
+) -> dict:
     """Turn raw conditions into fantasy-impact flags + a severity label."""
     if is_dome:
         return {
@@ -147,7 +146,7 @@ def weather_impact(
     }
 
 
-async def _fetch_open_meteo(lat: float, lon: float, date: str) -> Optional[Dict]:
+async def _fetch_open_meteo(lat: float, lon: float, date: str) -> dict | None:
     """Fetch daily max wind / precip / temp for a single date. None if unavailable."""
     params = {
         "latitude": lat,
@@ -185,7 +184,7 @@ async def _fetch_open_meteo(lat: float, lon: float, date: str) -> Optional[Dict]
     }
 
 
-def _game_date(kickoff: Optional[str]) -> Optional[str]:
+def _game_date(kickoff: str | None) -> str | None:
     """Extract YYYY-MM-DD from an ISO kickoff timestamp."""
     if not kickoff or not isinstance(kickoff, str):
         return None
@@ -199,7 +198,7 @@ def _game_date(kickoff: Optional[str]) -> Optional[str]:
 async def get_weather_forecast(
     season: int,
     week: int,
-    teams: Optional[List[str]] = None,
+    teams: list[str] | None = None,
 ) -> dict:
     """Per-game weather forecast + fantasy impact for a given NFL week.
 

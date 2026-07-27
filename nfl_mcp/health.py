@@ -9,6 +9,7 @@ Extracted from server.py as part of Fix #3 (extract health endpoint).
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -77,17 +78,13 @@ async def health_check() -> JSONResponse:
 
     # Get circuit breaker status
     circuit_breakers: dict[str, Any] = {}
-    try:
+    with contextlib.suppress(Exception):
         circuit_breakers = get_all_circuit_breaker_status()
-    except Exception:
-        pass
 
     # Get rate limiter status
     rate_limiters: dict[str, Any] = {}
-    try:
+    with contextlib.suppress(Exception):
         rate_limiters = get_all_rate_limiter_status()
-    except Exception:
-        pass
 
     return JSONResponse(
         {

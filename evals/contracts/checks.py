@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Callable, List, Tuple
 
 import httpx
 
 # (name, critical, fn)
-CHECKS: List[Tuple[str, bool, Callable[[], str]]] = []
+CHECKS: list[tuple[str, bool, Callable[[], str]]] = []
 
 
 def check(name: str, critical: bool = True):
@@ -40,7 +40,7 @@ def _get(url: str, **kw) -> httpx.Response:
     return r
 
 
-def _completed_seasons() -> List[int]:
+def _completed_seasons() -> list[int]:
     """Recent seasons that should have full published data (newest first)."""
     now = datetime.now(UTC)
     base = now.year - (1 if now.month >= 3 else 2)
@@ -167,18 +167,18 @@ def _espn_news() -> str:
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
-def run_all() -> List[dict]:
+def run_all() -> list[dict]:
     results = []
     for name, critical, fn in CHECKS:
         try:
             detail = fn()
             results.append({"name": name, "critical": critical, "ok": True, "detail": detail})
-        except Exception as e:  # noqa: BLE001 - report any failure
+        except Exception as e:
             results.append({"name": name, "critical": critical, "ok": False, "detail": f"{type(e).__name__}: {e}"})
     return results
 
 
-def exit_code(results: List[dict]) -> int:
+def exit_code(results: list[dict]) -> int:
     """Non-zero iff a CRITICAL check failed (warnings don't fail the job)."""
     return 1 if any((not r["ok"] and r["critical"]) for r in results) else 0
 

@@ -359,7 +359,7 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
 
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=PREFETCH_INTERVAL_SECONDS)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
 
 

@@ -12,7 +12,7 @@ async def _count_tools(app):
 async def _tool_names(app):
     # FastMCP 3.0: list_tools() returns list of Tool objects
     tools = await app.list_tools()
-    return set(tool.name for tool in tools)
+    return {tool.name for tool in tools}
 
 
 @pytest.mark.asyncio

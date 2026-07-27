@@ -15,19 +15,19 @@ class TestGetVersion:
         # Create a temporary pyproject.toml
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "1.2.3"\n')
-        
+
         with patch('nfl_mcp.health.Path') as mock_path:
             mock_path_instance = MagicMock()
             mock_path_instance.exists.return_value = True
             mock_path_instance.__truediv__ = lambda self, other: tmp_path / other
             mock_path_instance.parents = [tmp_path]
-            
+
             mock_path.return_value = mock_path_instance
-            
+
             with open(pyproject, "rb") as f:
                 import tomllib
                 version = tomllib.load(f).get("project", {}).get("version", "unknown")
-            
+
             assert version == "1.2.3"
 
     def test_get_version_fallback(self):
@@ -35,7 +35,7 @@ class TestGetVersion:
         with patch('nfl_mcp.health.Path') as mock_path:
             mock_path.return_value.exists.return_value = False
             mock_path.return_value.parents = []
-            
+
             with patch('nfl_mcp.health.Path.iterdir', return_value=[]):
                 version = _get_version()
                 assert version == "unknown"

@@ -8,7 +8,7 @@ lower-is-better metrics are documented per function.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Sequence
+from collections.abc import Sequence
 
 
 def mae(pred: Sequence[float], actual: Sequence[float]) -> float:
@@ -43,7 +43,7 @@ def pearson(pred: Sequence[float], actual: Sequence[float]) -> float:
     return cov / denom if denom else 0.0
 
 
-def _ranks(values: Sequence[float]) -> List[float]:
+def _ranks(values: Sequence[float]) -> list[float]:
     """Fractional ranks (ties share the average rank)."""
     order = sorted(range(len(values)), key=lambda i: values[i])
     ranks = [0.0] * len(values)
@@ -79,7 +79,7 @@ def r2(pred: Sequence[float], actual: Sequence[float]) -> float:
     return 1 - ss_res / ss_tot if ss_tot else 0.0
 
 
-def evaluate(pred: Sequence[float], actual: Sequence[float]) -> Dict[str, float]:
+def evaluate(pred: Sequence[float], actual: Sequence[float]) -> dict[str, float]:
     """Return the full metric bundle for a prediction series."""
     return {
         "n": len(pred),

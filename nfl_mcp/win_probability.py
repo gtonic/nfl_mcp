@@ -18,7 +18,6 @@ swaps, so the objective itself decides floor vs ceiling.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
 
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .projections import _VOLATILITY
@@ -46,11 +45,11 @@ def win_prob(my_mean: float, my_var: float, opp_mean: float, opp_var: float) -> 
     return _phi((my_mean - opp_mean) / math.sqrt(total_var))
 
 
-def player_mean(p: Dict) -> float:
+def player_mean(p: dict) -> float:
     return float(p.get("projected_points", p.get("mean", 0.0)) or 0.0)
 
 
-def player_sd(p: Dict) -> float:
+def player_sd(p: dict) -> float:
     """Per-player standard deviation from sd, else the floor/ceiling band, else
     a position-volatility fallback."""
     if p.get("sd") is not None:
@@ -74,14 +73,14 @@ def _eligible(slot: str, position: str) -> bool:
     return pos == slot
 
 
-def expand_slots(slots: Dict[str, int]) -> List[str]:
-    out: List[str] = []
+def expand_slots(slots: dict[str, int]) -> list[str]:
+    out: list[str] = []
     for slot, n in slots.items():
         out.extend([slot.upper()] * int(n))
     return out
 
 
-def _is_stack_pair(a: Dict, b: Dict) -> bool:
+def _is_stack_pair(a: dict, b: dict) -> bool:
     """True for a QB + same-team pass catcher (WR/TE) pair."""
     ta, tb = (a.get("team") or "").upper(), (b.get("team") or "").upper()
     if not ta or ta != tb:
@@ -90,7 +89,7 @@ def _is_stack_pair(a: Dict, b: Dict) -> bool:
     return "QB" in pair and bool(pair & {"WR", "TE"})
 
 
-def _team_stats(players: List[Dict], stack_rho: float = STACK_CORRELATION) -> Tuple[float, float]:
+def _team_stats(players: list[dict], stack_rho: float = STACK_CORRELATION) -> tuple[float, float]:
     """(total mean, total variance). Adds positive covariance for QB↔same-team
     pass-catcher stacks; players are otherwise treated as independent."""
     mean = sum(player_mean(p) for p in players)
@@ -103,13 +102,13 @@ def _team_stats(players: List[Dict], stack_rho: float = STACK_CORRELATION) -> Tu
     return mean, max(0.0, var)
 
 
-def greedy_mean_lineup(candidates: List[Dict], slot_list: List[str]) -> List[Optional[Dict]]:
+def greedy_mean_lineup(candidates: list[dict], slot_list: list[str]) -> list[dict | None]:
     """Fill each slot with the highest-mean eligible unused player (FLEX last)."""
     # Fill specific positions before FLEX/SUPERFLEX so flex takes leftovers.
     order = sorted(range(len(slot_list)), key=lambda i: slot_list[i] in ("FLEX", "SUPERFLEX"))
     pool = sorted(candidates, key=player_mean, reverse=True)
     used: set = set()
-    assignment: List[Optional[Dict]] = [None] * len(slot_list)
+    assignment: list[dict | None] = [None] * len(slot_list)
     for i in order:
         for p in pool:
             if id(p) in used:
@@ -122,14 +121,14 @@ def greedy_mean_lineup(candidates: List[Dict], slot_list: List[str]) -> List[Opt
 
 
 def _p_win_of(
-    lineup: List[Optional[Dict]], opp_mean: float, opp_var: float, stack_rho: float = STACK_CORRELATION
+    lineup: list[dict | None], opp_mean: float, opp_var: float, stack_rho: float = STACK_CORRELATION
 ) -> float:
     starters = [p for p in lineup if p is not None]
     my_mean, my_var = _team_stats(starters, stack_rho)
     return win_prob(my_mean, my_var, opp_mean, opp_var)
 
 
-def _stacks(lineup: List[Optional[Dict]]) -> List[str]:
+def _stacks(lineup: list[dict | None]) -> list[str]:
     """Describe QB↔same-team pass-catcher stacks present in a lineup."""
     players = [p for p in lineup if p is not None]
     out = []
@@ -145,11 +144,11 @@ def _stacks(lineup: List[Optional[Dict]]) -> List[str]:
 
 
 def optimize_win_probability(
-    candidates: List[Dict],
-    opponent_players: List[Dict],
-    slots: Optional[Dict[str, int]] = None,
+    candidates: list[dict],
+    opponent_players: list[dict],
+    slots: dict[str, int] | None = None,
     stack_correlation: float = STACK_CORRELATION,
-) -> Dict:
+) -> dict:
     """Pick the lineup maximizing P(win) vs the given opponent.
 
     Returns the recommended lineup, its win probability, the E[points]-optimal
@@ -225,9 +224,9 @@ def optimize_win_probability(
     operation_name="optimizing win-probability lineup",
 )
 async def get_win_probability_lineup(
-    your_players: List[Dict],
-    opponent_players: List[Dict],
-    slots: Optional[Dict[str, int]] = None,
+    your_players: list[dict],
+    opponent_players: list[dict],
+    slots: dict[str, int] | None = None,
     stack_correlation: float = STACK_CORRELATION,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).

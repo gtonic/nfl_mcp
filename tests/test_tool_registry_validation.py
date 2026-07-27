@@ -74,13 +74,13 @@ class TestToolRegistryValidation:
         """Test that functions have expected signatures."""
         # Test that functions exist and can be introspected
         import inspect
-        
+
         # Test Vegas functions
         vegas_funcs = [get_vegas_lines, get_game_environment, analyze_roster_vegas, get_stack_opportunities]
         for func in vegas_funcs:
             inspect.signature(func)
             assert callable(func)
-            
+
         # Test Coaching functions
         coaching_funcs = [get_coaching_staff, get_all_coaching_staffs, get_coaching_tree, get_scheme_classification]
         for func in coaching_funcs:
@@ -91,16 +91,16 @@ class TestToolRegistryValidation:
         """Test that we don't have any missing tools that were reported."""
         # The key tools that were reported as missing in the original issue
         missing_tools = [
-            "get_vegas_lines", 
-            "get_game_environment", 
-            "analyze_roster_vegas", 
+            "get_vegas_lines",
+            "get_game_environment",
+            "analyze_roster_vegas",
             "get_stack_opportunities",
             "get_coaching_staff",
             "get_all_coaching_staffs",
             "get_coaching_tree",
             "get_scheme_classification"
         ]
-        
+
         # All should be callable now
         for tool_name in missing_tools:
             assert tool_name in globals() or hasattr(sys.modules[__name__], tool_name)

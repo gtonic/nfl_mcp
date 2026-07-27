@@ -24,7 +24,7 @@ async def test_fantasy_context_basic_all_sections():
         assert result["auto_week_inferred"] is True
         assert result["week"] == 9
         ctx = result["context"]
-        assert set(["league", "rosters", "users", "matchups", "transactions"]).issubset(ctx.keys())
+        assert {"league", "rosters", "users", "matchups", "transactions"}.issubset(ctx.keys())
 
 
 @pytest.mark.asyncio

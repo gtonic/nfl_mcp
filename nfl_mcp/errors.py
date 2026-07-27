@@ -1,13 +1,14 @@
 """
 Error handling utilities for the NFL MCP Server.
 
-This module provides standardized error handling utilities, decorators, and 
+This module provides standardized error handling utilities, decorators, and
 response formats to ensure consistent error management across all tools.
 """
 
 import logging
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -30,18 +31,18 @@ class ErrorType:
 def create_error_response(
     error_message: str,
     error_type: str = ErrorType.UNEXPECTED,
-    data: Optional[Dict[str, Any]] = None,
+    data: dict[str, Any] | None = None,
     success: bool = False
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Create a standardized error response.
-    
+
     Args:
         error_message: Human-readable error description
         error_type: Type of error (see ErrorType constants)
         data: Tool-specific data to include in response
         success: Whether the operation was successful
-        
+
     Returns:
         Standardized error response dictionary
     """
@@ -50,25 +51,25 @@ def create_error_response(
         "error": error_message,
         "error_type": error_type
     }
-    
+
     # Add tool-specific data if provided
     if data:
         response.update(data)
-    
+
     # Log the error for debugging
     if not success:
         logger.error(f"Error ({error_type}): {error_message}")
-    
+
     return response
 
 
-def create_success_response(data: Dict[str, Any]) -> Dict[str, Any]:
+def create_success_response(data: dict[str, Any]) -> dict[str, Any]:
     """
     Create a standardized success response.
-    
+
     Args:
         data: Tool-specific data to include in response
-        
+
     Returns:
         Standardized success response dictionary
     """
@@ -82,101 +83,101 @@ def create_success_response(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def handle_http_errors(
-    default_data: Optional[Dict[str, Any]] = None,
+    default_data: dict[str, Any] | None = None,
     operation_name: str = "operation"
 ) -> Callable:
     """
     Decorator for standardizing HTTP API error handling.
-    
+
     Args:
         default_data: Default data structure to return on errors
         operation_name: Name of the operation for error messages
-        
+
     Returns:
         Decorator function
     """
     def decorator(func: Callable) -> Callable:
         @wraps(func)
-        async def wrapper(*args, **kwargs) -> Dict[str, Any]:
+        async def wrapper(*args, **kwargs) -> dict[str, Any]:
             try:
                 result = await func(*args, **kwargs)
                 return result
-                
+
             except httpx.TimeoutException:
                 return create_error_response(
                     f"Request timed out while {operation_name}",
                     ErrorType.TIMEOUT,
                     default_data or {}
                 )
-                
+
             except httpx.HTTPStatusError as e:
                 return create_error_response(
                     f"HTTP {e.response.status_code}: {e.response.reason_phrase}",
                     ErrorType.HTTP,
                     default_data or {}
                 )
-                
+
             except httpx.NetworkError as e:
                 return create_error_response(
-                    f"Network error while {operation_name}: {str(e)}",
+                    f"Network error while {operation_name}: {e!s}",
                     ErrorType.NETWORK,
                     default_data or {}
                 )
-                
+
             except Exception as e:
                 return create_error_response(
-                    f"Unexpected error during {operation_name}: {str(e)}",
+                    f"Unexpected error during {operation_name}: {e!s}",
                     ErrorType.UNEXPECTED,
                     default_data or {}
                 )
-                
+
         return wrapper
     return decorator
 
 
 def handle_database_errors(
-    default_data: Optional[Dict[str, Any]] = None,
+    default_data: dict[str, Any] | None = None,
     operation_name: str = "database operation"
 ) -> Callable:
     """
     Decorator for standardizing database operation error handling.
-    
+
     Args:
         default_data: Default data structure to return on errors
         operation_name: Name of the operation for error messages
-        
+
     Returns:
         Decorator function
     """
     def decorator(func: Callable) -> Callable:
         @wraps(func)
-        def wrapper(*args, **kwargs) -> Dict[str, Any]:
+        def wrapper(*args, **kwargs) -> dict[str, Any]:
             try:
                 result = func(*args, **kwargs)
                 return result
-                
+
             except Exception as e:
                 return create_error_response(
-                    f"Error during {operation_name}: {str(e)}",
+                    f"Error during {operation_name}: {e!s}",
                     ErrorType.DATABASE,
                     default_data or {}
                 )
-                
+
         return wrapper
     return decorator
 
 
 def handle_validation_error(
     error_message: str,
-    default_data: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
+    default_data: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """
     Create a standardized validation error response.
-    
+
     Args:
         error_message: Validation error message
         default_data: Default data structure to return
-        
+
     Returns:
         Standardized validation error response
     """
@@ -189,7 +190,7 @@ def handle_validation_error(
 
 class RetryConfig:
     """Configuration for retry strategies."""
-    
+
     def __init__(
         self,
         max_attempts: int = 3,
@@ -208,53 +209,53 @@ class RetryConfig:
 
 
 def with_retry(
-    retry_config: Optional[RetryConfig] = None,
-    default_data: Optional[Dict[str, Any]] = None,
+    retry_config: RetryConfig | None = None,
+    default_data: dict[str, Any] | None = None,
     operation_name: str = "operation"
 ) -> Callable:
     """
     Decorator that adds retry logic with exponential backoff.
-    
+
     Args:
         retry_config: Retry configuration
         default_data: Default data structure to return on final failure
         operation_name: Name of the operation for error messages
-        
+
     Returns:
         Decorator function
     """
     if retry_config is None:
         retry_config = RetryConfig()
-    
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
-        async def wrapper(*args, **kwargs) -> Dict[str, Any]:
+        async def wrapper(*args, **kwargs) -> dict[str, Any]:
             import asyncio
-            
+
             last_exception = None
-            
+
             for attempt in range(retry_config.max_attempts):
                 try:
                     result = await func(*args, **kwargs)
                     return result
-                    
+
                 except httpx.TimeoutException as e:
                     last_exception = e
                     if not retry_config.retry_on_timeout or attempt == retry_config.max_attempts - 1:
                         break
-                        
+
                 except httpx.HTTPStatusError as e:
                     last_exception = e
                     # Retry on 5xx server errors
-                    if (not retry_config.retry_on_server_error or 
-                        e.response.status_code < 500 or 
+                    if (not retry_config.retry_on_server_error or
+                        e.response.status_code < 500 or
                         attempt == retry_config.max_attempts - 1):
                         break
-                        
+
                 except Exception as e:
                     last_exception = e
                     break  # Don't retry on unexpected errors
-                
+
                 # Calculate delay for next attempt
                 if attempt < retry_config.max_attempts - 1:
                     delay = min(
@@ -263,7 +264,7 @@ def with_retry(
                     )
                     logger.info(f"Retrying {operation_name} in {delay:.1f}s (attempt {attempt + 1}/{retry_config.max_attempts})")
                     await asyncio.sleep(delay)
-            
+
             # Handle the final exception
             if isinstance(last_exception, httpx.TimeoutException):
                 return create_error_response(
@@ -279,10 +280,10 @@ def with_retry(
                 )
             else:
                 return create_error_response(
-                    f"Unexpected error during {operation_name}: {str(last_exception)}",
+                    f"Unexpected error during {operation_name}: {last_exception!s}",
                     ErrorType.UNEXPECTED,
                     default_data or {}
                 )
-                
+
         return wrapper
     return decorator

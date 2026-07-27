@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .sleeper_tools import get_league, get_league_users, get_matchups, get_nfl_state, get_rosters
@@ -32,9 +32,9 @@ def _rank_key(w: float, p: float):
 
 
 def _simulate(
-    teams: List[Dict], schedule: List[Tuple[int, int]], playoff_teams: int,
+    teams: list[dict], schedule: list[tuple[int, int]], playoff_teams: int,
     num_sims: int, score_sd: float, rng: random.Random,
-) -> Dict[int, Dict[str, float]]:
+) -> dict[int, dict[str, float]]:
     """Monte-Carlo the remaining schedule. teams: [{roster_id, wins, points, mean}]."""
     made = {t["roster_id"]: 0 for t in teams}
     seed_sum = {t["roster_id"]: 0 for t in teams}
@@ -70,14 +70,14 @@ def _simulate(
     return out
 
 
-async def _build_remaining_schedule(league_id: str, weeks: List[int]) -> List[Tuple[int, int]]:
+async def _build_remaining_schedule(league_id: str, weeks: list[int]) -> list[tuple[int, int]]:
     """Reconstruct roster-vs-roster pairings for the given weeks from Sleeper matchups."""
-    schedule: List[Tuple[int, int]] = []
+    schedule: list[tuple[int, int]] = []
     for wk in weeks:
         res = await get_matchups(league_id, wk)
         if not res.get("success"):
             continue
-        by_mid: Dict[Any, List[int]] = {}
+        by_mid: dict[Any, list[int]] = {}
         for m in res.get("matchups", []):
             mid = m.get("matchup_id")
             rid = m.get("roster_id")
@@ -93,13 +93,13 @@ async def _build_remaining_schedule(league_id: str, weeks: List[int]) -> List[Tu
 @handle_http_errors(default_data={"odds": []}, operation_name="computing playoff odds")
 async def get_playoff_odds(
     league_id: str,
-    current_week: Optional[int] = None,
+    current_week: int | None = None,
     num_sims: int = 10000,
     score_sd: float = DEFAULT_SCORE_SD,
-    my_roster_id: Optional[int] = None,
-    seed: Optional[int] = None,
+    my_roster_id: int | None = None,
+    seed: int | None = None,
     db=None,
-) -> Dict:
+) -> dict:
     """Compute playoff probabilities by simulating the rest of the regular season.
 
     Args:

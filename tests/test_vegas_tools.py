@@ -37,7 +37,7 @@ class TestGetGameEnvironmentTier:
     def test_shootout_tier(self):
         """Test shootout tier (>=50 points)."""
         result = get_game_environment_tier(52.5)
-        
+
         assert result["tier"] == "shootout"
         assert result["indicator"] == "🔥"
         assert result["qb_boost"] == "+15%"
@@ -46,7 +46,7 @@ class TestGetGameEnvironmentTier:
     def test_high_scoring_tier(self):
         """Test high_scoring tier (46-49 points)."""
         result = get_game_environment_tier(47.0)
-        
+
         assert result["tier"] == "high_scoring"
         assert result["indicator"] == "📈"
         assert result["qb_boost"] == "+8%"
@@ -54,7 +54,7 @@ class TestGetGameEnvironmentTier:
     def test_average_tier(self):
         """Test average tier (41-45 points)."""
         result = get_game_environment_tier(43.0)
-        
+
         assert result["tier"] == "average"
         assert result["indicator"] == "➡️"
         assert result["qb_boost"] == "0%"
@@ -62,7 +62,7 @@ class TestGetGameEnvironmentTier:
     def test_low_scoring_tier(self):
         """Test low_scoring tier (37-40 points)."""
         result = get_game_environment_tier(38.5)
-        
+
         assert result["tier"] == "low_scoring"
         assert result["indicator"] == "📉"
         assert result["qb_boost"] == "-5%"
@@ -70,7 +70,7 @@ class TestGetGameEnvironmentTier:
     def test_defensive_battle_tier(self):
         """Test defensive_battle tier (<37 points)."""
         result = get_game_environment_tier(34.0)
-        
+
         assert result["tier"] == "defensive_battle"
         assert result["indicator"] == "🛡️"
         assert result["qb_boost"] == "-10%"
@@ -82,7 +82,7 @@ class TestCalculateImpliedTeamTotal:
     def test_favorite_implied_total(self):
         """Test implied total for favorite."""
         result = calculate_implied_team_total(47.0, -3.0, True)
-        
+
         # Formula: (total + abs(spread)) / 2
         expected = round((47.0 + 3.0) / 2, 1)
         assert result == expected
@@ -90,7 +90,7 @@ class TestCalculateImpliedTeamTotal:
     def test_underdog_implied_total(self):
         """Test implied total for underdog."""
         result = calculate_implied_team_total(47.0, 3.0, False)
-        
+
         # Formula: (total - abs(spread)) / 2
         expected = round((47.0 - 3.0) / 2, 1)
         assert result == expected
@@ -99,10 +99,10 @@ class TestCalculateImpliedTeamTotal:
         """Test that favorite + underdog implied totals = game total."""
         total = 47.0
         spread = 3.0
-        
+
         fav = calculate_implied_team_total(total, spread, True)
         und = calculate_implied_team_total(total, spread, False)
-        
+
         # Due to rounding, they should be very close
         assert abs((fav + und) - total) < 0.2
 
@@ -113,7 +113,7 @@ class TestGetGameScriptProjection:
     def test_heavy_favorite(self):
         """Test heavy favorite projection (>=10 spread)."""
         result = get_game_script_projection(-12.0)
-        
+
         assert result["projection"] == "likely_blowout_win"
         assert result["indicator"] == "💨"
         assert result["description"]  # non-empty game-script description
@@ -121,28 +121,28 @@ class TestGetGameScriptProjection:
     def test_heavy_underdog(self):
         """Test heavy underdog projection."""
         result = get_game_script_projection(12.0)
-        
+
         assert result["projection"] == "likely_blowout_loss"
         assert result["rb_impact"] == "Negative - game script unfavorable"
 
     def test_solid_favorite(self):
         """Test solid favorite projection (6-10 spread)."""
         result = get_game_script_projection(-7.5)
-        
+
         assert result["projection"] == "solid_favorite"
         assert result["rb_impact"] == "Positive - should control pace"
 
     def test_slight_favorite(self):
         """Test slight favorite projection (3-6 spread)."""
         result = get_game_script_projection(-4.0)
-        
+
         assert result["projection"] == "slight_favorite"
         assert result["rb_impact"] == "Neutral"
 
     def test_toss_up(self):
         """Test toss up projection (<3 spread)."""
         result = get_game_script_projection(-1.5)
-        
+
         assert result["projection"] == "toss_up"
         assert "competitive" in result["description"].lower()
 
@@ -163,7 +163,7 @@ class TestVegasLinesAnalyzer:
     def test_get_team_abbrev(self):
         """Test team abbreviation conversion."""
         analyzer = VegasLinesAnalyzer()
-        
+
         assert analyzer._get_team_abbrev("Kansas City Chiefs") == "KC"
         assert analyzer._get_team_abbrev("New England Patriots") == "NE"
 
@@ -219,7 +219,7 @@ class TestConstants:
     def test_bidirectional_mapping(self):
         """Test that mapping is bidirectional."""
         assert len(ABBREVIATION_TO_FULL) == len(TEAM_ABBREVIATIONS)
-        
+
         for full_name, abbrev in TEAM_ABBREVIATIONS.items():
             assert ABBREVIATION_TO_FULL[abbrev] == full_name
 

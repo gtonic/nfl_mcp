@@ -8,17 +8,18 @@ import asyncio
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import wraps
-from typing import Any, Callable, Dict
+from typing import Any
 
 
 @dataclass
 class MetricPoint:
     timestamp: float
     value: float
-    labels: Dict[str, str]
+    labels: dict[str, str]
 
 @dataclass
 class MetricSummary:
@@ -33,14 +34,14 @@ class MetricsCollector:
     def __init__(self, retention_hours: int = 24):
         self._lock = threading.RLock()
         self._retention_seconds = retention_hours * 3600
-        self._counters: Dict[str, int] = defaultdict(int)
-        self._gauges: Dict[str, float] = defaultdict(float)
-        self._histograms: Dict[str, deque] = defaultdict(lambda: deque(maxlen=10000))
-        self._timings: Dict[str, deque] = defaultdict(lambda: deque(maxlen=10000))
-        self._summaries: Dict[str, MetricSummary] = defaultdict(MetricSummary)
-        self._labels: Dict[str, Dict[str, str]] = defaultdict(dict)
+        self._counters: dict[str, int] = defaultdict(int)
+        self._gauges: dict[str, float] = defaultdict(float)
+        self._histograms: dict[str, deque] = defaultdict(lambda: deque(maxlen=10000))
+        self._timings: dict[str, deque] = defaultdict(lambda: deque(maxlen=10000))
+        self._summaries: dict[str, MetricSummary] = defaultdict(MetricSummary)
+        self._labels: dict[str, dict[str, str]] = defaultdict(dict)
 
-    def _make_key(self, name: str, labels: Dict[str, str]) -> str:
+    def _make_key(self, name: str, labels: dict[str, str]) -> str:
         if not labels:
             return name
         label_str = '|'.join(f'{k}={v}' for k, v in sorted(labels.items()))
@@ -98,7 +99,7 @@ class MetricsCollector:
             self._update_summary(key, duration_ms)
             self._cleanup_old(key)
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         with self._lock:
             return {
                 'timestamp': datetime.now(UTC).isoformat(),

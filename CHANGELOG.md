@@ -99,6 +99,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contracts watchdog under `evals/`.
 
 ### Changed
+- **Lint-debt cleanup + expanded ruff gate** — grew the ruff rule set from
+  `F`/`B`/`I` to also enforce whitespace (`E`/`W`), pyupgrade modernization
+  (`UP`), simplifications (`SIM`), comprehensions (`C4`), `PIE`, Ruff-native
+  checks (`RUF`) and timezone-aware datetimes (`DTZ`), and auto-fixed ~4,800
+  findings in one sweep: trailing/blank-line whitespace, Python-3.11 native type
+  annotations (`List[x]`→`list[x]`, `Optional[x]`→`x | None`), f-string
+  conversions, comprehension and redundancy cleanups. Also fixed the deprecated
+  `datetime.utcnow()` → `datetime.now(UTC)`. Deliberately **not** enforced
+  (documented in `pyproject.toml`): blind-except `BLE001` (an intentional
+  best-effort pattern here), line length `E501`, ambiguous-unicode (emoji/text),
+  and a short list of manual-only style nits. No behavior change; full suite
+  green. A type checker (mypy/pyright) is the planned next step.
 - **`project_player`/`project_players` default to the opportunity baseline** when
   `season` + `week` are supplied — the backtested opportunity projection
   (trailing nflverse volume × shrunk efficiency) replaces rank-bucket PPG as the

@@ -14,7 +14,6 @@ import csv
 import logging
 import os
 from io import StringIO
-from typing import Dict, List, Optional
 
 import httpx
 
@@ -38,7 +37,7 @@ def _to_float(v) -> float:
         return 0.0
 
 
-def load_season(season: int, use_cache: bool = True) -> List[Dict]:
+def load_season(season: int, use_cache: bool = True) -> list[dict]:
     """Return regular-season weekly records for a season.
 
     Each record: player_id, player, position, team, opponent, season, week,
@@ -47,7 +46,7 @@ def load_season(season: int, use_cache: bool = True) -> List[Dict]:
     os.makedirs(_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(_CACHE_DIR, f"player_stats_{season}.csv")
 
-    text: Optional[str] = None
+    text: str | None = None
     if use_cache and os.path.exists(cache_path):
         with open(cache_path, encoding="utf-8") as f:
             text = f.read()
@@ -60,7 +59,7 @@ def load_season(season: int, use_cache: bool = True) -> List[Dict]:
         with open(cache_path, "w", encoding="utf-8") as f:
             f.write(text)
 
-    records: List[Dict] = []
+    records: list[dict] = []
     for row in csv.DictReader(StringIO(text)):
         if (row.get("season_type") or "").upper() != "REG":
             continue
@@ -102,7 +101,7 @@ def load_season(season: int, use_cache: bool = True) -> List[Dict]:
     return records
 
 
-def load_games(season: int, use_cache: bool = True) -> Dict:
+def load_games(season: int, use_cache: bool = True) -> dict:
     """Return per-game weather keyed by both teams.
 
     ``{(season, week, team): {"wind": float, "roof": str}}`` for regular-season
@@ -111,7 +110,7 @@ def load_games(season: int, use_cache: bool = True) -> Dict:
     os.makedirs(_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(_CACHE_DIR, "games.csv")
 
-    text: Optional[str] = None
+    text: str | None = None
     if use_cache and os.path.exists(cache_path):
         with open(cache_path, encoding="utf-8") as f:
             text = f.read()
@@ -123,7 +122,7 @@ def load_games(season: int, use_cache: bool = True) -> Dict:
         with open(cache_path, "w", encoding="utf-8") as f:
             f.write(text)
 
-    out: Dict = {}
+    out: dict = {}
     for row in csv.DictReader(StringIO(text)):
         if str(row.get("season")) != str(season):
             continue

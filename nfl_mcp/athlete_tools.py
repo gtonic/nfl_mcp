@@ -4,7 +4,6 @@ Athlete-related MCP tools for the NFL MCP Server.
 This module contains MCP tools for fetching, searching, and managing NFL athlete data.
 """
 
-from typing import Optional
 
 from .config import LIMITS, LONG_TIMEOUT, create_http_client, get_http_headers, validate_limit
 from .errors import create_success_response, handle_database_errors, handle_http_errors
@@ -17,13 +16,13 @@ from .errors import create_success_response, handle_database_errors, handle_http
 async def fetch_athletes(nfl_db) -> dict:
     """
     Fetch all NFL players from Sleeper API and store them in the local database.
-    
-    This tool fetches the complete athlete roster from Sleeper's API and 
+
+    This tool fetches the complete athlete roster from Sleeper's API and
     upserts the data into the SQLite database for fast local lookups.
-    
+
     Args:
         nfl_db: The NFLDatabase instance to store data in
-    
+
     Returns:
         A dictionary containing:
         - athletes_count: Number of athletes processed
@@ -33,22 +32,22 @@ async def fetch_athletes(nfl_db) -> dict:
         - error_type: Type of error (if any)
     """
     headers = get_http_headers("athletes")
-    
+
     # Sleeper API endpoint for all players
     url = "https://api.sleeper.app/v1/players/nfl"
-    
+
     async with create_http_client(LONG_TIMEOUT) as client:
         # Fetch the athletes from Sleeper API
         response = await client.get(url, headers=headers)
         response.raise_for_status()
-        
+
         # Parse JSON response
         athletes_data = response.json()
-        
+
         # Store in database
         count = nfl_db.upsert_athletes(athletes_data)
         last_updated = nfl_db.get_last_updated()
-        
+
         return create_success_response({
             "athletes_count": count,
             "last_updated": last_updated
@@ -62,14 +61,14 @@ async def fetch_athletes(nfl_db) -> dict:
 def lookup_athlete(nfl_db, athlete_id: str) -> dict:
     """
     Look up an athlete by their ID.
-    
+
     This tool queries the local database for an athlete with the given ID
     and returns their information including name, team, position, etc.
-    
+
     Args:
         nfl_db: The NFLDatabase instance to query
         athlete_id: The unique identifier for the athlete
-        
+
     Returns:
         A dictionary containing:
         - athlete: Athlete information (if found)
@@ -78,7 +77,7 @@ def lookup_athlete(nfl_db, athlete_id: str) -> dict:
         - error_type: Type of error (if any)
     """
     athlete = nfl_db.get_athlete_by_id(athlete_id)
-    
+
     if athlete:
         return create_success_response({
             "athlete": athlete,
@@ -95,18 +94,18 @@ def lookup_athlete(nfl_db, athlete_id: str) -> dict:
     default_data={"athletes": [], "count": 0, "search_term": None},
     operation_name="searching athletes"
 )
-def search_athletes(nfl_db, name: str, limit: Optional[int] = 10) -> dict:
+def search_athletes(nfl_db, name: str, limit: int | None = 10) -> dict:
     """
     Search for athletes by name (partial match supported).
-    
+
     This tool searches the local database for athletes whose names match
     the given search term, supporting partial matches.
-    
+
     Args:
         nfl_db: The NFLDatabase instance to query
         name: Name or partial name to search for
         limit: Maximum number of results to return (default: 10)
-        
+
     Returns:
         A dictionary containing:
         - athletes: List of matching athletes
@@ -122,9 +121,9 @@ def search_athletes(nfl_db, name: str, limit: Optional[int] = 10) -> dict:
         LIMITS["athletes_search_max"],
         LIMITS["athletes_search_default"]
     )
-    
+
     athletes = nfl_db.search_athletes_by_name(name, limit)
-    
+
     return create_success_response({
         "athletes": athletes,
         "count": len(athletes),
@@ -139,14 +138,14 @@ def search_athletes(nfl_db, name: str, limit: Optional[int] = 10) -> dict:
 def get_athletes_by_team(nfl_db, team_id: str) -> dict:
     """
     Get all athletes for a specific team.
-    
+
     This tool retrieves all athletes associated with a given team ID
     from the local database.
-    
+
     Args:
         nfl_db: The NFLDatabase instance to query
         team_id: The team identifier (e.g., "SF", "DAL", "NE")
-        
+
     Returns:
         A dictionary containing:
         - athletes: List of athletes on the team
@@ -156,7 +155,7 @@ def get_athletes_by_team(nfl_db, team_id: str) -> dict:
         - error_type: Type of error (if any)
     """
     athletes = nfl_db.get_athletes_by_team(team_id)
-    
+
     return create_success_response({
         "athletes": athletes,
         "count": len(athletes),

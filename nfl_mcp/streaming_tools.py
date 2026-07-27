@@ -18,7 +18,6 @@ weather/wind feature lands (wind depresses kicking).
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple
 
 from . import matchup_tools
 from .errors import create_success_response, handle_http_errors, handle_validation_error
@@ -42,10 +41,10 @@ def _score_one(
     position: str,
     team: str,
     opponent: str,
-    def_rankings: Dict,
-    offense_rankings: Dict,
+    def_rankings: dict,
+    offense_rankings: dict,
     analyzer,
-) -> Tuple[Optional[float], Optional[str], bool, Dict]:
+) -> tuple[float | None, str | None, bool, dict]:
     """Score a single team/position/week matchup.
 
     Returns ``(stream_score_or_None, tier, is_fallback, detail)``. A ``None``
@@ -93,26 +92,26 @@ def _score_one(
 
 
 def compute_streaming_scores(
-    opponents_by_week: Dict[str, Dict[int, Optional[str]]],
-    positions: List[str],
-    def_rankings: Dict,
-    offense_rankings: Dict,
+    opponents_by_week: dict[str, dict[int, str | None]],
+    positions: list[str],
+    def_rankings: dict,
+    offense_rankings: dict,
     analyzer,
-) -> Dict[str, Dict[str, Dict]]:
+) -> dict[str, dict[str, dict]]:
     """Pure per-position, per-team streaming scores over the given weeks.
 
     Returns ``{position: {team: {stream_score, games, is_fallback, weeks[...]}}}``.
     Higher ``stream_score`` (0-100) = better weekly streaming matchup. Teams with
     no scorable week for a position (e.g. no offense data) are omitted.
     """
-    out: Dict[str, Dict[str, Dict]] = {}
+    out: dict[str, dict[str, dict]] = {}
     for position in positions:
         pos = position.upper()
-        team_scores: Dict[str, Dict] = {}
+        team_scores: dict[str, dict] = {}
         for team, wk_opps in opponents_by_week.items():
             games = [(wk, opp) for wk, opp in sorted(wk_opps.items()) if opp]
             per_week = []
-            scores: List[float] = []
+            scores: list[float] = []
             fallback_any = False
             for wk, opp in games:
                 score, tier, is_fb, detail = _score_one(
@@ -143,7 +142,7 @@ def compute_streaming_scores(
     return out
 
 
-async def _resolve_offense(season: int, strength_season: Optional[int]):
+async def _resolve_offense(season: int, strength_season: int | None):
     """Return ``(offense_rankings, used_season, is_fallback)`` with prior-season fallback."""
     target = strength_season if strength_season is not None else season
     rankings = await matchup_tools.fetch_offense_rankings(target)
@@ -156,15 +155,15 @@ async def _resolve_offense(season: int, strength_season: Optional[int]):
     return rankings, used, fell_back
 
 
-def _needs_offense(positions: List[str]) -> bool:
+def _needs_offense(positions: list[str]) -> bool:
     return any(p.upper() in ("DST", "K") for p in positions)
 
 
-def _needs_defense(positions: List[str]) -> bool:
+def _needs_defense(positions: list[str]) -> bool:
     return any(p.upper() in DEFENSE_POSITIONS for p in positions)
 
 
-async def _rostered_ids(league_id: str) -> Tuple[set, bool]:
+async def _rostered_ids(league_id: str) -> tuple[set, bool]:
     """Return (set of rostered player_ids, rosters_available)."""
     from . import sleeper_tools
     resp = await sleeper_tools.get_rosters(league_id)
@@ -173,7 +172,7 @@ async def _rostered_ids(league_id: str) -> Tuple[set, bool]:
     return rostered, bool(rosters)
 
 
-def _unit_availability(position: str, team: str, rostered: set, db) -> Dict:
+def _unit_availability(position: str, team: str, rostered: set, db) -> dict:
     """Availability of a team's streamable unit at ``position`` in the league.
 
     DST maps 1:1 (Sleeper DST id = team abbreviation). K/QB/TE/RB/WR enumerate the
@@ -204,10 +203,10 @@ async def get_streaming_options(
     season: int,
     start_week: int,
     weeks_ahead: int = 3,
-    positions: Optional[List[str]] = None,
-    strength_season: Optional[int] = None,
+    positions: list[str] | None = None,
+    strength_season: int | None = None,
     top_n: int = 8,
-    league_id: Optional[str] = None,
+    league_id: str | None = None,
     only_available: bool = False,
 ) -> dict:
     """Rank weekly streaming options per position over the next 1-4 weeks.
@@ -275,7 +274,7 @@ async def get_streaming_options(
         rostered, rosters_ok = await _rostered_ids(league_id)
         availability_active = rosters_ok
 
-    streaming_options: Dict[str, List[Dict]] = {}
+    streaming_options: dict[str, list[dict]] = {}
     for pos, teams in scores.items():
         rows = [{"team": team, **data} for team, data in teams.items()]
         rows.sort(key=lambda r: r["stream_score"], reverse=True)
