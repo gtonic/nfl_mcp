@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Weather / wind tool** (`nfl_mcp/weather_tools.py`) — new MCP tool
+  `get_weather_forecast` reports per-game wind/precipitation/temperature from
+  **Open-Meteo** (free, no API key) using static stadium coordinates + dome
+  flags, and flags passing/kicking/running impact (wind ≥15 mph fades passing;
+  kickers hit hardest; dome games neutral), worst-weather-first. Ships a
+  reusable `weather_multiplier` heuristic. Deliberately **not** wired into the
+  projection engine yet — per the project's backtest-before-trust philosophy,
+  the weather factor should earn its place in `environment_multiplier` via a
+  backtest first. Live-verified against Open-Meteo.
 - **Streaming planner** (`nfl_mcp/streaming_tools.py`) — new MCP tool
   `get_streaming_options` ranks weekly streaming options per position over the
   next 1-4 weeks: QB/RB/WR/TE by opponent defense-vs-position ease, **DST by
