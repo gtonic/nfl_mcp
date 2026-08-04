@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`get_nfl_news` HTTP 403 from ESPN — branded User-Agent now identifies via a
+  project URL.** ESPN's `site.api.espn.com` WAF started rejecting the plain
+  `NFL-MCP-Server/<version> (…)` User-Agent with `403 Forbidden`, which broke
+  `get_nfl_news` (and would also affect the `teams`/`scoreboard` `site.api`
+  endpoints). The base User-Agent now embeds the standard bot-identification
+  comment `(+https://github.com/gtonic/nfl_mcp)`, which ESPN accepts. As a
+  belt-and-suspenders fallback, `get_nfl_news` retries once with httpx's default
+  User-Agent if a `403` still comes back.
+
 ### Added
 - **Configurable database path via `NFL_MCP_DB_PATH`.** The SQLite cache path now
   falls back to the `NFL_MCP_DB_PATH` environment variable (default

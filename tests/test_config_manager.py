@@ -43,13 +43,17 @@ class TestConfigurationModels:
         """Test default server configuration."""
         config = ServerConfig()
         assert config.version == "0.1.0"
-        assert config.base_user_agent == "NFL-MCP-Server/0.1.0"
+        assert config.base_user_agent == (
+            "NFL-MCP-Server/0.1.0 (+https://github.com/gtonic/nfl_mcp)"
+        )
 
     def test_server_config_custom_version(self):
         """Test server configuration with custom version."""
         config = ServerConfig(version="1.2.3")
         assert config.version == "1.2.3"
-        assert config.base_user_agent == "NFL-MCP-Server/1.2.3"
+        assert config.base_user_agent == (
+            "NFL-MCP-Server/1.2.3 (+https://github.com/gtonic/nfl_mcp)"
+        )
 
     def test_validation_limits_defaults(self):
         """Test default validation limits."""
@@ -271,10 +275,12 @@ class TestConfigManager:
 
         # Test user agent methods
         base_agent = manager.get_user_agent()
-        assert base_agent == "NFL-MCP-Server/0.1.0"
+        assert base_agent == "NFL-MCP-Server/0.1.0 (+https://github.com/gtonic/nfl_mcp)"
 
         service_agent = manager.get_user_agent("nfl_news")
-        assert service_agent == "NFL-MCP-Server/0.1.0 (NFL News Fetcher)"
+        assert service_agent == (
+            "NFL-MCP-Server/0.1.0 (+https://github.com/gtonic/nfl_mcp) (NFL News Fetcher)"
+        )
 
         # Test dictionary methods for backward compatibility
         limits_dict = manager.get_limits_dict()
