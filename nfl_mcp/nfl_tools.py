@@ -61,6 +61,18 @@ async def get_nfl_news(limit: int | None = 50) -> dict:
     async with create_http_client() as client:
         # Fetch the news from ESPN API
         response = await client.get(url, headers=headers)
+
+        # ESPN's site.api WAF intermittently rejects our branded User-Agent with
+        # HTTP 403. The branded UA now carries a (+URL) identifier which is
+        # normally accepted, but if a 403 still comes back, retry once letting
+        # httpx send its own default User-Agent (empirically accepted by ESPN).
+        if response.status_code == 403:
+            logger.warning(
+                "ESPN news returned 403 for branded User-Agent; "
+                "retrying with default User-Agent"
+            )
+            response = await client.get(url)
+
         response.raise_for_status()
 
         # Parse JSON response

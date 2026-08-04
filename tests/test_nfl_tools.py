@@ -64,6 +64,35 @@ class TestGetNflNews:
 
             assert result["success"] is True
 
+    @pytest.mark.asyncio
+    async def test_get_nfl_news_retries_on_403(self):
+        """A 403 (ESPN WAF blocking the branded UA) triggers a retry with the
+        default User-Agent, which is accepted."""
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {
+            "articles": [{"headline": "Recovered", "description": "d"}]
+        }
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [forbidden, ok]
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
+            result = await get_nfl_news(limit=1)
+
+        assert result["success"] is True
+        assert result["articles"][0]["headline"] == "Recovered"
+        # Two requests: first branded (with headers), retry without a custom UA.
+        assert mock_client.get.call_count == 2
+        first_call, retry_call = mock_client.get.call_args_list
+        assert "headers" in first_call.kwargs
+        assert "headers" not in retry_call.kwargs
+
 
 class TestGetTeams:
     """Test get_teams function."""
