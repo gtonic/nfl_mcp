@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Upgraded to FastMCP 4 (`>=4.0.0b1`) and moved the HTTP transport to stateless
+  MCP (the sessionless `2026-07-28` protocol).** FastMCP 4 rebuilds on MCP Python
+  SDK v2 and serves the sessionless `2026-07-28` protocol via mode negotiation.
+  `main()` now enables `stateless_http` on `app.http_app(path="/mcp", …)`, so the
+  Streamable HTTP transport keeps **no** server-side session state and issues no
+  `Mcp-Session-Id` — the server can scale horizontally behind a plain round-robin
+  load balancer with no sticky sessions or shared session store. Set
+  `NFL_MCP_STATELESS_HTTP=0` to fall back to the session-based transport for
+  older, handshake-era clients. The background-prefetch lifespan is now registered
+  through FastMCP's public `lifespan=` constructor argument instead of
+  monkey-patching the ASGI app's internal `router.lifespan_context`. No tool
+  implementations changed; the codebase used none of the removed v4 APIs
+  (`ctx.sample`/`list_roots`/`elicit`, constructor transport kwargs, etc.). Full
+  suite green (906 passed, 2 skipped). See `FASTMCP_4_UPGRADE.md`.
+- **Pinned `httpx<1` and `pydantic<2.14`.** Defensive upper bounds so a
+  `uv`/`pip` resolution during the FastMCP 4 beta can't pull `httpx==1.0.dev*`
+  (breaking-major dev release) or `pydantic==2.14.0a*` (alpha). `requirements.lock`
+  was regenerated with `--prerelease=allow` accordingly.
+
 ### Fixed
 - **`get_nfl_news` HTTP 403 from ESPN — branded User-Agent now identifies via a
   project URL.** ESPN's `site.api.espn.com` WAF started rejecting the plain
