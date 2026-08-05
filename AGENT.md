@@ -272,12 +272,14 @@ Background data prefetching for optimal performance:
 - **Enable**: Set `NFL_MCP_PREFETCH=1`
 - **Interval**: `NFL_MCP_PREFETCH_INTERVAL` (default: 900 seconds = 15 min)
 - **Snap TTL**: `NFL_MCP_PREFETCH_SNAPS_TTL` (default: 900 seconds)
+- **Athletes refresh**: `NFL_MCP_PREFETCH_ATHLETES` (default: on) every `NFL_MCP_PREFETCH_ATHLETES_INTERVAL` (default: 86400 seconds = daily)
 
 The prefetch system automatically:
 1. Determines current season/week via NFL state
 2. Fetches team schedules (caches opponent data)
 3. Fetches player snap counts (caches usage data)
-4. Refreshes on configured intervals
+4. Refreshes the athletes cache (player names/teams/positions) at startup and daily
+5. Refreshes on configured intervals
 
 ### Robustness & Resilience
 
@@ -322,6 +324,8 @@ The server supports extensive configuration via environment variables:
 - `NFL_MCP_PREFETCH`: Enable background prefetch (0 or 1)
 - `NFL_MCP_PREFETCH_INTERVAL`: Prefetch interval in seconds (default: 900)
 - `NFL_MCP_PREFETCH_SNAPS_TTL`: Snap data TTL in seconds (default: 900)
+- `NFL_MCP_PREFETCH_ATHLETES`: Refresh athletes cache during prefetch (0 or 1, default: 1)
+- `NFL_MCP_PREFETCH_ATHLETES_INTERVAL`: Athletes refresh interval in seconds (default: 86400)
 
 #### Logging
 - `NFL_MCP_LOG_LEVEL`: Log verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL)

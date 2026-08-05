@@ -47,10 +47,52 @@ PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
 PREFETCH_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900"))
 PREFETCH_SNAPS_TTL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_SNAPS_TTL", "900"))
 PREFETCH_SCHEDULE_WEEKS = int(os.getenv("NFL_MCP_PREFETCH_SCHEDULE_WEEKS", "4"))
+# Athletes cache refresh (player names/teams/positions). Enabled by default when
+# prefetch runs; refreshed once at startup and then every ATHLETES_INTERVAL.
+PREFETCH_ATHLETES = os.getenv("NFL_MCP_PREFETCH_ATHLETES", "1") == "1"
+PREFETCH_ATHLETES_INTERVAL_SECONDS = int(
+    os.getenv("NFL_MCP_PREFETCH_ATHLETES_INTERVAL", "86400")  # daily
+)
 
 # Global state for prefetch task
 _prefetch_task: asyncio.Task | None = None
 _shutdown_event: asyncio.Event | None = None
+
+
+async def _refresh_athletes(nfl_db: NFLDatabase, tag: str = "Prefetch") -> None:
+    """Refresh the Sleeper athletes cache (player names, teams, positions).
+
+    Player→team assignments change over the offseason and season (signings,
+    trades, releases), so the cache is refreshed periodically to keep enrichment
+    — e.g. trending players — current. Best-effort: failures are logged, never
+    raised. Gated by ``NFL_MCP_PREFETCH_ATHLETES`` (default on).
+    """
+    if not PREFETCH_ATHLETES:
+        return
+    try:
+        from . import athlete_tools
+        before = nfl_db.get_athlete_count()
+        res = await athlete_tools.fetch_athletes(nfl_db)
+        after = nfl_db.get_athlete_count()
+        if res.get("success"):
+            logger.info(
+                f"[{tag}] Athletes cache refreshed: {before} -> {after} "
+                f"({res.get('athletes_count')} processed)"
+            )
+        else:
+            logger.warning(f"[{tag}] Athletes refresh failed: {res.get('error')}")
+    except Exception as e:
+        logger.warning(f"[{tag}] Athletes refresh error: {e}")
+
+
+def _athletes_refresh_every_n_cycles() -> int:
+    """Number of prefetch cycles between athletes refreshes (always >= 1).
+
+    Derived from the athletes interval vs. the base prefetch interval so the
+    cadence tracks ``NFL_MCP_PREFETCH_ATHLETES_INTERVAL`` (default daily)
+    regardless of the base loop interval.
+    """
+    return max(1, round(PREFETCH_ATHLETES_INTERVAL_SECONDS / max(1, PREFETCH_INTERVAL_SECONDS)))
 
 
 async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
@@ -355,6 +397,11 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
             except Exception as e:
                 logger.warning(f"[Prefetch Cycle #{cycle_count}] Cleanup failed: {e}")
 
+        # Periodic athletes cache refresh (default daily) so player
+        # names/teams/positions stay current as roster moves happen.
+        if PREFETCH_ATHLETES and cycle_count % _athletes_refresh_every_n_cycles() == 0:
+            await _refresh_athletes(nfl_db, tag=f"Prefetch Cycle #{cycle_count}")
+
         logger.info(f"[Prefetch Cycle #{cycle_count}] Next cycle in {PREFETCH_INTERVAL_SECONDS}s")
 
         try:
@@ -489,6 +536,10 @@ def _create_prefetch_lifespan(nfl_db: NFLDatabase):
                     logger.error(
                         f"[Startup Prefetch] Failed to fetch team schedules: {e}", exc_info=True
                     )
+
+                # Initial athletes cache refresh (names/teams/positions) so
+                # enrichment is current from the first request.
+                await _refresh_athletes(nfl_db, tag="Startup Prefetch")
 
                 # Start background prefetch loop
                 _shutdown_event = asyncio.Event()
