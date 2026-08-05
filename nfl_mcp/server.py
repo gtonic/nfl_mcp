@@ -409,14 +409,18 @@ def create_app() -> FastMCP:
     except Exception:
         logger.warning("ConfigManager init failed; using defaults from config.py", exc_info=True)
 
-    # --- Create FastMCP server instance ---
-    mcp = FastMCP(name="NFL MCP Server")
-
     # --- Initialize NFL database ---
     nfl_db = NFLDatabase()
 
     # --- Fix #2: Inject DB into ContextVar (eliminates global mutable state) ---
     tool_registry.initialize_shared(nfl_db)
+
+    # --- Create FastMCP server instance (FastMCP 4) ---
+    # The background prefetch/shutdown work is registered on the server via the
+    # public ``lifespan=`` constructor argument. FastMCP composes it with the
+    # transport's own (session-manager) lifespan, so main() no longer needs to
+    # monkey-patch the ASGI app's internal ``router.lifespan_context``.
+    mcp = FastMCP(name="NFL MCP Server", lifespan=_create_prefetch_lifespan(nfl_db))
 
     # --- Register all tools from the tool registry ---
     for tool_func in tool_registry.get_all_tools():
@@ -528,34 +532,21 @@ def main():
     except Exception:
         logger.warning("Failed to initialize ConfigManager; using defaults", exc_info=True)
 
-    # Create the application
+    # Create the application (the prefetch lifespan is registered on the server
+    # itself via FastMCP's ``lifespan=`` constructor argument, see create_app).
     app = create_app()
 
-    # Get DB instance for lifespan (injected via ContextVar)
-    nfl_db = tool_registry.get_db()
-    if nfl_db is None:
-        raise RuntimeError("NFLDatabase not initialized in tool_registry")
-
-    # Create lifespan with DB access
-    app_lifespan_fn = _create_prefetch_lifespan(nfl_db)
-
-    # Get MCP HTTP app with /mcp path prefix
-    mcp_http = app.http_app(path="/mcp")
-
-    # Save original MCP lifespan BEFORE replacing it
-    original_mcp_lifespan = mcp_http.router.lifespan_context
-
-    # Combine lifespans
-    @asynccontextmanager
-    async def combined_lifespan(app_instance):
-        # Start our custom lifespan (prefetch, etc.)
-        async with app_lifespan_fn(app_instance):
-            # Start MCP's ORIGINAL lifespan
-            async with original_mcp_lifespan(app_instance):
-                yield
-
-    # Replace the lifespan with combined version
-    mcp_http.router.lifespan_context = combined_lifespan
+    # Build the MCP HTTP app under the ``/mcp`` path prefix.
+    #
+    # FastMCP 4 serves the sessionless ``2026-07-28`` protocol out of the box via
+    # mode negotiation. We additionally enable ``stateless_http`` so the
+    # Streamable HTTP transport keeps NO server-side session state at all: every
+    # request is self-contained, so the deployment can scale horizontally behind
+    # a plain round-robin load balancer with no sticky sessions and no shared
+    # session store. Set ``NFL_MCP_STATELESS_HTTP=0`` to fall back to the
+    # session-based transport (e.g. for older, handshake-era clients).
+    stateless_http = os.getenv("NFL_MCP_STATELESS_HTTP", "1") == "1"
+    mcp_http = app.http_app(path="/mcp", stateless_http=stateless_http)
 
     # Run with uvicorn
     import uvicorn
