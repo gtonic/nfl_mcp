@@ -45,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   User-Agent if a `403` still comes back.
 
 ### Added
+- **Periodic athletes-cache refresh in the background prefetch.** Player→team
+  assignments change over the offseason and season (signings, trades, releases),
+  which left the Sleeper athletes cache stale — e.g. trending players showing an
+  outdated team. When prefetch runs (`NFL_MCP_PREFETCH=1` + `NFL_MCP_ADVANCED_ENRICH=1`)
+  the athletes cache is now refreshed once at startup and then on a cadence
+  (default **daily**). Controlled by `NFL_MCP_PREFETCH_ATHLETES` (default on) and
+  `NFL_MCP_PREFETCH_ATHLETES_INTERVAL` (seconds, default `86400`); the refresh is
+  best-effort (failures are logged, never fatal) and its config is surfaced in the
+  `/health` `prefetch` block.
 - **Configurable database path via `NFL_MCP_DB_PATH`.** The SQLite cache path now
   falls back to the `NFL_MCP_DB_PATH` environment variable (default
   `nfl_data.db`). The default is resolved inside `NFLDatabase.__init__`, so

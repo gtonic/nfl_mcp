@@ -1209,3 +1209,112 @@ class TestSleeperApiToolsIntegration:
         app = create_app()
         assert app.name == "NFL MCP Server"
         # Test passes if no exceptions are raised during app creation
+
+
+class TestAthletesRefresh:
+    """Tests for the periodic athletes-cache refresh in the prefetch loop."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_athletes_calls_fetch_when_enabled(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from nfl_mcp import server
+
+        calls = {}
+
+        async def fake_fetch(db):
+            calls["db"] = db
+            return {"success": True, "error": None, "athletes_count": 10}
+
+        fake_db = MagicMock()
+        fake_db.get_athlete_count.side_effect = [100, 110]
+
+        monkeypatch.setattr(server, "PREFETCH_ATHLETES", True)
+        monkeypatch.setattr("nfl_mcp.athlete_tools.fetch_athletes", fake_fetch)
+
+        await server._refresh_athletes(fake_db, tag="Test")
+        assert calls.get("db") is fake_db
+
+    @pytest.mark.asyncio
+    async def test_refresh_athletes_skipped_when_disabled(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from nfl_mcp import server
+
+        called = {"v": False}
+
+        async def fake_fetch(db):
+            called["v"] = True
+            return {"success": True}
+
+        monkeypatch.setattr(server, "PREFETCH_ATHLETES", False)
+        monkeypatch.setattr("nfl_mcp.athlete_tools.fetch_athletes", fake_fetch)
+
+        await server._refresh_athletes(MagicMock(), tag="Test")
+        assert called["v"] is False
+
+    @pytest.mark.asyncio
+    async def test_refresh_athletes_swallows_errors(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from nfl_mcp import server
+
+        async def boom(db):
+            raise RuntimeError("network down")
+
+        fake_db = MagicMock()
+        fake_db.get_athlete_count.return_value = 0
+
+        monkeypatch.setattr(server, "PREFETCH_ATHLETES", True)
+        monkeypatch.setattr("nfl_mcp.athlete_tools.fetch_athletes", boom)
+
+        # Best-effort: must not raise
+        await server._refresh_athletes(fake_db, tag="Test")
+
+    def test_athletes_refresh_every_n_cycles(self, monkeypatch):
+        from nfl_mcp import server
+
+        # daily refresh at a 15-minute base cycle -> every 96 cycles
+        monkeypatch.setattr(server, "PREFETCH_INTERVAL_SECONDS", 900)
+        monkeypatch.setattr(server, "PREFETCH_ATHLETES_INTERVAL_SECONDS", 86400)
+        assert server._athletes_refresh_every_n_cycles() == 96
+
+        # never zero, even if the athletes interval is below the base interval
+        monkeypatch.setattr(server, "PREFETCH_ATHLETES_INTERVAL_SECONDS", 100)
+        assert server._athletes_refresh_every_n_cycles() == 1
+
+    @pytest.mark.asyncio
+    async def test_startup_prefetch_triggers_athletes_refresh(self, monkeypatch):
+        """The startup lifespan warm-up invokes the athletes refresh."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from nfl_mcp import server, sleeper_tools
+
+        # Enable the prefetch startup path without touching the environment.
+        monkeypatch.setattr(server, "PREFETCH_ENABLED", True)
+        monkeypatch.setattr(sleeper_tools, "ADVANCED_ENRICH_ENABLED", True)
+        # Reset (and auto-restore) the task globals the lifespan mutates.
+        monkeypatch.setattr(server, "_prefetch_task", None)
+        monkeypatch.setattr(server, "_shutdown_event", None)
+
+        # Fast, network-free stubs for the schedule warm-up + background loop.
+        monkeypatch.setattr(
+            sleeper_tools, "get_nfl_state",
+            AsyncMock(return_value={"success": True, "nfl_state": {"season": "2026"}}),
+        )
+        monkeypatch.setattr(sleeper_tools, "_fetch_all_team_schedules", AsyncMock(return_value=[]))
+        monkeypatch.setattr(server, "_prefetch_loop", AsyncMock())
+
+        refresh = AsyncMock()
+        monkeypatch.setattr(server, "_refresh_athletes", refresh)
+
+        lifespan = server._create_prefetch_lifespan(MagicMock())
+        async with lifespan(MagicMock()):
+            pass  # run startup, then shutdown
+
+        assert refresh.await_count >= 1
+        tags = [
+            (c.kwargs.get("tag") or (c.args[1] if len(c.args) > 1 else None))
+            for c in refresh.await_args_list
+        ]
+        assert "Startup Prefetch" in tags

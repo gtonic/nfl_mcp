@@ -141,6 +141,8 @@ variables take precedence.
 | `NFL_MCP_PREFETCH_INTERVAL` | Prefetch interval, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SNAPS_TTL` | Snap-data TTL, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SCHEDULE_WEEKS` | Weeks of schedule to prefetch (default 4). |
+| `NFL_MCP_PREFETCH_ATHLETES` | `1` (default) refreshes the Sleeper athletes cache (player names/teams/positions) during prefetch — once at startup and then every interval below. `0` disables it. |
+| `NFL_MCP_PREFETCH_ATHLETES_INTERVAL` | Athletes-cache refresh interval, seconds (default 86400 = daily). |
 | `NFL_MCP_TIMEOUT_TOTAL` | Total HTTP request timeout (e.g. `45.0`). |
 | `NFL_MCP_RATE_LIMIT_DEFAULT` | Default outbound rate limit (requests/min). |
 | `NFL_MCP_NFL_NEWS_MAX` | Max NFL news items. |

@@ -41,6 +41,10 @@ def _get_prefetch_config() -> dict[str, Any]:
         "enabled": os.getenv("NFL_MCP_PREFETCH") == "1",
         "interval_seconds": int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900")),
         "advanced_enrich_enabled": os.getenv("NFL_MCP_ADVANCED_ENRICH") == "1",
+        "athletes_refresh_enabled": os.getenv("NFL_MCP_PREFETCH_ATHLETES", "1") == "1",
+        "athletes_refresh_interval_seconds": int(
+            os.getenv("NFL_MCP_PREFETCH_ATHLETES_INTERVAL", "86400")
+        ),
     }
 
 
