@@ -346,6 +346,60 @@ class TestRosterAccessPermissions:
             assert result["count"] == 3  # Only valid IDs should be processed
             assert len(result["trending_players"]) == 3
 
+    @pytest.mark.asyncio
+    async def test_get_trending_players_flattens_fields_and_team_fallback(self):
+        """Top-level full_name/position/team are surfaced (additive) and team
+        falls back to the raw Sleeper `team` when the column is blank."""
+        import json as _json
+
+        func = sleeper_tools.get_trending_players
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = [
+            {'player_id': '7608', 'count': 52983},   # free agent: no team anywhere
+            {'player_id': '13413', 'count': 20130},  # blank column, raw carries team
+        ]
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+
+        athletes = {
+            '7608': {'player_id': '7608', 'full_name': 'Khalil Herbert',
+                     'position': 'RB', 'team_id': '', 'raw': _json.dumps({'team': None})},
+            '13413': {'player_id': '13413', 'full_name': 'Cyrus Allen',
+                      'position': 'WR', 'team_id': '', 'raw': _json.dumps({'team': 'KC'})},
+        }
+        fake_db = MagicMock()
+        fake_db.get_athlete_by_id.side_effect = lambda pid: athletes.get(pid)
+        fake_db.search_athletes_by_name.return_value = [{'id': 'x'}]  # non-empty -> skip fetch
+
+        with patch('nfl_mcp.sleeper_tools.create_http_client', return_value=mock_client), \
+             patch('nfl_mcp.sleeper_tools._enrich_usage_and_opponent', return_value={}), \
+             patch('nfl_mcp.nfl_tools.get_current_season_and_week',
+                   new=AsyncMock(return_value=(2026, 1))):
+            result = await func(nfl_db=fake_db, trend_type="add", limit=2)
+
+        assert result["success"] is True
+        assert result["count"] == 2
+        by_id = {p["player_id"]: p for p in result["trending_players"]}
+
+        # (a) additive top-level identity fields
+        assert by_id['7608']['full_name'] == 'Khalil Herbert'
+        assert by_id['7608']['position'] == 'RB'
+        assert by_id['7608']['count'] == 52983
+        assert by_id['13413']['full_name'] == 'Cyrus Allen'
+
+        # (b) team: genuine free agent stays None; blank column falls back to raw.team
+        assert by_id['7608']['team'] is None
+        assert by_id['13413']['team'] == 'KC'
+
+        # backward compat: nested `enriched` still present and team-normalized
+        assert by_id['13413']['enriched']['full_name'] == 'Cyrus Allen'
+        assert by_id['13413']['enriched']['team'] == 'KC'
+
 
 class TestSleeperToolsIntegration:
     """Integration tests for sleeper tools in real server context."""

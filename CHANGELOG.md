@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uv`/`pip` resolution during the FastMCP 4 beta can't pull `httpx==1.0.dev*`
   (breaking-major dev release) or `pydantic==2.14.0a*` (alpha). `requirements.lock`
   was regenerated with `--prerelease=allow` accordingly.
+- **`get_trending_players` now surfaces `full_name`/`position`/`team` at the top
+  level of each entry, with a team fallback.** Previously the identity fields were
+  only reachable under the nested `enriched` object, so naive consumers saw bare
+  Sleeper player IDs. The three key fields are now mirrored to the top level
+  (additive — `enriched` is unchanged), and `team` falls back to the raw Sleeper
+  `team` field when the athlete cache's `team_id` column is blank (genuine free
+  agents stay `null`).
 
 ### Fixed
 - **`get_nfl_news` HTTP 403 from ESPN — branded User-Agent now identifies via a
