@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-05
+
 ### Changed
 - **Upgraded to FastMCP 4 (`>=4.0.0b1`) and moved the HTTP transport to stateless
   MCP (the sessionless `2026-07-28` protocol).** FastMCP 4 rebuilds on MCP Python
