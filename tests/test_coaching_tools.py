@@ -289,3 +289,108 @@ class TestConstants:
         for _team_id, scheme_data in TEAM_SCHEMES.items():
             assert "offense" in scheme_data
             assert "defense" in scheme_data
+
+
+class TestGetCoachingStaffResolution:
+    """The ESPN coach object has no displayName/position; resolve HC anyway."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_head_coach_without_position_field(self):
+        coach_ref = "http://espn/v2/nfl/coaches/17533"
+        team_ref = "http://espn/v2/nfl/teams/25"
+
+        def make(payload):
+            m = MagicMock()
+            m.status_code = 200
+            m.json.return_value = payload
+            m.raise_for_status = MagicMock()
+            return m
+
+        responses = {
+            "LIST": make({"count": 1, "items": [{"$ref": coach_ref}]}),
+            coach_ref: make({"id": "17533", "firstName": "Kyle", "lastName": "Shanahan",
+                             "experience": 9, "team": {"$ref": team_ref}}),
+            team_ref: make({"displayName": "San Francisco 49ers"}),
+        }
+
+        async def fake_get(url, headers=None, **kwargs):
+            if url.endswith("/coaches"):       # the team coaches list endpoint
+                return responses["LIST"]
+            if "wikipedia.org" in url:         # no season page -> no coordinators
+                return make({"query": {"pages": {"-1": {"missing": ""}}}})
+            return responses[url]
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = fake_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
+            result = await get_coaching_staff("SF", season=2026)
+
+        assert result["success"] is True
+        hc = result["head_coach"]
+        assert hc is not None
+        assert hc["name"] == "Kyle Shanahan"          # built from first+last (no displayName)
+        assert hc["category"] == "head_coach"          # promoted despite missing position
+        assert hc["role"] == "Head Coach"
+        assert result["team_name"] == "San Francisco 49ers"
+        # No coordinators in the (missing) Wikipedia page -> null, with a note.
+        assert result["offensive_coordinator"] is None
+        assert result["defensive_coordinator"] is None
+        assert result.get("note")
+
+    @pytest.mark.asyncio
+    async def test_enriches_coordinators_from_wikipedia(self):
+        coach_ref = "http://espn/v2/nfl/coaches/17533"
+        team_ref = "http://espn/v2/nfl/teams/25"
+
+        def make(payload):
+            m = MagicMock()
+            m.status_code = 200
+            m.json.return_value = payload
+            m.raise_for_status = MagicMock()
+            return m
+
+        wiki_wt = (
+            "{{Infobox NFL team season\n"
+            "| coach = [[Kyle Shanahan]]\n"
+            "| off_coach = [[Klay Kubiak]]\n"
+            "| def_coach = Raheem Morris\n"
+            "}}"
+        )
+        responses = {
+            "LIST": make({"count": 1, "items": [{"$ref": coach_ref}]}),
+            coach_ref: make({"id": "17533", "firstName": "Kyle", "lastName": "Shanahan",
+                             "experience": 9, "team": {"$ref": team_ref}}),
+            team_ref: make({"displayName": "San Francisco 49ers"}),
+            "WIKI": make({"query": {"pages": {"1": {
+                "title": "2026 San Francisco 49ers season",
+                "revisions": [{"slots": {"main": {"*": wiki_wt}}}]}}}}),
+        }
+
+        async def fake_get(url, headers=None, **kwargs):
+            if url.endswith("/coaches"):
+                return responses["LIST"]
+            if "wikipedia.org" in url:
+                return responses["WIKI"]
+            return responses[url]
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = fake_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
+            result = await get_coaching_staff("SF", season=2026)
+
+        assert result["success"] is True
+        assert result["head_coach"]["name"] == "Kyle Shanahan"
+        oc = result["offensive_coordinator"]
+        dc = result["defensive_coordinator"]
+        assert oc["name"] == "Klay Kubiak"     # [[link]] stripped
+        assert oc["source"] == "wikipedia"
+        assert oc["category"] == "coordinator"
+        assert dc["name"] == "Raheem Morris"
+        assert result["coordinator_source"] == "wikipedia"
+        assert result["total_coaches"] == 3    # HC + OC + DC

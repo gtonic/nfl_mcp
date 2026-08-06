@@ -411,53 +411,101 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
             else:
                 raise  # Re-raise other HTTP errors
 
-        # Parse JSON response
+        # Parse JSON response. The Core API returns a paginated list where each
+        # item is a bare {"$ref": ...} pointing at the injury object, which in
+        # turn references the athlete via another {"$ref": ...}. Follow both hops.
+        # (Older/mocked responses may inline the objects — handle that too.)
         data = response.json()
+        injury_items = data.get('items', [])
 
-        # Extract injuries from the response
-        injuries_data = data.get('items', [])
+        async def _resolve_injury(item):
+            # Dereference the injury object unless it's already inlined.
+            detail = item
+            ref = item.get('$ref') if isinstance(item, dict) else None
+            if ref and not (isinstance(item, dict) and item.get('status')):
+                try:
+                    r = await client.get(ref, headers=headers)
+                    r.raise_for_status()
+                    detail = r.json()
+                except Exception as e:
+                    logger.debug(f"[Injuries] injury ref fetch failed ({ref}): {e}")
+                    return None
 
-        # Process injuries to extract relevant information
-        processed_injuries = []
-        team_name = None
+            # Athlete: dereference when given as a $ref, else read inline.
+            athlete = detail.get('athlete', {}) or {}
+            a_ref = athlete.get('$ref') if isinstance(athlete, dict) else None
+            if a_ref:
+                try:
+                    ar = await client.get(a_ref, headers=headers)
+                    ar.raise_for_status()
+                    athlete = ar.json()
+                except Exception as e:
+                    logger.debug(f"[Injuries] athlete ref fetch failed ({a_ref}): {e}")
+                    athlete = {}
+            player_name = (
+                athlete.get('displayName')
+                or f"{athlete.get('firstName', '')} {athlete.get('lastName', '')}".strip()
+                or 'Unknown'
+            )
+            player_id = athlete.get('id')
+            position = (athlete.get('position') or {}).get('abbreviation', 'N/A')
 
-        for injury_item in injuries_data:
-            injury = {}
+            # Status may be a plain string (Core API) or a {"name": ...} dict.
+            status = detail.get('status')
+            if isinstance(status, dict):
+                status = status.get('name') or status.get('description')
+            type_obj = detail.get('type') or {}
+            if not status and isinstance(type_obj, dict):
+                status = type_obj.get('description')
+            status = status or 'Unknown'
 
-            # Get athlete information
-            athlete_ref = injury_item.get('athlete', {})
-            if athlete_ref and isinstance(athlete_ref, dict):
-                injury['player_name'] = athlete_ref.get('displayName', 'Unknown')
-                injury['player_id'] = athlete_ref.get('id')
-                injury['position'] = athlete_ref.get('position', {}).get('abbreviation', 'N/A')
+            # `details` carries the body part / specifics; the top-level `type`
+            # is the status classification, not the body part.
+            details = detail.get('details') or {}
+            body_part = details.get('type')
+            specifics = details.get('detail')
+            description = (
+                detail.get('shortComment')
+                or detail.get('description')
+                or " - ".join(p for p in (body_part, specifics) if p)
+                or 'No description available'
+            )
 
-            # Get team information (should be consistent across all items)
-            if not team_name:
-                team_ref = injury_item.get('team', {})
-                if team_ref and isinstance(team_ref, dict):
-                    team_name = team_ref.get('displayName', 'Unknown Team')
-
-            # Get injury details
-            injury['status'] = injury_item.get('status', {}).get('name', 'Unknown')
-            injury['description'] = injury_item.get('description', 'No description available')
-            injury['date'] = injury_item.get('date', 'Unknown')
-            injury['type'] = injury_item.get('type', {}).get('name', 'Unknown')
-
-            # Fantasy relevance indicators
-            injury['severity'] = 'Unknown'
-            status_lower = injury['status'].lower()
-            if 'out' in status_lower or 'ir' in status_lower:
-                injury['severity'] = 'High'
+            severity = 'Unknown'
+            status_lower = status.lower()
+            if 'out' in status_lower or 'reserve' in status_lower or status_lower == 'ir':
+                severity = 'High'
             elif 'doubtful' in status_lower or 'questionable' in status_lower:
-                injury['severity'] = 'Medium'
+                severity = 'Medium'
             elif 'probable' in status_lower or 'limited' in status_lower:
-                injury['severity'] = 'Low'
+                severity = 'Low'
 
-            processed_injuries.append(injury)
+            return {
+                'player_id': player_id,
+                'player_name': player_name,
+                'position': position,
+                'status': status,
+                'type': body_part or 'Unknown',
+                'description': description,
+                'return_date': details.get('returnDate'),
+                'date': detail.get('date', 'Unknown'),
+                'severity': severity,
+            }
+
+        # Resolve refs concurrently, but bound fan-out to stay a good API
+        # citizen (each injury can trigger up to two follow-up requests).
+        sem = asyncio.Semaphore(10)
+
+        async def _bounded(item):
+            async with sem:
+                return await _resolve_injury(item)
+
+        resolved = await asyncio.gather(*[_bounded(it) for it in injury_items])
+        processed_injuries = [inj for inj in resolved if inj]
 
         return create_success_response({
             "team_id": team_id_upper,
-            "team_name": team_name,
+            "team_name": None,
             "injuries": processed_injuries,
             "count": len(processed_injuries),
             "cache_source": "api"
