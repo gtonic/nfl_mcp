@@ -289,3 +289,51 @@ class TestConstants:
         for _team_id, scheme_data in TEAM_SCHEMES.items():
             assert "offense" in scheme_data
             assert "defense" in scheme_data
+
+
+class TestGetCoachingStaffResolution:
+    """The ESPN coach object has no displayName/position; resolve HC anyway."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_head_coach_without_position_field(self):
+        coach_ref = "http://espn/v2/nfl/coaches/17533"
+        team_ref = "http://espn/v2/nfl/teams/25"
+
+        def make(payload):
+            m = MagicMock()
+            m.status_code = 200
+            m.json.return_value = payload
+            m.raise_for_status = MagicMock()
+            return m
+
+        responses = {
+            "LIST": make({"count": 1, "items": [{"$ref": coach_ref}]}),
+            coach_ref: make({"id": "17533", "firstName": "Kyle", "lastName": "Shanahan",
+                             "experience": 9, "team": {"$ref": team_ref}}),
+            team_ref: make({"displayName": "San Francisco 49ers"}),
+        }
+
+        async def fake_get(url, headers=None, **kwargs):
+            if url.endswith("/coaches"):  # the team coaches list endpoint
+                return responses["LIST"]
+            return responses[url]
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = fake_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('nfl_mcp.coaching_tools.create_http_client', return_value=mock_client):
+            result = await get_coaching_staff("SF")
+
+        assert result["success"] is True
+        hc = result["head_coach"]
+        assert hc is not None
+        assert hc["name"] == "Kyle Shanahan"          # built from first+last (no displayName)
+        assert hc["category"] == "head_coach"          # promoted despite missing position
+        assert hc["role"] == "Head Coach"
+        assert result["team_name"] == "San Francisco 49ers"
+        # ESPN exposes only the HC here -> coordinators null, with an explicit note.
+        assert result["offensive_coordinator"] is None
+        assert result["defensive_coordinator"] is None
+        assert result.get("note")

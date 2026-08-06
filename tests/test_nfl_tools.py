@@ -235,6 +235,57 @@ class TestGetTeamInjuries:
         result = await get_team_injuries("")
         assert result["success"] is False
 
+    @pytest.mark.asyncio
+    async def test_get_team_injuries_dereferences_refs(self):
+        """Core-API items are bare $refs; the tool must follow injury + athlete refs."""
+        inj_ref = "http://espn/v2/nfl/seasons/2026/athletes/9/injuries/1"
+        ath_ref = "http://espn/v2/nfl/seasons/2026/athletes/9"
+
+        def make(payload):
+            m = MagicMock()
+            m.status_code = 200
+            m.json.return_value = payload
+            m.raise_for_status = MagicMock()
+            return m
+
+        responses = {
+            "LIST": make({"count": 1, "items": [{"$ref": inj_ref}]}),
+            inj_ref: make({
+                "status": "Questionable",
+                "date": "2026-08-10",
+                "athlete": {"$ref": ath_ref},
+                "type": {"name": "INJURY_STATUS_QUESTIONABLE",
+                         "description": "questionable", "abbreviation": "Q"},
+                "details": {"type": "Hamstring", "detail": "Soreness", "returnDate": "2026-08-13"},
+                "shortComment": "Dealing with a hamstring issue.",
+            }),
+            ath_ref: make({"id": "9", "displayName": "De'Zhaun Stribling",
+                           "position": {"abbreviation": "WR"}}),
+        }
+
+        async def fake_get(url, headers=None, **kwargs):
+            if "/injuries?" in url:  # the team injuries list endpoint
+                return responses["LIST"]
+            return responses[url]
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = fake_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
+            result = await get_team_injuries("SF")
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        inj = result["injuries"][0]
+        assert inj["player_name"] == "De'Zhaun Stribling"
+        assert inj["position"] == "WR"
+        assert inj["status"] == "Questionable"
+        assert inj["type"] == "Hamstring"
+        assert inj["return_date"] == "2026-08-13"
+        assert inj["severity"] == "Medium"
+
 
 class TestGetTeamPlayerStats:
     """Test get_team_player_stats function."""

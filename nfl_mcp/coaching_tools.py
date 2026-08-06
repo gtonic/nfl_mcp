@@ -171,10 +171,16 @@ async def get_coaching_staff(team_id: str) -> dict:
                     # Extract coach info
                     coach_info = {
                         "id": coach_data.get('id', ''),
-                        "name": coach_data.get('displayName', coach_data.get('fullName', '')),
+                        "name": (
+                            coach_data.get('displayName')
+                            or coach_data.get('fullName')
+                            or " ".join(
+                                p for p in (coach_data.get('firstName'), coach_data.get('lastName')) if p
+                            )
+                        ),
                         "first_name": coach_data.get('firstName', ''),
                         "last_name": coach_data.get('lastName', ''),
-                        "role": coach_data.get('position', {}).get('name', 'Unknown'),
+                        "role": (coach_data.get('position') or {}).get('name', 'Unknown'),
                         "experience": coach_data.get('experience', None),
                     }
 
@@ -208,6 +214,25 @@ async def get_coaching_staff(team_id: str) -> dict:
                     logger.warning(f"Failed to fetch coach details from {ref_url}: {e}")
                     continue
 
+        # ESPN's core `/teams/{id}/coaches` endpoint exposes only the head coach,
+        # and the coach object carries no `position` field — so role-based
+        # classification finds no head coach. Promote the (single) returned coach
+        # so `head_coach` is populated instead of null.
+        if head_coach is None and coaches:
+            coaches[0].update({"category": "head_coach", "side": "both", "is_coordinator": False})
+            if not coaches[0].get("role") or coaches[0]["role"] == "Unknown":
+                coaches[0]["role"] = "Head Coach"
+            head_coach = coaches[0]
+
+        # Be explicit that coordinators / position coaches are not available from
+        # this endpoint (so callers don't read the nulls as "team has none").
+        note = None
+        if offensive_coordinator is None and defensive_coordinator is None:
+            note = (
+                "ESPN's core API exposes only the head coach for a team; "
+                "coordinators and position coaches are not available from this endpoint."
+            )
+
         return create_success_response({
             "team_id": team_id_upper,
             "team_name": team_name,
@@ -215,7 +240,8 @@ async def get_coaching_staff(team_id: str) -> dict:
             "head_coach": head_coach,
             "offensive_coordinator": offensive_coordinator,
             "defensive_coordinator": defensive_coordinator,
-            "total_coaches": len(coaches)
+            "total_coaches": len(coaches),
+            "note": note
         })
 
 

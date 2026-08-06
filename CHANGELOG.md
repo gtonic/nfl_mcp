@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`get_team_injuries` now returns real injury data (names, status, body part,
+  return date).** ESPN's Core API returns the team injury list as bare
+  `{"$ref": …}` links; the tool treated each item as a complete object, so every
+  field came back empty (`player_name: null`, `status: "Unknown"`). It now
+  follows both hops — the injury ref and the nested athlete ref — concurrently
+  (bounded fan-out), and surfaces `player_name`, `position`, `status`, `type`
+  (body part), `description`, `return_date` and a fantasy `severity`. Inline
+  responses are still handled (back-compat), and "Injured Reserve" now maps to
+  `High` severity.
+- **`get_coaching_staff` resolves the head coach instead of returning nulls.**
+  The ESPN coach object has no `displayName`/`position`, so the coach name came
+  back empty and no head coach was identified. The name is now built from
+  `firstName`/`lastName`, and the coach returned by ESPN's team `/coaches`
+  endpoint (which exposes only the head coach) is promoted to `head_coach`. A
+  `note` field now states explicitly that coordinators/position coaches are not
+  available from this endpoint, instead of silently returning nulls.
+
 ## [0.7.0] - 2026-08-05
 
 ### Changed
