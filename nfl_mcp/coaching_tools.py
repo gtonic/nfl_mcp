@@ -6,6 +6,7 @@ coach records, and coaching tree information from ESPN API.
 """
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -89,19 +90,109 @@ def _classify_coach_role(role_name: str) -> dict[str, Any]:
         return {"category": "assistant", "side": "unknown", "is_coordinator": False}
 
 
+# ESPN abbreviation -> Wikipedia team name, used to look up "{season} {name} season"
+# for coordinator info (ESPN exposes only the head coach; see below).
+TEAM_WIKI_NAMES = {
+    "ARI": "Arizona Cardinals", "ATL": "Atlanta Falcons", "BAL": "Baltimore Ravens",
+    "BUF": "Buffalo Bills", "CAR": "Carolina Panthers", "CHI": "Chicago Bears",
+    "CIN": "Cincinnati Bengals", "CLE": "Cleveland Browns", "DAL": "Dallas Cowboys",
+    "DEN": "Denver Broncos", "DET": "Detroit Lions", "GB": "Green Bay Packers",
+    "HOU": "Houston Texans", "IND": "Indianapolis Colts", "JAX": "Jacksonville Jaguars",
+    "KC": "Kansas City Chiefs", "LV": "Las Vegas Raiders", "LAC": "Los Angeles Chargers",
+    "LAR": "Los Angeles Rams", "MIA": "Miami Dolphins", "MIN": "Minnesota Vikings",
+    "NE": "New England Patriots", "NO": "New Orleans Saints", "NYG": "New York Giants",
+    "NYJ": "New York Jets", "PHI": "Philadelphia Eagles", "PIT": "Pittsburgh Steelers",
+    "SF": "San Francisco 49ers", "SEA": "Seattle Seahawks", "TB": "Tampa Bay Buccaneers",
+    "TEN": "Tennessee Titans", "WAS": "Washington Commanders", "WSH": "Washington Commanders",
+}
+
+_WIKI_UA = "nfl-mcp/1.0 (+https://github.com/gtonic/nfl_mcp) coaching-staff enrichment"
+
+
+def _current_nfl_season() -> int:
+    """Best-effort current NFL season year (league year rolls over in March)."""
+    from datetime import UTC, datetime
+    now = datetime.now(UTC)
+    return now.year if now.month >= 3 else now.year - 1
+
+
+def _infobox_field(wikitext: str, field: str) -> str | None:
+    """Return the raw value of a top-level infobox `| field = ...` line."""
+    m = re.search(r'\|\s*' + re.escape(field) + r'\s*=\s*([^\n|]*)', wikitext)
+    return m.group(1) if m else None
+
+
+def _strip_wikitext(val: str | None) -> str | None:
+    """Reduce an infobox value to a plain name (strip links/refs/templates)."""
+    if not val:
+        return None
+    val = re.sub(r'<ref.*?</ref>', '', val, flags=re.S)
+    val = re.sub(r'<ref[^>]*/>', '', val)
+    val = re.split(r'<br\s*/?>', val)[0]              # first entry if a <br> list
+    val = re.sub(r'\[\[(?:[^\]|]+\|)?([^\]]+)\]\]', r'\1', val)  # [[Link|Text]] -> Text
+    val = re.sub(r'\{\{[^{}]*\}\}', '', val)          # drop simple templates
+    val = val.replace("'''", "").replace("''", "").strip()
+    return val or None
+
+
+async def _fetch_coordinators_wikipedia(client, team_abbrev: str, season: int) -> dict:
+    """Best-effort OC/DC lookup from the Wikipedia 'Infobox NFL team season'.
+
+    ESPN does not expose coordinators, so we read ``off_coach``/``def_coach``
+    from the team's season page. Coverage is partial — many pages only fill the
+    head coach — so this returns ``{}`` when nothing usable is found, and never
+    raises (the caller degrades gracefully).
+    """
+    name = TEAM_WIKI_NAMES.get(team_abbrev.upper())
+    if not name:
+        return {}
+    # Try the requested season, then the prior one (new-season pages can lag).
+    for yr in (season, season - 1):
+        title = f"{yr} {name} season"
+        try:
+            resp = await client.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={
+                    "action": "query", "prop": "revisions", "rvprop": "content",
+                    "rvslots": "main", "format": "json", "redirects": 1, "titles": title,
+                },
+                headers={"User-Agent": _WIKI_UA},
+            )
+            resp.raise_for_status()
+            page = next(iter(resp.json()["query"]["pages"].values()))
+            if "revisions" not in page:
+                continue
+            wt = page["revisions"][0]["slots"]["main"]["*"]
+            oc = _strip_wikitext(_infobox_field(wt, "off_coach"))
+            dc = _strip_wikitext(_infobox_field(wt, "def_coach"))
+            if oc or dc:
+                return {
+                    "offensive_coordinator": oc,
+                    "defensive_coordinator": dc,
+                    "source": "wikipedia",
+                    "season": yr,
+                    "page": page.get("title"),
+                }
+        except Exception as e:  # best-effort — never fail the coaching call
+            logger.debug(f"[Coaching] Wikipedia coordinator lookup failed ({title}): {e}")
+    return {}
+
+
 @handle_http_errors(
     default_data={"team_id": None, "team_name": None, "coaches": [], "head_coach": None},
     operation_name="fetching coaching staff"
 )
-async def get_coaching_staff(team_id: str) -> dict:
+async def get_coaching_staff(team_id: str, season: int | None = None) -> dict:
     """
-    Get the coaching staff for a specific NFL team from ESPN API.
+    Get the coaching staff for a specific NFL team.
 
-    This tool fetches coaching information including head coach, coordinators,
-    and position coaches from ESPN's Core API.
+    The head coach comes from ESPN's Core API (the only coach ESPN exposes).
+    Coordinators are enriched best-effort from the Wikipedia season-page infobox
+    (``off_coach``/``def_coach``) — coverage is partial, so they may be null.
 
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE') or ESPN team ID
+        season: Season year for the coordinator lookup (defaults to current)
 
     Returns:
         A dictionary containing:
@@ -109,8 +200,10 @@ async def get_coaching_staff(team_id: str) -> dict:
         - team_name: The team's full name
         - coaches: List of all coaches with roles and details
         - head_coach: The head coach information (convenience field)
-        - offensive_coordinator: The OC information if available
-        - defensive_coordinator: The DC information if available
+        - offensive_coordinator: The OC information if available (else None)
+        - defensive_coordinator: The DC information if available (else None)
+        - coordinator_source: Source of the coordinators (e.g. "wikipedia")
+        - note: Provenance / coverage note
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
@@ -224,13 +317,39 @@ async def get_coaching_staff(team_id: str) -> dict:
                 coaches[0]["role"] = "Head Coach"
             head_coach = coaches[0]
 
-        # Be explicit that coordinators / position coaches are not available from
-        # this endpoint (so callers don't read the nulls as "team has none").
-        note = None
+        # ESPN exposes only the head coach. Coordinators (when available) come
+        # from the Wikipedia season-page infobox — best-effort, partial coverage.
+        coordinator_source = None
         if offensive_coordinator is None and defensive_coordinator is None:
+            wiki_season = season or _current_nfl_season()
+            coords = await _fetch_coordinators_wikipedia(client, team_id_upper, wiki_season)
+            if coords.get("offensive_coordinator"):
+                offensive_coordinator = {
+                    "name": coords["offensive_coordinator"], "role": "Offensive Coordinator",
+                    "category": "coordinator", "side": "offense", "is_coordinator": True,
+                    "source": "wikipedia",
+                }
+                coaches.append(offensive_coordinator)
+            if coords.get("defensive_coordinator"):
+                defensive_coordinator = {
+                    "name": coords["defensive_coordinator"], "role": "Defensive Coordinator",
+                    "category": "coordinator", "side": "defense", "is_coordinator": True,
+                    "source": "wikipedia",
+                }
+                coaches.append(defensive_coordinator)
+            if coords:
+                coordinator_source = coords.get("source")
+
+        # Honest note about data provenance / gaps.
+        if offensive_coordinator is not None or defensive_coordinator is not None:
             note = (
-                "ESPN's core API exposes only the head coach for a team; "
-                "coordinators and position coaches are not available from this endpoint."
+                "Head coach is from ESPN; coordinators are best-effort from the "
+                "Wikipedia season-page infobox (coverage is partial)."
+            )
+        else:
+            note = (
+                "ESPN exposes only the head coach; no coordinators were found for "
+                "this team (the Wikipedia season-page infobox had none)."
             )
 
         return create_success_response({
@@ -240,6 +359,7 @@ async def get_coaching_staff(team_id: str) -> dict:
             "head_coach": head_coach,
             "offensive_coordinator": offensive_coordinator,
             "defensive_coordinator": defensive_coordinator,
+            "coordinator_source": coordinator_source,
             "total_coaches": len(coaches),
             "note": note
         })
@@ -291,8 +411,13 @@ async def get_all_coaching_staffs() -> dict:
                 team_id = team_info.get('abbreviation', team_info.get('id', ''))
                 team_name = team_info.get('displayName', team_info.get('name', ''))
 
-                # Fetch coaches for this team
-                coaches_url = f"{team_url}/coaches"
+                # Fetch coaches for this team. Build the URL from the numeric id:
+                # team_url carries a query string, so f"{team_url}/coaches" puts
+                # `/coaches` *after* the `?...` and yields a broken URL.
+                coaches_url = (
+                    "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/"
+                    f"teams/{team_info.get('id')}/coaches"
+                )
                 try:
                     coaches_response = await client.get(coaches_url, headers=headers)
                     coaches_response.raise_for_status()
@@ -301,20 +426,30 @@ async def get_all_coaching_staffs() -> dict:
                     coach_refs = coaches_data.get('items', [])
                     head_coach_name = None
 
-                    # Get head coach name
-                    for coach_ref in coach_refs[:5]:  # Check first 5 coaches
+                    # This endpoint exposes the head coach; the coach object often
+                    # lacks `position`/`displayName`, so take the first coach and
+                    # build the name from first/last.
+                    for coach_ref in coach_refs[:5]:
                         ref_url = coach_ref.get('$ref', '')
-                        if ref_url:
-                            try:
-                                coach_response = await client.get(ref_url, headers=headers)
-                                coach_response.raise_for_status()
-                                coach_data = coach_response.json()
-                                role = coach_data.get('position', {}).get('name', '').lower()
-                                if 'head coach' in role:
-                                    head_coach_name = coach_data.get('displayName', coach_data.get('fullName', ''))
-                                    break
-                            except Exception:
-                                continue
+                        if not ref_url:
+                            continue
+                        try:
+                            coach_response = await client.get(ref_url, headers=headers)
+                            coach_response.raise_for_status()
+                            coach_data = coach_response.json()
+                        except Exception:
+                            continue
+                        role = (coach_data.get('position') or {}).get('name', '').lower()
+                        name = (
+                            coach_data.get('displayName')
+                            or coach_data.get('fullName')
+                            or " ".join(p for p in (coach_data.get('firstName'),
+                                                    coach_data.get('lastName')) if p)
+                        )
+                        if 'head coach' in role or head_coach_name is None:
+                            head_coach_name = name
+                        if 'head coach' in role:
+                            break
 
                     all_teams.append({
                         "team_id": team_id,

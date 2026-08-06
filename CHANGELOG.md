@@ -17,13 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (body part), `description`, `return_date` and a fantasy `severity`. Inline
   responses are still handled (back-compat), and "Injured Reserve" now maps to
   `High` severity.
-- **`get_coaching_staff` resolves the head coach instead of returning nulls.**
+- **`get_coaching_staff` now resolves the head coach and fills in coordinators.**
   The ESPN coach object has no `displayName`/`position`, so the coach name came
-  back empty and no head coach was identified. The name is now built from
-  `firstName`/`lastName`, and the coach returned by ESPN's team `/coaches`
-  endpoint (which exposes only the head coach) is promoted to `head_coach`. A
-  `note` field now states explicitly that coordinators/position coaches are not
-  available from this endpoint, instead of silently returning nulls.
+  back empty and no head coach was identified; the name is now built from
+  `firstName`/`lastName` and the coach returned by ESPN's team `/coaches`
+  endpoint (which exposes only the head coach) is promoted to `head_coach`.
+  Because ESPN never exposes coordinators, `offensive_coordinator` /
+  `defensive_coordinator` are now enriched **best-effort from the Wikipedia
+  season-page infobox** (`off_coach`/`def_coach`) — with a `coordinator_source`
+  field and an honest `note` about the partial coverage. Adds an optional
+  `season` argument (defaults to the current NFL season).
+- **`get_all_coaching_staffs` now returns head coaches (was 0/32).** The coaches
+  URL was built as `f"{team_url}/coaches"` where `team_url` already carried a
+  `?lang=…` query string, producing a broken URL (`…?lang=…/coaches`), so every
+  team came back `head_coach: null, coach_count: 0`. The URL is now built from
+  the numeric team id and the head-coach name is resolved from `firstName`/
+  `lastName`.
 
 ## [0.7.0] - 2026-08-05
 
