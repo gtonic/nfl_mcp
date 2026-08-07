@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-08-07
+
 ### Fixed
 High-severity data-quality bugs found by the multi-agent tool audit (all
 reproduced against live ESPN data):
