@@ -1102,56 +1102,53 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
             players_local: list[dict[str, Any]] = []
             cache: dict[str, Any] = {}
 
-            # Collect leader groups (dereference group if needed)
-            leader_groups = cat_obj.get('leaders', []) or []
-
-            async def expand_group(group):
-                # If no inline leaders but has ref/href, dereference
-                if not group.get('leaders'):
-                    for ref_key in ('$ref', 'href'):
-                        if ref_key in group and isinstance(group[ref_key], str):
-                            fetched = await _fetch_json(group[ref_key], client, headers, cache)
-                            if fetched:
-                                return fetched.get('leaders') or fetched.get('items') or []
-                return group.get('leaders') or []
-
-            expanded_lists = [expand_group(grp) for grp in leader_groups]
-            expanded = await asyncio.gather(*expanded_lists) if expanded_lists else []
-
-            # Flatten entries
+            # ESPN returns `leaders` as a FLAT list of leader entries (each with
+            # value + athlete/team refs). A leader entry has no nested `leaders`,
+            # so the old group-expansion returned [] -> 0 players. Use entries
+            # directly; only flatten/deref the rare "group" wrapper.
+            raw = cat_obj.get('leaders', []) or []
             entries: list[dict[str, Any]] = []
-            for lst in expanded:
-                entries.extend(lst)
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                if item.get('athlete') or 'value' in item:
+                    entries.append(item)                       # a leader entry itself
+                elif item.get('leaders'):
+                    entries.extend(item['leaders'])            # nested group
+                elif item.get('$ref') or item.get('href'):
+                    fetched = await _fetch_json(item.get('$ref') or item.get('href'), client, headers, cache)
+                    if fetched:
+                        entries.extend(fetched.get('leaders') or fetched.get('items') or [])
 
-            async def enrich_entry(entry):
-                athlete = entry.get('athlete', {}) or {}
-                team = entry.get('team', {}) or {}
-                # Deref athlete/team if only reference
-                for key_obj, label in ((athlete, 'athlete'), (team, 'team')):
-                    if isinstance(key_obj, dict) and ('$ref' in key_obj or 'href' in key_obj):
-                        ref_url = key_obj.get('$ref') or key_obj.get('href')
-                        data = await _fetch_json(ref_url, client, headers, cache)
+            async def enrich_entry(rank, entry):
+                athlete = dict(entry.get('athlete') or {})
+                team = dict(entry.get('team') or {})
+                for obj in (athlete, team):
+                    if '$ref' in obj or 'href' in obj:
+                        data = await _fetch_json(obj.get('$ref') or obj.get('href'), client, headers, cache)
                         if data:
-                            if label == 'athlete':
-                                athlete.update(data)
-                            else:
-                                team.update(data)
-                players_local.append({
-                    "rank": entry.get('rank'),
+                            obj.update(data)
+                pos = athlete.get('position') or {}
+                return {
+                    "rank": rank,
                     "value": entry.get('value'),
+                    "display_value": entry.get('displayValue'),
                     "athlete_id": athlete.get('id'),
                     "athlete_name": athlete.get('displayName') or athlete.get('shortName'),
+                    "position": pos.get('abbreviation') if isinstance(pos, dict) else None,
                     "team_id": team.get('id'),
                     "team_abbr": team.get('abbreviation'),
-                })
+                }
 
-            tasks = [enrich_entry(e) for e in entries]
-            if tasks:
-                semaphore = asyncio.Semaphore(10)
-                async def sem_task(coro):
-                    async with semaphore:
-                        return await coro
-                await asyncio.gather(*(sem_task(t) for t in tasks))
+            semaphore = asyncio.Semaphore(10)
+
+            async def sem_task(rank, e):
+                async with semaphore:
+                    return await enrich_entry(rank, e)
+
+            players_local = list(await asyncio.gather(
+                *(sem_task(i + 1, e) for i, e in enumerate(entries))
+            ))
             return players_local
 
         if not multi:

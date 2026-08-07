@@ -310,70 +310,51 @@ async def get_cbs_expert_picks(week: int | None = None) -> dict:
         response = await client.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
 
-        # Parse HTML content
+        # CBS renders one `TableExpertPicks` table: row 0 = expert names (header),
+        # row 1 = their records, rows 2+ = one game each (first cell = matchup,
+        # remaining cells = each expert's pick for that game).
         soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Extract picks data
         processed_picks = []
+        experts: list[str] = []
 
-        # Look for picks table or containers
-        picks_table = soup.find('table', class_=re.compile(r'picks|games|matchup', re.I))
+        table = (soup.find('table', class_=re.compile(r'TableExpertPicks', re.I))
+                 or soup.find('table', class_=re.compile(r'picks', re.I)))
+        if table:
+            rows = table.find_all('tr')
+            header_cells = rows[0].find_all(['th', 'td']) if rows else []
+            # First column is the matchup column; the rest are the experts.
+            for c in header_cells[1:]:
+                name = c.get_text(' ', strip=True)
+                # Drop a trailing role/title glued onto the name.
+                name = re.sub(r'\s+(Senior|Writer|Analyst|NFL|Fantasy|Editor|Insider).*$', '', name).strip()
+                experts.append(name or c.get_text(' ', strip=True))
 
-        if picks_table:
-            # Find data rows
-            rows = picks_table.find_all('tr')
-
-            for row in rows[1:]:  # Skip header row
-                cells = row.find_all(['td', 'th'])
-                if len(cells) >= 3:
-                    pick = {}
-
-                    # Extract game/matchup info (usually first cell)
-                    matchup_cell = cells[0]
-                    pick['matchup'] = matchup_cell.get_text(strip=True)
-
-                    # Extract teams if available
-                    team_links = matchup_cell.find_all('a')
-                    if len(team_links) >= 2:
-                        pick['away_team'] = team_links[0].get_text(strip=True)
-                        pick['home_team'] = team_links[1].get_text(strip=True)
-
-                    # Extract expert picks from remaining cells
-                    pick['experts'] = []
-                    for cell in cells[1:]:
-                        expert_pick = cell.get_text(strip=True)
-                        if expert_pick:
-                            pick['experts'].append(expert_pick)
-
-                    if pick.get('matchup'):
-                        processed_picks.append(pick)
-        else:
-            # Alternative: look for individual pick cards/containers
-            pick_containers = soup.find_all(['div', 'article'], class_=re.compile(r'pick|game|matchup', re.I))
-
-            for container in pick_containers:
-                pick = {}
-
-                # Extract matchup info
-                matchup_elem = container.find(['h3', 'h4', 'div'], class_=re.compile(r'matchup|game|title', re.I))
-                if matchup_elem:
-                    pick['matchup'] = matchup_elem.get_text(strip=True)
-
-                # Extract expert name and pick
-                expert_elem = container.find(['span', 'div'], class_=re.compile(r'expert|analyst', re.I))
-                if expert_elem:
-                    pick['expert'] = expert_elem.get_text(strip=True)
-
-                prediction_elem = container.find(['span', 'div'], class_=re.compile(r'pick|prediction', re.I))
-                if prediction_elem:
-                    pick['prediction'] = prediction_elem.get_text(strip=True)
-
-                if pick.get('matchup'):
-                    processed_picks.append(pick)
+            _skip_codes = {'CBS', 'NBC', 'FOX', 'ESPN', 'NFL', 'TNF', 'SNF', 'MNF',
+                           'AM', 'PM', 'ET', 'FINAL', 'BYE'}
+            for row in rows[1:]:
+                cells = row.find_all(['th', 'td'])
+                if len(cells) < 2:
+                    continue
+                matchup = re.sub(r'\s+', ' ', cells[0].get_text(' ', strip=True))
+                if not matchup or matchup.lower().startswith('week'):
+                    continue  # skip the records row / empty rows
+                teams = [t for t in re.findall(r'\b[A-Z]{2,3}\b', matchup) if t not in _skip_codes]
+                picks_by_expert = {}
+                for i, cell in enumerate(cells[1:]):
+                    txt = re.sub(r'\s+', ' ', cell.get_text(' ', strip=True))
+                    if i < len(experts) and txt:
+                        picks_by_expert[experts[i]] = txt
+                processed_picks.append({
+                    "matchup": matchup,
+                    "away_team": teams[0] if len(teams) >= 1 else None,
+                    "home_team": teams[1] if len(teams) >= 2 else None,
+                    "picks": picks_by_expert,
+                })
 
         return create_success_response({
             "picks": processed_picks,
             "total_picks": len(processed_picks),
+            "experts": experts,
             "week": week,
             "source": "CBS Sports Expert Picks"
         })
