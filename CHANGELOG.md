@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-07
+
 ### Fixed
 - **Scoring format is now normalized — `half_ppr` no longer silently means full
   PPR.** `scoring_to_ppr` only recognized `half-ppr` (hyphen); Sleeper's own
