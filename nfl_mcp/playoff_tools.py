@@ -181,6 +181,20 @@ async def get_playoff_odds(
     remaining_weeks = list(range(current_week, regular_weeks + 1))
     schedule = await _build_remaining_schedule(league_id, remaining_weeks) if remaining_weeks else []
 
+    # No remaining games (e.g. preseason / schedule not published) -> the sim
+    # would otherwise emit a deterministic 100/0 split by roster id. Flag it.
+    if not schedule:
+        return create_success_response({
+            "odds": [],
+            "playoff_teams": playoff_teams,
+            "regular_season_weeks": regular_weeks,
+            "current_week": current_week,
+            "games_remaining": 0,
+            "computable": False,
+            "message": ("Playoff odds can't be computed yet — no remaining scheduled "
+                        "games (preseason or schedule not available)."),
+        })
+
     rng = random.Random(seed)
     sim = _simulate(teams, schedule, playoff_teams, max(100, min(int(num_sims), 50000)), score_sd, rng)
 

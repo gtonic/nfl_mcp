@@ -570,6 +570,7 @@ async def get_game_environment(
 
     result = {
         "team": team_norm,
+        "game": game,  # full game data with Vegas lines (documented top-level field)
         "opponent": game.get("away_team") if is_home else game.get("home_team"),
         "is_home": is_home,
         "spread": game.get("home_spread") if is_home else game.get("away_spread"),

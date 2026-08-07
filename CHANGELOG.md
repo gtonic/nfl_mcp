@@ -59,6 +59,26 @@ Medium-severity fixes from the same audit:
   was unset (unlike `get_vegas_lines`); it now says so instead of reporting a bare
   "no high-total games".
 
+The deeper medium-severity findings (logic derivation, not surgical fixes):
+- **Bye weeks are now derived from the schedule gap.** `get_team_schedule` returns
+  a `bye_week` (the one regular-season week 1-18 with no game — ESPN encodes a bye
+  as a *missing* week, not a game row). `get_season_bye_week_coordination` and
+  `get_strategic_matchup_preview` read it instead of matching a `"BYE WEEK"` string
+  that was never emitted, so the bye calendar is populated again.
+- **`get_playoff_odds` no longer invents odds with no schedule.** With
+  `games_remaining == 0` (preseason / schedule unavailable) it returned a
+  deterministic 100/0 split by roster id and a hard-coded `mean_ppg=100`; it now
+  returns `computable: false` with an explanation.
+- **`get_playoff_preparation_plan` stops fabricating a roster grade.** The
+  readiness score reflects only preparation *timing*, so `roster_depth` /
+  `schedule_strength` / `bye_week_planning` are now labelled "Not assessed" (with
+  pointers to the tools that do assess them) instead of grading an empty pre-draft
+  roster "Good".
+- **`recommend_faab_bid` reframes non-FAAB leagues.** In a waiver-priority league
+  the message now says to use a priority claim rather than "Bid ~75%".
+- **`get_game_environment` returns its documented `game` field** (was missing →
+  `KeyError` on `result['game']`).
+
 ## [0.7.2] - 2026-08-07
 
 ### Fixed

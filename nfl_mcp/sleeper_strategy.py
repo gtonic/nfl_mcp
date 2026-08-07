@@ -148,18 +148,15 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
             try:
                 team_schedule = await nfl_tools.get_team_schedule(team, 2026)
                 if team_schedule.get("success", False):
-                    schedule = team_schedule.get("schedule", [])
-                    for game in schedule:
-                        if (game.get("week") == target_week and
-                            "BYE WEEK" in game.get("fantasy_implications", [])):
-                            week_analysis["bye_week_teams"].append({
-                                "team": team,
-                                "impact": "High - Consider backup options or trades"
-                            })
-                            strategic_data["summary"]["critical_bye_weeks"].append({
-                                "week": target_week,
-                                "team": team
-                            })
+                    if team_schedule.get("bye_week") == target_week:
+                        week_analysis["bye_week_teams"].append({
+                            "team": team,
+                            "impact": "High - Consider backup options or trades"
+                        })
+                        strategic_data["summary"]["critical_bye_weeks"].append({
+                            "week": target_week,
+                            "team": team
+                        })
             except Exception:
                 # Skip team if schedule unavailable
                 continue
@@ -281,14 +278,9 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -
         try:
             team_schedule = await nfl_tools.get_team_schedule(team, season)
             if team_schedule.get("success", False):
-                schedule = team_schedule.get("schedule", [])
-                for game in schedule:
-                    if "BYE WEEK" in game.get("fantasy_implications", []):
-                        week_num = game.get("week")
-                        if week_num:
-                            if week_num not in bye_weeks_by_week:
-                                bye_weeks_by_week[week_num] = []
-                            bye_weeks_by_week[week_num].append(team)
+                week_num = team_schedule.get("bye_week")
+                if week_num:
+                    bye_weeks_by_week.setdefault(week_num, []).append(team)
         except Exception:
             continue
 
@@ -668,19 +660,18 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
 
     playoff_plan["readiness_assessment"]["overall_score"] = min(100, readiness_score)
 
-    # Set readiness levels based on score
-    if readiness_score >= 80:
-        playoff_plan["readiness_assessment"]["roster_depth"] = "Excellent"
-        playoff_plan["readiness_assessment"]["schedule_strength"] = "Strong"
-        playoff_plan["readiness_assessment"]["bye_week_planning"] = "Well Prepared"
-    elif readiness_score >= 60:
-        playoff_plan["readiness_assessment"]["roster_depth"] = "Good"
-        playoff_plan["readiness_assessment"]["schedule_strength"] = "Adequate"
-        playoff_plan["readiness_assessment"]["bye_week_planning"] = "Prepared"
-    else:
-        playoff_plan["readiness_assessment"]["roster_depth"] = "Needs Work"
-        playoff_plan["readiness_assessment"]["schedule_strength"] = "Challenging"
-        playoff_plan["readiness_assessment"]["bye_week_planning"] = "Behind Schedule"
+    # The score above reflects only *preparation timing* (weeks-to-playoffs +
+    # whether NFL schedule analysis ran) — it is NOT a measurement of the actual
+    # roster or schedule, so don't fabricate a roster_depth grade (an empty
+    # pre-draft roster used to be graded "Good"). Label honestly and point at the
+    # tools that do assess each dimension.
+    ra = playoff_plan["readiness_assessment"]
+    ra["score_basis"] = "preparation timing only (not roster/schedule quality)"
+    ra["prep_timing"] = ("Excellent" if readiness_score >= 80
+                         else "Good" if readiness_score >= 60 else "Needs Work")
+    ra["roster_depth"] = "Not assessed — draft/set your roster to evaluate"
+    ra["schedule_strength"] = "Not assessed — see get_playoff_sos / get_strength_of_schedule"
+    ra["bye_week_planning"] = "Not assessed — see get_season_bye_week_coordination"
 
     return create_success_response({
         "playoff_plan": playoff_plan,
