@@ -150,7 +150,9 @@ async def get_teams() -> dict:
                 "location": team_info.get('location', ''),
                 "color": team_info.get('color', ''),
                 "alternateColor": team_info.get('alternateColor', ''),
-                "logo": team_info.get('logo', '')
+                # ESPN exposes team images under `logos` (a list), not `logo`.
+                "logo": ((team_info.get('logos') or [{}])[0].get('href')
+                         or team_info.get('logo') or '')
             }
             processed_teams.append(processed_team)
 
