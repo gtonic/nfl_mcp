@@ -162,30 +162,36 @@ class TestNFLStandings:
         mock_response_data = {
             "children": [
                 {
-                    "team": {
-                        "id": "12",
-                        "displayName": "Kansas City Chiefs",
-                        "abbreviation": "KC"
-                    },
-                    "stats": [
-                        {"name": "wins", "value": 15},
-                        {"name": "losses", "value": 2},
-                        {"name": "ties", "value": 0},
-                        {"name": "winPercent", "value": 0.882}
-                    ]
-                },
-                {
-                    "team": {
-                        "id": "16",
-                        "displayName": "New York Giants",
-                        "abbreviation": "NYG"
-                    },
-                    "stats": [
-                        {"name": "wins", "value": 3},
-                        {"name": "losses", "value": 14},
-                        {"name": "ties", "value": 0},
-                        {"name": "winPercent", "value": 0.176}
-                    ]
+                    "standings": {
+                        "entries": [
+                            {
+                                "team": {
+                                    "id": "12",
+                                    "displayName": "Kansas City Chiefs",
+                                    "abbreviation": "KC"
+                                },
+                                "stats": [
+                                    {"name": "wins", "value": 15},
+                                    {"name": "losses", "value": 2},
+                                    {"name": "ties", "value": 0},
+                                    {"name": "winPercent", "value": 0.882}
+                                ]
+                            },
+                            {
+                                "team": {
+                                    "id": "16",
+                                    "displayName": "New York Giants",
+                                    "abbreviation": "NYG"
+                                },
+                                "stats": [
+                                    {"name": "wins", "value": 3},
+                                    {"name": "losses", "value": 14},
+                                    {"name": "ties", "value": 0},
+                                    {"name": "winPercent", "value": 0.176}
+                                ]
+                            }
+                        ]
+                    }
                 }
             ]
         }

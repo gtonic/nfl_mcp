@@ -2378,14 +2378,38 @@ if FEATURE_LEAGUE_LEADERS:
         """Get NFL league leaders by stat type (feature-flagged).
 
         Parameters:
-            stat_type (str, default "passing"): Type of stat to get leaders for.
+            stat_type (str, default "passing"): passing/rushing/receiving/tackles/sacks.
             limit (int, default 25, range 1-100): Max leaders to return.
-        Returns: {leaders: [...], stat_type, count, success, error?}
+        Returns: {leaders: [...], stat_type, count, season, success, error?}
         Example: get_league_leaders(stat_type="rushing", limit=10)
         """
+        # Map friendly labels to the underlying short category tokens.
+        alias = {
+            "passing": "pass", "pass": "pass", "passingyards": "pass",
+            "rushing": "rush", "rush": "rush", "rushingyards": "rush",
+            "receiving": "receiving", "rec": "receiving", "receivingyards": "receiving",
+            "tackles": "tackles", "tackle": "tackles",
+            "sacks": "sacks", "sack": "sacks",
+        }
         try:
             stat_type = validate_string_input(stat_type, 'stat_type', max_length=20, required=True)
             limit = validate_limit(limit, 1, 100, 25)
-            return await nfl_tools.get_league_leaders(stat_type, limit)
         except ValueError as e:
             return {"leaders": [], "stat_type": stat_type, "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
+
+        category = alias.get(stat_type.strip().lower().replace("_", ""), stat_type.strip().lower())
+        # Call by keyword (the underlying signature is get_league_leaders(category,
+        # season, season_type, week) — passing limit positionally landed in season).
+        res = await nfl_tools.get_league_leaders(category=category)
+        if not res.get("success"):
+            return {"leaders": [], "stat_type": stat_type, "count": 0,
+                    "success": False, "error": res.get("error"), "error_type": res.get("error_type")}
+        players = (res.get("players") or [])[:limit]
+        return {
+            "leaders": players,
+            "stat_type": res.get("category", category),
+            "count": len(players),
+            "season": res.get("season"),
+            "success": True,
+            "error": None,
+        }
