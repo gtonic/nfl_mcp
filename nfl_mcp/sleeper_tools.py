@@ -308,10 +308,14 @@ async def get_rosters(league_id: str) -> dict:
                         # Because we need async inside enrichment, gather sequentially
                         for roster in rosters_data:
                             if isinstance(roster, dict):
+                                # "0" is Sleeper's empty-slot sentinel — filter it
+                                # (and blanks) so we don't fabricate phantom players.
                                 if isinstance(roster.get("players"), list):
-                                    roster["players_enriched"] = await enrich_players(roster["players"])
+                                    roster["players_enriched"] = await enrich_players(
+                                        [p for p in roster["players"] if p and p != "0"])
                                 if isinstance(roster.get("starters"), list):
-                                    roster["starters_enriched"] = await enrich_players(roster["starters"])
+                                    roster["starters_enriched"] = await enrich_players(
+                                        [p for p in roster["starters"] if p and p != "0"])
                 except Exception as enrich_error:
                     logger.debug(f"Roster enrichment (extended) skipped: {enrich_error}")
 

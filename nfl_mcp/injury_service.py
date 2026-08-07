@@ -468,7 +468,10 @@ class InjuryAggregator:
                 team_id="",  # Will be set by caller
                 position=None,  # Not available in injury endpoint
                 injury_status=normalized_status,
-                injury_type=type_data.get("name") if isinstance(type_data, dict) else None,
+                # Prefer the body part; fall back to the human-readable status
+                # description ("active") — never the raw enum ("INJURY_STATUS_ACTIVE").
+                injury_type=((data.get("details") or {}).get("type")
+                             or (type_data.get("description") if isinstance(type_data, dict) else None)),
                 injury_description=data.get("shortComment") or data.get("longComment"),
                 game_status=None,
                 severity=self.get_severity(normalized_status),
