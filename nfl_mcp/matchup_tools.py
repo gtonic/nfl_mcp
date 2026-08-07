@@ -18,7 +18,7 @@ from .config import LONG_TIMEOUT, create_http_client
 # free CSV per season — the reliable source for defense-vs-position.
 NFLVERSE_PLAYER_STATS_URL = (
     "https://github.com/nflverse/nflverse-data/releases/download/"
-    "player_stats/player_stats_{season}.csv"
+    "stats_player/stats_player_week_{season}.csv"
 )
 # nflverse abbreviations -> the abbreviations used across this codebase.
 _NFLVERSE_TEAM_FIX = {"LA": "LAR", "WAS": "WSH", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LAR"}

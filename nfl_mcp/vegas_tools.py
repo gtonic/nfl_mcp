@@ -820,6 +820,11 @@ async def get_stack_opportunities(
 
         primary_teams = list({s["primary_stack_team"] for s in stacks[:3]})
         summary.append(f"📈 Target: {', '.join(primary_teams)} pass games")
+    elif not analyzer.api_key:
+        summary.append(
+            "⚠️ No Vegas lines available — set ODDS_API_KEY to enable live totals; "
+            "stack opportunities can't be computed."
+        )
     else:
         summary.append(f"⚠️ No games with O/U >= {min_total} found")
 

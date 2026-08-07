@@ -537,8 +537,8 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
             "current_week": current_week,
             "playoff_start": playoff_start,
             "weeks_to_playoffs": max(0, playoff_start - current_week),
-            "playoff_duration": 4,  # Typical playoff duration
-            "championship_week": playoff_start + 3
+            "playoff_duration": 3,  # standard fantasy playoff span (e.g. weeks 15-17)
+            "championship_week": playoff_start + 2
         },
         "preparation_phases": {},
         "strategic_priorities": [],

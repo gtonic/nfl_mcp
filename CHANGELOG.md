@@ -37,6 +37,28 @@ reproduced against live ESPN data):
   documented `{leaders, stat_type, count, season}` shape. (Note: ESPN's leaders
   endpoint itself yields no data in the preseason.)
 
+Medium-severity fixes from the same audit:
+- **`get_defense_rankings` (and the SoS/streaming/matchup tools it feeds) used a
+  renamed nflverse asset URL** (`player_stats_*` → 404), so they collapsed to
+  neutral placeholders even when real data existed. Updated to
+  `stats_player/stats_player_week_{season}.csv` → real defense data again (e.g.
+  2025 toughest QB defenses MIN/LAC/HOU).
+- **`get_rosters` fabricated phantom "healthy" players** for Sleeper's empty-slot
+  sentinel id `"0"` (9 per roster). The sentinel is now filtered before enrichment.
+- **`project_player` over-credited confidence and hid the Vegas fallback.** It
+  always passed an all-`None` usage dict (truthy → +15 confidence), reporting
+  85/high vs `project_players`' 70/medium for identical input; confidence now
+  requires a real usage signal. It also now surfaces `vegas_active` so a neutral
+  Vegas placeholder isn't mistaken for a live implied total.
+- **`get_playoff_preparation_plan` hard-coded a 4-week playoff** (`championship_week
+  = start+3`); corrected to the standard 3-week span (`start+2`).
+- **`get_injury_report` / `get_gameday_inactives` leaked the raw status enum**
+  (`INJURY_STATUS_ACTIVE`) as `injury_type`; now uses the body part / readable
+  description.
+- **`get_stack_opportunities` gave no fallback disclaimer** when `ODDS_API_KEY`
+  was unset (unlike `get_vegas_lines`); it now says so instead of reporting a bare
+  "no high-total games".
+
 ## [0.7.2] - 2026-08-07
 
 ### Fixed

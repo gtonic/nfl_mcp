@@ -199,7 +199,15 @@ class ProjectionEngine:
             conf += 20
         if not env_is_fallback:
             conf += 15
-        if usage or base_source == "opportunity":
+        # Only credit real usage signal — project_player always passes a
+        # {snap_percentage: None, usage_trend: None} dict (truthy), which used to
+        # inflate confidence to 85/high with no actual usage data.
+        has_real_usage = (
+            base_source == "opportunity"
+            or usage.get("snap_percentage") is not None
+            or usage.get("usage_trend") is not None
+        )
+        if has_real_usage:
             conf += 15
         conf = min(conf, 100)
         conf_level = "high" if conf >= 80 else "medium" if conf >= 60 else "low"
@@ -216,6 +224,7 @@ class ProjectionEngine:
             "confidence_level": conf_level,
             "matchup_tier": matchup_tier,
             "implied_total": implied_total,
+            "vegas_active": not env_is_fallback,
             "breakdown": {
                 "base_ppg": base,
                 "base_source": base_source,
