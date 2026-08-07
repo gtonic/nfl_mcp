@@ -177,7 +177,8 @@ async def get_draft_board(
         "total": len(board),
         "tiers_by_position": tiers_by_position,
         "replacement_values": vbd["replacement"],
-        "format": {"scoring": scoring, "superflex": superflex, "num_teams": num_teams, "dynasty": dynasty},
+        "format": {"scoring": scoring, "ppr": scoring_to_ppr(scoring), "superflex": superflex,
+                   "num_teams": num_teams, "dynasty": dynasty},
         "source": data.get("source"),
         "stale": data.get("stale", False),
         "message": (
@@ -416,7 +417,8 @@ async def recommend_draft_pick(
             "starter_requirements": reqs,
         } if my_slot is not None else None,
         "picks_made": len(picks),
-        "format": {"scoring": scoring, "superflex": superflex, "num_teams": num_teams, "dynasty": dynasty},
+        "format": {"scoring": scoring, "ppr": scoring_to_ppr(scoring), "superflex": superflex,
+                   "num_teams": num_teams, "dynasty": dynasty},
         "source": data.get("source"),
         "stale": data.get("stale", False),
         "message": (
@@ -699,8 +701,8 @@ async def simulate_draft(
 
     result: dict[str, Any] = {
         "sample": sample,
-        "format": {"scoring": scoring, "superflex": superflex, "num_teams": num_teams,
-                   "dynasty": dynasty, "rounds": rounds},
+        "format": {"scoring": scoring, "ppr": scoring_to_ppr(scoring), "superflex": superflex,
+                   "num_teams": num_teams, "dynasty": dynasty, "rounds": rounds},
         "starter_requirements": reqs,
         "num_sims": n,
         "source": data.get("source"),

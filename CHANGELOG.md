@@ -79,6 +79,23 @@ The deeper medium-severity findings (logic derivation, not surgical fixes):
 - **`get_game_environment` returns its documented `game` field** (was missing →
   `KeyError` on `result['game']`).
 
+Low-severity consistency/schema polish from the audit:
+- **`get_teams` now returns team logos.** ESPN exposes images under `logos` (a
+  list), not `logo`, so the field was empty for all 32 teams.
+- **`get_draft_board` / `recommend_draft_pick` / `simulate_draft` echo the
+  effective `ppr`.** The `format` block now includes the resolved `ppr` value, so
+  an unrecognized `scoring` label (which maps to full PPR) is transparent.
+- **`get_player_values` reports `updated_at` for fresh data** (fell back to the
+  DB snapshot time, which is null on a fresh fetch → now uses `fetched_at`).
+- **`analyze_roster_vegas` surfaces the Vegas fallback at the top level** (an
+  `is_fallback` flag + a message note) instead of only per-entry.
+- **`analyze_opponent` no longer rates an empty roster "100% vulnerable."** A
+  pre-draft/empty opponent roster returns `no_data: true` (`vulnerability_score:
+  null`) instead of fabricating "critical" weaknesses at every position.
+- **`analyze_trade` resolves off-roster players' real identity.** A traded player
+  not on the given roster is backfilled with the name/position from the value list
+  (was `"Unknown (4034)"` despite a resolved value) and flagged in `warnings`.
+
 ## [0.7.2] - 2026-08-07
 
 ### Fixed

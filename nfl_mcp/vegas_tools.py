@@ -716,7 +716,12 @@ async def analyze_roster_vegas(
             worst_environments.append(f"{name} ({team_norm}) - O/U {game.get('total')}")
 
     # Generate summary
+    all_fallback = bool(analyses) and all(a.get("is_fallback") for a in analyses)
     summary_lines = []
+    if all_fallback:
+        summary_lines.append(
+            "⚠️ No live Vegas lines (set ODDS_API_KEY) — neutral placeholder values"
+        )
     if best_environments:
         summary_lines.append(f"🔥 BEST ENVIRONMENTS: {', '.join(best_environments[:3])}")
     if worst_environments:
@@ -727,8 +732,10 @@ async def analyze_roster_vegas(
         "best_environments": best_environments,
         "worst_environments": worst_environments,
         "summary": summary_lines,
+        "is_fallback": all_fallback,
         "total_analyzed": len(analyses),
-        "message": f"Analyzed Vegas lines for {len(analyses)} players"
+        "message": (f"Analyzed Vegas lines for {len(analyses)} players"
+                    + (" (⚠️ fallback/neutral — no ODDS_API_KEY)" if all_fallback else "")),
     })
 
 

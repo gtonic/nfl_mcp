@@ -302,7 +302,10 @@ async def get_player_values(
         },
         "source": data.get("source"),
         "stale": data.get("stale", False),
-        "updated_at": data.get("snapshot_updated_at"),
+        "updated_at": (
+            data.get("snapshot_updated_at")
+            or (data["fetched_at"].isoformat() if data.get("fetched_at") else None)
+        ),
         "message": (
             f"{len(values)} player values ({data.get('source')})"
             + (" ⚠️ STALE cached data" if data.get("stale") else "")
