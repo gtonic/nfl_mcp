@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+The two deeper audit follow-ups (deferred from the 0.7.5 batches):
+- **`get_league_leaders` now returns actual leaders.** ESPN's `leaders` endpoint
+  returns a *flat* list of leader entries (each with an `athlete` `$ref`), but the
+  parser treated each entry as a *group* and expanded it to `[]` — so even
+  completed seasons came back empty. It now uses the entries directly (deref
+  athlete/team, ordered rank), e.g. 2024 passing → Burrow / Goff / Mayfield.
+- **`get_cbs_expert_picks` is parsed properly.** Rewrote the scraper against the
+  `TableExpertPicks` layout: clean expert names from the header row, per-game
+  `picks` keyed by expert, extracted `away_team`/`home_team`, and
+  whitespace-collapsed text — instead of concatenated blobs like
+  `"FINALNBCDAL7-9-120PHI…"` and duplicated experts.
+
 ## [0.7.5] - 2026-08-07
 
 ### Fixed
