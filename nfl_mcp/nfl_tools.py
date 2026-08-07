@@ -952,17 +952,23 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
                     elif game['week'] >= 15:
                         game['fantasy_implications'].append("Late season - potential rest concerns for playoff teams")
 
-                # Add bye week identification
-                if game['season_type'] == 'Bye Week':
-                    game['fantasy_implications'].append("BYE WEEK - No fantasy points available")
-
             processed_schedule.append(game)
+
+        # Derive the bye week: the single regular-season week (1-18) with no game.
+        # ESPN encodes a bye as a *missing* week rather than a game row, so it must
+        # be inferred from the gap (only when we have a near-complete schedule).
+        played_weeks = {g.get('week') for g in processed_schedule if isinstance(g.get('week'), int)}
+        bye_week = (
+            next((w for w in range(1, 19) if w not in played_weeks), None)
+            if len(played_weeks) >= 16 else None
+        )
 
         return create_success_response({
             "team_id": team_id_upper,
             "team_name": team_name,
             "season": season,
             "schedule": processed_schedule,
+            "bye_week": bye_week,
             "count": len(processed_schedule),
             "cache_source": "api"
         })
