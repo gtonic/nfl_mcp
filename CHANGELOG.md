@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-07
+
 ### Fixed
 - **`get_team_injuries` now returns real injury data (names, status, body part,
   return date).** ESPN's Core API returns the team injury list as bare
