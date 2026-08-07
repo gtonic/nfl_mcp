@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-08-07
+
 ### Fixed
 The two deeper audit follow-ups (deferred from the 0.7.5 batches):
 - **`get_league_leaders` now returns actual leaders.** ESPN's `leaders` endpoint
