@@ -352,15 +352,21 @@ class TestGetNflStandings:
         mock_response.json.return_value = {
             "children": [
                 {
-                    "team": {
-                        "id": "1",
-                        "displayName": "Kansas City Chiefs",
-                        "abbreviation": "KC"
-                    },
-                    "stats": [
-                        {"name": "wins", "value": 14},
-                        {"name": "losses", "value": 3}
-                    ]
+                    "standings": {
+                        "entries": [
+                            {
+                                "team": {
+                                    "id": "1",
+                                    "displayName": "Kansas City Chiefs",
+                                    "abbreviation": "KC"
+                                },
+                                "stats": [
+                                    {"name": "wins", "value": 14},
+                                    {"name": "losses", "value": 3}
+                                ]
+                            }
+                        ]
+                    }
                 }
             ]
         }
@@ -528,3 +534,58 @@ class TestGetCurrentSeasonAndWeek:
             # Should return current year and week 0
             assert season is not None
             assert week == 0
+
+
+class TestAuditHighFixes:
+    """Regression tests for the audit HIGH-severity fixes."""
+
+    @pytest.mark.asyncio
+    async def test_depth_chart_pairs_position_and_player_tables(self):
+        html = (
+            "<html><body><h1>San Francisco49ers</h1>"
+            "<table><tr><td></td></tr><tr><td>QB</td></tr><tr><td>RB</td></tr></table>"
+            "<table>"
+            "<tr><th>Starter</th><th>2nd</th></tr>"
+            "<tr><td>Brock Purdy</td><td>Mac Jones</td></tr>"
+            "<tr><td>Christian McCaffrey</td><td>Jordan JamesQ</td></tr>"
+            "</table></body></html>"
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = html
+        mock_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
+            result = await get_depth_chart("SF")
+
+        assert result["success"] is True
+        assert result["team_name"] == "San Francisco 49ers"     # digit boundary spaced
+        by_pos = {d["position"]: d["players"] for d in result["depth_chart"]}
+        assert by_pos["QB"][0] == "Brock Purdy"                  # position label, not a name
+        assert by_pos["RB"][0] == "Christian McCaffrey"
+        assert "Jordan James" in by_pos["RB"]                    # trailing injury tag stripped
+
+    @pytest.mark.asyncio
+    async def test_league_leaders_wrapper_maps_and_reshapes(self):
+        from nfl_mcp import tool_registry
+        fn = {f.__name__: f for f in tool_registry.get_all_tools()}["get_league_leaders"]
+
+        captured = {}
+
+        async def fake(category=None, **kw):
+            captured["category"] = category
+            return {"success": True, "category": category, "season": 2024,
+                    "players": [{"rank": i, "athlete_name": f"P{i}"} for i in range(1, 11)]}
+
+        with patch("nfl_mcp.nfl_tools.get_league_leaders", fake):
+            res = await fn(stat_type="passing", limit=3)
+
+        assert captured["category"] == "pass"          # friendly label -> short token
+        assert res["success"] is True
+        assert {"leaders", "stat_type", "count"}.issubset(res.keys())   # documented shape
+        assert res["stat_type"] == "pass"
+        assert res["count"] == 3                        # limit applied (not shoved into season)

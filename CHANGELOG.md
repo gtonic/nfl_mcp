@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+High-severity data-quality bugs found by the multi-agent tool audit (all
+reproduced against live ESPN data):
+- **`get_team_schedule` returned only the 3-game preseason slate.** The URL
+  omitted `seasontype`, so ESPN defaulted to preseason before the season starts.
+  Now requests `&seasontype=2` → the full 17-game regular season (and its bye gap),
+  which also fixes the downstream bye/SoS/matchup previews.
+- **`get_team_player_stats` always returned 0 players.** The URL carried a dead
+  `/types/{season_type}/` segment (404 for every season, masked as
+  `success=True, count=0`). Uses the season roster endpoint and dereferences the
+  athlete `$ref`s → real players (id/name/position/jersey).
+- **`get_nfl_standings` returned 4 placeholder rows with fabricated context.** The
+  Core API endpoint only exposes standings-TYPE group refs, not teams. Switched to
+  the site standings endpoint and parses `children[].standings.entries` → all 32
+  teams with real records; preseason (0-0) no longer fabricates a motivation level.
+- **`get_depth_chart` put player names in the `position` field.** ESPN renders
+  each unit as a *pair* of tables (position labels + player grid); the parser now
+  joins them, skips the `Starter` header, strips glued injury tags, and spaces the
+  team name (`San Francisco 49ers`).
+- **`get_high_confidence_injuries` was always empty.** Every ESPN injury got a
+  flat confidence of 60, unreachable by the default `min_confidence=70`. Confidence
+  is now graded by status certainty (Out/IR/Doubtful=90, Questionable=65, …), so
+  the threshold surfaces the genuinely high-confidence injuries.
+- **`get_league_leaders` was mis-wired.** The registry wrapper returned an
+  undocumented shape, rejected the documented `passing`/`rushing` labels, and
+  passed `limit` positionally into `season`. It now maps friendly labels to the
+  short tokens, calls the underlying by keyword, applies `limit`, and returns the
+  documented `{leaders, stat_type, count, season}` shape. (Note: ESPN's leaders
+  endpoint itself yields no data in the preseason.)
+
 ## [0.7.2] - 2026-08-07
 
 ### Fixed

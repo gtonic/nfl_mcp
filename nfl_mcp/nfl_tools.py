@@ -6,6 +6,7 @@ This module contains MCP tools for fetching NFL news, teams data, and depth char
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -256,41 +257,42 @@ async def get_depth_chart(team_id: str) -> dict:
         # Parse HTML content
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Extract team name
+        # Extract team name (ESPN's <h1> glues city+nickname, e.g.
+        # "San Francisco49ers" -> add a space at the letter/digit boundary).
         team_name = None
         team_header = soup.find('h1')
         if team_header:
-            team_name = team_header.get_text(strip=True)
+            team_name = re.sub(r'(?<=[A-Za-z])(?=\d)', ' ', team_header.get_text(strip=True))
 
-        # Extract depth chart information
+        # Extract depth chart. ESPN renders each unit as a PAIR of tables: a
+        # 1-column table of position labels (QB/RB/…), immediately followed by a
+        # table whose first row is a header (Starter/2nd/3rd/4th) and whose
+        # remaining rows are the players, aligned row-for-row with the labels.
+        def _clean_name(name):
+            if not name or name == '-':
+                return None
+            # Strip an injury tag glued to the surname ("Jordan JamesQ" -> "…James").
+            return re.sub(r'(?<=[a-z])(IR|PUP|SUS|NFI|Q|O|D|P)$', '', name).strip() or None
+
         depth_chart = []
-
-        # Look for depth chart tables or sections
-        # ESPN depth chart structure may vary, so we'll look for common patterns
-        depth_sections = soup.find_all(['table', 'div'], class_=lambda x: x and 'depth' in x.lower() if x else False)
-
-        if not depth_sections:
-            # Try alternative selectors
-            depth_sections = soup.find_all('table')
-
-        for section in depth_sections:
-            # Extract position and players
-            rows = section.find_all('tr')
-            for row in rows:
-                cells = row.find_all(['td', 'th'])
-                if len(cells) >= 2:
-                    position = cells[0].get_text(strip=True)
-                    players = []
-                    for cell in cells[1:]:
-                        player_text = cell.get_text(strip=True)
-                        if player_text and player_text != position:
-                            players.append(player_text)
-
-                    if position and players:
-                        depth_chart.append({
-                            "position": position,
-                            "players": players
-                        })
+        tables = soup.find_all('table')
+        i = 0
+        while i < len(tables) - 1:
+            pos_rows = tables[i].find_all('tr')
+            player_rows = tables[i + 1].find_all('tr')
+            pos_is_single_col = bool(pos_rows) and len(pos_rows[0].find_all(['td', 'th'])) == 1
+            player_is_grid = bool(player_rows) and len(player_rows[0].find_all(['td', 'th'])) >= 2
+            if pos_is_single_col and player_is_grid:
+                pos_labels = [r.get_text(strip=True) for r in pos_rows]
+                # Row 0 of each is a header ('' and 'Starter …') -> skip it.
+                for pos_label, prow in zip(pos_labels[1:], player_rows[1:], strict=False):
+                    names = [_clean_name(c.get_text(strip=True)) for c in prow.find_all(['td', 'th'])]
+                    names = [n for n in names if n]
+                    if pos_label and names:
+                        depth_chart.append({"position": pos_label, "players": names})
+                i += 2
+            else:
+                i += 1
 
         return create_success_response({
             "team_id": team_id.upper(),
@@ -555,8 +557,10 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
 
     headers = get_http_headers("nfl_teams")  # Reuse existing config
 
-    # ESPN Core API endpoint for team player statistics
-    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/teams/{team_id.upper()}/athletes?limit={limit}"
+    # ESPN Core API team roster for the season. The older
+    # /types/{season_type}/ variant now 404s; this endpoint returns athlete
+    # $ref links which we dereference below.
+    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/teams/{team_id.upper()}/athletes?limit={limit}"
 
     async with create_http_client() as client:
         try:
@@ -576,57 +580,50 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
             else:
                 raise
 
-        # Parse JSON response
+        # Parse JSON response. `items` are athlete $ref links; dereference each.
         data = response.json()
+        athlete_items = data.get('items', [])
 
-        # Extract athletes from the response
-        athletes_data = data.get('items', [])
-
-        # Process athlete statistics
-        processed_stats = []
-        team_name = None
-
-        for athlete_item in athletes_data:
-            # Extract basic athlete info
-            player_stat = {
-                'player_id': athlete_item.get('id'),
-                'player_name': athlete_item.get('displayName', 'Unknown'),
-                'jersey': athlete_item.get('jersey'),
-                'position': None,
-                'age': athlete_item.get('age'),
-                'experience': athlete_item.get('experience', {}).get('years')
+        async def _resolve_athlete(item):
+            athlete = item
+            ref = item.get('$ref') if isinstance(item, dict) else None
+            if ref and not (isinstance(item, dict) and item.get('id')):
+                try:
+                    r = await client.get(ref, headers=headers)
+                    r.raise_for_status()
+                    athlete = r.json()
+                except Exception as e:
+                    logger.debug(f"[TeamPlayerStats] athlete ref fetch failed ({ref}): {e}")
+                    return None
+            position_ref = athlete.get('position') or {}
+            pos = position_ref.get('abbreviation', 'N/A') if isinstance(position_ref, dict) else 'N/A'
+            experience = athlete.get('experience')
+            return {
+                'player_id': athlete.get('id'),
+                'player_name': (athlete.get('displayName')
+                                or f"{athlete.get('firstName', '')} {athlete.get('lastName', '')}".strip()
+                                or 'Unknown'),
+                'jersey': athlete.get('jersey'),
+                'position': pos,
+                'age': athlete.get('age'),
+                'experience': experience.get('years') if isinstance(experience, dict) else None,
+                'active': athlete.get('active', True),
+                'fantasy_relevant': pos.upper() in ('QB', 'RB', 'WR', 'TE', 'K', 'DST'),
+                'stats_note': 'Detailed per-game statistics require additional API calls per player',
             }
 
-            # Get position info
-            position_ref = athlete_item.get('position', {})
-            if position_ref and isinstance(position_ref, dict):
-                player_stat['position'] = position_ref.get('abbreviation', 'N/A')
+        sem = asyncio.Semaphore(10)
 
-            # Get team info (should be consistent)
-            if not team_name:
-                team_ref = athlete_item.get('team', {})
-                if team_ref and isinstance(team_ref, dict):
-                    team_name = team_ref.get('displayName', 'Unknown Team')
+        async def _bounded(item):
+            async with sem:
+                return await _resolve_athlete(item)
 
-            # Try to get statistics if available (this may require additional API calls)
-            # For now, we'll include basic info and note that detailed stats may need separate calls
-            player_stat['stats_note'] = 'Detailed statistics require additional API calls per player'
-
-            # Check if player is active
-            player_stat['active'] = athlete_item.get('active', True)
-
-            # Fantasy relevance indicators
-            position = player_stat.get('position', '').upper()
-            if position in ['QB', 'RB', 'WR', 'TE', 'K', 'DST']:
-                player_stat['fantasy_relevant'] = True
-            else:
-                player_stat['fantasy_relevant'] = False
-
-            processed_stats.append(player_stat)
+        resolved = await asyncio.gather(*[_bounded(it) for it in athlete_items])
+        processed_stats = [p for p in resolved if p]
 
         return create_success_response({
             "team_id": team_id.upper(),
-            "team_name": team_name,
+            "team_name": None,
             "season": season,
             "season_type": season_type,
             "player_stats": processed_stats,
@@ -670,10 +667,10 @@ async def get_nfl_standings(season: int | None = 2026, season_type: int | None =
     # ESPN Core API endpoint for NFL standings
     if group is not None and group in [1, 2]:
         # Get specific conference standings
-        url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/groups/{group}/standings"
+        url = f"https://site.api.espn.com/apis/v2/sports/football/nfl/standings?season={season}"
     else:
         # Get all standings
-        url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/standings"
+        url = f"https://site.api.espn.com/apis/v2/sports/football/nfl/standings?season={season}"
 
     async with create_http_client() as client:
         response = await client.get(url, headers=headers)
@@ -682,48 +679,55 @@ async def get_nfl_standings(season: int | None = 2026, season_type: int | None =
         # Parse JSON response
         data = response.json()
 
-        # Extract standings from the response
-        standings_items = data.get('children', []) or data.get('items', [])
+        # The site standings endpoint returns children=conferences, each with
+        # standings.entries = real team rows (the Core API only exposed
+        # standings-TYPE group refs, which produced empty placeholder rows).
+        children = data.get('children') or []
+        if group in (1, 2):
+            want = 'afc' if group == 1 else 'nfc'
+            children = [
+                c for c in children
+                if want in (c.get('abbreviation') or c.get('name') or '').lower()
+            ]
+
+        entries = []
+        for child in children:
+            std = child.get('standings') or {}
+            entries.extend(std.get('entries') or [])
 
         processed_standings = []
+        for entry in entries:
+            team_ref = entry.get('team') or {}
+            team_info = {
+                'team_id': team_ref.get('id'),
+                'team_name': team_ref.get('displayName', 'Unknown'),
+                'abbreviation': team_ref.get('abbreviation', 'UNK'),
+            }
 
-        for standing_item in standings_items:
-            # Try to get team info from the standing entry
-            team_info = {}
-
-            # Extract team reference
-            team_ref = standing_item.get('team', {})
-            if team_ref and isinstance(team_ref, dict):
-                team_info['team_id'] = team_ref.get('id')
-                team_info['team_name'] = team_ref.get('displayName', 'Unknown')
-                team_info['abbreviation'] = team_ref.get('abbreviation', 'UNK')
-
-            # Extract standings statistics
-            stats = standing_item.get('stats', [])
-            for stat in stats:
-                stat_name = stat.get('name', '').lower()
+            for stat in (entry.get('stats') or []):
+                stat_name = (stat.get('name') or '').lower()
                 stat_value = stat.get('value')
-
-                if 'wins' in stat_name or stat_name == 'wins':
+                if stat_name == 'wins':
                     team_info['wins'] = stat_value
-                elif 'losses' in stat_name or stat_name == 'losses':
+                elif stat_name == 'losses':
                     team_info['losses'] = stat_value
-                elif 'ties' in stat_name or stat_name == 'ties':
+                elif stat_name == 'ties':
                     team_info['ties'] = stat_value
-                elif 'winpercent' in stat_name or 'win_percent' in stat_name:
+                elif stat_name == 'winpercent':
                     team_info['win_percentage'] = stat_value
-                elif 'playoffrank' in stat_name or 'playoff' in stat_name:
-                    team_info['playoff_rank'] = stat_value
-                elif 'divisionrank' in stat_name or 'division' in stat_name:
-                    team_info['division_rank'] = stat_value
+                elif stat_name == 'playoffseed':
+                    team_info['playoff_seed'] = stat_value
+                elif stat_name == 'divisionrecord':
+                    team_info['division_record'] = stat.get('displayValue')
 
-            # Calculate fantasy implications
-            wins = team_info.get('wins', 0)
-            losses = team_info.get('losses', 0)
+            # Fantasy implications (only meaningful once games have been played).
+            wins = team_info.get('wins') or 0
+            losses = team_info.get('losses') or 0
             total_games = wins + losses
-
-            # Determine team motivation level for fantasy purposes
-            if wins >= 12 or (total_games >= 14 and wins / total_games > 0.8):
+            if total_games == 0:
+                team_info['fantasy_context'] = 'Season not started — no games played yet'
+                team_info['motivation_level'] = 'Unknown (preseason)'
+            elif wins >= 12 or (total_games >= 14 and wins / total_games > 0.8):
                 team_info['fantasy_context'] = 'May rest starters in late season'
                 team_info['motivation_level'] = 'Low (Playoff lock)'
             elif wins <= 4 or (total_games >= 10 and wins / total_games < 0.3):
@@ -837,7 +841,9 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
     headers = get_http_headers("nfl_teams")  # Reuse existing config
 
     # ESPN Site API endpoint for team schedule
-    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id_upper}/schedule?season={season}"
+    # seasontype=2 => regular season (ESPN otherwise defaults to preseason when
+    # the regular season hasn't started, returning only the 3-game preseason slate).
+    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id_upper}/schedule?season={season}&seasontype=2"
 
     async with create_http_client() as client:
         try:
