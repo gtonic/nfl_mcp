@@ -289,26 +289,26 @@ class DefenseRankingsAnalyzer:
         return name[:3].upper()
 
     def _get_fallback_rankings(self, position: str) -> list[dict]:
-        """
-        Return fallback rankings when API fails.
+        """Neutral fallback rankings when real data is unavailable (e.g. preseason).
 
-        Based on typical NFL defense patterns.
+        Every team is marked *neutral* (same middle rank/tier) rather than ranked
+        1..32 in alphabetical order — otherwise callers would mistake an arbitrary
+        alphabetical ordering for a real ranking. ``is_fallback`` flags each entry.
         """
-        # Generic fallback - all teams at neutral rating
         teams = list(ESPN_TEAM_MAP.values())
-        rankings = []
-
-        for rank, team in enumerate(sorted(teams), 1):
-            rankings.append({
+        neutral_rank = 16
+        tier = _get_matchup_tier(neutral_rank)
+        return [
+            {
                 "team": team,
-                "rank": rank,
-                "points_allowed_avg": 15.0,  # Average fantasy points
-                "matchup_tier": _get_matchup_tier(rank),
-                "tier_indicator": _get_tier_color(_get_matchup_tier(rank)),
-                "is_fallback": True
-            })
-
-        return rankings
+                "rank": neutral_rank,
+                "points_allowed_avg": 15.0,  # neutral placeholder
+                "matchup_tier": tier,
+                "tier_indicator": _get_tier_color(tier),
+                "is_fallback": True,
+            }
+            for team in sorted(teams)
+        ]
 
     def _save_rankings_to_db(self, rankings: dict, season: int) -> None:
         """Persist rankings to database for caching."""
@@ -547,11 +547,28 @@ async def get_defense_rankings(
         filtered = all_rankings
         positions = list(all_rankings.keys())
 
+    # Surface when the rankings are neutral placeholders (no live data yet),
+    # mirroring get_strength_of_schedule so callers don't treat them as real.
+    is_fallback = any(
+        entry.get("is_fallback")
+        for lst in filtered.values()
+        for entry in (lst or [])
+    )
+    if is_fallback:
+        message = (
+            f"⚠️ No live defense data for {season or datetime.now().year} "
+            "(preseason / not published yet) — rankings are neutral placeholders; "
+            "treat matchup grades as low-confidence."
+        )
+    else:
+        message = f"Defense rankings fetched for {len(positions)} positions"
+
     return create_success_response({
         "rankings": filtered,
         "positions": positions,
         "season": season or datetime.now().year,
         "total_teams": 32,
+        "is_fallback": is_fallback,
         "tiers_explained": {
             "elite": "Ranks 1-5: Tough matchup, consider benching",
             "tough": "Ranks 6-12: Above average defense",
@@ -560,7 +577,7 @@ async def get_defense_rankings(
             "smash": "Ranks 28-32: Excellent matchup, must start"
         },
         "usage_tip": "Use matchup tier + usage trends + injury status for start/sit decisions",
-        "message": f"Defense rankings fetched for {len(positions)} positions"
+        "message": message
     })
 
 

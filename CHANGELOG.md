@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Scoring format is now normalized — `half_ppr` no longer silently means full
+  PPR.** `scoring_to_ppr` only recognized `half-ppr` (hyphen); Sleeper's own
+  `half_ppr` (underscore) and other spellings fell through to full PPR (1.0),
+  so a half-PPR league silently got full-PPR values in `get_draft_board`,
+  `get_player_value(s)`, `simulate_draft`, `recommend_draft_pick`, etc. It now
+  normalizes separators/case and accepts `half_ppr`/`halfppr`/`HALF PPR`/`std`/
+  `none`/raw numbers.
+- **`get_defense_rankings` no longer emits a fake ranking in the preseason.** The
+  neutral fallback (used when nflverse data isn't published yet) ranked teams
+  `1..32` in **alphabetical** order and the tool returned it with no fallback
+  flag — so matchup grades looked real but were alphabetical. The fallback is now
+  genuinely neutral (all teams rank 16) and the response carries `is_fallback`
+  plus a ⚠️ low-confidence message, mirroring `get_strength_of_schedule`.
+
+### Added
+- **`get_weather_forecast` now reports `forecast_unavailable`.** Games beyond
+  Open-Meteo's ~16-day horizon were already flagged per-game as
+  `impact.severity="unknown"`; the response now also carries a top-level count
+  (and a message note) so callers planning ahead aren't misled by empty weather
+  fields reading as "calm".
+
 ## [0.7.1] - 2026-08-07
 
 ### Fixed
