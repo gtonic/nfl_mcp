@@ -340,3 +340,36 @@ class TestNflverseRankings:
         an = DefenseRankingsAnalyzer(db=None)
         client = self._Client(self._Resp("", status=404))
         assert await an._fetch_nflverse_rankings(client, 2099) is None
+
+
+class TestDefenseFallback:
+    """Preseason fallback must be neutral and flagged, not fake-alphabetical."""
+
+    def test_fallback_rankings_are_neutral(self):
+        an = DefenseRankingsAnalyzer(db=None)
+        fb = an._get_fallback_rankings("QB")
+        assert len(fb) == 32
+        assert {r["rank"] for r in fb} == {16}          # no 1..32 alphabetical order
+        assert all(r["is_fallback"] for r in fb)
+
+    @pytest.mark.asyncio
+    async def test_get_defense_rankings_flags_fallback(self):
+        an = DefenseRankingsAnalyzer(db=None)
+        fallback = {p: an._get_fallback_rankings(p) for p in ("QB", "RB", "WR", "TE")}
+        fake = MagicMock()
+        fake.fetch_defense_rankings = AsyncMock(return_value=fallback)
+        with patch("nfl_mcp.matchup_tools.get_defense_analyzer", return_value=fake):
+            res = await matchup_tools.get_defense_rankings(season=2026)
+        assert res["success"] is True
+        assert res["is_fallback"] is True
+        assert "No live defense data" in res["message"]
+
+    @pytest.mark.asyncio
+    async def test_real_data_not_flagged(self):
+        real = {"QB": [{"team": "KC", "rank": 1, "is_fallback": False}]}
+        fake = MagicMock()
+        fake.fetch_defense_rankings = AsyncMock(return_value=real)
+        with patch("nfl_mcp.matchup_tools.get_defense_analyzer", return_value=fake):
+            res = await matchup_tools.get_defense_rankings(positions=["QB"], season=2025)
+        assert res["is_fallback"] is False
+        assert "Defense rankings fetched" in res["message"]

@@ -134,3 +134,24 @@ class TestGetWeatherForecast:
         result = await get_weather_forecast(season=2026, week=25)
         assert result["success"] is False
         assert "week must be" in result["error"]
+
+
+class TestForecastUnavailable:
+    """Games beyond the forecast horizon are flagged 'unknown' and counted."""
+
+    @pytest.mark.asyncio
+    async def test_forecast_unavailable_counted(self):
+        rows = [
+            {"team": "GB", "opponent": "CHI", "is_home": 1, "kickoff": "2026-09-13T17:00Z"},
+            {"team": "CHI", "opponent": "GB", "is_home": 0, "kickoff": "2026-09-13T17:00Z"},
+        ]
+        with patch("nfl_mcp.sleeper_tools._fetch_week_schedule",
+                   new=AsyncMock(return_value=rows)), \
+             patch("nfl_mcp.weather_tools._fetch_open_meteo",
+                   new=AsyncMock(return_value=None)):
+            res = await get_weather_forecast(season=2026, week=2)
+        assert res["success"] is True
+        assert res["count"] == 1                       # one home game (GB)
+        assert res["forecast_unavailable"] == 1        # out-of-range -> unknown
+        assert res["games"][0]["impact"]["severity"] == "unknown"
+        assert "no forecast" in res["message"]

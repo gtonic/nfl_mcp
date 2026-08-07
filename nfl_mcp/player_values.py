@@ -46,19 +46,28 @@ _NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 
 def scoring_to_ppr(scoring: str | None) -> float:
-    """Map a scoring label to a PPR value (points per reception)."""
+    """Map a scoring label to a PPR value (points per reception).
+
+    Accepts common spellings and separators so callers can pass e.g. Sleeper's
+    own ``half_ppr`` (underscore) or ``half-ppr`` interchangeably. Recognized:
+    full PPR, half-PPR, and standard/non-PPR, plus a raw number (``"0.5"``).
+    Unrecognized non-numeric input falls back to full PPR (1.0).
+    """
     if scoring is None:
         return 1.0
-    s = str(scoring).strip().lower()
-    if s in ("ppr", "full", "full-ppr", "1", "1.0"):
+    raw = str(scoring).strip()
+    # Normalize separators (underscores/spaces -> hyphen) and case.
+    s = re.sub(r"[\s_]+", "-", raw.lower())
+    if s in ("ppr", "full", "full-ppr", "1-ppr", "1", "1.0"):
         return 1.0
-    if s in ("half", "half-ppr", "halfppr", "0.5", ".5"):
+    if s in ("half", "half-ppr", "halfppr", "half-point", "half-point-ppr",
+             "0.5", ".5", "0.5-ppr", "0.5ppr", "ppr-0.5"):
         return 0.5
-    if s in ("standard", "std", "non-ppr", "0", "0.0"):
+    if s in ("standard", "std", "non-ppr", "nonppr", "no-ppr", "none", "0", "0.0"):
         return 0.0
-    # Allow passing a raw number
+    # Allow passing a raw number like "0.75".
     try:
-        return float(s)
+        return float(raw)
     except ValueError:
         return 1.0
 

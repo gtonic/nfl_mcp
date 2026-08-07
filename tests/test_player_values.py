@@ -136,3 +136,26 @@ class TestTools:
     async def test_get_player_value_requires_arg(self):
         res = await pv.get_player_value(db=_temp_db())
         assert res["success"] is False
+
+
+class TestScoringToPpr:
+    """scoring_to_ppr normalizes spellings/separators.
+
+    Regression for the silent bug where 'half_ppr' (Sleeper's own underscore
+    form) fell through to full PPR (1.0).
+    """
+
+    def test_normalizes_aliases(self):
+        assert pv.scoring_to_ppr("half_ppr") == 0.5   # underscore (Sleeper style)
+        assert pv.scoring_to_ppr("half-ppr") == 0.5
+        assert pv.scoring_to_ppr("HALF PPR") == 0.5
+        assert pv.scoring_to_ppr("halfppr") == 0.5
+        assert pv.scoring_to_ppr("0.5") == 0.5
+        assert pv.scoring_to_ppr("ppr") == 1.0
+        assert pv.scoring_to_ppr("full_ppr") == 1.0
+        assert pv.scoring_to_ppr("std") == 0.0
+        assert pv.scoring_to_ppr("standard") == 0.0
+        assert pv.scoring_to_ppr("none") == 0.0
+        assert pv.scoring_to_ppr("0.75") == 0.75
+        assert pv.scoring_to_ppr(None) == 1.0
+        assert pv.scoring_to_ppr("garbage") == 1.0    # unknown -> full PPR (documented)
