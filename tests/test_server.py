@@ -60,6 +60,39 @@ class TestServerConfiguration:
         assert callable(app.custom_route)
 
 
+class TestPortBinding:
+    """Test the bind pre-flight check that guards against a busy port."""
+
+    def test_port_in_use_detects_listener(self):
+        """A socket we hold open must be reported as in use."""
+        import socket
+
+        from nfl_mcp.server import _port_in_use
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+            srv.bind(("127.0.0.1", 0))
+            # Backlog must exceed the number of probes below: each probe leaves
+            # an unaccepted connection in the queue.
+            srv.listen(8)
+            port = srv.getsockname()[1]
+
+            assert _port_in_use("127.0.0.1", port) is True
+            # 0.0.0.0 must probe loopback rather than report a free port.
+            assert _port_in_use("0.0.0.0", port) is True
+
+    def test_port_in_use_false_when_free(self):
+        """A port with no listener must be reported as free."""
+        import socket
+
+        from nfl_mcp.server import _port_in_use
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        # Socket is closed again, so nothing listens on that port anymore.
+        assert _port_in_use("127.0.0.1", port) is False
+
+
 class TestMultiplicationLogic:
     """Test the multiplication business logic directly."""
 

@@ -562,6 +562,17 @@ def _create_prefetch_lifespan(nfl_db: NFLDatabase):
     return app_lifespan
 
 
+def _port_in_use(host: str, port: int) -> bool:
+    """Check whether ``port`` already has a listener we would collide with."""
+    import socket
+
+    # 0.0.0.0 binds every interface, so probe loopback to detect any listener.
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((probe_host, port)) == 0
+
+
 def main():
     """Main entry point for the server."""
     # --- Fix #1: Explicitly initialize ConfigManager before anything else ---
@@ -599,10 +610,29 @@ def main():
     stateless_http = os.getenv("NFL_MCP_STATELESS_HTTP", "1") == "1"
     mcp_http = app.http_app(path="/mcp", stateless_http=stateless_http)
 
-    # Run with uvicorn
+    # Run with uvicorn. Host/port are configurable so a local run can coexist
+    # with a containerised instance instead of silently losing the bind race:
+    # uvicorn logs the "address already in use" error and exits, which is easy
+    # to miss when the process is backgrounded — so we check the port up front
+    # and fail with an actionable message naming the occupied address.
     import uvicorn
 
-    uvicorn.run(mcp_http, host="0.0.0.0", port=9000)
+    host = os.getenv("NFL_MCP_HOST", "0.0.0.0")
+    try:
+        port = int(os.getenv("NFL_MCP_PORT", "9000"))
+    except ValueError:
+        logger.warning("Invalid NFL_MCP_PORT; falling back to 9000")
+        port = 9000
+
+    if _port_in_use(host, port):
+        raise SystemExit(
+            f"Port {port} on {host} is already in use — another NFL MCP instance "
+            f"(e.g. a Docker container) is likely serving it. Stop it, or set "
+            f"NFL_MCP_PORT to a free port."
+        )
+
+    logger.info(f"Starting NFL MCP Server on {host}:{port}")
+    uvicorn.run(mcp_http, host=host, port=port)
 
 
 if __name__ == "__main__":
