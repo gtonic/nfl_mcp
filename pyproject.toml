@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=83.0.0", "wheel"]
+requires = ["setuptools>=84.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -23,7 +23,7 @@ classifiers = [
 dependencies = [
     "fastmcp>=4.0.0b2",
     "fastapi>=0.141.1",
-    "uvicorn>=0.52.1",
+    "uvicorn>=0.52.3",
     "httpx>=0.28.1,<1",
     "beautifulsoup4>=4.15.0",
     "lxml>=6.1.1",
