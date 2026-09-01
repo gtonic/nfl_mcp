@@ -15,6 +15,19 @@ from .errors import create_success_response, handle_http_errors, handle_validati
 
 logger = logging.getLogger(__name__)
 
+# CBS concatenates the column abbreviation with its full label in one cell,
+# e.g. "attRushing Attempts", "yds/gYards Per Game" or, for kickers,
+# "1-19Field Goals 1-19 Yards" and "50+Field Goals 50+ Yards". The abbreviation
+# alone is not unique ("yds" is both rushing and receiving yards), so keep the
+# descriptive part as the key. Anchored on the following capital so headers that
+# are already plain ("Player", "Team") are left untouched.
+_HEADER_ABBREV_PREFIX = re.compile(r'^[a-z0-9][a-z0-9/%.+-]*(?=[A-Z])')
+
+
+def _clean_header(text: str) -> str:
+    """Strip CBS's leading column abbreviation from a header label."""
+    return _HEADER_ABBREV_PREFIX.sub('', text).strip() or text
+
 
 @handle_http_errors(
     default_data={"news": [], "total_news": 0},
@@ -148,11 +161,20 @@ async def get_cbs_projections(
         season: Season year (default: 2026)
         scoring: Scoring format - ppr, half-ppr, standard (default: ppr)
 
+    Note:
+        CBS only publishes *season-long* projections at this endpoint — the week
+        segment in the URL is ignored server-side (week 1, week 2 and
+        "restofseason" all return identical full-season numbers). The returned
+        values are therefore labelled ``period: "season"``; do not read them as
+        single-week projections.
+
     Returns:
         A dictionary containing:
-        - projections: List of player projections with stats
+        - projections: List of player projections with stats (season totals)
         - total_projections: Number of projections returned
-        - week: Week number
+        - week: Week number that was requested (echoed back, not honoured by CBS)
+        - period: Always "season" — the granularity of the returned numbers
+        - week_honoured: Always False, see Note above
         - position: Position filtered
         - success: Whether the request was successful
         - error: Error message (if any)
@@ -207,15 +229,31 @@ async def get_cbs_projections(
         # Extract projection data
         processed_projections = []
 
-        # Look for stats table - common in sports sites
-        table = soup.find('table', class_=re.compile(r'stats|data|projections', re.I))
+        # Look for stats table. CBS renders it as <table class="TableBase-table">;
+        # older markup used stats/data/projections classes. Fall back to the only
+        # table on the page so a further rename degrades to "wrong table" rather
+        # than a silent empty result.
+        table = soup.find(
+            'table',
+            class_=re.compile(r'stats|data|projections|TableBase', re.I)
+        )
+        if table is None:
+            table = soup.find('table')
 
         if table:
-            # Find header row to map column names
+            # Map column names from the header row. CBS uses a two-row thead:
+            # the first row holds group spans (Rushing/Receiving/Misc), the
+            # second the actual per-column labels. Only the last row lines up
+            # with the body cells, so flattening both would misname every value.
             header_row = table.find('thead')
             headers_list = []
             if header_row:
-                headers_list = [th.get_text(strip=True) for th in header_row.find_all(['th', 'td'])]
+                header_rows = header_row.find_all('tr')
+                cells_source = header_rows[-1] if header_rows else header_row
+                headers_list = [
+                    _clean_header(th.get_text(strip=True))
+                    for th in cells_source.find_all(['th', 'td'])
+                ]
 
             # Find data rows
             tbody = table.find('tbody')
@@ -227,9 +265,15 @@ async def get_cbs_projections(
                     if len(cells) >= 2:
                         projection = {}
 
-                        # First cell usually contains player info
+                        # First cell holds the player (or, for DST, the team).
+                        # It may lead with a text-less logo anchor, so take the
+                        # first anchor that actually carries a label — keying off
+                        # find('a') alone drops every DST row.
                         player_cell = cells[0]
-                        player_link = player_cell.find('a')
+                        player_link = next(
+                            (a for a in player_cell.find_all('a') if a.get_text(strip=True)),
+                            None
+                        )
                         if player_link:
                             projection['player_name'] = player_link.get_text(strip=True)
                             projection['player_url'] = player_link.get('href')
@@ -253,14 +297,30 @@ async def get_cbs_projections(
                         if projection.get('player_name'):
                             processed_projections.append(projection)
 
+        if not processed_projections:
+            logger.warning(
+                "[CBS] No projections parsed for %s %s week %s — CBS markup may "
+                "have changed again (table found: %s)",
+                season, position, week, table is not None
+            )
+
         return create_success_response({
             "projections": processed_projections,
             "total_projections": len(processed_projections),
             "week": week,
+            # CBS serves identical season-long numbers for every week segment,
+            # so be explicit that these are not single-week projections.
+            "period": "season",
+            "week_honoured": False,
             "position": position,
             "season": season,
             "scoring": scoring,
-            "source": "CBS Sports Fantasy Football"
+            "source": "CBS Sports Fantasy Football",
+            "note": (
+                "CBS publishes season-long projections only; the requested week "
+                f"({week}) is not honoured by the source. Values are {season} "
+                "full-season totals, not week-level projections."
+            )
         })
 
 

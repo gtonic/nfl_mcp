@@ -351,14 +351,20 @@ async def get_cbs_projections(
     season: int | None = 2026,
     scoring: str = "ppr"
 ) -> dict:
-    """Fetch fantasy football projections from CBS Sports for a specific position and week.
+    """Fetch SEASON-LONG fantasy football projections from CBS Sports for a position.
+
+    CBS only publishes season-long projections: the week is validated and echoed
+    back, but the source returns identical full-season numbers for every week.
+    Results carry period="season" and week_honoured=False. Do NOT use these as
+    week-level projections; use project_player/project_players for that.
 
     Parameters:
         position (str, default "QB"): Player position (QB, RB, WR, TE, K, DST).
-        week (int, required): NFL week number (1-18).
+        week (int, required): NFL week number (1-18). Validated, not honoured.
         season (int, default 2026): Season year.
         scoring (str, default "ppr"): Scoring format (ppr, half-ppr, standard).
-    Returns: {projections: [...], total_projections, week, position, success, error?}
+    Returns: {projections: [...], total_projections, week, period, week_honoured,
+        position, success, error?}
     Example: get_cbs_projections(position="RB", week=11, season=2026, scoring="ppr")
     """
     try:

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`get_cbs_projections` returned zero projections for every position.** Three
+  compounding breaks, all reproduced against the live CBS page (the projections
+  sibling of the 0.7.6 `get_cbs_expert_picks` rewrite):
+  - The table selector matched `stats|data|projections`, but CBS renders the
+    grid as `TableBase-table` — so no table was ever found and the tool reported
+    `success: true` with an empty list. Now matches `TableBase` and falls back to
+    the page's only table, so a further rename degrades visibly instead of
+    silently.
+  - CBS uses a **two-row `thead`** (group spans `Rushing`/`Receiving`/`Misc`
+    above the real column labels). Flattening both misaligned every column, so
+    values would have been labelled `Rushing` instead of `Games Played`. Only
+    the last header row is used now, with CBS's concatenated abbreviation
+    stripped (`ydsRushing Yards` → `Rushing Yards`, keeping rushing and
+    receiving yards distinct).
+  - The first body cell leads with a **text-less logo anchor**, so `find('a')`
+    yielded an empty name and every row was dropped — this alone silently
+    discarded all 32 DST rows. The first *labelled* anchor is used now.
+
+  Live result: RB 100, QB 69, WR 100, TE 100, K 33, DST 32.
+
+### Changed
+- **`get_cbs_projections` now labels its granularity honestly.** CBS serves
+  identical full-season numbers for `/1/`, `/2/` and `/restofseason/` — the week
+  segment is ignored server-side. The payload carries `period: "season"`,
+  `week_honoured: false` and an explanatory `note`; `week` is still validated
+  and echoed back. Season totals must not be read as week-level projections.
+
 ## [0.7.6] - 2026-08-07
 
 ### Fixed

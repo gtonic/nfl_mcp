@@ -155,6 +155,104 @@ class TestGetCBSProjections:
             assert result["scoring"] == "ppr"
 
     @pytest.mark.asyncio
+    async def test_parses_live_cbs_markup(self):
+        """Regression: parse CBS's actual markup shape.
+
+        Pins the three things that silently produced zero projections against
+        the live site: the table class is ``TableBase-table`` (no
+        stats/data/projections in it), ``thead`` has a group-header row above
+        the real column row, and the first body cell leads with a text-less
+        logo anchor (as on the DST page).
+        """
+        mock_html = """
+        <html><body>
+            <table class="TableBase-table">
+                <thead>
+                    <tr><th></th><th>Rushing</th><th>Misc</th></tr>
+                    <tr>
+                        <th>Player</th>
+                        <th>gpGames Played</th>
+                        <th>ydsRushing Yards</th>
+                        <th>fptsFantasy Points</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            <a href="/nfl/teams/DEN/denver-broncos/"></a>
+                            <a href="/nfl/players/1/jahmyr-gibbs/">J. Gibbs</a>
+                        </td>
+                        <td>17</td>
+                        <td>1353</td>
+                        <td>296.5</td>
+                    </tr>
+                </tbody>
+            </table>
+        </body></html>
+        """
+
+        with patch('nfl_mcp.cbs_fantasy_tools.create_http_client') as mock_client_creator:
+            mock_client = AsyncMock()
+            mock_response = Mock()
+            mock_response.text = mock_html
+            mock_response.raise_for_status = Mock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_creator.return_value = mock_client
+
+            result = await cbs_fantasy_tools.get_cbs_projections(
+                position="RB", week=1, season=2026
+            )
+
+        assert result["success"] is True
+        assert result["total_projections"] == 1
+
+        row = result["projections"][0]
+        # The logo anchor must not win over the labelled one.
+        assert row["player_name"] == "J. Gibbs"
+        assert row["player_url"] == "/nfl/players/1/jahmyr-gibbs/"
+        # Columns map to the *second* thead row, with abbreviations stripped.
+        assert row["Games Played"] == 17
+        assert row["Rushing Yards"] == 1353
+        assert row["Fantasy Points"] == 296.5
+        assert "Rushing" not in row  # group header must not become a column
+
+    @pytest.mark.asyncio
+    async def test_reports_season_granularity(self):
+        """CBS ignores the week segment, so the payload must say so."""
+        with patch('nfl_mcp.cbs_fantasy_tools.create_http_client') as mock_client_creator:
+            mock_client = AsyncMock()
+            mock_response = Mock()
+            mock_response.text = "<html><body></body></html>"
+            mock_response.raise_for_status = Mock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_creator.return_value = mock_client
+
+            result = await cbs_fantasy_tools.get_cbs_projections(
+                position="RB", week=1, season=2026
+            )
+
+        assert result["period"] == "season"
+        assert result["week_honoured"] is False
+        assert result["week"] == 1
+
+    @pytest.mark.asyncio
+    async def test_header_abbreviation_stripping(self):
+        """Duplicate abbreviations must not collide into one key."""
+        assert cbs_fantasy_tools._clean_header("ydsRushing Yards") == "Rushing Yards"
+        assert cbs_fantasy_tools._clean_header("ydsReceiving Yards") == "Receiving Yards"
+        assert cbs_fantasy_tools._clean_header("yds/gYards Per Game") == "Yards Per Game"
+        assert cbs_fantasy_tools._clean_header("1-19Field Goals 1-19 Yards") == "Field Goals 1-19 Yards"
+        assert cbs_fantasy_tools._clean_header("50+Field Goals 50+ Yards") == "Field Goals 50+ Yards"
+        # Already-plain headers are untouched.
+        assert cbs_fantasy_tools._clean_header("Player") == "Player"
+        assert cbs_fantasy_tools._clean_header("Team") == "Team"
+        assert cbs_fantasy_tools._clean_header("gp") == "gp"
+
+    @pytest.mark.asyncio
     async def test_missing_week_parameter(self):
         """Test that week parameter is required."""
         result = await cbs_fantasy_tools.get_cbs_projections(position="QB")
