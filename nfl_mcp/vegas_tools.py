@@ -266,15 +266,43 @@ class VegasLinesAnalyzer:
 
         return team
 
-    async def fetch_current_lines(self) -> dict[str, dict]:
+    @staticmethod
+    def _has_kicked_off(commence_time: str, now: datetime | None = None) -> bool:
+        """Whether a game's kickoff is already in the past.
+
+        Once a game starts the sportsbook switches to in-play pricing, where the
+        total reflects points *already scored* plus the remainder. Such a line is
+        not comparable to a pre-game one — during Week 1 a live CHI@CAR showed a
+        total of 79.5 and BAL@IND a spread of 17.6 — so ranking or tiering on it
+        produces nonsense. Unparseable timestamps are treated as not-started so a
+        format change degrades to the previous behaviour rather than silently
+        dropping every game.
+        """
+        if not commence_time:
+            return False
+        try:
+            kickoff = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return False
+        if kickoff.tzinfo is None:
+            kickoff = kickoff.replace(tzinfo=UTC)
+        return kickoff < (now or datetime.now(UTC))
+
+    async def fetch_current_lines(self, include_live: bool = False) -> dict[str, dict]:
         """
         Fetch current NFL lines from The Odds API.
+
+        Args:
+            include_live: Keep games that have already kicked off. Off by
+                default because in-play lines are not comparable to pre-game
+                ones; excluded games fall through to the neutral
+                ``is_fallback`` defaults in :meth:`get_game_lines`.
 
         Returns:
             Dict mapping game keys to line data
         """
         # Check cache
-        if self._cache_time and self._lines_cache:
+        if self._cache_time and self._lines_cache and not include_live:
             age = datetime.now(UTC) - self._cache_time
             if age < timedelta(hours=self.CACHE_TTL_HOURS):
                 logger.debug("Using cached Vegas lines")
@@ -312,12 +340,18 @@ class VegasLinesAnalyzer:
                 logger.info(f"Odds API: {remaining} requests remaining this month")
 
                 lines = {}
+                skipped_live = 0
                 for game in games:
                     home_team = self._get_team_abbrev(game.get("home_team", ""))
                     away_team = self._get_team_abbrev(game.get("away_team", ""))
                     commence_time = game.get("commence_time", "")
 
                     if not home_team or not away_team:
+                        continue
+
+                    is_live = self._has_kicked_off(commence_time)
+                    if is_live and not include_live:
+                        skipped_live += 1
                         continue
 
                     # Parse bookmaker odds - use consensus (average of major books)
@@ -363,6 +397,7 @@ class VegasLinesAnalyzer:
                         "away_implied_total": away_implied,
                         "home_is_favorite": home_is_favorite,
                         "commence_time": commence_time,
+                        "is_live": is_live,
                         "game_environment": get_game_environment_tier(total),
                         "home_game_script": get_game_script_projection(home_spread),
                         "away_game_script": get_game_script_projection(-home_spread),
@@ -373,10 +408,20 @@ class VegasLinesAnalyzer:
                     lines[home_team] = lines[game_key]
                     lines[away_team] = lines[game_key]
 
-                self._lines_cache = lines
-                self._cache_time = datetime.now(UTC)
+                # Only the pre-game view is cached; an include_live result is
+                # valid for seconds, not the 2h TTL, so it must not poison it.
+                if not include_live:
+                    self._lines_cache = lines
+                    self._cache_time = datetime.now(UTC)
 
-                logger.info(f"Fetched Vegas lines for {len(games)} NFL games")
+                if skipped_live:
+                    logger.info(
+                        f"Skipped {skipped_live} in-progress game(s) — in-play "
+                        f"lines are not comparable to pre-game ones"
+                    )
+                logger.info(
+                    f"Fetched Vegas lines for {len(games) - skipped_live}/{len(games)} NFL games"
+                )
                 return lines
 
         except httpx.HTTPError as e:

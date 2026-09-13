@@ -7,7 +7,53 @@ Tests the basic server functionality and tool logic including URL crawling.
 
 import pytest
 
-from nfl_mcp.server import create_app
+from nfl_mcp.server import _load_dotenv, create_app
+
+
+class TestLoadDotenv:
+    """Test the dependency-free .env loader."""
+
+    def test_loads_values(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SOME_KEY", raising=False)
+        env = tmp_path / ".env"
+        env.write_text("SOME_KEY=some_value\n")
+
+        assert _load_dotenv(env) == 1
+        import os
+        assert os.environ["SOME_KEY"] == "some_value"
+
+    def test_existing_env_wins(self, tmp_path, monkeypatch):
+        """A real environment variable must never be clobbered by .env."""
+        monkeypatch.setenv("SOME_KEY", "from_environment")
+        env = tmp_path / ".env"
+        env.write_text("SOME_KEY=from_dotenv\n")
+
+        assert _load_dotenv(env) == 0
+        import os
+        assert os.environ["SOME_KEY"] == "from_environment"
+
+    def test_skips_comments_blanks_and_malformed(self, tmp_path, monkeypatch):
+        for key in ("A_KEY", "B_KEY", "C_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        env = tmp_path / ".env"
+        env.write_text(
+            "# a comment\n"
+            "\n"
+            "   \n"
+            "no_equals_sign\n"
+            "A_KEY=plain\n"
+            'B_KEY="double quoted"\n'
+            "export C_KEY='single quoted'\n"
+        )
+
+        assert _load_dotenv(env) == 3
+        import os
+        assert os.environ["A_KEY"] == "plain"
+        assert os.environ["B_KEY"] == "double quoted"
+        assert os.environ["C_KEY"] == "single quoted"
+
+    def test_missing_file_is_not_an_error(self, tmp_path):
+        assert _load_dotenv(tmp_path / "does-not-exist.env") == 0
 
 
 class TestServerCreation:
