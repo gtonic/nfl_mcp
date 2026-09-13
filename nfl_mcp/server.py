@@ -24,6 +24,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastmcp import FastMCP
 
@@ -31,6 +32,47 @@ from . import tool_registry
 from .config_manager import get_config_manager
 from .database import NFLDatabase
 from .health import health_check as _health_check
+
+
+def _load_dotenv(path: Path | None = None) -> int:
+    """Populate ``os.environ`` from a ``.env`` file next to the repo root.
+
+    Secrets such as ``ODDS_API_KEY`` live in a gitignored ``.env`` so a local
+    run picks them up without exporting anything by hand. Deliberately
+    dependency-free and non-destructive: a variable already present in the real
+    environment always wins, so container/CI values are never clobbered.
+
+    Returns the number of variables newly set.
+    """
+    env_path = path or Path(__file__).resolve().parent.parent / ".env"
+    try:
+        raw = env_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return 0
+
+    loaded = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded += 1
+    return loaded
+
+
+# Must run before any module-level ``os.getenv`` below so a .env-provided
+# LOG_LEVEL / prefetch setting takes effect on the very first import.
+_DOTENV_LOADED = _load_dotenv()
 
 # Configure logging with INFO level by default
 LOG_LEVEL = os.getenv("NFL_MCP_LOG_LEVEL", "INFO").upper()
@@ -41,6 +83,9 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+if _DOTENV_LOADED:
+    logger.info(f"Loaded {_DOTENV_LOADED} variable(s) from .env")
 
 # Load prefetch config once from environment (prefetch is separate from general config)
 PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
