@@ -7,7 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-09-13
+
+### Added
+- **Draft picks are now priced on injury, playoff schedule and handcuff status**
+  (`recommend_draft_pick`). Ranking was purely positional, so a player on IR and
+  a healthy one at the same ADP were indistinguishable on the clock. Four
+  signals feed the valuation: injury multipliers for statuses that actually cost
+  games (Out `.35`, IR `.30`, PUP `.45`, Suspended `.50`, Doubtful `.65`), a
+  playoff-ease tilt that breaks ties on the week 15–17 schedule, a handcuff
+  index flagging the backup to a RB already rostered, and unrankable-gap
+  detection for positions with no viable target left before the next pick.
+
+  `Questionable` deliberately scores `1.0`. In this feed it is a news channel,
+  not a severity grade: a live preseason board tagged Mahomes ("on track to
+  start Week 1"), Kraft ("expected to be full go"), Jeanty and a planned
+  McCaffrey rest day all at identical `severity 2` / `confidence 65`, two of
+  them mislabelled `Knee - ACL`. Discounting on that would push first-round
+  talent down the board for nothing, so the note is surfaced to the drafter
+  instead. Name matching normalises accents, suffixes and punctuation because
+  the injury feed keys on ESPN ids while the value layer keys on Sleeper ids.
+- **`.env` is loaded automatically** so `ODDS_API_KEY` no longer has to be
+  exported by hand. Without it a local run silently fell back to a
+  positional-rank prior with no game script at all (`vegas_active: false`).
+  The loader is dependency-free, runs before the module-level `getenv` calls,
+  resolves relative to the repo root rather than the cwd, and **never
+  overwrites an already-set variable** — container and CI values still win.
+  `.env.example` documents the variables; `.env` stays gitignored.
+
 ### Fixed
+- **Vegas tools treated in-play lines as forecasts.** A sportsbook switches to
+  in-play pricing at kickoff, where the total includes points *already on the
+  board*. Week 1 surfaced a live CHI@CAR at a total of **79.5** and BAL@IND at a
+  spread of **17.6**, and `get_stack_opportunities` duly ranked those halftime
+  scores as the week's best shootouts. `fetch_current_lines` now skips started
+  games by default; `include_live=True` keeps them, flagged with `is_live`.
+  Excluded teams fall through to the existing neutral `is_fallback` defaults, so
+  a live game reads as "no usable line" instead of a bogus total. An
+  `include_live` result bypasses the cache in both directions — an in-play
+  snapshot is valid for seconds, not the 2h TTL. Unparseable timestamps count as
+  not-started so an upstream format change degrades to the previous behaviour
+  rather than silently dropping every game.
+- **Server host/port are configurable and a busy port fails loudly**
+  (`NFL_MCP_HOST` / `NFL_MCP_PORT`). A local run alongside a containerised
+  instance silently lost the bind race; the port is now probed up front and the
+  process exits with a message naming the occupied address.
 - **`get_cbs_projections` returned zero projections for every position.** Three
   compounding breaks, all reproduced against the live CBS page (the projections
   sibling of the 0.7.6 `get_cbs_expert_picks` rewrite):
