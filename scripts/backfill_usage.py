@@ -21,8 +21,8 @@ import os
 # Both fetchers are gated on this flag at import time.
 os.environ.setdefault("NFL_MCP_ADVANCED_ENRICH", "1")
 
-from nfl_mcp import sleeper_enrichment as se  # noqa: E402
-from nfl_mcp.database import NFLDatabase  # noqa: E402
+from nfl_mcp import sleeper_enrichment as se
+from nfl_mcp.database import NFLDatabase
 
 se.ADVANCED_ENRICH_ENABLED = True
 

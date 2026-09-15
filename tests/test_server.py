@@ -1370,8 +1370,11 @@ class TestAthletesRefresh:
         from nfl_mcp import server, sleeper_tools
 
         # Enable the prefetch startup path without touching the environment.
+        # Patch the flag on its defining module: `sleeper_tools` only re-exports
+        # a copy of the boolean, and `advanced_enrich_enabled()` resolves against
+        # `sleeper_enrichment`.
         monkeypatch.setattr(server, "PREFETCH_ENABLED", True)
-        monkeypatch.setattr(sleeper_tools, "ADVANCED_ENRICH_ENABLED", True)
+        monkeypatch.setattr("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", True)
         # Reset (and auto-restore) the task globals the lifespan mutates.
         monkeypatch.setattr(server, "_prefetch_task", None)
         monkeypatch.setattr(server, "_shutdown_event", None)
