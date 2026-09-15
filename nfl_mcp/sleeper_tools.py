@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 # keep working unchanged after the split.
 from .sleeper_enrichment import (  # noqa: F401
     ADVANCED_ENRICH_ENABLED,
-    advanced_enrich_enabled,
     _calculate_usage_trend,
     _enrich_usage_and_opponent,
     _estimate_snap_pct,
@@ -45,6 +44,7 @@ from .sleeper_enrichment import (  # noqa: F401
     _fetch_week_player_snaps,
     _fetch_week_schedule,
     _fetch_weekly_usage_stats,
+    advanced_enrich_enabled,
 )
 
 
