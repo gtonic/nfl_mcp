@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 
 # Import the new configuration manager
-from .config_manager import get_config_manager
+from .config_manager import PROJECT_URL, get_config_manager
 
 # Rate limiting storage (in production, use Redis or similar)
 _rate_limit_storage = defaultdict(lambda: deque())
@@ -264,7 +264,7 @@ def _get_base_user_agent():
     try:
         return get_config_manager().config.server.base_user_agent
     except Exception:
-        return f"NFL-MCP-Server/{_get_server_version()}"
+        return f"NFL-MCP-Server/{_get_server_version()} (+{PROJECT_URL})"
 
 SERVER_VERSION = _get_server_version()
 BASE_USER_AGENT = _get_base_user_agent()
@@ -293,7 +293,7 @@ def _get_user_agents():
         }
     except Exception:
         # Fallback to hardcoded values
-        base_agent = f"NFL-MCP-Server/{_get_server_version()}"
+        base_agent = f"NFL-MCP-Server/{_get_server_version()} (+{PROJECT_URL})"
         return {
             "nfl_news": f"{base_agent} (NFL News Fetcher)",
             "nfl_teams": f"{base_agent} (NFL Teams Fetcher)",

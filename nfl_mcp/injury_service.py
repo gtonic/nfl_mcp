@@ -447,17 +447,35 @@ class InjuryAggregator:
             raw_status = status_data if isinstance(status_data, str) else status_data.get("description", "Unknown")
             normalized_status = self.normalize_status(raw_status)
 
+            # ESPN is a single source, but its status IS the confidence signal:
+            # a definitive "Out"/IR/Doubtful is far more certain than
+            # "Questionable" (which in turn beats a plain "Active" listing). A
+            # flat 60 made get_high_confidence_injuries(min_confidence=70) always
+            # empty, so grade confidence by status certainty instead.
+            _s = (normalized_status or "").lower()
+            if any(k in _s for k in ("out", "injured reserve", "reserve", "doubtful", "suspend")):
+                _confidence = 90
+            elif "questionable" in _s:
+                _confidence = 65
+            elif any(k in _s for k in ("probable", "active", "day", "limited")):
+                _confidence = 55
+            else:
+                _confidence = 50
+
             return InjuryReport(
                 player_id=str(player_id),
                 player_name=player_name,
                 team_id="",  # Will be set by caller
                 position=None,  # Not available in injury endpoint
                 injury_status=normalized_status,
-                injury_type=type_data.get("name") if isinstance(type_data, dict) else None,
+                # Prefer the body part; fall back to the human-readable status
+                # description ("active") — never the raw enum ("INJURY_STATUS_ACTIVE").
+                injury_type=((data.get("details") or {}).get("type")
+                             or (type_data.get("description") if isinstance(type_data, dict) else None)),
                 injury_description=data.get("shortComment") or data.get("longComment"),
                 game_status=None,
                 severity=self.get_severity(normalized_status),
-                confidence=60,  # Single source baseline
+                confidence=_confidence,
                 sources=["ESPN"],
                 date_reported=data.get("date"),
             )

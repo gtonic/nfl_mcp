@@ -1,4 +1,5 @@
 """Tests for vegas_tools module."""
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -12,6 +13,32 @@ from nfl_mcp.vegas_tools import (
     get_game_environment_tier,
     get_game_script_projection,
 )
+
+
+class TestHasKickedOff:
+    """Kickoff detection decides whether a line is pre-game or in-play."""
+
+    NOW = datetime(2026, 9, 13, 18, 0, tzinfo=UTC)
+
+    def test_past_kickoff_is_live(self):
+        assert VegasLinesAnalyzer._has_kicked_off("2026-09-13T17:00:00Z", self.NOW) is True
+
+    def test_future_kickoff_is_not_live(self):
+        assert VegasLinesAnalyzer._has_kicked_off("2026-09-13T20:25:00Z", self.NOW) is False
+
+    def test_naive_timestamp_is_treated_as_utc(self):
+        assert VegasLinesAnalyzer._has_kicked_off("2026-09-13T17:00:00", self.NOW) is True
+
+    @pytest.mark.parametrize("value", ["", None, "not-a-timestamp", "2026-13-45"])
+    def test_unparseable_degrades_to_not_started(self, value):
+        """A format change must not silently drop every game."""
+        assert VegasLinesAnalyzer._has_kicked_off(value, self.NOW) is False
+
+    def test_uses_wallclock_when_now_omitted(self):
+        past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        assert VegasLinesAnalyzer._has_kicked_off(past) is True
+        assert VegasLinesAnalyzer._has_kicked_off(future) is False
 
 
 class TestVegasHonesty:
@@ -147,16 +174,137 @@ class TestGetGameScriptProjection:
         assert "competitive" in result["description"].lower()
 
 
+def _odds_payload(commence_time: str, home: str, away: str, spread: float, total: float) -> dict:
+    """One game in The Odds API's response shape."""
+    return {
+        "home_team": home,
+        "away_team": away,
+        "commence_time": commence_time,
+        "bookmakers": [{
+            "markets": [
+                {"key": "spreads", "outcomes": [
+                    {"name": home, "point": spread},
+                    {"name": away, "point": -spread},
+                ]},
+                {"key": "totals", "outcomes": [{"name": "Over", "point": total}]},
+            ]
+        }],
+    }
+
+
+class _FakeResponse:
+    status_code = 200
+    headers: dict = {}
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        return None
+
+
+class _FakeClient:
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, *args, **kwargs):
+        return _FakeResponse(self._payload)
+
+
+class TestInPlayFiltering:
+    """In-play lines include points already scored and must not be ranked."""
+
+    def _analyzer_with(self, payload):
+        analyzer = VegasLinesAnalyzer(api_key="test_key")
+        return analyzer, patch(
+            "nfl_mcp.vegas_tools.httpx.AsyncClient",
+            lambda *a, **k: _FakeClient(payload),
+        )
+
+    @pytest.fixture
+    def payload(self):
+        past = (datetime.now(UTC) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        future = (datetime.now(UTC) + timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+        return [
+            # Live game with an absurd in-play total, as seen in Week 1.
+            _odds_payload(past, "Carolina Panthers", "Chicago Bears", 6.5, 79.5),
+            _odds_payload(future, "Los Angeles Chargers", "Arizona Cardinals", -9.5, 47.5),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_live_game_excluded_by_default(self, payload):
+        analyzer, mock = self._analyzer_with(payload)
+        with mock:
+            lines = await analyzer.fetch_current_lines()
+
+        assert "LAC" in lines
+        assert "CHI" not in lines and "CAR" not in lines
+        assert all(g["total"] == 47.5 for g in lines.values())
+
+    @pytest.mark.asyncio
+    async def test_include_live_keeps_game_and_flags_it(self, payload):
+        analyzer, mock = self._analyzer_with(payload)
+        with mock:
+            lines = await analyzer.fetch_current_lines(include_live=True)
+
+        assert lines["CHI"]["is_live"] is True
+        assert lines["LAC"]["is_live"] is False
+
+    @pytest.mark.asyncio
+    async def test_include_live_does_not_poison_the_cache(self, payload):
+        """An in-play snapshot is valid for seconds, not the 2h TTL."""
+        analyzer, mock = self._analyzer_with(payload)
+        with mock:
+            await analyzer.fetch_current_lines(include_live=True)
+            assert analyzer._cache_time is None
+
+            await analyzer.fetch_current_lines()
+            assert analyzer._cache_time is not None
+            assert "CHI" not in analyzer._lines_cache
+
+    @pytest.mark.asyncio
+    async def test_excluded_team_falls_back_to_neutral(self, payload):
+        """A live team must surface as is_fallback, not as a bogus 79.5 total."""
+        analyzer, mock = self._analyzer_with(payload)
+        with mock:
+            lines = await analyzer.fetch_current_lines()
+
+        chi = analyzer.get_game_lines("CHI", lines)
+        assert chi["is_fallback"] is True
+        assert chi["total"] == 45.0
+
+
 class TestVegasLinesAnalyzer:
     """Test VegasLinesAnalyzer class."""
 
-    def test_init_with_default_api_key(self):
-        """Test initialization with default API key."""
-        analyzer = VegasLinesAnalyzer()
-        assert analyzer.api_key is None  # No env var set
+    def test_init_without_env_key(self, monkeypatch):
+        """Falls back to no key when ODDS_API_KEY is absent from the env.
 
-    def test_init_with_custom_api_key(self):
-        """Test initialization with custom API key."""
+        Explicitly cleared rather than assumed: a developer .env or a CI secret
+        would otherwise make this pass or fail depending on the machine.
+        """
+        monkeypatch.delenv("ODDS_API_KEY", raising=False)
+        analyzer = VegasLinesAnalyzer()
+        assert analyzer.api_key is None
+
+    def test_init_picks_up_env_key(self, monkeypatch):
+        """Reads ODDS_API_KEY from the environment when no key is passed."""
+        monkeypatch.setenv("ODDS_API_KEY", "env_key")
+        analyzer = VegasLinesAnalyzer()
+        assert analyzer.api_key == "env_key"
+
+    def test_init_with_custom_api_key(self, monkeypatch):
+        """An explicit key argument wins over the environment."""
+        monkeypatch.setenv("ODDS_API_KEY", "env_key")
         analyzer = VegasLinesAnalyzer(api_key="test_key")
         assert analyzer.api_key == "test_key"
 

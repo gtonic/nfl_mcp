@@ -273,13 +273,25 @@ async def get_weather_forecast(
 
     games.sort(key=lambda e: severity_order.get(e["impact"].get("severity"), 4))
 
+    # Surface how many games have no forecast yet (dates beyond Open-Meteo's
+    # ~16-day horizon show severity "unknown", not calm) so callers planning
+    # ahead aren't misled by empty weather fields.
+    unavailable = sum(1 for e in games if e["impact"].get("severity") == "unknown")
+    msg = (
+        f"Weather forecast for {len(games)} game(s) in week {week} of {season}, "
+        "worst-weather-first. Wind >=15 mph fades passing; kickers are hit hardest."
+    )
+    if unavailable:
+        msg += (
+            f" ⚠️ {unavailable} game(s) have no forecast yet (beyond the ~16-day "
+            "horizon or fetch failed) — reported as severity 'unknown', not calm."
+        )
+
     return create_success_response({
         "season": season,
         "week": week,
         "games": games,
         "count": len(games),
-        "message": (
-            f"Weather forecast for {len(games)} game(s) in week {week} of {season}, "
-            "worst-weather-first. Wind >=15 mph fades passing; kickers are hit hardest."
-        ),
+        "forecast_unavailable": unavailable,
+        "message": msg,
     })

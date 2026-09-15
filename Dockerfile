@@ -36,7 +36,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install pinned, reproducible dependencies. requirements.lock is generated via:
-#   uv pip compile requirements.txt --python-version 3.13 --output-file requirements.lock
+#   uv pip compile requirements.txt --python-version 3.13 --prerelease=allow --output-file requirements.lock
+# (--prerelease=allow is required while FastMCP 4 is a beta: fastmcp==4.0.0b1 pins
+#  a pre-release fastmcp-slim. The httpx<1 / pydantic<2.14 bounds in
+#  requirements.txt keep uv from resolving their dev/alpha releases under that
+#  flag. Plain `pip install -r requirements.lock` below needs no --pre — exact
+#  pins of a pre-release are always honored.)
 COPY requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock
 

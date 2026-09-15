@@ -215,7 +215,12 @@ async def recommend_faab_bid(
         "is_faab_league": is_faab,
         "total_budget": total_budget if is_faab else None,
         "remaining_budget": remaining_budget,
-        "message": (f"Bid ~{bid_pct}% "
-                    + (f"(${bid_absolute} of {total_budget}) " if bid_absolute is not None else "")
-                    + f"on {target.get('name')} [{tier}]"),
+        "message": (
+            (f"Bid ~{bid_pct}% "
+             + (f"(${bid_absolute} of {total_budget}) " if bid_absolute is not None else "")
+             + f"on {target.get('name')} [{tier}]")
+            if is_faab else
+            (f"Non-FAAB league — use a high waiver-priority claim on {target.get('name')} "
+             f"[{tier}] (value {int(target_value)}); the bid_pct below is only a priority heuristic.")
+        ),
     })

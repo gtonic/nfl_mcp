@@ -8,6 +8,331 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`injury_history` is now written, and readable through `get_injury_trends`.**
+  The table and its `add_injury_history()` / `get_injury_history()` helpers had
+  shipped in migration v11 but nothing ever called the writer: 0 rows against
+  2621 in `player_injuries`. `upsert_injuries` now records a row on a player's
+  first sighting and on every later status or body-part change — **only** on a
+  change, because the prefetch loop re-sends the identical feed every 15
+  minutes and copying it each cycle would bury the timeline in duplicates.
+
+  `get_injury_trends` reads that timeline rather than the current snapshot, so
+  it answers "what moved since I last looked" instead of "who is hurt". Each
+  change carries its `previous_status`, a `direction` (`worse` / `better` /
+  `lateral` / `new`) and a `severity_delta` derived from the existing
+  `STATUS_SEVERITY` scale, and can be filtered by window, team and direction.
+  A same-severity relabel (a changed body part on an unchanged status) counts
+  as `lateral`, not as a move in either direction.
+
+### Fixed
+- **The prefetch loop never ran from a `.env`-only config**, so
+  `player_usage_stats` and `player_week_stats` stayed empty for the whole
+  season. `server.py` imports the tool registry — and through it
+  `sleeper_enrichment` — *before* it loads `.env`, so the module-level
+  `ADVANCED_ENRICH_ENABLED = os.getenv(...)` was evaluated against an empty
+  environment. `/health` read the variable live and cheerfully reported
+  `advanced_enrich_enabled: true` while the loop read the stale constant and
+  logged `Prefetch disabled`. The flag is now resolved lazily via
+  `advanced_enrich_enabled()`; the module attribute still wins when set, so
+  existing `monkeypatch.setattr` overrides keep working.
+- **`air_yards` was always NULL.** The usage parser probed `rec_air_yds`
+  (plural) and `air_yards`; Sleeper ships `rec_air_yd`. 249 of 343 week-1 rows
+  carry the field, and none of them were being read. Both legacy spellings are
+  still accepted.
+- **`snap_pct` was always NULL in `player_week_stats`.** Sleeper publishes no
+  percentage field, so the snaps parser stored nothing and the response
+  validator warned `Low snap_pct coverage: 0.0%` on every fetch. It is now
+  derived from `off_snp / tm_off_snp` — the same calculation the usage fetcher
+  already did — which is a measured value rather than the depth-chart guess
+  from `_estimate_snap_pct`. Field probing moved to a `_first_present()` helper
+  so a legitimate `0` survives, which plain `or` chaining discarded.
+
+### Added
+- **`scripts/backfill_usage.py`** for the weeks the prefetch loop cannot reach.
+  Each cycle only fetches `week - 1`, so a server started mid-season never
+  acquires the earlier weeks. The script walks a week range and upserts both
+  tables from the same free Sleeper endpoint; re-running is safe.
+
+## [0.7.7] - 2026-09-13
+
+### Added
+- **Draft picks are now priced on injury, playoff schedule and handcuff status**
+  (`recommend_draft_pick`). Ranking was purely positional, so a player on IR and
+  a healthy one at the same ADP were indistinguishable on the clock. Four
+  signals feed the valuation: injury multipliers for statuses that actually cost
+  games (Out `.35`, IR `.30`, PUP `.45`, Suspended `.50`, Doubtful `.65`), a
+  playoff-ease tilt that breaks ties on the week 15–17 schedule, a handcuff
+  index flagging the backup to a RB already rostered, and unrankable-gap
+  detection for positions with no viable target left before the next pick.
+
+  `Questionable` deliberately scores `1.0`. In this feed it is a news channel,
+  not a severity grade: a live preseason board tagged Mahomes ("on track to
+  start Week 1"), Kraft ("expected to be full go"), Jeanty and a planned
+  McCaffrey rest day all at identical `severity 2` / `confidence 65`, two of
+  them mislabelled `Knee - ACL`. Discounting on that would push first-round
+  talent down the board for nothing, so the note is surfaced to the drafter
+  instead. Name matching normalises accents, suffixes and punctuation because
+  the injury feed keys on ESPN ids while the value layer keys on Sleeper ids.
+- **`.env` is loaded automatically** so `ODDS_API_KEY` no longer has to be
+  exported by hand. Without it a local run silently fell back to a
+  positional-rank prior with no game script at all (`vegas_active: false`).
+  The loader is dependency-free, runs before the module-level `getenv` calls,
+  resolves relative to the repo root rather than the cwd, and **never
+  overwrites an already-set variable** — container and CI values still win.
+  `.env.example` documents the variables; `.env` stays gitignored.
+
+### Fixed
+- **Vegas tools treated in-play lines as forecasts.** A sportsbook switches to
+  in-play pricing at kickoff, where the total includes points *already on the
+  board*. Week 1 surfaced a live CHI@CAR at a total of **79.5** and BAL@IND at a
+  spread of **17.6**, and `get_stack_opportunities` duly ranked those halftime
+  scores as the week's best shootouts. `fetch_current_lines` now skips started
+  games by default; `include_live=True` keeps them, flagged with `is_live`.
+  Excluded teams fall through to the existing neutral `is_fallback` defaults, so
+  a live game reads as "no usable line" instead of a bogus total. An
+  `include_live` result bypasses the cache in both directions — an in-play
+  snapshot is valid for seconds, not the 2h TTL. Unparseable timestamps count as
+  not-started so an upstream format change degrades to the previous behaviour
+  rather than silently dropping every game.
+- **Server host/port are configurable and a busy port fails loudly**
+  (`NFL_MCP_HOST` / `NFL_MCP_PORT`). A local run alongside a containerised
+  instance silently lost the bind race; the port is now probed up front and the
+  process exits with a message naming the occupied address.
+- **`get_cbs_projections` returned zero projections for every position.** Three
+  compounding breaks, all reproduced against the live CBS page (the projections
+  sibling of the 0.7.6 `get_cbs_expert_picks` rewrite):
+  - The table selector matched `stats|data|projections`, but CBS renders the
+    grid as `TableBase-table` — so no table was ever found and the tool reported
+    `success: true` with an empty list. Now matches `TableBase` and falls back to
+    the page's only table, so a further rename degrades visibly instead of
+    silently.
+  - CBS uses a **two-row `thead`** (group spans `Rushing`/`Receiving`/`Misc`
+    above the real column labels). Flattening both misaligned every column, so
+    values would have been labelled `Rushing` instead of `Games Played`. Only
+    the last header row is used now, with CBS's concatenated abbreviation
+    stripped (`ydsRushing Yards` → `Rushing Yards`, keeping rushing and
+    receiving yards distinct).
+  - The first body cell leads with a **text-less logo anchor**, so `find('a')`
+    yielded an empty name and every row was dropped — this alone silently
+    discarded all 32 DST rows. The first *labelled* anchor is used now.
+
+  Live result: RB 100, QB 69, WR 100, TE 100, K 33, DST 32.
+
+### Changed
+- **`get_cbs_projections` now labels its granularity honestly.** CBS serves
+  identical full-season numbers for `/1/`, `/2/` and `/restofseason/` — the week
+  segment is ignored server-side. The payload carries `period: "season"`,
+  `week_honoured: false` and an explanatory `note`; `week` is still validated
+  and echoed back. Season totals must not be read as week-level projections.
+
+## [0.7.6] - 2026-08-07
+
+### Fixed
+The two deeper audit follow-ups (deferred from the 0.7.5 batches):
+- **`get_league_leaders` now returns actual leaders.** ESPN's `leaders` endpoint
+  returns a *flat* list of leader entries (each with an `athlete` `$ref`), but the
+  parser treated each entry as a *group* and expanded it to `[]` — so even
+  completed seasons came back empty. It now uses the entries directly (deref
+  athlete/team, ordered rank), e.g. 2024 passing → Burrow / Goff / Mayfield.
+- **`get_cbs_expert_picks` is parsed properly.** Rewrote the scraper against the
+  `TableExpertPicks` layout: clean expert names from the header row, per-game
+  `picks` keyed by expert, extracted `away_team`/`home_team`, and
+  whitespace-collapsed text — instead of concatenated blobs like
+  `"FINALNBCDAL7-9-120PHI…"` and duplicated experts.
+
+## [0.7.5] - 2026-08-07
+
+### Fixed
+High-severity data-quality bugs found by the multi-agent tool audit (all
+reproduced against live ESPN data):
+- **`get_team_schedule` returned only the 3-game preseason slate.** The URL
+  omitted `seasontype`, so ESPN defaulted to preseason before the season starts.
+  Now requests `&seasontype=2` → the full 17-game regular season (and its bye gap),
+  which also fixes the downstream bye/SoS/matchup previews.
+- **`get_team_player_stats` always returned 0 players.** The URL carried a dead
+  `/types/{season_type}/` segment (404 for every season, masked as
+  `success=True, count=0`). Uses the season roster endpoint and dereferences the
+  athlete `$ref`s → real players (id/name/position/jersey).
+- **`get_nfl_standings` returned 4 placeholder rows with fabricated context.** The
+  Core API endpoint only exposes standings-TYPE group refs, not teams. Switched to
+  the site standings endpoint and parses `children[].standings.entries` → all 32
+  teams with real records; preseason (0-0) no longer fabricates a motivation level.
+- **`get_depth_chart` put player names in the `position` field.** ESPN renders
+  each unit as a *pair* of tables (position labels + player grid); the parser now
+  joins them, skips the `Starter` header, strips glued injury tags, and spaces the
+  team name (`San Francisco 49ers`).
+- **`get_high_confidence_injuries` was always empty.** Every ESPN injury got a
+  flat confidence of 60, unreachable by the default `min_confidence=70`. Confidence
+  is now graded by status certainty (Out/IR/Doubtful=90, Questionable=65, …), so
+  the threshold surfaces the genuinely high-confidence injuries.
+- **`get_league_leaders` was mis-wired.** The registry wrapper returned an
+  undocumented shape, rejected the documented `passing`/`rushing` labels, and
+  passed `limit` positionally into `season`. It now maps friendly labels to the
+  short tokens, calls the underlying by keyword, applies `limit`, and returns the
+  documented `{leaders, stat_type, count, season}` shape. (Note: ESPN's leaders
+  endpoint itself yields no data in the preseason.)
+
+Medium-severity fixes from the same audit:
+- **`get_defense_rankings` (and the SoS/streaming/matchup tools it feeds) used a
+  renamed nflverse asset URL** (`player_stats_*` → 404), so they collapsed to
+  neutral placeholders even when real data existed. Updated to
+  `stats_player/stats_player_week_{season}.csv` → real defense data again (e.g.
+  2025 toughest QB defenses MIN/LAC/HOU).
+- **`get_rosters` fabricated phantom "healthy" players** for Sleeper's empty-slot
+  sentinel id `"0"` (9 per roster). The sentinel is now filtered before enrichment.
+- **`project_player` over-credited confidence and hid the Vegas fallback.** It
+  always passed an all-`None` usage dict (truthy → +15 confidence), reporting
+  85/high vs `project_players`' 70/medium for identical input; confidence now
+  requires a real usage signal. It also now surfaces `vegas_active` so a neutral
+  Vegas placeholder isn't mistaken for a live implied total.
+- **`get_playoff_preparation_plan` hard-coded a 4-week playoff** (`championship_week
+  = start+3`); corrected to the standard 3-week span (`start+2`).
+- **`get_injury_report` / `get_gameday_inactives` leaked the raw status enum**
+  (`INJURY_STATUS_ACTIVE`) as `injury_type`; now uses the body part / readable
+  description.
+- **`get_stack_opportunities` gave no fallback disclaimer** when `ODDS_API_KEY`
+  was unset (unlike `get_vegas_lines`); it now says so instead of reporting a bare
+  "no high-total games".
+
+The deeper medium-severity findings (logic derivation, not surgical fixes):
+- **Bye weeks are now derived from the schedule gap.** `get_team_schedule` returns
+  a `bye_week` (the one regular-season week 1-18 with no game — ESPN encodes a bye
+  as a *missing* week, not a game row). `get_season_bye_week_coordination` and
+  `get_strategic_matchup_preview` read it instead of matching a `"BYE WEEK"` string
+  that was never emitted, so the bye calendar is populated again.
+- **`get_playoff_odds` no longer invents odds with no schedule.** With
+  `games_remaining == 0` (preseason / schedule unavailable) it returned a
+  deterministic 100/0 split by roster id and a hard-coded `mean_ppg=100`; it now
+  returns `computable: false` with an explanation.
+- **`get_playoff_preparation_plan` stops fabricating a roster grade.** The
+  readiness score reflects only preparation *timing*, so `roster_depth` /
+  `schedule_strength` / `bye_week_planning` are now labelled "Not assessed" (with
+  pointers to the tools that do assess them) instead of grading an empty pre-draft
+  roster "Good".
+- **`recommend_faab_bid` reframes non-FAAB leagues.** In a waiver-priority league
+  the message now says to use a priority claim rather than "Bid ~75%".
+- **`get_game_environment` returns its documented `game` field** (was missing →
+  `KeyError` on `result['game']`).
+
+Low-severity consistency/schema polish from the audit:
+- **`get_teams` now returns team logos.** ESPN exposes images under `logos` (a
+  list), not `logo`, so the field was empty for all 32 teams.
+- **`get_draft_board` / `recommend_draft_pick` / `simulate_draft` echo the
+  effective `ppr`.** The `format` block now includes the resolved `ppr` value, so
+  an unrecognized `scoring` label (which maps to full PPR) is transparent.
+- **`get_player_values` reports `updated_at` for fresh data** (fell back to the
+  DB snapshot time, which is null on a fresh fetch → now uses `fetched_at`).
+- **`analyze_roster_vegas` surfaces the Vegas fallback at the top level** (an
+  `is_fallback` flag + a message note) instead of only per-entry.
+- **`analyze_opponent` no longer rates an empty roster "100% vulnerable."** A
+  pre-draft/empty opponent roster returns `no_data: true` (`vulnerability_score:
+  null`) instead of fabricating "critical" weaknesses at every position.
+- **`analyze_trade` resolves off-roster players' real identity.** A traded player
+  not on the given roster is backfilled with the name/position from the value list
+  (was `"Unknown (4034)"` despite a resolved value) and flagged in `warnings`.
+
+## [0.7.2] - 2026-08-07
+
+### Fixed
+- **Scoring format is now normalized — `half_ppr` no longer silently means full
+  PPR.** `scoring_to_ppr` only recognized `half-ppr` (hyphen); Sleeper's own
+  `half_ppr` (underscore) and other spellings fell through to full PPR (1.0),
+  so a half-PPR league silently got full-PPR values in `get_draft_board`,
+  `get_player_value(s)`, `simulate_draft`, `recommend_draft_pick`, etc. It now
+  normalizes separators/case and accepts `half_ppr`/`halfppr`/`HALF PPR`/`std`/
+  `none`/raw numbers.
+- **`get_defense_rankings` no longer emits a fake ranking in the preseason.** The
+  neutral fallback (used when nflverse data isn't published yet) ranked teams
+  `1..32` in **alphabetical** order and the tool returned it with no fallback
+  flag — so matchup grades looked real but were alphabetical. The fallback is now
+  genuinely neutral (all teams rank 16) and the response carries `is_fallback`
+  plus a ⚠️ low-confidence message, mirroring `get_strength_of_schedule`.
+
+### Added
+- **`get_weather_forecast` now reports `forecast_unavailable`.** Games beyond
+  Open-Meteo's ~16-day horizon were already flagged per-game as
+  `impact.severity="unknown"`; the response now also carries a top-level count
+  (and a message note) so callers planning ahead aren't misled by empty weather
+  fields reading as "calm".
+
+## [0.7.1] - 2026-08-07
+
+### Fixed
+- **`get_team_injuries` now returns real injury data (names, status, body part,
+  return date).** ESPN's Core API returns the team injury list as bare
+  `{"$ref": …}` links; the tool treated each item as a complete object, so every
+  field came back empty (`player_name: null`, `status: "Unknown"`). It now
+  follows both hops — the injury ref and the nested athlete ref — concurrently
+  (bounded fan-out), and surfaces `player_name`, `position`, `status`, `type`
+  (body part), `description`, `return_date` and a fantasy `severity`. Inline
+  responses are still handled (back-compat), and "Injured Reserve" now maps to
+  `High` severity.
+- **`get_coaching_staff` now resolves the head coach and fills in coordinators.**
+  The ESPN coach object has no `displayName`/`position`, so the coach name came
+  back empty and no head coach was identified; the name is now built from
+  `firstName`/`lastName` and the coach returned by ESPN's team `/coaches`
+  endpoint (which exposes only the head coach) is promoted to `head_coach`.
+  Because ESPN never exposes coordinators, `offensive_coordinator` /
+  `defensive_coordinator` are now enriched **best-effort from the Wikipedia
+  season-page infobox** (`off_coach`/`def_coach`) — with a `coordinator_source`
+  field and an honest `note` about the partial coverage. Adds an optional
+  `season` argument (defaults to the current NFL season).
+- **`get_all_coaching_staffs` now returns head coaches (was 0/32).** The coaches
+  URL was built as `f"{team_url}/coaches"` where `team_url` already carried a
+  `?lang=…` query string, producing a broken URL (`…?lang=…/coaches`), so every
+  team came back `head_coach: null, coach_count: 0`. The URL is now built from
+  the numeric team id and the head-coach name is resolved from `firstName`/
+  `lastName`.
+
+## [0.7.0] - 2026-08-05
+
+### Changed
+- **Upgraded to FastMCP 4 (`>=4.0.0b1`) and moved the HTTP transport to stateless
+  MCP (the sessionless `2026-07-28` protocol).** FastMCP 4 rebuilds on MCP Python
+  SDK v2 and serves the sessionless `2026-07-28` protocol via mode negotiation.
+  `main()` now enables `stateless_http` on `app.http_app(path="/mcp", …)`, so the
+  Streamable HTTP transport keeps **no** server-side session state and issues no
+  `Mcp-Session-Id` — the server can scale horizontally behind a plain round-robin
+  load balancer with no sticky sessions or shared session store. Set
+  `NFL_MCP_STATELESS_HTTP=0` to fall back to the session-based transport for
+  older, handshake-era clients. The background-prefetch lifespan is now registered
+  through FastMCP's public `lifespan=` constructor argument instead of
+  monkey-patching the ASGI app's internal `router.lifespan_context`. No tool
+  implementations changed; the codebase used none of the removed v4 APIs
+  (`ctx.sample`/`list_roots`/`elicit`, constructor transport kwargs, etc.). Full
+  suite green (906 passed, 2 skipped). See `FASTMCP_4_UPGRADE.md`.
+- **Pinned `httpx<1` and `pydantic<2.14`.** Defensive upper bounds so a
+  `uv`/`pip` resolution during the FastMCP 4 beta can't pull `httpx==1.0.dev*`
+  (breaking-major dev release) or `pydantic==2.14.0a*` (alpha). `requirements.lock`
+  was regenerated with `--prerelease=allow` accordingly.
+- **`get_trending_players` now surfaces `full_name`/`position`/`team` at the top
+  level of each entry, with a team fallback.** Previously the identity fields were
+  only reachable under the nested `enriched` object, so naive consumers saw bare
+  Sleeper player IDs. The three key fields are now mirrored to the top level
+  (additive — `enriched` is unchanged), and `team` falls back to the raw Sleeper
+  `team` field when the athlete cache's `team_id` column is blank (genuine free
+  agents stay `null`).
+
+### Fixed
+- **`get_nfl_news` HTTP 403 from ESPN — branded User-Agent now identifies via a
+  project URL.** ESPN's `site.api.espn.com` WAF started rejecting the plain
+  `NFL-MCP-Server/<version> (…)` User-Agent with `403 Forbidden`, which broke
+  `get_nfl_news` (and would also affect the `teams`/`scoreboard` `site.api`
+  endpoints). The base User-Agent now embeds the standard bot-identification
+  comment `(+https://github.com/gtonic/nfl_mcp)`, which ESPN accepts. As a
+  belt-and-suspenders fallback, `get_nfl_news` retries once with httpx's default
+  User-Agent if a `403` still comes back.
+
+### Added
+- **Periodic athletes-cache refresh in the background prefetch.** Player→team
+  assignments change over the offseason and season (signings, trades, releases),
+  which left the Sleeper athletes cache stale — e.g. trending players showing an
+  outdated team. When prefetch runs (`NFL_MCP_PREFETCH=1` + `NFL_MCP_ADVANCED_ENRICH=1`)
+  the athletes cache is now refreshed once at startup and then on a cadence
+  (default **daily**). Controlled by `NFL_MCP_PREFETCH_ATHLETES` (default on) and
+  `NFL_MCP_PREFETCH_ATHLETES_INTERVAL` (seconds, default `86400`); the refresh is
+  best-effort (failures are logged, never fatal) and its config is surfaced in the
+  `/health` `prefetch` block.
 - **Configurable database path via `NFL_MCP_DB_PATH`.** The SQLite cache path now
   falls back to the `NFL_MCP_DB_PATH` environment variable (default
   `nfl_data.db`). The default is resolved inside `NFLDatabase.__init__`, so

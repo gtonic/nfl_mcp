@@ -64,6 +64,35 @@ class TestGetNflNews:
 
             assert result["success"] is True
 
+    @pytest.mark.asyncio
+    async def test_get_nfl_news_retries_on_403(self):
+        """A 403 (ESPN WAF blocking the branded UA) triggers a retry with the
+        default User-Agent, which is accepted."""
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {
+            "articles": [{"headline": "Recovered", "description": "d"}]
+        }
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [forbidden, ok]
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
+            result = await get_nfl_news(limit=1)
+
+        assert result["success"] is True
+        assert result["articles"][0]["headline"] == "Recovered"
+        # Two requests: first branded (with headers), retry without a custom UA.
+        assert mock_client.get.call_count == 2
+        first_call, retry_call = mock_client.get.call_args_list
+        assert "headers" in first_call.kwargs
+        assert "headers" not in retry_call.kwargs
+
 
 class TestGetTeams:
     """Test get_teams function."""
@@ -206,6 +235,57 @@ class TestGetTeamInjuries:
         result = await get_team_injuries("")
         assert result["success"] is False
 
+    @pytest.mark.asyncio
+    async def test_get_team_injuries_dereferences_refs(self):
+        """Core-API items are bare $refs; the tool must follow injury + athlete refs."""
+        inj_ref = "http://espn/v2/nfl/seasons/2026/athletes/9/injuries/1"
+        ath_ref = "http://espn/v2/nfl/seasons/2026/athletes/9"
+
+        def make(payload):
+            m = MagicMock()
+            m.status_code = 200
+            m.json.return_value = payload
+            m.raise_for_status = MagicMock()
+            return m
+
+        responses = {
+            "LIST": make({"count": 1, "items": [{"$ref": inj_ref}]}),
+            inj_ref: make({
+                "status": "Questionable",
+                "date": "2026-08-10",
+                "athlete": {"$ref": ath_ref},
+                "type": {"name": "INJURY_STATUS_QUESTIONABLE",
+                         "description": "questionable", "abbreviation": "Q"},
+                "details": {"type": "Hamstring", "detail": "Soreness", "returnDate": "2026-08-13"},
+                "shortComment": "Dealing with a hamstring issue.",
+            }),
+            ath_ref: make({"id": "9", "displayName": "De'Zhaun Stribling",
+                           "position": {"abbreviation": "WR"}}),
+        }
+
+        async def fake_get(url, headers=None, **kwargs):
+            if "/injuries?" in url:  # the team injuries list endpoint
+                return responses["LIST"]
+            return responses[url]
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = fake_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
+            result = await get_team_injuries("SF")
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        inj = result["injuries"][0]
+        assert inj["player_name"] == "De'Zhaun Stribling"
+        assert inj["position"] == "WR"
+        assert inj["status"] == "Questionable"
+        assert inj["type"] == "Hamstring"
+        assert inj["return_date"] == "2026-08-13"
+        assert inj["severity"] == "Medium"
+
 
 class TestGetTeamPlayerStats:
     """Test get_team_player_stats function."""
@@ -272,15 +352,21 @@ class TestGetNflStandings:
         mock_response.json.return_value = {
             "children": [
                 {
-                    "team": {
-                        "id": "1",
-                        "displayName": "Kansas City Chiefs",
-                        "abbreviation": "KC"
-                    },
-                    "stats": [
-                        {"name": "wins", "value": 14},
-                        {"name": "losses", "value": 3}
-                    ]
+                    "standings": {
+                        "entries": [
+                            {
+                                "team": {
+                                    "id": "1",
+                                    "displayName": "Kansas City Chiefs",
+                                    "abbreviation": "KC"
+                                },
+                                "stats": [
+                                    {"name": "wins", "value": 14},
+                                    {"name": "losses", "value": 3}
+                                ]
+                            }
+                        ]
+                    }
                 }
             ]
         }
@@ -448,3 +534,58 @@ class TestGetCurrentSeasonAndWeek:
             # Should return current year and week 0
             assert season is not None
             assert week == 0
+
+
+class TestAuditHighFixes:
+    """Regression tests for the audit HIGH-severity fixes."""
+
+    @pytest.mark.asyncio
+    async def test_depth_chart_pairs_position_and_player_tables(self):
+        html = (
+            "<html><body><h1>San Francisco49ers</h1>"
+            "<table><tr><td></td></tr><tr><td>QB</td></tr><tr><td>RB</td></tr></table>"
+            "<table>"
+            "<tr><th>Starter</th><th>2nd</th></tr>"
+            "<tr><td>Brock Purdy</td><td>Mac Jones</td></tr>"
+            "<tr><td>Christian McCaffrey</td><td>Jordan JamesQ</td></tr>"
+            "</table></body></html>"
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = html
+        mock_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('nfl_mcp.nfl_tools.create_http_client', return_value=mock_client):
+            result = await get_depth_chart("SF")
+
+        assert result["success"] is True
+        assert result["team_name"] == "San Francisco 49ers"     # digit boundary spaced
+        by_pos = {d["position"]: d["players"] for d in result["depth_chart"]}
+        assert by_pos["QB"][0] == "Brock Purdy"                  # position label, not a name
+        assert by_pos["RB"][0] == "Christian McCaffrey"
+        assert "Jordan James" in by_pos["RB"]                    # trailing injury tag stripped
+
+    @pytest.mark.asyncio
+    async def test_league_leaders_wrapper_maps_and_reshapes(self):
+        from nfl_mcp import tool_registry
+        fn = {f.__name__: f for f in tool_registry.get_all_tools()}["get_league_leaders"]
+
+        captured = {}
+
+        async def fake(category=None, **kw):
+            captured["category"] = category
+            return {"success": True, "category": category, "season": 2024,
+                    "players": [{"rank": i, "athlete_name": f"P{i}"} for i in range(1, 11)]}
+
+        with patch("nfl_mcp.nfl_tools.get_league_leaders", fake):
+            res = await fn(stat_type="passing", limit=3)
+
+        assert captured["category"] == "pass"          # friendly label -> short token
+        assert res["success"] is True
+        assert {"leaders", "stat_type", "count"}.issubset(res.keys())   # documented shape
+        assert res["stat_type"] == "pass"
+        assert res["count"] == 3                        # limit applied (not shoved into season)

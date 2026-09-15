@@ -6,6 +6,7 @@ This module contains MCP tools for fetching NFL news, teams data, and depth char
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -61,6 +62,18 @@ async def get_nfl_news(limit: int | None = 50) -> dict:
     async with create_http_client() as client:
         # Fetch the news from ESPN API
         response = await client.get(url, headers=headers)
+
+        # ESPN's site.api WAF intermittently rejects our branded User-Agent with
+        # HTTP 403. The branded UA now carries a (+URL) identifier which is
+        # normally accepted, but if a 403 still comes back, retry once letting
+        # httpx send its own default User-Agent (empirically accepted by ESPN).
+        if response.status_code == 403:
+            logger.warning(
+                "ESPN news returned 403 for branded User-Agent; "
+                "retrying with default User-Agent"
+            )
+            response = await client.get(url)
+
         response.raise_for_status()
 
         # Parse JSON response
@@ -137,7 +150,9 @@ async def get_teams() -> dict:
                 "location": team_info.get('location', ''),
                 "color": team_info.get('color', ''),
                 "alternateColor": team_info.get('alternateColor', ''),
-                "logo": team_info.get('logo', '')
+                # ESPN exposes team images under `logos` (a list), not `logo`.
+                "logo": ((team_info.get('logos') or [{}])[0].get('href')
+                         or team_info.get('logo') or '')
             }
             processed_teams.append(processed_team)
 
@@ -244,41 +259,42 @@ async def get_depth_chart(team_id: str) -> dict:
         # Parse HTML content
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Extract team name
+        # Extract team name (ESPN's <h1> glues city+nickname, e.g.
+        # "San Francisco49ers" -> add a space at the letter/digit boundary).
         team_name = None
         team_header = soup.find('h1')
         if team_header:
-            team_name = team_header.get_text(strip=True)
+            team_name = re.sub(r'(?<=[A-Za-z])(?=\d)', ' ', team_header.get_text(strip=True))
 
-        # Extract depth chart information
+        # Extract depth chart. ESPN renders each unit as a PAIR of tables: a
+        # 1-column table of position labels (QB/RB/…), immediately followed by a
+        # table whose first row is a header (Starter/2nd/3rd/4th) and whose
+        # remaining rows are the players, aligned row-for-row with the labels.
+        def _clean_name(name):
+            if not name or name == '-':
+                return None
+            # Strip an injury tag glued to the surname ("Jordan JamesQ" -> "…James").
+            return re.sub(r'(?<=[a-z])(IR|PUP|SUS|NFI|Q|O|D|P)$', '', name).strip() or None
+
         depth_chart = []
-
-        # Look for depth chart tables or sections
-        # ESPN depth chart structure may vary, so we'll look for common patterns
-        depth_sections = soup.find_all(['table', 'div'], class_=lambda x: x and 'depth' in x.lower() if x else False)
-
-        if not depth_sections:
-            # Try alternative selectors
-            depth_sections = soup.find_all('table')
-
-        for section in depth_sections:
-            # Extract position and players
-            rows = section.find_all('tr')
-            for row in rows:
-                cells = row.find_all(['td', 'th'])
-                if len(cells) >= 2:
-                    position = cells[0].get_text(strip=True)
-                    players = []
-                    for cell in cells[1:]:
-                        player_text = cell.get_text(strip=True)
-                        if player_text and player_text != position:
-                            players.append(player_text)
-
-                    if position and players:
-                        depth_chart.append({
-                            "position": position,
-                            "players": players
-                        })
+        tables = soup.find_all('table')
+        i = 0
+        while i < len(tables) - 1:
+            pos_rows = tables[i].find_all('tr')
+            player_rows = tables[i + 1].find_all('tr')
+            pos_is_single_col = bool(pos_rows) and len(pos_rows[0].find_all(['td', 'th'])) == 1
+            player_is_grid = bool(player_rows) and len(player_rows[0].find_all(['td', 'th'])) >= 2
+            if pos_is_single_col and player_is_grid:
+                pos_labels = [r.get_text(strip=True) for r in pos_rows]
+                # Row 0 of each is a header ('' and 'Starter …') -> skip it.
+                for pos_label, prow in zip(pos_labels[1:], player_rows[1:], strict=False):
+                    names = [_clean_name(c.get_text(strip=True)) for c in prow.find_all(['td', 'th'])]
+                    names = [n for n in names if n]
+                    if pos_label and names:
+                        depth_chart.append({"position": pos_label, "players": names})
+                i += 2
+            else:
+                i += 1
 
         return create_success_response({
             "team_id": team_id.upper(),
@@ -399,53 +415,101 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
             else:
                 raise  # Re-raise other HTTP errors
 
-        # Parse JSON response
+        # Parse JSON response. The Core API returns a paginated list where each
+        # item is a bare {"$ref": ...} pointing at the injury object, which in
+        # turn references the athlete via another {"$ref": ...}. Follow both hops.
+        # (Older/mocked responses may inline the objects — handle that too.)
         data = response.json()
+        injury_items = data.get('items', [])
 
-        # Extract injuries from the response
-        injuries_data = data.get('items', [])
+        async def _resolve_injury(item):
+            # Dereference the injury object unless it's already inlined.
+            detail = item
+            ref = item.get('$ref') if isinstance(item, dict) else None
+            if ref and not (isinstance(item, dict) and item.get('status')):
+                try:
+                    r = await client.get(ref, headers=headers)
+                    r.raise_for_status()
+                    detail = r.json()
+                except Exception as e:
+                    logger.debug(f"[Injuries] injury ref fetch failed ({ref}): {e}")
+                    return None
 
-        # Process injuries to extract relevant information
-        processed_injuries = []
-        team_name = None
+            # Athlete: dereference when given as a $ref, else read inline.
+            athlete = detail.get('athlete', {}) or {}
+            a_ref = athlete.get('$ref') if isinstance(athlete, dict) else None
+            if a_ref:
+                try:
+                    ar = await client.get(a_ref, headers=headers)
+                    ar.raise_for_status()
+                    athlete = ar.json()
+                except Exception as e:
+                    logger.debug(f"[Injuries] athlete ref fetch failed ({a_ref}): {e}")
+                    athlete = {}
+            player_name = (
+                athlete.get('displayName')
+                or f"{athlete.get('firstName', '')} {athlete.get('lastName', '')}".strip()
+                or 'Unknown'
+            )
+            player_id = athlete.get('id')
+            position = (athlete.get('position') or {}).get('abbreviation', 'N/A')
 
-        for injury_item in injuries_data:
-            injury = {}
+            # Status may be a plain string (Core API) or a {"name": ...} dict.
+            status = detail.get('status')
+            if isinstance(status, dict):
+                status = status.get('name') or status.get('description')
+            type_obj = detail.get('type') or {}
+            if not status and isinstance(type_obj, dict):
+                status = type_obj.get('description')
+            status = status or 'Unknown'
 
-            # Get athlete information
-            athlete_ref = injury_item.get('athlete', {})
-            if athlete_ref and isinstance(athlete_ref, dict):
-                injury['player_name'] = athlete_ref.get('displayName', 'Unknown')
-                injury['player_id'] = athlete_ref.get('id')
-                injury['position'] = athlete_ref.get('position', {}).get('abbreviation', 'N/A')
+            # `details` carries the body part / specifics; the top-level `type`
+            # is the status classification, not the body part.
+            details = detail.get('details') or {}
+            body_part = details.get('type')
+            specifics = details.get('detail')
+            description = (
+                detail.get('shortComment')
+                or detail.get('description')
+                or " - ".join(p for p in (body_part, specifics) if p)
+                or 'No description available'
+            )
 
-            # Get team information (should be consistent across all items)
-            if not team_name:
-                team_ref = injury_item.get('team', {})
-                if team_ref and isinstance(team_ref, dict):
-                    team_name = team_ref.get('displayName', 'Unknown Team')
-
-            # Get injury details
-            injury['status'] = injury_item.get('status', {}).get('name', 'Unknown')
-            injury['description'] = injury_item.get('description', 'No description available')
-            injury['date'] = injury_item.get('date', 'Unknown')
-            injury['type'] = injury_item.get('type', {}).get('name', 'Unknown')
-
-            # Fantasy relevance indicators
-            injury['severity'] = 'Unknown'
-            status_lower = injury['status'].lower()
-            if 'out' in status_lower or 'ir' in status_lower:
-                injury['severity'] = 'High'
+            severity = 'Unknown'
+            status_lower = status.lower()
+            if 'out' in status_lower or 'reserve' in status_lower or status_lower == 'ir':
+                severity = 'High'
             elif 'doubtful' in status_lower or 'questionable' in status_lower:
-                injury['severity'] = 'Medium'
+                severity = 'Medium'
             elif 'probable' in status_lower or 'limited' in status_lower:
-                injury['severity'] = 'Low'
+                severity = 'Low'
 
-            processed_injuries.append(injury)
+            return {
+                'player_id': player_id,
+                'player_name': player_name,
+                'position': position,
+                'status': status,
+                'type': body_part or 'Unknown',
+                'description': description,
+                'return_date': details.get('returnDate'),
+                'date': detail.get('date', 'Unknown'),
+                'severity': severity,
+            }
+
+        # Resolve refs concurrently, but bound fan-out to stay a good API
+        # citizen (each injury can trigger up to two follow-up requests).
+        sem = asyncio.Semaphore(10)
+
+        async def _bounded(item):
+            async with sem:
+                return await _resolve_injury(item)
+
+        resolved = await asyncio.gather(*[_bounded(it) for it in injury_items])
+        processed_injuries = [inj for inj in resolved if inj]
 
         return create_success_response({
             "team_id": team_id_upper,
-            "team_name": team_name,
+            "team_name": None,
             "injuries": processed_injuries,
             "count": len(processed_injuries),
             "cache_source": "api"
@@ -495,8 +559,10 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
 
     headers = get_http_headers("nfl_teams")  # Reuse existing config
 
-    # ESPN Core API endpoint for team player statistics
-    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/teams/{team_id.upper()}/athletes?limit={limit}"
+    # ESPN Core API team roster for the season. The older
+    # /types/{season_type}/ variant now 404s; this endpoint returns athlete
+    # $ref links which we dereference below.
+    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/teams/{team_id.upper()}/athletes?limit={limit}"
 
     async with create_http_client() as client:
         try:
@@ -516,57 +582,50 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
             else:
                 raise
 
-        # Parse JSON response
+        # Parse JSON response. `items` are athlete $ref links; dereference each.
         data = response.json()
+        athlete_items = data.get('items', [])
 
-        # Extract athletes from the response
-        athletes_data = data.get('items', [])
-
-        # Process athlete statistics
-        processed_stats = []
-        team_name = None
-
-        for athlete_item in athletes_data:
-            # Extract basic athlete info
-            player_stat = {
-                'player_id': athlete_item.get('id'),
-                'player_name': athlete_item.get('displayName', 'Unknown'),
-                'jersey': athlete_item.get('jersey'),
-                'position': None,
-                'age': athlete_item.get('age'),
-                'experience': athlete_item.get('experience', {}).get('years')
+        async def _resolve_athlete(item):
+            athlete = item
+            ref = item.get('$ref') if isinstance(item, dict) else None
+            if ref and not (isinstance(item, dict) and item.get('id')):
+                try:
+                    r = await client.get(ref, headers=headers)
+                    r.raise_for_status()
+                    athlete = r.json()
+                except Exception as e:
+                    logger.debug(f"[TeamPlayerStats] athlete ref fetch failed ({ref}): {e}")
+                    return None
+            position_ref = athlete.get('position') or {}
+            pos = position_ref.get('abbreviation', 'N/A') if isinstance(position_ref, dict) else 'N/A'
+            experience = athlete.get('experience')
+            return {
+                'player_id': athlete.get('id'),
+                'player_name': (athlete.get('displayName')
+                                or f"{athlete.get('firstName', '')} {athlete.get('lastName', '')}".strip()
+                                or 'Unknown'),
+                'jersey': athlete.get('jersey'),
+                'position': pos,
+                'age': athlete.get('age'),
+                'experience': experience.get('years') if isinstance(experience, dict) else None,
+                'active': athlete.get('active', True),
+                'fantasy_relevant': pos.upper() in ('QB', 'RB', 'WR', 'TE', 'K', 'DST'),
+                'stats_note': 'Detailed per-game statistics require additional API calls per player',
             }
 
-            # Get position info
-            position_ref = athlete_item.get('position', {})
-            if position_ref and isinstance(position_ref, dict):
-                player_stat['position'] = position_ref.get('abbreviation', 'N/A')
+        sem = asyncio.Semaphore(10)
 
-            # Get team info (should be consistent)
-            if not team_name:
-                team_ref = athlete_item.get('team', {})
-                if team_ref and isinstance(team_ref, dict):
-                    team_name = team_ref.get('displayName', 'Unknown Team')
+        async def _bounded(item):
+            async with sem:
+                return await _resolve_athlete(item)
 
-            # Try to get statistics if available (this may require additional API calls)
-            # For now, we'll include basic info and note that detailed stats may need separate calls
-            player_stat['stats_note'] = 'Detailed statistics require additional API calls per player'
-
-            # Check if player is active
-            player_stat['active'] = athlete_item.get('active', True)
-
-            # Fantasy relevance indicators
-            position = player_stat.get('position', '').upper()
-            if position in ['QB', 'RB', 'WR', 'TE', 'K', 'DST']:
-                player_stat['fantasy_relevant'] = True
-            else:
-                player_stat['fantasy_relevant'] = False
-
-            processed_stats.append(player_stat)
+        resolved = await asyncio.gather(*[_bounded(it) for it in athlete_items])
+        processed_stats = [p for p in resolved if p]
 
         return create_success_response({
             "team_id": team_id.upper(),
-            "team_name": team_name,
+            "team_name": None,
             "season": season,
             "season_type": season_type,
             "player_stats": processed_stats,
@@ -610,10 +669,10 @@ async def get_nfl_standings(season: int | None = 2026, season_type: int | None =
     # ESPN Core API endpoint for NFL standings
     if group is not None and group in [1, 2]:
         # Get specific conference standings
-        url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/groups/{group}/standings"
+        url = f"https://site.api.espn.com/apis/v2/sports/football/nfl/standings?season={season}"
     else:
         # Get all standings
-        url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/types/{season_type}/standings"
+        url = f"https://site.api.espn.com/apis/v2/sports/football/nfl/standings?season={season}"
 
     async with create_http_client() as client:
         response = await client.get(url, headers=headers)
@@ -622,48 +681,55 @@ async def get_nfl_standings(season: int | None = 2026, season_type: int | None =
         # Parse JSON response
         data = response.json()
 
-        # Extract standings from the response
-        standings_items = data.get('children', []) or data.get('items', [])
+        # The site standings endpoint returns children=conferences, each with
+        # standings.entries = real team rows (the Core API only exposed
+        # standings-TYPE group refs, which produced empty placeholder rows).
+        children = data.get('children') or []
+        if group in (1, 2):
+            want = 'afc' if group == 1 else 'nfc'
+            children = [
+                c for c in children
+                if want in (c.get('abbreviation') or c.get('name') or '').lower()
+            ]
+
+        entries = []
+        for child in children:
+            std = child.get('standings') or {}
+            entries.extend(std.get('entries') or [])
 
         processed_standings = []
+        for entry in entries:
+            team_ref = entry.get('team') or {}
+            team_info = {
+                'team_id': team_ref.get('id'),
+                'team_name': team_ref.get('displayName', 'Unknown'),
+                'abbreviation': team_ref.get('abbreviation', 'UNK'),
+            }
 
-        for standing_item in standings_items:
-            # Try to get team info from the standing entry
-            team_info = {}
-
-            # Extract team reference
-            team_ref = standing_item.get('team', {})
-            if team_ref and isinstance(team_ref, dict):
-                team_info['team_id'] = team_ref.get('id')
-                team_info['team_name'] = team_ref.get('displayName', 'Unknown')
-                team_info['abbreviation'] = team_ref.get('abbreviation', 'UNK')
-
-            # Extract standings statistics
-            stats = standing_item.get('stats', [])
-            for stat in stats:
-                stat_name = stat.get('name', '').lower()
+            for stat in (entry.get('stats') or []):
+                stat_name = (stat.get('name') or '').lower()
                 stat_value = stat.get('value')
-
-                if 'wins' in stat_name or stat_name == 'wins':
+                if stat_name == 'wins':
                     team_info['wins'] = stat_value
-                elif 'losses' in stat_name or stat_name == 'losses':
+                elif stat_name == 'losses':
                     team_info['losses'] = stat_value
-                elif 'ties' in stat_name or stat_name == 'ties':
+                elif stat_name == 'ties':
                     team_info['ties'] = stat_value
-                elif 'winpercent' in stat_name or 'win_percent' in stat_name:
+                elif stat_name == 'winpercent':
                     team_info['win_percentage'] = stat_value
-                elif 'playoffrank' in stat_name or 'playoff' in stat_name:
-                    team_info['playoff_rank'] = stat_value
-                elif 'divisionrank' in stat_name or 'division' in stat_name:
-                    team_info['division_rank'] = stat_value
+                elif stat_name == 'playoffseed':
+                    team_info['playoff_seed'] = stat_value
+                elif stat_name == 'divisionrecord':
+                    team_info['division_record'] = stat.get('displayValue')
 
-            # Calculate fantasy implications
-            wins = team_info.get('wins', 0)
-            losses = team_info.get('losses', 0)
+            # Fantasy implications (only meaningful once games have been played).
+            wins = team_info.get('wins') or 0
+            losses = team_info.get('losses') or 0
             total_games = wins + losses
-
-            # Determine team motivation level for fantasy purposes
-            if wins >= 12 or (total_games >= 14 and wins / total_games > 0.8):
+            if total_games == 0:
+                team_info['fantasy_context'] = 'Season not started — no games played yet'
+                team_info['motivation_level'] = 'Unknown (preseason)'
+            elif wins >= 12 or (total_games >= 14 and wins / total_games > 0.8):
                 team_info['fantasy_context'] = 'May rest starters in late season'
                 team_info['motivation_level'] = 'Low (Playoff lock)'
             elif wins <= 4 or (total_games >= 10 and wins / total_games < 0.3):
@@ -777,7 +843,9 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
     headers = get_http_headers("nfl_teams")  # Reuse existing config
 
     # ESPN Site API endpoint for team schedule
-    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id_upper}/schedule?season={season}"
+    # seasontype=2 => regular season (ESPN otherwise defaults to preseason when
+    # the regular season hasn't started, returning only the 3-game preseason slate).
+    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id_upper}/schedule?season={season}&seasontype=2"
 
     async with create_http_client() as client:
         try:
@@ -886,17 +954,23 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
                     elif game['week'] >= 15:
                         game['fantasy_implications'].append("Late season - potential rest concerns for playoff teams")
 
-                # Add bye week identification
-                if game['season_type'] == 'Bye Week':
-                    game['fantasy_implications'].append("BYE WEEK - No fantasy points available")
-
             processed_schedule.append(game)
+
+        # Derive the bye week: the single regular-season week (1-18) with no game.
+        # ESPN encodes a bye as a *missing* week rather than a game row, so it must
+        # be inferred from the gap (only when we have a near-complete schedule).
+        played_weeks = {g.get('week') for g in processed_schedule if isinstance(g.get('week'), int)}
+        bye_week = (
+            next((w for w in range(1, 19) if w not in played_weeks), None)
+            if len(played_weeks) >= 16 else None
+        )
 
         return create_success_response({
             "team_id": team_id_upper,
             "team_name": team_name,
             "season": season,
             "schedule": processed_schedule,
+            "bye_week": bye_week,
             "count": len(processed_schedule),
             "cache_source": "api"
         })
@@ -1028,56 +1102,53 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
             players_local: list[dict[str, Any]] = []
             cache: dict[str, Any] = {}
 
-            # Collect leader groups (dereference group if needed)
-            leader_groups = cat_obj.get('leaders', []) or []
-
-            async def expand_group(group):
-                # If no inline leaders but has ref/href, dereference
-                if not group.get('leaders'):
-                    for ref_key in ('$ref', 'href'):
-                        if ref_key in group and isinstance(group[ref_key], str):
-                            fetched = await _fetch_json(group[ref_key], client, headers, cache)
-                            if fetched:
-                                return fetched.get('leaders') or fetched.get('items') or []
-                return group.get('leaders') or []
-
-            expanded_lists = [expand_group(grp) for grp in leader_groups]
-            expanded = await asyncio.gather(*expanded_lists) if expanded_lists else []
-
-            # Flatten entries
+            # ESPN returns `leaders` as a FLAT list of leader entries (each with
+            # value + athlete/team refs). A leader entry has no nested `leaders`,
+            # so the old group-expansion returned [] -> 0 players. Use entries
+            # directly; only flatten/deref the rare "group" wrapper.
+            raw = cat_obj.get('leaders', []) or []
             entries: list[dict[str, Any]] = []
-            for lst in expanded:
-                entries.extend(lst)
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                if item.get('athlete') or 'value' in item:
+                    entries.append(item)                       # a leader entry itself
+                elif item.get('leaders'):
+                    entries.extend(item['leaders'])            # nested group
+                elif item.get('$ref') or item.get('href'):
+                    fetched = await _fetch_json(item.get('$ref') or item.get('href'), client, headers, cache)
+                    if fetched:
+                        entries.extend(fetched.get('leaders') or fetched.get('items') or [])
 
-            async def enrich_entry(entry):
-                athlete = entry.get('athlete', {}) or {}
-                team = entry.get('team', {}) or {}
-                # Deref athlete/team if only reference
-                for key_obj, label in ((athlete, 'athlete'), (team, 'team')):
-                    if isinstance(key_obj, dict) and ('$ref' in key_obj or 'href' in key_obj):
-                        ref_url = key_obj.get('$ref') or key_obj.get('href')
-                        data = await _fetch_json(ref_url, client, headers, cache)
+            async def enrich_entry(rank, entry):
+                athlete = dict(entry.get('athlete') or {})
+                team = dict(entry.get('team') or {})
+                for obj in (athlete, team):
+                    if '$ref' in obj or 'href' in obj:
+                        data = await _fetch_json(obj.get('$ref') or obj.get('href'), client, headers, cache)
                         if data:
-                            if label == 'athlete':
-                                athlete.update(data)
-                            else:
-                                team.update(data)
-                players_local.append({
-                    "rank": entry.get('rank'),
+                            obj.update(data)
+                pos = athlete.get('position') or {}
+                return {
+                    "rank": rank,
                     "value": entry.get('value'),
+                    "display_value": entry.get('displayValue'),
                     "athlete_id": athlete.get('id'),
                     "athlete_name": athlete.get('displayName') or athlete.get('shortName'),
+                    "position": pos.get('abbreviation') if isinstance(pos, dict) else None,
                     "team_id": team.get('id'),
                     "team_abbr": team.get('abbreviation'),
-                })
+                }
 
-            tasks = [enrich_entry(e) for e in entries]
-            if tasks:
-                semaphore = asyncio.Semaphore(10)
-                async def sem_task(coro):
-                    async with semaphore:
-                        return await coro
-                await asyncio.gather(*(sem_task(t) for t in tasks))
+            semaphore = asyncio.Semaphore(10)
+
+            async def sem_task(rank, e):
+                async with semaphore:
+                    return await enrich_entry(rank, e)
+
+            players_local = list(await asyncio.gather(
+                *(sem_task(i + 1, e) for i, e in enumerate(entries))
+            ))
             return players_local
 
         if not multi:

@@ -375,6 +375,13 @@ async def analyze_trade(
                 value, value_source, market = analyzer._calculate_player_value(
                     player, service, values_index
                 )
+                # If the player wasn't on the roster we still resolved a market
+                # value — backfill the real name/position instead of "Unknown (id)".
+                if market and str(player.get("full_name", "")).startswith("Unknown"):
+                    player["full_name"] = market.get("name") or player["full_name"]
+                    player["position"] = market.get("position") or player.get("position") or ""
+                    player.setdefault("warnings", []).append(
+                        "Not on the given roster — identity resolved from the value list")
                 player["calculated_value"] = round(value, 1)
                 player["value_source"] = value_source
                 player["overall_rank"] = (market or {}).get("overall_rank")

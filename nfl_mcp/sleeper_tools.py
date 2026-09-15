@@ -7,6 +7,7 @@ matchups, transactions, and more.
 """
 
 import asyncio
+import json
 import logging
 
 import httpx
@@ -43,6 +44,7 @@ from .sleeper_enrichment import (  # noqa: F401
     _fetch_week_player_snaps,
     _fetch_week_schedule,
     _fetch_weekly_usage_stats,
+    advanced_enrich_enabled,
 )
 
 
@@ -73,6 +75,28 @@ def _enrich_single(nfl_db, pid, cache):
 def _enrich_id_list(nfl_db, ids):
     cache = {}
     return [_enrich_single(nfl_db, pid, cache) for pid in (ids or [])]
+
+
+def _resolve_team(base_info: dict) -> str | None:
+    """Best-effort team abbreviation for an athlete row.
+
+    Prefers the populated ``team``/``team_id`` field, then falls back to the
+    ``team`` key inside the stored raw Sleeper player JSON — the column can be
+    blank even when the raw record carries a team. Returns ``None`` for genuine
+    free agents (both sources empty).
+    """
+    team = base_info.get("team") or base_info.get("team_id")
+    if team:
+        return team
+    raw = base_info.get("raw")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            raw = None
+    if isinstance(raw, dict):
+        return raw.get("team") or None
+    return None
 
 
 @handle_http_errors(
@@ -285,10 +309,14 @@ async def get_rosters(league_id: str) -> dict:
                         # Because we need async inside enrichment, gather sequentially
                         for roster in rosters_data:
                             if isinstance(roster, dict):
+                                # "0" is Sleeper's empty-slot sentinel — filter it
+                                # (and blanks) so we don't fabricate phantom players.
                                 if isinstance(roster.get("players"), list):
-                                    roster["players_enriched"] = await enrich_players(roster["players"])
+                                    roster["players_enriched"] = await enrich_players(
+                                        [p for p in roster["players"] if p and p != "0"])
                                 if isinstance(roster.get("starters"), list):
-                                    roster["starters_enriched"] = await enrich_players(roster["starters"])
+                                    roster["starters_enriched"] = await enrich_players(
+                                        [p for p in roster["starters"] if p and p != "0"])
                 except Exception as enrich_error:
                     logger.debug(f"Roster enrichment (extended) skipped: {enrich_error}")
 
@@ -810,10 +838,20 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
             except Exception as e:
                 logger.warning(f"[Trending Players] Failed to enrich player {player_id}: {e}")
 
+            # Surface the key identity fields at the top level so consumers don't
+            # have to reach into `enriched`; normalize team (the column can be
+            # blank even when the raw record carries it). `enriched` is kept
+            # intact for the full record (injury, usage, opponent, raw, ...).
+            team = _resolve_team(base_info)
+            base_info["team"] = team
+
             enriched_players.append({
                 "player_id": player_id,
                 "count": count,
-                "enriched": base_info
+                "full_name": base_info.get("full_name"),
+                "position": base_info.get("position"),
+                "team": team,
+                "enriched": base_info,
             })
 
         return create_success_response({

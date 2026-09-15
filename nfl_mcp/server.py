@@ -24,6 +24,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastmcp import FastMCP
 
@@ -31,6 +32,47 @@ from . import tool_registry
 from .config_manager import get_config_manager
 from .database import NFLDatabase
 from .health import health_check as _health_check
+
+
+def _load_dotenv(path: Path | None = None) -> int:
+    """Populate ``os.environ`` from a ``.env`` file next to the repo root.
+
+    Secrets such as ``ODDS_API_KEY`` live in a gitignored ``.env`` so a local
+    run picks them up without exporting anything by hand. Deliberately
+    dependency-free and non-destructive: a variable already present in the real
+    environment always wins, so container/CI values are never clobbered.
+
+    Returns the number of variables newly set.
+    """
+    env_path = path or Path(__file__).resolve().parent.parent / ".env"
+    try:
+        raw = env_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return 0
+
+    loaded = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded += 1
+    return loaded
+
+
+# Must run before any module-level ``os.getenv`` below so a .env-provided
+# LOG_LEVEL / prefetch setting takes effect on the very first import.
+_DOTENV_LOADED = _load_dotenv()
 
 # Configure logging with INFO level by default
 LOG_LEVEL = os.getenv("NFL_MCP_LOG_LEVEL", "INFO").upper()
@@ -42,15 +84,60 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+if _DOTENV_LOADED:
+    logger.info(f"Loaded {_DOTENV_LOADED} variable(s) from .env")
+
 # Load prefetch config once from environment (prefetch is separate from general config)
 PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
 PREFETCH_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900"))
 PREFETCH_SNAPS_TTL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_SNAPS_TTL", "900"))
 PREFETCH_SCHEDULE_WEEKS = int(os.getenv("NFL_MCP_PREFETCH_SCHEDULE_WEEKS", "4"))
+# Athletes cache refresh (player names/teams/positions). Enabled by default when
+# prefetch runs; refreshed once at startup and then every ATHLETES_INTERVAL.
+PREFETCH_ATHLETES = os.getenv("NFL_MCP_PREFETCH_ATHLETES", "1") == "1"
+PREFETCH_ATHLETES_INTERVAL_SECONDS = int(
+    os.getenv("NFL_MCP_PREFETCH_ATHLETES_INTERVAL", "86400")  # daily
+)
 
 # Global state for prefetch task
 _prefetch_task: asyncio.Task | None = None
 _shutdown_event: asyncio.Event | None = None
+
+
+async def _refresh_athletes(nfl_db: NFLDatabase, tag: str = "Prefetch") -> None:
+    """Refresh the Sleeper athletes cache (player names, teams, positions).
+
+    Player→team assignments change over the offseason and season (signings,
+    trades, releases), so the cache is refreshed periodically to keep enrichment
+    — e.g. trending players — current. Best-effort: failures are logged, never
+    raised. Gated by ``NFL_MCP_PREFETCH_ATHLETES`` (default on).
+    """
+    if not PREFETCH_ATHLETES:
+        return
+    try:
+        from . import athlete_tools
+        before = nfl_db.get_athlete_count()
+        res = await athlete_tools.fetch_athletes(nfl_db)
+        after = nfl_db.get_athlete_count()
+        if res.get("success"):
+            logger.info(
+                f"[{tag}] Athletes cache refreshed: {before} -> {after} "
+                f"({res.get('athletes_count')} processed)"
+            )
+        else:
+            logger.warning(f"[{tag}] Athletes refresh failed: {res.get('error')}")
+    except Exception as e:
+        logger.warning(f"[{tag}] Athletes refresh error: {e}")
+
+
+def _athletes_refresh_every_n_cycles() -> int:
+    """Number of prefetch cycles between athletes refreshes (always >= 1).
+
+    Derived from the athletes interval vs. the base prefetch interval so the
+    cadence tracks ``NFL_MCP_PREFETCH_ATHLETES_INTERVAL`` (default daily)
+    regardless of the base loop interval.
+    """
+    return max(1, round(PREFETCH_ATHLETES_INTERVAL_SECONDS / max(1, PREFETCH_INTERVAL_SECONDS)))
 
 
 async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
@@ -69,16 +156,16 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
 
     # Import late to avoid circular
     from .sleeper_tools import (
-        ADVANCED_ENRICH_ENABLED,
         _fetch_injuries,
         _fetch_practice_reports,
         _fetch_week_player_snaps,
         _fetch_week_schedule,
         _fetch_weekly_usage_stats,
+        advanced_enrich_enabled,
         get_nfl_state,
     )
 
-    if not ADVANCED_ENRICH_ENABLED:
+    if not advanced_enrich_enabled():
         logger.warning("Prefetch loop disabled: NFL_MCP_ADVANCED_ENRICH not set to 1")
         return
 
@@ -355,6 +442,11 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
             except Exception as e:
                 logger.warning(f"[Prefetch Cycle #{cycle_count}] Cleanup failed: {e}")
 
+        # Periodic athletes cache refresh (default daily) so player
+        # names/teams/positions stay current as roster moves happen.
+        if PREFETCH_ATHLETES and cycle_count % _athletes_refresh_every_n_cycles() == 0:
+            await _refresh_athletes(nfl_db, tag=f"Prefetch Cycle #{cycle_count}")
+
         logger.info(f"[Prefetch Cycle #{cycle_count}] Next cycle in {PREFETCH_INTERVAL_SECONDS}s")
 
         try:
@@ -409,14 +501,18 @@ def create_app() -> FastMCP:
     except Exception:
         logger.warning("ConfigManager init failed; using defaults from config.py", exc_info=True)
 
-    # --- Create FastMCP server instance ---
-    mcp = FastMCP(name="NFL MCP Server")
-
     # --- Initialize NFL database ---
     nfl_db = NFLDatabase()
 
     # --- Fix #2: Inject DB into ContextVar (eliminates global mutable state) ---
     tool_registry.initialize_shared(nfl_db)
+
+    # --- Create FastMCP server instance (FastMCP 4) ---
+    # The background prefetch/shutdown work is registered on the server via the
+    # public ``lifespan=`` constructor argument. FastMCP composes it with the
+    # transport's own (session-manager) lifespan, so main() no longer needs to
+    # monkey-patch the ASGI app's internal ``router.lifespan_context``.
+    mcp = FastMCP(name="NFL MCP Server", lifespan=_create_prefetch_lifespan(nfl_db))
 
     # --- Register all tools from the tool registry ---
     for tool_func in tool_registry.get_all_tools():
@@ -444,12 +540,12 @@ def _create_prefetch_lifespan(nfl_db: NFLDatabase):
         if PREFETCH_ENABLED:
             # Import late to avoid circular
             from .sleeper_tools import (
-                ADVANCED_ENRICH_ENABLED,
                 _fetch_all_team_schedules,
+                advanced_enrich_enabled,
                 get_nfl_state,
             )
 
-            if ADVANCED_ENRICH_ENABLED:
+            if advanced_enrich_enabled():
                 # Run initial startup prefetch (schedules for all 32 teams)
                 logger.info("[Startup Prefetch] Running initial cache warm-up...")
                 try:
@@ -486,6 +582,10 @@ def _create_prefetch_lifespan(nfl_db: NFLDatabase):
                         f"[Startup Prefetch] Failed to fetch team schedules: {e}", exc_info=True
                     )
 
+                # Initial athletes cache refresh (names/teams/positions) so
+                # enrichment is current from the first request.
+                await _refresh_athletes(nfl_db, tag="Startup Prefetch")
+
                 # Start background prefetch loop
                 _shutdown_event = asyncio.Event()
                 _prefetch_task = asyncio.create_task(
@@ -505,6 +605,17 @@ def _create_prefetch_lifespan(nfl_db: NFLDatabase):
             logger.info("Prefetch task stopped")
 
     return app_lifespan
+
+
+def _port_in_use(host: str, port: int) -> bool:
+    """Check whether ``port`` already has a listener we would collide with."""
+    import socket
+
+    # 0.0.0.0 binds every interface, so probe loopback to detect any listener.
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((probe_host, port)) == 0
 
 
 def main():
@@ -528,39 +639,45 @@ def main():
     except Exception:
         logger.warning("Failed to initialize ConfigManager; using defaults", exc_info=True)
 
-    # Create the application
+    # Create the application (the prefetch lifespan is registered on the server
+    # itself via FastMCP's ``lifespan=`` constructor argument, see create_app).
     app = create_app()
 
-    # Get DB instance for lifespan (injected via ContextVar)
-    nfl_db = tool_registry.get_db()
-    if nfl_db is None:
-        raise RuntimeError("NFLDatabase not initialized in tool_registry")
+    # Build the MCP HTTP app under the ``/mcp`` path prefix.
+    #
+    # FastMCP 4 serves the sessionless ``2026-07-28`` protocol out of the box via
+    # mode negotiation. We additionally enable ``stateless_http`` so the
+    # Streamable HTTP transport keeps NO server-side session state at all: every
+    # request is self-contained, so the deployment can scale horizontally behind
+    # a plain round-robin load balancer with no sticky sessions and no shared
+    # session store. Set ``NFL_MCP_STATELESS_HTTP=0`` to fall back to the
+    # session-based transport (e.g. for older, handshake-era clients).
+    stateless_http = os.getenv("NFL_MCP_STATELESS_HTTP", "1") == "1"
+    mcp_http = app.http_app(path="/mcp", stateless_http=stateless_http)
 
-    # Create lifespan with DB access
-    app_lifespan_fn = _create_prefetch_lifespan(nfl_db)
-
-    # Get MCP HTTP app with /mcp path prefix
-    mcp_http = app.http_app(path="/mcp")
-
-    # Save original MCP lifespan BEFORE replacing it
-    original_mcp_lifespan = mcp_http.router.lifespan_context
-
-    # Combine lifespans
-    @asynccontextmanager
-    async def combined_lifespan(app_instance):
-        # Start our custom lifespan (prefetch, etc.)
-        async with app_lifespan_fn(app_instance):
-            # Start MCP's ORIGINAL lifespan
-            async with original_mcp_lifespan(app_instance):
-                yield
-
-    # Replace the lifespan with combined version
-    mcp_http.router.lifespan_context = combined_lifespan
-
-    # Run with uvicorn
+    # Run with uvicorn. Host/port are configurable so a local run can coexist
+    # with a containerised instance instead of silently losing the bind race:
+    # uvicorn logs the "address already in use" error and exits, which is easy
+    # to miss when the process is backgrounded — so we check the port up front
+    # and fail with an actionable message naming the occupied address.
     import uvicorn
 
-    uvicorn.run(mcp_http, host="0.0.0.0", port=9000)
+    host = os.getenv("NFL_MCP_HOST", "0.0.0.0")
+    try:
+        port = int(os.getenv("NFL_MCP_PORT", "9000"))
+    except ValueError:
+        logger.warning("Invalid NFL_MCP_PORT; falling back to 9000")
+        port = 9000
+
+    if _port_in_use(host, port):
+        raise SystemExit(
+            f"Port {port} on {host} is already in use — another NFL MCP instance "
+            f"(e.g. a Docker container) is likely serving it. Stop it, or set "
+            f"NFL_MCP_PORT to a free port."
+        )
+
+    logger.info(f"Starting NFL MCP Server on {host}:{port}")
+    uvicorn.run(mcp_http, host=host, port=port)
 
 
 if __name__ == "__main__":

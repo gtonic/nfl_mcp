@@ -175,6 +175,7 @@ def get_all_tools() -> list[Callable]:
         # Injury Report Tools (Multi-source with confidence scoring)
         get_injury_report,
         get_high_confidence_injuries,
+        get_injury_trends,
         get_gameday_inactives,
 
         # Coaching Intelligence Tools
@@ -351,14 +352,20 @@ async def get_cbs_projections(
     season: int | None = 2026,
     scoring: str = "ppr"
 ) -> dict:
-    """Fetch fantasy football projections from CBS Sports for a specific position and week.
+    """Fetch SEASON-LONG fantasy football projections from CBS Sports for a position.
+
+    CBS only publishes season-long projections: the week is validated and echoed
+    back, but the source returns identical full-season numbers for every week.
+    Results carry period="season" and week_honoured=False. Do NOT use these as
+    week-level projections; use project_player/project_players for that.
 
     Parameters:
         position (str, default "QB"): Player position (QB, RB, WR, TE, K, DST).
-        week (int, required): NFL week number (1-18).
+        week (int, required): NFL week number (1-18). Validated, not honoured.
         season (int, default 2026): Season year.
         scoring (str, default "ppr"): Scoring format (ppr, half-ppr, standard).
-    Returns: {projections: [...], total_projections, week, position, success, error?}
+    Returns: {projections: [...], total_projections, week, period, week_honoured,
+        position, success, error?}
     Example: get_cbs_projections(position="RB", week=11, season=2026, scoring="ppr")
     """
     try:
@@ -2170,6 +2177,84 @@ async def get_injury_report(
         }
 
 
+@timing_decorator("get_injury_trends", tool_type="injury")
+async def get_injury_trends(
+    lookback_hours: int | None = 168,
+    teams: list[str] | None = None,
+    direction: str | None = None,
+    limit: int | None = 50,
+) -> dict:
+    """Get injury status CHANGES over a window - who got worse or recovered.
+
+    Reads the recorded timeline rather than the current snapshot, so it answers
+    "what moved since I last looked" instead of "who is hurt". A player's first
+    sighting has no previous status and is reported as ``new``.
+
+    Parameters:
+        lookback_hours: Window to look back (default 168 = 7 days)
+        teams: Team abbreviations to filter
+        direction: "worse", "better" or "new" to filter; omit for all
+        limit: Max changes to return
+
+    Returns: {
+        changes: [{player_name, team_id, position, previous_status,
+                   injury_status, direction, severity_delta, recorded_at, ...}],
+        total_changes, lookback_hours, success, error?
+    }
+
+    Example: get_injury_trends()
+    Example: get_injury_trends(lookback_hours=48, direction="worse")
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from .injury_service import STATUS_SEVERITY
+
+    try:
+        hours = max(1, min(int(lookback_hours or 168), 24 * 30))
+        since = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+        teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
+        max_rows = max(1, min(int(limit or 50), 500))
+
+        rows = get_db().get_injury_status_changes(
+            since=since, teams=teams_list or None, limit=max_rows
+        )
+
+        changes = []
+        for row in rows:
+            prev = row.get("previous_status")
+            new_sev = int(STATUS_SEVERITY.get(row.get("injury_status"), 3))
+            if prev is None:
+                row_direction, delta = "new", None
+            else:
+                old_sev = int(STATUS_SEVERITY.get(prev, 3))
+                delta = new_sev - old_sev
+                # Same severity bucket with a different label (e.g. a changed
+                # body part) is a re-report, not a move in either direction.
+                row_direction = "worse" if delta > 0 else "better" if delta < 0 else "lateral"
+            changes.append({**row, "direction": row_direction, "severity_delta": delta})
+
+        if direction:
+            wanted = str(direction).lower()
+            changes = [c for c in changes if c["direction"] == wanted]
+
+        return {
+            "changes": changes,
+            "total_changes": len(changes),
+            "lookback_hours": hours,
+            "success": True,
+            "error": None,
+        }
+
+    except Exception as e:
+        return {
+            "changes": [],
+            "total_changes": 0,
+            "lookback_hours": lookback_hours,
+            "success": False,
+            "error": f"Failed to get injury trends: {e}",
+        }
+
+
 @timing_decorator("get_high_confidence_injuries", tool_type="injury")
 async def get_high_confidence_injuries(
     min_confidence: int | None = 70,
@@ -2378,14 +2463,38 @@ if FEATURE_LEAGUE_LEADERS:
         """Get NFL league leaders by stat type (feature-flagged).
 
         Parameters:
-            stat_type (str, default "passing"): Type of stat to get leaders for.
+            stat_type (str, default "passing"): passing/rushing/receiving/tackles/sacks.
             limit (int, default 25, range 1-100): Max leaders to return.
-        Returns: {leaders: [...], stat_type, count, success, error?}
+        Returns: {leaders: [...], stat_type, count, season, success, error?}
         Example: get_league_leaders(stat_type="rushing", limit=10)
         """
+        # Map friendly labels to the underlying short category tokens.
+        alias = {
+            "passing": "pass", "pass": "pass", "passingyards": "pass",
+            "rushing": "rush", "rush": "rush", "rushingyards": "rush",
+            "receiving": "receiving", "rec": "receiving", "receivingyards": "receiving",
+            "tackles": "tackles", "tackle": "tackles",
+            "sacks": "sacks", "sack": "sacks",
+        }
         try:
             stat_type = validate_string_input(stat_type, 'stat_type', max_length=20, required=True)
             limit = validate_limit(limit, 1, 100, 25)
-            return await nfl_tools.get_league_leaders(stat_type, limit)
         except ValueError as e:
             return {"leaders": [], "stat_type": stat_type, "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
+
+        category = alias.get(stat_type.strip().lower().replace("_", ""), stat_type.strip().lower())
+        # Call by keyword (the underlying signature is get_league_leaders(category,
+        # season, season_type, week) — passing limit positionally landed in season).
+        res = await nfl_tools.get_league_leaders(category=category)
+        if not res.get("success"):
+            return {"leaders": [], "stat_type": stat_type, "count": 0,
+                    "success": False, "error": res.get("error"), "error_type": res.get("error_type")}
+        players = (res.get("players") or [])[:limit]
+        return {
+            "leaders": players,
+            "stat_type": res.get("category", category),
+            "count": len(players),
+            "season": res.get("season"),
+            "success": True,
+            "error": None,
+        }

@@ -297,6 +297,22 @@ class OpponentAnalyzer:
         all_players = opponent_roster.get("players_enriched", [])
         starters = opponent_roster.get("starters_enriched", [])
 
+        # An empty (undrafted / pre-draft) roster isn't "100% vulnerable" —
+        # every position would score 0 and invert to a max vulnerability. Flag
+        # it as no-data instead of fabricating "critical" weaknesses.
+        if not all_players and not starters:
+            return {
+                "vulnerability_score": None,
+                "vulnerability_level": "unknown",
+                "no_data": True,
+                "position_assessments": {},
+                "starter_weaknesses": [],
+                "exploitation_strategies": [],
+                "roster_id": opponent_roster.get("roster_id"),
+                "owner_id": opponent_roster.get("owner_id"),
+                "message": "Opponent roster is empty (not drafted yet) — nothing to analyze.",
+            }
+
         # Group players by position
         players_by_position = defaultdict(list)
         for player in all_players:

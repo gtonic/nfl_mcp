@@ -24,6 +24,12 @@ from watchdog.observers import Observer
 
 logger = logging.getLogger(__name__)
 
+# Public project URL, embedded in the User-Agent as a standard bot-identification
+# comment (``(+URL)``). Some upstreams (notably ESPN's ``site.api.espn.com`` WAF)
+# reject bare descriptive User-Agent strings with HTTP 403 but accept a
+# User-Agent that identifies the crawler via a URL. See config.get_http_headers.
+PROJECT_URL = "https://github.com/gtonic/nfl_mcp"
+
 
 @dataclass
 class TimeoutConfig:
@@ -46,7 +52,7 @@ class ServerConfig:
     base_user_agent: str = field(init=False)
 
     def __post_init__(self):
-        self.base_user_agent = f"NFL-MCP-Server/{self.version}"
+        self.base_user_agent = f"NFL-MCP-Server/{self.version} (+{PROJECT_URL})"
 
 
 @dataclass
