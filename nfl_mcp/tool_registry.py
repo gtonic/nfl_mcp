@@ -175,6 +175,7 @@ def get_all_tools() -> list[Callable]:
         # Injury Report Tools (Multi-source with confidence scoring)
         get_injury_report,
         get_high_confidence_injuries,
+        get_injury_trends,
         get_gameday_inactives,
 
         # Coaching Intelligence Tools
@@ -2173,6 +2174,84 @@ async def get_injury_report(
             "cache_used": False,
             "success": False,
             "error": str(e)
+        }
+
+
+@timing_decorator("get_injury_trends", tool_type="injury")
+async def get_injury_trends(
+    lookback_hours: int | None = 168,
+    teams: list[str] | None = None,
+    direction: str | None = None,
+    limit: int | None = 50,
+) -> dict:
+    """Get injury status CHANGES over a window - who got worse or recovered.
+
+    Reads the recorded timeline rather than the current snapshot, so it answers
+    "what moved since I last looked" instead of "who is hurt". A player's first
+    sighting has no previous status and is reported as ``new``.
+
+    Parameters:
+        lookback_hours: Window to look back (default 168 = 7 days)
+        teams: Team abbreviations to filter
+        direction: "worse", "better" or "new" to filter; omit for all
+        limit: Max changes to return
+
+    Returns: {
+        changes: [{player_name, team_id, position, previous_status,
+                   injury_status, direction, severity_delta, recorded_at, ...}],
+        total_changes, lookback_hours, success, error?
+    }
+
+    Example: get_injury_trends()
+    Example: get_injury_trends(lookback_hours=48, direction="worse")
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from .injury_service import STATUS_SEVERITY
+
+    try:
+        hours = max(1, min(int(lookback_hours or 168), 24 * 30))
+        since = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+        teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
+        max_rows = max(1, min(int(limit or 50), 500))
+
+        rows = get_db().get_injury_status_changes(
+            since=since, teams=teams_list or None, limit=max_rows
+        )
+
+        changes = []
+        for row in rows:
+            prev = row.get("previous_status")
+            new_sev = int(STATUS_SEVERITY.get(row.get("injury_status"), 3))
+            if prev is None:
+                row_direction, delta = "new", None
+            else:
+                old_sev = int(STATUS_SEVERITY.get(prev, 3))
+                delta = new_sev - old_sev
+                # Same severity bucket with a different label (e.g. a changed
+                # body part) is a re-report, not a move in either direction.
+                row_direction = "worse" if delta > 0 else "better" if delta < 0 else "lateral"
+            changes.append({**row, "direction": row_direction, "severity_delta": delta})
+
+        if direction:
+            wanted = str(direction).lower()
+            changes = [c for c in changes if c["direction"] == wanted]
+
+        return {
+            "changes": changes,
+            "total_changes": len(changes),
+            "lookback_hours": hours,
+            "success": True,
+            "error": None,
+        }
+
+    except Exception as e:
+        return {
+            "changes": [],
+            "total_changes": 0,
+            "lookback_hours": lookback_hours,
+            "success": False,
+            "error": f"Failed to get injury trends: {e}",
         }
 
 

@@ -1231,11 +1231,38 @@ class NFLDatabase:
         try:
             now = datetime.now(UTC).isoformat()
             with self._pool.get_connection() as conn:
+                # Prior state for every known player, so `injury_history` records
+                # transitions instead of a fresh copy of the feed on every
+                # prefetch cycle (which would add thousands of identical rows
+                # every 15 minutes and make the timeline useless).
+                prior = {
+                    (row["player_id"], row["team_id"]): (
+                        row["injury_status"],
+                        row["injury_type"],
+                    )
+                    for row in conn.execute(
+                        "SELECT player_id, team_id, injury_status, injury_type "
+                        "FROM player_injuries"
+                    )
+                }
+                history_rows = []
+
                 processed = 0
                 for inj in injuries:
                     player_id = inj.get("player_id")
                     if not player_id:
                         continue
+
+                    # Log the first sighting and every later status/type change.
+                    key = (player_id, inj.get("team_id", ""))
+                    new_state = (
+                        inj.get("injury_status", "Unknown"),
+                        inj.get("injury_type"),
+                    )
+                    if prior.get(key) != new_state:
+                        history_rows.append(
+                            (player_id, key[1], new_state[0], new_state[1], now)
+                        )
 
                     # Handle sources as JSON array
                     sources = inj.get("sources", ["ESPN"])
@@ -1280,6 +1307,19 @@ class NFLDatabase:
                         )
                     )
                     processed += 1
+
+                if history_rows:
+                    conn.executemany(
+                        """
+                        INSERT INTO injury_history(
+                            player_id, team_id, injury_status, injury_type, recorded_at
+                        ) VALUES(?,?,?,?,?)
+                        """,
+                        history_rows,
+                    )
+                    logger.info(
+                        f"upsert_injuries: {len(history_rows)} status change(s) recorded"
+                    )
                 conn.commit()
                 return processed
         except Exception as e:
@@ -1446,6 +1486,61 @@ class NFLDatabase:
                 return [dict(row) for row in rows]
         except Exception as e:
             logger.debug(f"get_injury_history failed: {e}")
+            return []
+
+    def get_injury_status_changes(
+        self, since: str, teams: list[str] | None = None, limit: int = 100
+    ) -> list[dict]:
+        """Status transitions recorded since an ISO timestamp, newest first.
+
+        Each row carries the preceding status (``previous_status``, NULL for a
+        player's first sighting) so callers can tell a downgrade from a
+        recovery, plus the player's name and position from the current report.
+
+        Args:
+            since: ISO-8601 cutoff; only changes at or after this are returned.
+            teams: Optional team abbreviations to filter to.
+            limit: Max rows.
+        """
+        try:
+            params: list = [since]
+            team_clause = ""
+            if teams:
+                team_clause = f" AND h.team_id IN ({','.join('?' * len(teams))})"
+                params.extend(t.upper() for t in teams)
+            params.append(limit)
+
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    f"""
+                    WITH ordered AS (
+                        SELECT
+                            id, player_id, team_id, injury_status, injury_type,
+                            recorded_at,
+                            LAG(injury_status) OVER (
+                                PARTITION BY player_id, team_id
+                                ORDER BY recorded_at, id
+                            ) AS previous_status
+                        FROM injury_history
+                    )
+                    SELECT
+                        h.player_id, h.team_id, h.injury_status, h.injury_type,
+                        h.previous_status, h.recorded_at,
+                        p.player_name, p.position, p.injury_description
+                    FROM ordered h
+                    LEFT JOIN player_injuries p
+                        ON p.player_id = h.player_id AND p.team_id = h.team_id
+                    WHERE h.recorded_at >= ?{team_clause}
+                    -- `id` breaks ties: several transitions can share a
+                    -- timestamp when one feed refresh moves a player twice.
+                    ORDER BY h.recorded_at DESC, h.id DESC
+                    LIMIT ?
+                    """,
+                    params,
+                )
+                return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_injury_status_changes failed: {e}")
             return []
 
     # ------------------------------------------------------------------

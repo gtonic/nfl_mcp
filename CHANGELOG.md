@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`injury_history` is now written, and readable through `get_injury_trends`.**
+  The table and its `add_injury_history()` / `get_injury_history()` helpers had
+  shipped in migration v11 but nothing ever called the writer: 0 rows against
+  2621 in `player_injuries`. `upsert_injuries` now records a row on a player's
+  first sighting and on every later status or body-part change — **only** on a
+  change, because the prefetch loop re-sends the identical feed every 15
+  minutes and copying it each cycle would bury the timeline in duplicates.
+
+  `get_injury_trends` reads that timeline rather than the current snapshot, so
+  it answers "what moved since I last looked" instead of "who is hurt". Each
+  change carries its `previous_status`, a `direction` (`worse` / `better` /
+  `lateral` / `new`) and a `severity_delta` derived from the existing
+  `STATUS_SEVERITY` scale, and can be filtered by window, team and direction.
+  A same-severity relabel (a changed body part on an unchanged status) counts
+  as `lateral`, not as a move in either direction.
+
 ### Fixed
 - **The prefetch loop never ran from a `.env`-only config**, so
   `player_usage_stats` and `player_week_stats` stayed empty for the whole
