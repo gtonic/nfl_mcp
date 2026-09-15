@@ -31,4 +31,7 @@ jobs:
           python -m evals.backtest.backtest --seasons 2023,2024 --start-week 5 --min-trailing 5
 
       - name: Metric unit tests
-        run: pip install pytest && pytest tests/test_eval_metrics.py -q
+        # pytest-asyncio is required even for a sync-only test file: pyproject
+        # sets `asyncio_mode = "auto"`, and plain pytest aborts with
+        # `Unknown config option: asyncio_mode` (exit 4).
+        run: pip install pytest pytest-asyncio && pytest tests/test_eval_metrics.py -q

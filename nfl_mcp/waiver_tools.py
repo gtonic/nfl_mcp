@@ -31,8 +31,10 @@ class WaiverAnalyzer:
             # Check if this is a waiver transaction
             if transaction.get('type') in ['waiver', 'free_agent']:
                 # Process adds and drops
-                adds = transaction.get('adds', {})
-                drops = transaction.get('drops', {})
+                # Sleeper sends `null` (not an omitted key) for a pure add or
+                # pure drop, so the `{}` default never applies there.
+                adds = transaction.get('adds') or {}
+                drops = transaction.get('drops') or {}
 
                 # Create normalized waiver transaction
                 waiver_tx = {
@@ -58,8 +60,8 @@ class WaiverAnalyzer:
 
         for transaction in waiver_transactions:
             # Create a signature for deduplication based on player adds/drops and roster
-            adds_str = ','.join(sorted(transaction.get('adds', {}).keys()))
-            drops_str = ','.join(sorted(transaction.get('drops', {}).keys()))
+            adds_str = ','.join(sorted((transaction.get('adds') or {}).keys()))
+            drops_str = ','.join(sorted((transaction.get('drops') or {}).keys()))
             roster_ids_str = ','.join(map(str, sorted(transaction.get('roster_ids', []))))
 
             signature = f"{adds_str}|{drops_str}|{roster_ids_str}|{transaction.get('created', '')}"
@@ -85,7 +87,7 @@ class WaiverAnalyzer:
             timestamp = transaction.get('created')
 
             # Process drops first
-            for player_id, roster_id in transaction.get('drops', {}).items():
+            for player_id, roster_id in (transaction.get('drops') or {}).items():
                 player_activity[player_id].append({
                     'action': 'drop',
                     'timestamp': timestamp,
@@ -95,7 +97,7 @@ class WaiverAnalyzer:
                 })
 
             # Process adds
-            for player_id, roster_id in transaction.get('adds', {}).items():
+            for player_id, roster_id in (transaction.get('adds') or {}).items():
                 player_activity[player_id].append({
                     'action': 'add',
                     'timestamp': timestamp,
@@ -284,8 +286,8 @@ async def check_re_entry_status(league_id: str, round: int | None = None) -> dic
         # Count all players with waiver activity
         all_players = set()
         for tx in waiver_transactions:
-            all_players.update(tx.get('adds', {}).keys())
-            all_players.update(tx.get('drops', {}).keys())
+            all_players.update((tx.get('adds') or {}).keys())
+            all_players.update((tx.get('drops') or {}).keys())
 
         return create_success_response({
             "re_entry_players": re_entry_analysis,

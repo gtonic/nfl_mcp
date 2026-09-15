@@ -341,3 +341,35 @@ class TestGetWaiverWireDashboard:
             result = await get_waiver_wire_dashboard("league1")
 
             assert result["success"] is False
+
+
+class TestNullAddsDrops:
+    """Sleeper sends `adds: null` / `drops: null`, not an omitted key."""
+
+    @pytest.mark.asyncio
+    async def test_pure_drop_and_pure_add_do_not_crash(self, monkeypatch):
+        # A pure drop carries `adds: null`; a pure add carries `drops: null`.
+        # `.get('adds', {})` returns None for those and `.keys()` blew up.
+        transactions = [
+            {"transaction_id": "1", "type": "free_agent", "status": "complete",
+             "created": 1, "adds": None, "drops": {"6803": 3}, "roster_ids": [3]},
+            {"transaction_id": "2", "type": "waiver", "status": "complete",
+             "created": 2, "adds": {"1234": 7}, "drops": None, "roster_ids": [7]},
+        ]
+
+        async def fake_get_transactions(league_id, week):
+            return {"success": True, "transactions": transactions}
+
+        monkeypatch.setattr(
+            "nfl_mcp.waiver_tools.get_transactions", fake_get_transactions
+        )
+
+        result = await get_waiver_log("L1", round=1)
+
+        assert result["success"] is True, result.get("error")
+        assert len(result["waiver_log"]) == 2
+        by_id = {t["transaction_id"]: t for t in result["waiver_log"]}
+        assert by_id["1"]["adds"] == {}
+        assert by_id["1"]["drops"] == {"6803": 3}
+        assert by_id["2"]["adds"] == {"1234": 7}
+        assert by_id["2"]["drops"] == {}
