@@ -21,6 +21,32 @@ logger = logging.getLogger(__name__)
 
 ADVANCED_ENRICH_ENABLED = os.getenv("NFL_MCP_ADVANCED_ENRICH") == "1"
 
+
+def advanced_enrich_enabled() -> bool:
+    """Whether the advanced-enrichment fetchers may run.
+
+    Read lazily rather than trusting the import-time constant: ``server.py``
+    imports the tool registry (and therefore this module) *before* it loads
+    ``.env``, so a flag set only in ``.env`` would otherwise be missed for the
+    whole process. The module attribute still wins when set, which keeps
+    ``monkeypatch.setattr(..., ADVANCED_ENRICH_ENABLED, True)`` working.
+    """
+    return ADVANCED_ENRICH_ENABLED or os.getenv("NFL_MCP_ADVANCED_ENRICH") == "1"
+
+
+def _first_present(stats: dict, *keys: str):
+    """First key present with a non-None value, else None.
+
+    Field naming varies across the upstream feeds, so callers probe several
+    spellings. Plain ``or`` chaining would discard a legitimate 0.
+    """
+    for key in keys:
+        value = stats.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 async def _fetch_week_player_snaps(season: int, week: int):
     """Fetch player snap stats (best-effort) from Sleeper weekly stats endpoint.
 
@@ -30,7 +56,7 @@ async def _fetch_week_player_snaps(season: int, week: int):
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
     """
-    if not ADVANCED_ENRICH_ENABLED:
+    if not advanced_enrich_enabled():
         logger.debug("[Fetch Snaps] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
 
@@ -61,11 +87,18 @@ async def _fetch_week_player_snaps(season: int, week: int):
             for pid, stats in list(data.items())[:5000]:  # cap for safety
                 if not isinstance(stats, dict):
                     continue
-                # Attempt to extract snaps & snap_pct fields (naming may vary)
-                # Sleeper uses 'off_snp' (not 'off_snaps'), so check both variations
-                snaps = stats.get("snaps") or stats.get("off_snp") or stats.get("off_snaps") or stats.get("offense_snaps")
-                team_snaps = stats.get("team_snaps") or stats.get("tm_off_snp") or stats.get("off_team_snaps") or stats.get("team_snp")
-                snap_pct = stats.get("snap_pct") or stats.get("off_snp_pct") or stats.get("off_snap_pct")
+                # Attempt to extract snaps & snap_pct fields (naming may vary).
+                # Sleeper uses 'off_snp' / 'tm_off_snp'. Explicit None checks so a
+                # legitimate 0 (dressed but never on the field) survives.
+                snaps = _first_present(stats, "snaps", "off_snp", "off_snaps", "offense_snaps")
+                team_snaps = _first_present(
+                    stats, "team_snaps", "tm_off_snp", "off_team_snaps", "team_snp"
+                )
+                # Sleeper publishes no snap percentage, so derive it from the two
+                # counts — the same calculation the usage fetcher already does.
+                snap_pct = _first_present(stats, "snap_pct", "off_snp_pct", "off_snap_pct")
+                if snap_pct is None and snaps is not None and team_snaps:
+                    snap_pct = round(snaps / team_snaps * 100, 1)
                 rows.append({
                     "player_id": str(pid),
                     "season": season,
@@ -109,7 +142,7 @@ async def _fetch_week_schedule(season: int, week: int, force: bool = False):
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
     """
-    if not ADVANCED_ENRICH_ENABLED and not force:
+    if not advanced_enrich_enabled() and not force:
         logger.debug("[Fetch Schedule] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
 
@@ -180,7 +213,7 @@ async def _fetch_all_team_schedules(season: int):
     Returns:
         List of game dicts for upsert_schedule_games (bidirectional rows)
     """
-    if not ADVANCED_ENRICH_ENABLED:
+    if not advanced_enrich_enabled():
         logger.debug("[Fetch All Schedules] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
 
@@ -288,7 +321,7 @@ async def _fetch_injuries():
     Returns list of dicts with keys: player_id, player_name, team_id, position,
     injury_status, injury_type, injury_description, date_reported.
     """
-    if not ADVANCED_ENRICH_ENABLED:
+    if not advanced_enrich_enabled():
         logger.debug("[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
 
@@ -453,7 +486,7 @@ async def _fetch_practice_reports(season: int, week: int):
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
     """
-    if not ADVANCED_ENRICH_ENABLED:
+    if not advanced_enrich_enabled():
         logger.debug("[Fetch Practice] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
 
@@ -528,7 +561,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
     """
-    if not ADVANCED_ENRICH_ENABLED:
+    if not advanced_enrich_enabled():
         logger.debug("[Fetch Usage] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
 
@@ -619,8 +652,11 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         receptions = player_stats.get("rec", 0)
                         touches = rush_att + receptions
 
-                        # Air yards - preserve 0 values
-                        air_yards = player_stats.get("rec_air_yds")
+                        # Air yards - preserve 0 values. Sleeper ships `rec_air_yd`
+                        # (singular); the plural spellings never matched anything.
+                        air_yards = player_stats.get("rec_air_yd")
+                        if air_yards is None:
+                            air_yards = player_stats.get("rec_air_yds")
                         if air_yards is None:
                             air_yards = player_stats.get("air_yards")
 

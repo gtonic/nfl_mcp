@@ -156,16 +156,16 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
 
     # Import late to avoid circular
     from .sleeper_tools import (
-        ADVANCED_ENRICH_ENABLED,
         _fetch_injuries,
         _fetch_practice_reports,
         _fetch_week_player_snaps,
         _fetch_week_schedule,
         _fetch_weekly_usage_stats,
+        advanced_enrich_enabled,
         get_nfl_state,
     )
 
-    if not ADVANCED_ENRICH_ENABLED:
+    if not advanced_enrich_enabled():
         logger.warning("Prefetch loop disabled: NFL_MCP_ADVANCED_ENRICH not set to 1")
         return
 
@@ -540,12 +540,12 @@ def _create_prefetch_lifespan(nfl_db: NFLDatabase):
         if PREFETCH_ENABLED:
             # Import late to avoid circular
             from .sleeper_tools import (
-                ADVANCED_ENRICH_ENABLED,
                 _fetch_all_team_schedules,
+                advanced_enrich_enabled,
                 get_nfl_state,
             )
 
-            if ADVANCED_ENRICH_ENABLED:
+            if advanced_enrich_enabled():
                 # Run initial startup prefetch (schedules for all 32 teams)
                 logger.info("[Startup Prefetch] Running initial cache warm-up...")
                 try:

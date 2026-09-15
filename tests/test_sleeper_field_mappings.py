@@ -71,11 +71,13 @@ class TestSleeperFieldMappings:
         assert player_123["snaps_team_offense"] == 60, "Should extract tm_off_snp as snaps_team_offense"
         assert player_123["snap_pct"] == 75.0, "Should extract off_snp_pct as snap_pct"
 
-        # Check player_456 - snap_pct should be None (not calculated in fetch, calculated in DB)
+        # Check player_456 - Sleeper ships no percentage, so it is derived from
+        # the two counts. Leaving it None made every stored row NULL.
         player_456 = next((r for r in result if r["player_id"] == "player_456"), None)
         assert player_456 is not None, "Player 456 should be extracted"
         assert player_456["snaps_offense"] == 30
         assert player_456["snaps_team_offense"] == 60
+        assert player_456["snap_pct"] == 50.0, "Should derive snap_pct from off_snp/tm_off_snp"
 
         # Check player_789 - uses legacy field names
         player_789 = next((r for r in result if r["player_id"] == "player_789"), None)
@@ -163,3 +165,71 @@ class TestSleeperFieldMappings:
         assert player_456["targets"] == 10
         assert player_456["routes"] == 30
         assert player_456["rz_touches"] == 1, "Should estimate RZ from TDs when no explicit RZ data"
+
+    @pytest.mark.asyncio
+    async def test_air_yards_uses_sleeper_field_name(self, monkeypatch):
+        """Sleeper ships `rec_air_yd` (singular); the plural never matched."""
+        mock_response_data = {
+            "player_123": {"rec_tgt": 6, "rec_air_yd": 79, "rec": 5, "rush_att": 0},
+            # Legacy/alternate spellings must keep working.
+            "player_456": {"rec_tgt": 4, "rec_air_yds": 40, "rec": 3, "rush_att": 0},
+            "player_789": {"rec_tgt": 2, "air_yards": 12, "rec": 1, "rush_att": 0},
+        }
+
+        class MockResponse:
+            status_code = 200
+
+            def json(self):
+                return mock_response_data
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                return MockResponse()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        monkeypatch.setenv("NFL_MCP_ADVANCED_ENRICH", "1")
+        from nfl_mcp import sleeper_tools
+        monkeypatch.setattr("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", True)
+        monkeypatch.setattr(
+            "nfl_mcp.sleeper_enrichment.create_http_client", lambda: MockClient()
+        )
+        monkeypatch.setattr(
+            "nfl_mcp.response_validation.validate_response_and_log",
+            lambda data, validator, name, allow_partial=True: True,
+        )
+
+        result = await sleeper_tools._fetch_weekly_usage_stats(2026, 1)
+        by_id = {r["player_id"]: r for r in result}
+
+        assert by_id["player_123"]["air_yards"] == 79, "Should read rec_air_yd"
+        assert by_id["player_456"]["air_yards"] == 40, "Should still read rec_air_yds"
+        assert by_id["player_789"]["air_yards"] == 12, "Should still read air_yards"
+
+
+class TestAdvancedEnrichFlag:
+    """The flag must be readable after `.env` is loaded, not only at import."""
+
+    def test_env_set_after_import_is_honoured(self, monkeypatch):
+        from nfl_mcp import sleeper_enrichment as se
+
+        # Simulate the real startup order: module imported with the flag unset
+        # (server.py imports the tool registry before it loads `.env`), then the
+        # variable appears in the environment.
+        monkeypatch.setattr(se, "ADVANCED_ENRICH_ENABLED", False)
+        monkeypatch.delenv("NFL_MCP_ADVANCED_ENRICH", raising=False)
+        assert se.advanced_enrich_enabled() is False
+
+        monkeypatch.setenv("NFL_MCP_ADVANCED_ENRICH", "1")
+        assert se.advanced_enrich_enabled() is True
+
+    def test_module_attribute_still_overrides(self, monkeypatch):
+        from nfl_mcp import sleeper_enrichment as se
+
+        monkeypatch.delenv("NFL_MCP_ADVANCED_ENRICH", raising=False)
+        monkeypatch.setattr(se, "ADVANCED_ENRICH_ENABLED", True)
+        assert se.advanced_enrich_enabled() is True

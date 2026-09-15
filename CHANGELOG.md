@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The prefetch loop never ran from a `.env`-only config**, so
+  `player_usage_stats` and `player_week_stats` stayed empty for the whole
+  season. `server.py` imports the tool registry — and through it
+  `sleeper_enrichment` — *before* it loads `.env`, so the module-level
+  `ADVANCED_ENRICH_ENABLED = os.getenv(...)` was evaluated against an empty
+  environment. `/health` read the variable live and cheerfully reported
+  `advanced_enrich_enabled: true` while the loop read the stale constant and
+  logged `Prefetch disabled`. The flag is now resolved lazily via
+  `advanced_enrich_enabled()`; the module attribute still wins when set, so
+  existing `monkeypatch.setattr` overrides keep working.
+- **`air_yards` was always NULL.** The usage parser probed `rec_air_yds`
+  (plural) and `air_yards`; Sleeper ships `rec_air_yd`. 249 of 343 week-1 rows
+  carry the field, and none of them were being read. Both legacy spellings are
+  still accepted.
+- **`snap_pct` was always NULL in `player_week_stats`.** Sleeper publishes no
+  percentage field, so the snaps parser stored nothing and the response
+  validator warned `Low snap_pct coverage: 0.0%` on every fetch. It is now
+  derived from `off_snp / tm_off_snp` — the same calculation the usage fetcher
+  already did — which is a measured value rather than the depth-chart guess
+  from `_estimate_snap_pct`. Field probing moved to a `_first_present()` helper
+  so a legitimate `0` survives, which plain `or` chaining discarded.
+
+### Added
+- **`scripts/backfill_usage.py`** for the weeks the prefetch loop cannot reach.
+  Each cycle only fetches `week - 1`, so a server started mid-season never
+  acquires the earlier weeks. The script walks a week range and upserts both
+  tables from the same free Sleeper endpoint; re-running is safe.
+
 ## [0.7.7] - 2026-09-13
 
 ### Added
