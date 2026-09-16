@@ -107,6 +107,24 @@ STATUS_SEVERITY = {
 }
 
 
+# ESPN Core API `$ref` links end at the athlete id followed by a query string
+# (".../athletes/4684527?lang=en&region=us"), but nested refs can also continue
+# with another path segment. Accept both, plus end-of-string.
+_ATHLETE_ID_PATTERN = re.compile(r"/athletes/(\d+)(?:/|\?|$)")
+
+
+def extract_athlete_id(athlete_url: str | None) -> str | None:
+    """ESPN athlete id from a Core-API ``$ref`` URL, or None.
+
+    Shared so the injury fetchers cannot drift apart: a copy of this that
+    required a trailing slash silently dropped *every* record it saw.
+    """
+    if not athlete_url:
+        return None
+    match = _ATHLETE_ID_PATTERN.search(athlete_url)
+    return match.group(1) if match else None
+
+
 class InjuryAggregator:
     """Aggregates injury data from multiple sources with confidence scoring.
 
@@ -405,13 +423,10 @@ class InjuryAggregator:
                 return None
 
             # Extract player ID from athlete URL
-            # Pattern matches /athletes/12345 followed by / or ? or end of string
             athlete_url = athlete_ref.get("$ref", "")
-            id_match = re.search(r"/athletes/(\d+)(?:/|\?|$)", athlete_url)
-            if not id_match:
+            player_id = extract_athlete_id(athlete_url)
+            if not player_id:
                 return None
-
-            player_id = id_match.group(1)
 
             # Check athlete name cache first
             player_name = self._athlete_name_cache.get(player_id)

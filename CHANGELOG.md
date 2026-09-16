@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The injury prefetch returned zero records for every team.** `_fetch_injuries`
+  extracted the ESPN athlete id with `r'/athletes/(\d+)/'`, which requires a
+  trailing slash. The injury payload's `athlete.$ref` ends *at* the id followed
+  by a query string (`.../athletes/4684527?lang=en&region=us`), so the pattern
+  never matched and every record hit a `continue`. The loop spent ~7 minutes and
+  1919 HTTP requests per cycle producing nothing, and because that `continue`
+  logged nothing, the failure was invisible even at DEBUG — the cycle summary
+  just read `Injuries: 0 rows`.
+
+  `injury_service` already had the correct pattern, which is why the on-demand
+  path worked while the prefetch did not. Both now share
+  `injury_service.extract_athlete_id()` so the two cannot drift apart again, the
+  unresolvable-id branch logs a warning instead of skipping silently, and
+  athlete display names are cached across teams. Verified against the live API:
+  **1600 records** where the previous implementation returned 0.
+
 ### Added
 - **`injury_history` is now written, and readable through `get_injury_trends`.**
   The table and its `add_injury_history()` / `get_injury_history()` helpers had
