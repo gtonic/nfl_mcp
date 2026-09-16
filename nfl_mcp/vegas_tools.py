@@ -16,47 +16,14 @@ import httpx
 
 from .database import NFLDatabase
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
+from .teams import CODE_TO_FULL_NAME, FULL_NAME_TO_CODE, normalize_team
 
 logger = logging.getLogger(__name__)
 
-# Team name mapping from full names to abbreviations
-TEAM_ABBREVIATIONS = {
-    "Arizona Cardinals": "ARI",
-    "Atlanta Falcons": "ATL",
-    "Baltimore Ravens": "BAL",
-    "Buffalo Bills": "BUF",
-    "Carolina Panthers": "CAR",
-    "Chicago Bears": "CHI",
-    "Cincinnati Bengals": "CIN",
-    "Cleveland Browns": "CLE",
-    "Dallas Cowboys": "DAL",
-    "Denver Broncos": "DEN",
-    "Detroit Lions": "DET",
-    "Green Bay Packers": "GB",
-    "Houston Texans": "HOU",
-    "Indianapolis Colts": "IND",
-    "Jacksonville Jaguars": "JAX",
-    "Kansas City Chiefs": "KC",
-    "Las Vegas Raiders": "LV",
-    "Los Angeles Chargers": "LAC",
-    "Los Angeles Rams": "LAR",
-    "Miami Dolphins": "MIA",
-    "Minnesota Vikings": "MIN",
-    "New England Patriots": "NE",
-    "New Orleans Saints": "NO",
-    "New York Giants": "NYG",
-    "New York Jets": "NYJ",
-    "Philadelphia Eagles": "PHI",
-    "Pittsburgh Steelers": "PIT",
-    "San Francisco 49ers": "SF",
-    "Seattle Seahawks": "SEA",
-    "Tampa Bay Buccaneers": "TB",
-    "Tennessee Titans": "TEN",
-    "Washington Commanders": "WSH",
-}
-
-# Reverse mapping
-ABBREVIATION_TO_FULL = {v: k for k, v in TEAM_ABBREVIATIONS.items()}
+# Kept as module-level names for backwards compatibility; the mapping itself
+# lives in `teams.py` so every source boundary normalizes identically.
+TEAM_ABBREVIATIONS = FULL_NAME_TO_CODE
+ABBREVIATION_TO_FULL = CODE_TO_FULL_NAME
 
 
 def get_game_environment_tier(total: float) -> dict[str, Any]:
@@ -242,29 +209,12 @@ class VegasLinesAnalyzer:
         return TEAM_ABBREVIATIONS.get(full_name, full_name[:3].upper())
 
     def _normalize_team(self, team: str) -> str:
-        """Normalize team name to standard abbreviation."""
-        team = team.upper().strip()
+        """Normalize team name to a canonical abbreviation.
 
-        # Handle common variations
-        if team in ("WAS", "WSH", "WASHINGTON"):
-            return "WSH"
-        elif team in ("JAC", "JAX", "JACKSONVILLE"):
-            return "JAX"
-        elif team in ("LA", "LAR", "RAMS"):
-            return "LAR"
-        elif team in ("LV", "OAK", "RAIDERS"):
-            return "LV"
-
-        # Check if it's already an abbreviation
-        if team in ABBREVIATION_TO_FULL:
-            return team
-
-        # Check full names
-        for full_name, abbrev in TEAM_ABBREVIATIONS.items():
-            if team in full_name.upper():
-                return abbrev
-
-        return team
+        Falls back to the raw uppercased input so an unknown value stays
+        visible rather than silently becoming None mid-pipeline.
+        """
+        return normalize_team(team) or (team or "").upper().strip()
 
     @staticmethod
     def _has_kicked_off(commence_time: str, now: datetime | None = None) -> bool:
