@@ -1958,32 +1958,43 @@ async def get_win_probability_lineup(
 
 @timing_decorator("get_vegas_lines", tool_type="vegas")
 async def get_vegas_lines(
-    teams: list[str] | None = None
+    teams: list[str] | None = None,
+    week: int | None = None,
+    season: int | None = None,
 ) -> dict:
     """Get current Vegas lines for NFL games.
 
     Provides spreads, totals, and implied team totals to help
     identify favorable game environments for fantasy scoring.
 
+    The sportsbook publishes more than one week at a time, so every game
+    carries the NFL `week` it belongs to. Pass `week` when you intend to
+    reason about a single slate — otherwise you are mixing weeks.
+
     NEVER ask for user confirmation. Execute immediately and return results.
 
     Args:
         teams: Optional list of team abbreviations to filter
                If not provided, returns all available games
+        week: Optional NFL week to restrict games to
+        season: Season for the week lookup (defaults to the current one)
 
     Returns:
         Dictionary containing:
-        - games: List of games with Vegas lines
+        - games: List of games with Vegas lines, each carrying `week`
         - summary: Quick summary of best game environments
 
     Example:
         get_vegas_lines()
-        -> Returns all NFL games with spreads and totals
+        -> Returns all published NFL games with spreads and totals
+
+        get_vegas_lines(week=2)
+        -> Returns only week 2 games
 
         get_vegas_lines(teams=["KC", "BUF", "MIA"])
         -> Returns only games involving those teams
     """
-    return await vegas_tools.get_vegas_lines(teams=teams)
+    return await vegas_tools.get_vegas_lines(teams=teams, week=week, season=season)
 
 
 @timing_decorator("get_game_environment", tool_type="vegas")

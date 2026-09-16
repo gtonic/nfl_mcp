@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Vegas lines mixed two weeks, so half the league resolved to the wrong
+  game.** The sportsbook publishes the next slate mid-week, and
+  `fetch_current_lines` indexed each team with a plain assignment
+  (`lines[home_team] = ...`), so whichever game came last in the feed won.
+  Measured live in week 2: **15 of 32 teams resolved to their week-3 game**,
+  with implied totals off by up to 3.4 points and the matchup tier computed
+  against an entirely different opponent.
+
+  This was not cosmetic. `projections.py` reads this index through
+  `get_game_lines()`, so `project_player`, `project_players`,
+  `get_game_environment`, `analyze_roster_vegas`, `get_stack_opportunities` and
+  everything downstream — start/sit, win probability, the draft board — were
+  quietly scoring players against the wrong game. Nothing errored; the numbers
+  simply looked plausible. It also worsened as the week progressed, being
+  correct only before the book posted the following week.
+
+  Games are now sorted by kickoff and the per-team index keeps the *earliest*
+  upcoming game via `setdefault`, which is what every consumer means by "that
+  team's game". Each game additionally carries the NFL `week`, resolved from
+  the cached schedule (`get_kickoff_week_index`), and `get_vegas_lines` accepts
+  a `week` filter. Games whose week cannot be resolved are kept rather than
+  dropped, so a cold schedule cache degrades to the old behaviour instead of
+  returning an empty slate.
+
 ### Changed
 - **The injury prefetch now delegates to `injury_service` instead of carrying
   its own copy of the ESPN crawl.** `sleeper_enrichment._fetch_injuries` walked

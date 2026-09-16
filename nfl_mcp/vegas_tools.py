@@ -341,6 +341,11 @@ class VegasLinesAnalyzer:
 
                 lines = {}
                 skipped_live = 0
+                # Sort by kickoff so the per-team index below can keep the
+                # *earliest* upcoming game. The book publishes two weeks at a
+                # time, and blind overwriting resolved every team to the
+                # furthest-out week it had posted.
+                games = sorted(games, key=lambda g: g.get("commence_time") or "")
                 for game in games:
                     home_team = self._get_team_abbrev(game.get("home_team", ""))
                     away_team = self._get_team_abbrev(game.get("away_team", ""))
@@ -404,9 +409,13 @@ class VegasLinesAnalyzer:
                         "last_updated": datetime.now(UTC).isoformat()
                     }
 
-                    # Also index by individual teams
-                    lines[home_team] = lines[game_key]
-                    lines[away_team] = lines[game_key]
+                    # Also index by individual teams. `setdefault`, not
+                    # assignment: a team appears once per published week, and
+                    # every consumer of this index means "that team's next
+                    # game". Games are sorted by kickoff, so the first one
+                    # written is the earliest that has not started.
+                    lines.setdefault(home_team, lines[game_key])
+                    lines.setdefault(away_team, lines[game_key])
 
                 # Only the pre-game view is cached; an include_live result is
                 # valid for seconds, not the 2h TTL, so it must not poison it.
@@ -493,12 +502,24 @@ def get_vegas_analyzer() -> VegasLinesAnalyzer:
 # MCP Tool Functions
 # ============================================================================
 
+def _build_week_index(season: int | None) -> dict[tuple[str, str], int]:
+    """`(team, day)` -> NFL week, from the cached schedule. Empty on failure."""
+    try:
+        resolved = season or datetime.now(UTC).year
+        return NFLDatabase().get_kickoff_week_index(resolved)
+    except Exception as e:
+        logger.debug(f"week index unavailable: {e}")
+        return {}
+
+
 @handle_http_errors(
     default_data={"games": []},
     operation_name="fetching Vegas lines"
 )
 async def get_vegas_lines(
-    teams: list[str] | None = None
+    teams: list[str] | None = None,
+    week: int | None = None,
+    season: int | None = None,
 ) -> dict:
     """
     Get current Vegas lines for NFL games.
@@ -506,26 +527,37 @@ async def get_vegas_lines(
     Provides spreads, totals, and implied team totals to help
     identify favorable game environments for fantasy scoring.
 
+    The sportsbook publishes more than one week at a time, so every game is
+    labelled with the NFL ``week`` it belongs to and can be filtered on it.
+    Without that, a caller building a team -> game map silently mixes weeks.
+
     NEVER ask for user confirmation. Execute immediately and return results.
 
     Args:
         teams: Optional list of team abbreviations to filter
                If not provided, returns all available games
+        week: Optional NFL week to restrict games to. Games whose week cannot
+              be resolved from the cached schedule are kept, never dropped.
+        season: Season for the week lookup (defaults to the current one)
 
     Returns:
         Dictionary containing:
-        - games: List of games with Vegas lines
+        - games: List of games with Vegas lines, each carrying `week`
         - summary: Quick summary of best game environments
 
     Example:
         get_vegas_lines()
-        -> Returns all NFL games with spreads and totals
+        -> Returns all published NFL games with spreads and totals
+
+        get_vegas_lines(week=2)
+        -> Returns only week 2 games
 
         get_vegas_lines(teams=["KC", "BUF", "MIA"])
         -> Returns only games involving those teams
     """
     analyzer = get_vegas_analyzer()
     lines = await analyzer.fetch_current_lines()
+    week_index = _build_week_index(season)
 
     # Collect unique games
     seen_games = set()
@@ -544,6 +576,17 @@ async def get_vegas_lines(
             teams_normalized = [analyzer._normalize_team(t) for t in teams]
             if game_data["home_team"] not in teams_normalized and game_data["away_team"] not in teams_normalized:
                 continue
+
+        game_week = week_index.get(
+            (game_data["home_team"], (game_data.get("commence_time") or "")[:10])
+        )
+        game_data = {**game_data, "week": game_week}
+
+        # An unresolvable week is kept rather than dropped: the schedule cache
+        # may simply be cold, and silently losing games is how the mixed-week
+        # bug stayed invisible in the first place.
+        if week is not None and game_week is not None and game_week != week:
+            continue
 
         games.append(game_data)
 
