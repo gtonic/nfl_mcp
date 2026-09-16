@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **One canonical team mapping, applied at the source.** Sleeper's athlete rows
+  say `WAS` and `OAK` where the odds feed and ESPN say `WSH` and `LV`, and
+  nflverse says `LA` for the Rams. Three separate normalizers existed —
+  `VegasLinesAnalyzer._normalize_team`, `matchup_tools._NFLVERSE_TEAM_FIX` and
+  `MatchupAnalyzer._normalize_team_name` — and the `athletes` table was covered
+  by none of them. That is not a cosmetic inconsistency: an unnormalized code
+  does not raise, it simply fails to join, which is how a healthy quarterback
+  showed up as being on a bye.
+
+  `nfl_mcp/teams.py` now owns `CANONICAL_TEAMS`, `TEAM_ALIASES` and
+  `normalize_team()`; the existing normalizers delegate to it, and both athlete
+  writers canonicalize `team_id` on insert so the stored data is consistent
+  rather than only the readers that remember to convert. After one
+  `fetch_athletes`, 84 `WAS` rows and 1 `OAK` row became `WSH` and `LV`.
+
+  Ambiguous partial names are now refused instead of guessed: "New York"
+  matches two teams, and the previous implementation returned whichever came
+  first in dict order.
+
 ### Fixed
 - **Vegas lines mixed two weeks, so half the league resolved to the wrong
   game.** The sportsbook publishes the next slate mid-week, and

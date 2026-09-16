@@ -26,6 +26,8 @@ except ImportError:
     aiosqlite = None
     ASYNC_SUPPORT = False
 
+from .teams import normalize_team
+
 logger = logging.getLogger(__name__)
 
 
@@ -2068,7 +2070,11 @@ class NFLDatabase:
                     full_name = athlete.get('full_name', '') or ''
                     first_name = athlete.get('first_name', '') or ''
                     last_name = athlete.get('last_name', '') or ''
-                    team_id = athlete.get('team', '') or ''
+                    # Canonicalize at the source: Sleeper says WAS/OAK where
+                    # every other feed says WSH/LV, and an unnormalized code
+                    # does not fail loudly — it just never joins.
+                    raw_team = athlete.get('team', '') or ''
+                    team_id = normalize_team(raw_team) or raw_team
                     position = athlete.get('position', '') or ''
                     status = athlete.get('status', '') or ''
 
@@ -2196,7 +2202,8 @@ class NFLDatabase:
                     full_name = athlete.get('full_name', '') or ''
                     first_name = athlete.get('first_name', '') or ''
                     last_name = athlete.get('last_name', '') or ''
-                    team_id = athlete.get('team', '') or ''
+                    raw_team = athlete.get('team', '') or ''
+                    team_id = normalize_team(raw_team) or raw_team
                     position = athlete.get('position', '') or ''
                     status = athlete.get('status', '') or ''
 

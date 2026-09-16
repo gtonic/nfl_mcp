@@ -15,7 +15,8 @@ from io import StringIO
 from . import opportunity
 from .config import LONG_TIMEOUT, create_http_client
 from .errors import create_success_response, handle_http_errors, handle_validation_error
-from .matchup_tools import _NFLVERSE_TEAM_FIX, NFLVERSE_PLAYER_STATS_URL
+from .matchup_tools import NFLVERSE_PLAYER_STATS_URL
+from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def parse_game_logs(csv_text: str) -> dict[str, dict]:
             "player_id": pid,
             "name": row.get("player_display_name") or row.get("player_name"),
             "position": pos,
-            "team": _NFLVERSE_TEAM_FIX.get(team, team),
+            "team": normalize_team(team) or team,
             "games": [],
         })
         game = {"week": int(wk)}

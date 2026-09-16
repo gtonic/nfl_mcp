@@ -20,9 +20,12 @@ NFLVERSE_PLAYER_STATS_URL = (
     "https://github.com/nflverse/nflverse-data/releases/download/"
     "stats_player/stats_player_week_{season}.csv"
 )
-# nflverse abbreviations -> the abbreviations used across this codebase.
-_NFLVERSE_TEAM_FIX = {"LA": "LAR", "WAS": "WSH", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LAR"}
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
+from .teams import TEAM_ALIASES, normalize_team
+
+# nflverse abbreviations -> the abbreviations used across this codebase.
+# Retained for callers that import it; `normalize_team` is the real mapping.
+_NFLVERSE_TEAM_FIX = dict(TEAM_ALIASES)
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +194,7 @@ class DefenseRankingsAnalyzer:
                 if pos not in ("QB", "RB", "WR", "TE"):
                     continue
                 opp = (row.get("opponent_team") or "").upper()
-                opp = _NFLVERSE_TEAM_FIX.get(opp, opp)
+                opp = normalize_team(opp) or opp
                 wk = row.get("week")
                 if not opp or not wk:
                     continue
@@ -465,7 +468,7 @@ async def fetch_offense_rankings(season: int) -> dict[str, dict]:
             if pos not in ("QB", "RB", "WR", "TE"):
                 continue
             team = (row.get("team") or row.get("recent_team") or "").upper()
-            team = _NFLVERSE_TEAM_FIX.get(team, team)
+            team = normalize_team(team) or team
             wk = row.get("week")
             if not team or not wk:
                 continue
