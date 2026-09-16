@@ -1002,6 +1002,25 @@ class NFLDatabase:
             logger.debug(f"get_opponent failed: {e}")
             return None
 
+    def get_kickoff_week_index(self, season: int) -> dict[tuple[str, str], int]:
+        """Map ``(team, 'YYYY-MM-DD')`` to the NFL week of that kickoff.
+
+        Lets callers holding a bare kickoff timestamp — the odds feed, for
+        instance, which publishes two weeks at once and labels neither — decide
+        which week a game belongs to instead of guessing from the date.
+        """
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT team, substr(kickoff, 1, 10) AS day, week "
+                    "FROM schedule_games WHERE season=?",
+                    (season,),
+                )
+                return {(row["team"], row["day"]): row["week"] for row in cur.fetchall()}
+        except Exception as e:
+            logger.debug(f"get_kickoff_week_index failed: {e}")
+            return {}
+
     def get_team_schedule_from_cache(self, team: str, season: int) -> list[dict]:
         """Fetch team's full schedule from cache (all weeks for given season).
 
