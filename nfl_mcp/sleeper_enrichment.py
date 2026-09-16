@@ -336,13 +336,14 @@ async def _fetch_injuries():
     ]
 
     all_injuries = []
+    # ESPN id -> display name, shared across teams for the whole fetch.
+    athlete_names: dict[str, str] = {}
 
     try:
-        import re
-
         import httpx
 
         from .config import create_http_client, get_http_headers
+        from .injury_service import extract_athlete_id
 
         headers = get_http_headers("nfl_teams")
 
@@ -405,15 +406,20 @@ async def _fetch_injuries():
 
                                 # Athlete is also a $ref, so we need to extract from URL or fetch it
                                 athlete_url = athlete_ref.get('$ref', '')
-                                # Extract athlete ID from URL: .../athletes/4428633/...
-                                athlete_id_match = re.search(r'/athletes/(\d+)/', athlete_url)
-                                if not athlete_id_match:
+                                player_id = extract_athlete_id(athlete_url)
+                                if not player_id:
+                                    # Loud on purpose: a silent skip here once
+                                    # dropped every record from every team.
+                                    logger.warning(
+                                        f"[Fetch Injuries] {team}: no athlete id in {athlete_url!r}"
+                                    )
                                     continue
 
-                                player_id = athlete_id_match.group(1)
-
-                                # Get player name - might need to fetch athlete details
-                                player_name = athlete_ref.get('displayName')
+                                # Get player name - might need to fetch athlete details.
+                                # Cached across teams because the injury payload only
+                                # carries a $ref, so this would otherwise cost one
+                                # extra request per injury, every cycle.
+                                player_name = athlete_ref.get('displayName') or athlete_names.get(player_id)
                                 if not player_name:
                                     # Try fetching athlete details
                                     try:
@@ -425,6 +431,7 @@ async def _fetch_injuries():
                                             player_name = 'Unknown'
                                     except (httpx.HTTPError, json.JSONDecodeError, KeyError, AttributeError):
                                         player_name = 'Unknown'
+                                    athlete_names[player_id] = player_name
 
                                 # Status and type are nested objects
                                 status_data = injury_item.get('status', {})
