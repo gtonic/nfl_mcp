@@ -7,39 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **The injury prefetch returned zero records for every team.** `_fetch_injuries`
-  extracted the ESPN athlete id with `r'/athletes/(\d+)/'`, which requires a
-  trailing slash. The injury payload's `athlete.$ref` ends *at* the id followed
-  by a query string (`.../athletes/4684527?lang=en&region=us`), so the pattern
-  never matched and every record hit a `continue`. The loop spent ~7 minutes and
-  1919 HTTP requests per cycle producing nothing, and because that `continue`
-  logged nothing, the failure was invisible even at DEBUG — the cycle summary
-  just read `Injuries: 0 rows`.
+## [0.8.0] - 2026-09-16
 
-  `injury_service` already had the correct pattern, which is why the on-demand
-  path worked while the prefetch did not. Both now share
-  `injury_service.extract_athlete_id()` so the two cannot drift apart again, the
-  unresolvable-id branch logs a warning instead of skipping silently, and
-  athlete display names are cached across teams. Verified against the live API:
-  **1600 records** where the previous implementation returned 0.
+The weekly-usage pipeline never actually ran. Four independent defects, each
+enough on its own to lose the data, kept `player_usage_stats`,
+`player_week_stats` and `injury_history` empty for the whole season while the
+server reported itself healthy. This release fixes all four, activates the
+injury timeline that shipped dormant in v11, and adds a tool to read it.
 
 ### Added
-- **`injury_history` is now written, and readable through `get_injury_trends`.**
-  The table and its `add_injury_history()` / `get_injury_history()` helpers had
-  shipped in migration v11 but nothing ever called the writer: 0 rows against
-  2621 in `player_injuries`. `upsert_injuries` now records a row on a player's
-  first sighting and on every later status or body-part change — **only** on a
-  change, because the prefetch loop re-sends the identical feed every 15
-  minutes and copying it each cycle would bury the timeline in duplicates.
+- **`injury_history` is now written, and readable through the new
+  `get_injury_trends` tool.** The table and its `add_injury_history()` /
+  `get_injury_history()` helpers shipped in migration v11 but nothing ever
+  called the writer: 0 rows against 2621 in `player_injuries`.
+  `upsert_injuries` now records a row on a player's first sighting and on every
+  later status or body-part change — **only** on a change, because the prefetch
+  loop re-sends the identical feed every 15 minutes and copying it each cycle
+  would bury the timeline in duplicates.
 
   `get_injury_trends` reads that timeline rather than the current snapshot, so
-  it answers "what moved since I last looked" instead of "who is hurt". Each
-  change carries its `previous_status`, a `direction` (`worse` / `better` /
-  `lateral` / `new`) and a `severity_delta` derived from the existing
-  `STATUS_SEVERITY` scale, and can be filtered by window, team and direction.
-  A same-severity relabel (a changed body part on an unchanged status) counts
-  as `lateral`, not as a move in either direction.
+  it answers "what moved since I last looked" instead of "who is hurt", which
+  the existing tools already cover. Each change carries its `previous_status`,
+  a `direction` (`worse` / `better` / `lateral` / `new`) and a `severity_delta`
+  derived from the existing `STATUS_SEVERITY` scale, filterable by window, team
+  and direction. A same-severity relabel (a changed body part on an unchanged
+  status) counts as `lateral`, not as a move in either direction.
+- **`scripts/backfill_usage.py`** for the weeks the prefetch loop cannot reach.
+  Each cycle only fetches `week - 1`, so a server started mid-season never
+  acquires the earlier weeks. The script walks a week range and upserts both
+  tables from the same free Sleeper endpoint; re-running is safe.
 
 ### Fixed
 - **The prefetch loop never ran from a `.env`-only config**, so
@@ -49,9 +45,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ADVANCED_ENRICH_ENABLED = os.getenv(...)` was evaluated against an empty
   environment. `/health` read the variable live and cheerfully reported
   `advanced_enrich_enabled: true` while the loop read the stale constant and
-  logged `Prefetch disabled`. The flag is now resolved lazily via
-  `advanced_enrich_enabled()`; the module attribute still wins when set, so
-  existing `monkeypatch.setattr` overrides keep working.
+  logged `Prefetch disabled`, which made the symptom hard to trust. The flag is
+  now resolved lazily via `advanced_enrich_enabled()`; the module attribute
+  still wins when set, so existing `monkeypatch.setattr` overrides keep working.
+- **The injury prefetch returned zero records for every team.**
+  `_fetch_injuries` extracted the ESPN athlete id with `r'/athletes/(\d+)/'`,
+  which requires a trailing slash. The injury payload's `athlete.$ref` ends *at*
+  the id followed by a query string
+  (`.../athletes/4684527?lang=en&region=us`), so the pattern never matched and
+  every record hit a `continue`. The loop spent ~7 minutes and 1919 HTTP
+  requests per cycle producing nothing, and because that `continue` logged
+  nothing the failure was invisible even at DEBUG — the cycle summary just read
+  `Injuries: 0 rows`.
+
+  `injury_service` already had the correct pattern, which is precisely why the
+  on-demand path kept working while the prefetch silently did not. Both now
+  share `injury_service.extract_athlete_id()` so the two cannot drift apart
+  again, the unresolvable-id branch logs a warning instead of skipping
+  silently, and athlete display names are cached across teams. Verified against
+  the live API: **1600 records** where the previous implementation returned 0.
+- **`get_waiver_log` crashed on any league with activity**, taking
+  `get_waiver_wire_dashboard` down with it. Sleeper sends `"adds": null` for a
+  pure drop rather than omitting the key, so `transaction.get('adds', {})`
+  returned `None` — the default only applies to a *missing* key — and `.keys()`
+  raised `'NoneType' object has no attribute 'keys'`. In one real 12-team
+  league, 1 of 11 week-1 transactions had `adds: null` and 5 had `drops: null`.
+  The dashboard surfaced it as `http_error`, and without a `round` argument it
+  returned an empty log with `success: true`, so the failure read as "no waiver
+  activity" rather than an error. All eight add/drop accesses are now guarded.
 - **`air_yards` was always NULL.** The usage parser probed `rec_air_yds`
   (plural) and `air_yards`; Sleeper ships `rec_air_yd`. 249 of 343 week-1 rows
   carry the field, and none of them were being read. Both legacy spellings are
@@ -63,12 +84,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already did — which is a measured value rather than the depth-chart guess
   from `_estimate_snap_pct`. Field probing moved to a `_first_present()` helper
   so a legitimate `0` survives, which plain `or` chaining discarded.
+- **The scheduled Evals workflow failed every Tuesday** with
+  `Unknown config option: asyncio_mode` (exit 4). The metric-test step installed
+  bare `pytest`, but `pyproject.toml` sets `asyncio_mode = "auto"`, which only
+  parses with `pytest-asyncio` present. Because Evals is scheduled and
+  non-blocking, nobody saw it.
 
-### Added
-- **`scripts/backfill_usage.py`** for the weeks the prefetch loop cannot reach.
-  Each cycle only fetches `week - 1`, so a server started mid-season never
-  acquires the earlier weeks. The script walks a week range and upserts both
-  tables from the same free Sleeper endpoint; re-running is safe.
+### Documentation
+- `README.md` now covers all 77 tools; four were missing
+  (`get_handcuff_map`, `get_injury_trends`, `get_opportunity_projections`,
+  `get_win_probability_lineup`). The claim that AGENT.md carries every tool's
+  full parameter reference was inaccurate — 35 of 77 are absent — and now points
+  at the self-describing MCP schemas instead.
+- `AGENT.md` documented prefetch as "set `NFL_MCP_PREFETCH=1`". Both that flag
+  **and** `NFL_MCP_ADVANCED_ENRICH=1` are required; with only the first the loop
+  starts and immediately returns. This is what kept the tables empty in
+  practice, so it is a fix in its own right.
 
 ## [0.7.7] - 2026-09-13
 
