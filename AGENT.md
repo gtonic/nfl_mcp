@@ -269,7 +269,10 @@ The server provides multiple levels of data enrichment to enhance fantasy decisi
 
 Background data prefetching for optimal performance:
 
-- **Enable**: Set `NFL_MCP_PREFETCH=1`
+- **Enable**: set **both** `NFL_MCP_PREFETCH=1` *and* `NFL_MCP_ADVANCED_ENRICH=1`.
+  `NFL_MCP_PREFETCH` starts the loop; `NFL_MCP_ADVANCED_ENRICH` ungates the
+  individual fetchers. With only the first set, the loop starts and immediately
+  returns, and the usage/snap/injury tables stay empty.
 - **Interval**: `NFL_MCP_PREFETCH_INTERVAL` (default: 900 seconds = 15 min)
 - **Snap TTL**: `NFL_MCP_PREFETCH_SNAPS_TTL` (default: 900 seconds)
 - **Athletes refresh**: `NFL_MCP_PREFETCH_ATHLETES` (default: on) every `NFL_MCP_PREFETCH_ATHLETES_INTERVAL` (default: 86400 seconds = daily)
@@ -277,9 +280,20 @@ Background data prefetching for optimal performance:
 The prefetch system automatically:
 1. Determines current season/week via NFL state
 2. Fetches team schedules (caches opponent data)
-3. Fetches player snap counts (caches usage data)
-4. Refreshes the athletes cache (player names/teams/positions) at startup and daily
-5. Refreshes on configured intervals
+3. Fetches player snap counts (`player_week_stats`) and weekly usage —
+   targets, touches, red-zone touches, air yards, snap share (`player_usage_stats`)
+4. Fetches injury reports, recording every status change in `injury_history`
+5. Fetches practice reports (Thursday–Saturday only)
+6. Refreshes the athletes cache (player names/teams/positions) at startup and daily
+7. Refreshes on configured intervals
+
+Each cycle fetches only the **previous** week, so a server started mid-season
+never acquires the earlier ones. Use `scripts/backfill_usage.py` to fill a week
+range after the fact:
+
+```bash
+python -m scripts.backfill_usage --season 2026 --through 5
+```
 
 ### Robustness & Resilience
 
@@ -320,8 +334,10 @@ The server supports extensive configuration via environment variables:
 - `NFL_MCP_SERVER_VERSION`: Server version string
 
 #### Advanced Features
-- `NFL_MCP_ADVANCED_ENRICH`: Enable advanced enrichment (0 or 1)
-- `NFL_MCP_PREFETCH`: Enable background prefetch (0 or 1)
+- `NFL_MCP_ADVANCED_ENRICH`: Enable advanced enrichment (0 or 1). **Also required
+  for the prefetch loop** — without it the loop exits immediately.
+- `NFL_MCP_PREFETCH`: Enable background prefetch (0 or 1). Needs
+  `NFL_MCP_ADVANCED_ENRICH=1` alongside it to do anything.
 - `NFL_MCP_PREFETCH_INTERVAL`: Prefetch interval in seconds (default: 900)
 - `NFL_MCP_PREFETCH_SNAPS_TTL`: Snap data TTL in seconds (default: 900)
 - `NFL_MCP_PREFETCH_ATHLETES`: Refresh athletes cache during prefetch (0 or 1, default: 1)
