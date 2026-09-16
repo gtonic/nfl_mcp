@@ -91,9 +91,9 @@ Draft-day walkthrough → **[docs/DRAFT_DAY.md](docs/DRAFT_DAY.md)**.
 
 ## 🧰 What's inside
 
-77 MCP tools over HTTP, grouped by what they do. Every tool ships its own parameter
+78 MCP tools over HTTP, grouped by what they do. Every tool ships its own parameter
 schema over MCP, so your assistant can introspect them directly; **[AGENT.md](AGENT.md)**
-covers integration guidance and the tool categories. Below is the map.
+documents all of them plus integration guidance. Below is the map.
 
 **🎯 Draft & player values**
 `get_draft_board` (VBD-tiered board) · `recommend_draft_pick` (best pick live) · `simulate_draft` (offline mock) · `get_player_values` / `get_player_value` (market consensus) · `analyze_trade` (fairness on real values) · `get_league_drafts` · `get_draft` · `get_draft_picks` · `get_draft_traded_picks`

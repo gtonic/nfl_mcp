@@ -29,6 +29,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status from the same feed) are unaffected. It passes no `db`, because the
   callers own persistence — letting the service cache too would double-write.
 
+### Documentation
+- **`AGENT.md` now documents all 78 tools.** It described 44 across seven
+  categories while the server had grown to 78, so every newer family — draft,
+  projections, lineup optimization, matchup/schedule/weather, Vegas, injuries,
+  FAAB/handcuffs, CBS — was missing entirely, including tools an agent has no
+  other narrative reference for. The nine new sections are **generated from the
+  live signatures and docstrings** rather than written by hand, so parameter
+  lists and defaults cannot drift from the code the way the old ones did.
+
+  Also fixes counts that had gone stale (the Sleeper category claimed 18 tools
+  and listed 17) and a duplicated section number (two sections numbered 3).
+  Both documents now state 78: 77 always on, plus `get_league_leaders` behind
+  the `league_leaders` feature flag, which is why a naive count of the registry
+  returns 77.
+
 ## [0.8.0] - 2026-09-16
 
 The weekly-usage pipeline never actually ran. Four independent defects, each
