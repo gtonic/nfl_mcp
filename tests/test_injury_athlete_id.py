@@ -30,18 +30,23 @@ class TestExtractAthleteId:
         assert extract_athlete_id(url) == "111"
 
 
-class TestFetchInjuriesProducesRecords:
-    """End-to-end regression: the prefetch fetcher must return rows."""
+class TestEspnInjuryParsingProducesRecords:
+    """End-to-end regression against the real ESPN payload shape.
+
+    A pattern requiring a trailing slash returned zero records for every team
+    for months; the failure was silent, so pin the parse to real shapes.
+    """
 
     @pytest.mark.asyncio
-    async def test_real_payload_shape_yields_a_record(self, monkeypatch):
+    async def test_real_payload_shape_yields_a_record(self):
         injury_ref = f"{BASE}/seasons/2026/athletes/4684527/injuries/-2004214?lang=en"
         athlete_ref = f"{BASE}/seasons/2026/athletes/4684527?lang=en&region=us"
 
         # Shapes copied from the live ESPN Core API: the list returns bare
-        # $refs, the detail's `athlete` carries only a $ref (no displayName).
+        # $refs, and the detail's `athlete` carries only a $ref — no
+        # displayName, which is why the id must come out of the URL.
         responses = {
-            "injuries?limit=50&page=1": {
+            "injuries?limit": {
                 "count": 1, "pageCount": 1, "items": [{"$ref": injury_ref}],
             },
             injury_ref: {
@@ -57,6 +62,7 @@ class TestFetchInjuriesProducesRecords:
         class MockResponse:
             def __init__(self, payload):
                 self.status_code = 200
+                self.headers = {}
                 self._payload = payload
 
             def json(self):
@@ -69,27 +75,13 @@ class TestFetchInjuriesProducesRecords:
                         return MockResponse(payload)
                 return MockResponse({"count": 0, "pageCount": 1, "items": []})
 
-            async def __aenter__(self):
-                return self
+        from nfl_mcp.injury_service import InjuryAggregator
 
-            async def __aexit__(self, *args):
-                pass
+        aggregator = InjuryAggregator(http_client=MockClient())
+        reports = await aggregator.fetch_espn_injuries(["ARI"])
 
-        monkeypatch.setenv("NFL_MCP_ADVANCED_ENRICH", "1")
-        from nfl_mcp import sleeper_enrichment as se
-
-        monkeypatch.setattr(se, "ADVANCED_ENRICH_ENABLED", True)
-        # `_fetch_injuries` imports this from .config inside the function body,
-        # so the patch has to land on the defining module.
-        monkeypatch.setattr(
-            "nfl_mcp.config.create_http_client", lambda *a, **k: MockClient()
-        )
-
-        result = await se._fetch_injuries()
-
-        assert result, "fetcher returned no records at all"
-        first = result[0]
-        assert first["player_id"] == "4684527"
-        assert first["player_name"] == "Test Player"
-        assert first["injury_status"] == "Questionable"
-        assert first["injury_description"] == "Questionable for Sunday."
+        assert reports, "parser returned no records at all"
+        first = reports[0]
+        assert first.player_id == "4684527"
+        assert first.player_name == "Test Player"
+        assert first.injury_status == "Questionable"

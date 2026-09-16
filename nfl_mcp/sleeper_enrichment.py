@@ -5,7 +5,6 @@ plus the usage/opponent enrichment helpers. These are LEAF helpers — the publi
 Sleeper tools call into them, not the reverse — so extracting them is cycle-free.
 Re-exported from ``sleeper_tools`` for backward compatibility.
 """
-import json
 import logging
 import os
 from datetime import UTC, datetime
@@ -316,10 +315,22 @@ async def _fetch_all_team_schedules(season: int):
 
 
 async def _fetch_injuries():
-    """Fetch injury reports from ESPN for all NFL teams.
+    """Fetch injury reports for all NFL teams.
 
     Returns list of dicts with keys: player_id, player_name, team_id, position,
-    injury_status, injury_type, injury_description, date_reported.
+    injury_status, injury_type, injury_description, game_status, severity,
+    confidence, sources, date_reported.
+
+    Delegates to ``injury_service``, which fetches teams and injury details
+    concurrently, caches athlete names and merges ESPN with CBS. This module
+    used to carry its own sequential copy of that crawl; against the live API it
+    took 589s for 1600 single-source records where the service needs 45s for
+    1906 multi-source ones. Keeping two implementations is also what let one of
+    them silently break — the copy extracted athlete ids with a pattern that
+    never matched and returned nothing at all for months.
+
+    ``db`` is deliberately not passed: the callers own persistence, so letting
+    the service cache as well would write every record twice.
     """
     if not advanced_enrich_enabled():
         logger.debug("[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
@@ -327,162 +338,16 @@ async def _fetch_injuries():
 
     logger.info("[Fetch Injuries] Starting fetch for all teams")
 
-    # NFL team abbreviations
-    teams = [
-        "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
-        "DAL", "DEN", "DET", "GB", "HOU", "IND", "JAX", "KC",
-        "LAC", "LAR", "LV", "MIA", "MIN", "NE", "NO", "NYG",
-        "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WSH"  # WSH (not WAS) for Washington
-    ]
-
-    all_injuries = []
-    # ESPN id -> display name, shared across teams for the whole fetch.
-    athlete_names: dict[str, str] = {}
+    from .injury_service import get_injury_reports
 
     try:
-        import httpx
-
-        from .config import create_http_client, get_http_headers
-        from .injury_service import extract_athlete_id
-
-        headers = get_http_headers("nfl_teams")
-
-        async with create_http_client() as client:
-            for team in teams:
-                try:
-                    page = 1
-                    page_count = 1  # Will be updated from first response
-                    team_injuries = []
-
-                    # Fetch all pages for this team
-                    # Note: ESPN Core API returns items as $ref URLs only
-                    # Removed 10-injury limit - ESPN typically returns 15-25 max anyway
-                    max_injuries_per_team = 50  # Reasonable limit while allowing full data
-                    injuries_fetched = 0
-
-                    while page <= page_count and injuries_fetched < max_injuries_per_team:
-                        url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit=50&page={page}"
-                        resp = await client.get(url, headers=headers)
-
-                        if resp.status_code != 200:
-                            logger.debug(f"[Fetch Injuries] Team {team} page {page}: status {resp.status_code}")
-                            break
-
-                        data = resp.json()
-
-                        # Update page count from first response
-                        if page == 1:
-                            page_count = data.get('pageCount', 1)
-
-                            # DEBUG: Log first team's response to understand structure
-                            if team == teams[0]:
-                                logger.info(f"[DEBUG Injuries] {team} response keys: {list(data.keys())}")
-                                logger.info(f"[DEBUG Injuries] {team} count: {data.get('count', 'N/A')}")
-                                logger.info(f"[DEBUG Injuries] {team} pageCount: {page_count}")
-                                logger.info(f"[DEBUG Injuries] {team} page 1 items length: {len(data.get('items', []))}")
-
-                        injuries_data = data.get('items', [])
-
-                        # ESPN Core API v2 returns items as $ref URLs only
-                        # We need to fetch each injury detail separately
-                        for injury_ref in injuries_data:
-                            try:
-                                # Each item is just {"$ref": "url"}
-                                injury_url = injury_ref.get('$ref')
-                                if not injury_url:
-                                    continue
-
-                                # Fetch the actual injury details
-                                injury_resp = await client.get(injury_url, headers=headers)
-                                if injury_resp.status_code != 200:
-                                    continue
-
-                                injury_item = injury_resp.json()
-
-                                # Extract athlete info from the injury details
-                                athlete_ref = injury_item.get('athlete', {})
-                                if not athlete_ref:
-                                    continue
-
-                                # Athlete is also a $ref, so we need to extract from URL or fetch it
-                                athlete_url = athlete_ref.get('$ref', '')
-                                player_id = extract_athlete_id(athlete_url)
-                                if not player_id:
-                                    # Loud on purpose: a silent skip here once
-                                    # dropped every record from every team.
-                                    logger.warning(
-                                        f"[Fetch Injuries] {team}: no athlete id in {athlete_url!r}"
-                                    )
-                                    continue
-
-                                # Get player name - might need to fetch athlete details.
-                                # Cached across teams because the injury payload only
-                                # carries a $ref, so this would otherwise cost one
-                                # extra request per injury, every cycle.
-                                player_name = athlete_ref.get('displayName') or athlete_names.get(player_id)
-                                if not player_name:
-                                    # Try fetching athlete details
-                                    try:
-                                        athlete_detail_resp = await client.get(athlete_url, headers=headers)
-                                        if athlete_detail_resp.status_code == 200:
-                                            athlete_detail = athlete_detail_resp.json()
-                                            player_name = athlete_detail.get('displayName', 'Unknown')
-                                        else:
-                                            player_name = 'Unknown'
-                                    except (httpx.HTTPError, json.JSONDecodeError, KeyError, AttributeError):
-                                        player_name = 'Unknown'
-                                    athlete_names[player_id] = player_name
-
-                                # Status and type are nested objects
-                                status_data = injury_item.get('status', {})
-                                type_data = injury_item.get('type', {})
-
-                                # Normalize status and calculate severity
-                                raw_status = status_data if isinstance(status_data, str) else status_data.get('description', 'Unknown')
-                                from .injury_service import InjuryAggregator
-                                normalized_status = InjuryAggregator.normalize_status(raw_status)
-                                severity = InjuryAggregator.get_severity(normalized_status)
-
-                                injury = {
-                                    'player_id': str(player_id),
-                                    'player_name': player_name,
-                                    'team_id': team,
-                                    'position': None,  # Not available in injury endpoint
-                                    'injury_status': normalized_status,
-                                    'injury_type': type_data.get('name') if isinstance(type_data, dict) else None,
-                                    'injury_description': injury_item.get('shortComment') or injury_item.get('longComment'),
-                                    'severity': severity,
-                                    'confidence': 60,  # Single source (ESPN)
-                                    'sources': ['ESPN'],
-                                    'date_reported': injury_item.get('date')
-                                }
-                                team_injuries.append(injury)
-                                injuries_fetched += 1
-
-                                # Stop if we've reached the limit per team
-                                if injuries_fetched >= max_injuries_per_team:
-                                    break
-
-                            except Exception as e:
-                                logger.debug(f"[Fetch Injuries] Failed to fetch injury detail: {e}")
-                                continue
-
-                        # Move to next page
-                        page += 1
-
-                    # Add all injuries from this team
-                    all_injuries.extend(team_injuries)
-
-                except Exception as e:
-                    logger.debug(f"[Fetch Injuries] Team {team} failed: {e}")
-                    continue
-
-        logger.info(f"[Fetch Injuries] Successfully fetched {len(all_injuries)} injury records across {len(teams)} teams")
-        return all_injuries
-
+        injuries = await get_injury_reports(teams=None, db=None, use_cache=False)
+        logger.info(f"[Fetch Injuries] Successfully fetched {len(injuries)} injury records")
+        return injuries
     except Exception as e:
         logger.error(f"[Fetch Injuries] Failed: {e}", exc_info=True)
         return []
+
 
 async def _fetch_practice_reports(season: int, week: int):
     """Fetch practice status reports (DNP/LP/FP) from ESPN injuries endpoint.

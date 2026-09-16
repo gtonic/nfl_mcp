@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The injury prefetch now delegates to `injury_service` instead of carrying
+  its own copy of the ESPN crawl.** `sleeper_enrichment._fetch_injuries` walked
+  32 teams and every injury detail sequentially; `injury_service` has done the
+  same work concurrently for a while, with semaphores over both teams and
+  injury details, an athlete-name cache, ETag/If-Modified-Since handling and a
+  CBS merge on top. Measured against the live API, the duplicate needed **589s
+  for 1600 single-source records** where the service needs **44s for 1906
+  multi-source ones**. A full prefetch cycle drops from 418s to **47s**, which
+  matters against a 900s interval that also has to fit schedules, snaps, usage
+  and practice reports.
+
+  This removes 169 lines and, more to the point, the second implementation:
+  having two copies of one crawl is what allowed the v0.8.0 athlete-id bug to
+  sit undetected in the unused one while the maintained one stayed correct. The
+  end-to-end regression test moved with the parsing, onto `injury_service`.
+
+  `_fetch_injuries` keeps its name, signature and return shape, so both callers
+  (the prefetch loop and `_fetch_practice_reports`, which derives practice
+  status from the same feed) are unaffected. It passes no `db`, because the
+  callers own persistence — letting the service cache too would double-write.
+
 ## [0.8.0] - 2026-09-16
 
 The weekly-usage pipeline never actually ran. Four independent defects, each
