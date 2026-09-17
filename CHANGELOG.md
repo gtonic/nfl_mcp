@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`get_weekly_briefing` reported a team defense as a lineup change every
+  week, even when it was already starting.** Current starters were resolved via
+  `full_name`, which is empty for defenses, while the candidate side named them
+  after their team code — so the two sides of the comparison never matched.
+  Both now use the same resolution. Caught against a live roster where the
+  defense was correctly in the lineup and still appeared under `changes`.
+
 ### Added
 - **Defenses and kickers are projected instead of returning a constant.**
   `base_ppg` gave every DST 7.0 and every kicker 8.0 regardless of opponent,

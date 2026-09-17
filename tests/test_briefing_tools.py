@@ -89,3 +89,16 @@ class TestIdentifyingTheRoster:
         result = await briefing_tools.get_weekly_briefing(league_id="L1")
         assert result["success"] is False
         assert "roster_id" in result["error"]
+
+
+class TestDefenseIsRecognisedAsAlreadyStarting:
+    def test_starter_name_resolution_matches_build_player(self):
+        # A defense has no `full_name`; if the two sides of the comparison
+        # disagree it is reported as a lineup change every week even when it is
+        # already in the lineup.
+        from nfl_mcp.teams import normalize_team
+
+        row = {"full_name": "", "position": "DEF", "team_id": "SF"}
+        built = briefing_tools._build_player("SF", {"SF": row}, {"SF": "MIA"}, {}, {})
+        as_starter = row.get("full_name") or normalize_team(row.get("team_id"))
+        assert built["name"] == as_starter == "SF"
