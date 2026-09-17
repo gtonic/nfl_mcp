@@ -17,6 +17,7 @@ from .errors import (
     handle_http_errors,
     handle_validation_error,
 )
+from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ TEAM_ID_MAP = {
     "KC": "12", "LV": "13", "LAC": "24", "LAR": "14", "MIA": "15",
     "MIN": "16", "NE": "17", "NO": "18", "NYG": "19", "NYJ": "20",
     "PHI": "21", "PIT": "23", "SF": "25", "SEA": "26", "TB": "27",
-    "TEN": "10", "WAS": "28"
+    "TEN": "10", "WSH": "28"
 }
 
 
@@ -51,8 +52,10 @@ def _get_espn_team_id(team_id: str) -> str:
     if team_upper.isdigit():
         return team_upper
 
-    # Look up in mapping
-    return TEAM_ID_MAP.get(team_upper, team_upper)
+    # Canonicalize first: the map is keyed on canonical codes, and a caller
+    # passing WAS/JAC/OAK would otherwise fall through and be sent to ESPN as a
+    # literal team id, which answers 400.
+    return TEAM_ID_MAP.get(normalize_team(team_upper) or team_upper, team_upper)
 
 
 def _classify_coach_role(role_name: str) -> dict[str, Any]:
@@ -620,7 +623,7 @@ TEAM_SCHEMES = {
     "SEA": {"offense": "West Coast", "defense": "3-4 Base"},
     "TB": {"offense": "Coryell/Vertical", "defense": "3-4 Base"},
     "TEN": {"offense": "Power Run/Play Action", "defense": "3-4 Base"},
-    "WAS": {"offense": "West Coast", "defense": "4-3 Base"}
+    "WSH": {"offense": "West Coast", "defense": "4-3 Base"}
 }
 
 
@@ -650,7 +653,8 @@ async def get_scheme_classification(team_id: str) -> dict:
 
     team_id_upper = team_id.upper().strip()
 
-    scheme_data = TEAM_SCHEMES.get(team_id_upper)
+    # Keyed on canonical codes; normalize so WAS and WSH both resolve.
+    scheme_data = TEAM_SCHEMES.get(normalize_team(team_id_upper) or team_id_upper)
 
     if scheme_data:
         # Generate scheme notes based on classification

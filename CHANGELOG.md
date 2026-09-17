@@ -27,6 +27,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shapes are now handled, with the current one first. On a live roster the tool
   went from 0 findings to correctly mapping four running backs and surfacing
   two free handcuffs.
+- **Projections priced home-team players off the *opponent's* implied total
+  when the caller used a non-canonical team code.** `get_game_lines`
+  normalizes its lookup but returns the canonical spelling, so
+  `game["home_team"] == team` failed whenever a caller passed Sleeper's
+  `WAS`/`JAC` or nflverse's `LA` — and the code then read the away side.
+  Reproduced live: `LA` yielded an implied total of 20.4 where `LAR` gave 27.5
+  for the same player in the same game, with `vegas_active: true` reported
+  either way. The comparison is now canonical on both sides.
+- **`get_coaching_staff` and `get_scheme_classification` failed for
+  Washington.** Both lookup tables were keyed on `WAS` while the rest of the
+  codebase emits the canonical `WSH`, so `get_coaching_staff("WSH")` sent
+  the literal string to ESPN as a numeric team id and got HTTP 400, and the
+  scheme lookup reported "not found". Both tables are canonical now and both
+  entry points normalize their input.
+- **A fourth hand-rolled team normalizer in `get_matchup_difficulty`** handled
+  only `WAS` and `JAC`; `LA`, `STL`, `OAK`, `SD` and every full name fell
+  through to a neutral matchup tier. It now calls `normalize_team`.
+- **The Vegas lookup in `projections` swallowed every exception silently.** A
+  payload-shape change would have sent every player to the neutral fallback
+  with no trace in the logs — the same failure mode that hid the injury fetcher
+  returning zero records for months. It logs a warning now.
 
 ### Fixed
 - **`get_weekly_briefing` reported a team defense as a lineup change every
