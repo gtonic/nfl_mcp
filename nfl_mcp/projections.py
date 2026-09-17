@@ -23,6 +23,7 @@ from . import opportunity_tools
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .matchup_tools import get_defense_analyzer
 from .player_values import get_values_service, scoring_to_ppr
+from .teams import normalize_team
 from .vegas_tools import get_vegas_analyzer
 from .weather_tools import weather_multiplier
 
@@ -205,14 +206,21 @@ class ProjectionEngine:
         if team:
             try:
                 game = self.vegas.get_game_lines(team, lines)
-                is_home = game.get("home_team") == team
+                # Compare canonical to canonical. `get_game_lines` normalizes
+                # its lookup but returns the canonical spelling, so a caller
+                # passing Sleeper's `WAS`/`JAC`/`LA` would fail this test on a
+                # HOME game and read the *opponent's* implied total instead.
+                canonical = normalize_team(team) or team
+                is_home = game.get("home_team") == canonical
                 implied_total = game.get("home_implied_total") if is_home else game.get("away_implied_total")
                 opponent_implied_total = (
                     game.get("away_implied_total") if is_home else game.get("home_implied_total")
                 )
                 env_is_fallback = bool(game.get("is_fallback"))
-            except Exception:
-                pass
+            except Exception as e:
+                # Never silent: a payload-shape change here would send every
+                # player to the neutral fallback with no trace in the logs.
+                logger.warning(f"Vegas lookup failed for {team}: {e}")
         env_mult = _environment_mult(implied_total, env_is_fallback)
 
         # Defenses and kickers are priced off the game total directly rather

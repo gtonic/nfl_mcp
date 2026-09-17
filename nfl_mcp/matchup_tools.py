@@ -342,13 +342,9 @@ class DefenseRankingsAnalyzer:
             Dict with rank, tier, points_allowed, and recommendation
         """
         position = position.upper()
-        opponent_team = opponent_team.upper()
-
-        # Normalize opponent team
-        if opponent_team == "WAS":
-            opponent_team = "WSH"
-        elif opponent_team == "JAC":
-            opponent_team = "JAX"
+        # A hand-rolled two-entry map lived here and missed LA/STL/OAK/SD and
+        # every full name, each of which silently produced a neutral tier.
+        opponent_team = normalize_team(opponent_team) or opponent_team.upper()
 
         if rankings and position in rankings:
             pos_rankings = rankings[position]
