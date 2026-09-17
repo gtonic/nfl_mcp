@@ -32,7 +32,7 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server provides **78 MCP tools** organized into logical categories — 77
+The server provides **79 MCP tools** organized into logical categories — 78
 always on, plus `get_league_leaders` behind the `league_leaders` feature flag
 (enabled by default). Every tool also ships its own parameter schema over MCP,
 so an agent can introspect the authoritative signature at runtime; this list is
@@ -247,7 +247,11 @@ Trade evaluation and optimization:
   - Parameters: `player_id` (optional), `name` (optional), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `num_teams` (optional, default 12), `dynasty` (optional, default False)
   - Returns: value
 
-### 10. Weekly Projections (3 tools)
+### 10. Weekly Projections (4 tools)
+
+- **`get_weekly_briefing`**: One call for "how should I line up this week".
+  - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional)
+  - Returns: league, week, record, win_probability, projected_points, opponent_projected_points, recommended_lineup, changes, bench, injury_changes, not_projected
 
 - **`project_player`**: Project weekly fantasy points for one player (transparent, no scraping).
   - Parameters: `player_name` (required), `position` (required), `team` (required), `opponent` (required), `snap_percentage` (optional), `usage_trend` (optional), `injury_status` (optional), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `season` (optional), `week` (optional), `wind_mph` (optional), `is_dome` (optional, default False)

@@ -13,6 +13,7 @@ from contextvars import ContextVar
 
 from . import (
     athlete_tools,
+    briefing_tools,
     cbs_fantasy_tools,
     coaching_tools,
     draft_tools,
@@ -100,6 +101,7 @@ def get_all_tools() -> list[Callable]:
         get_nfl_state,
         get_trending_players,
     get_fantasy_context,
+        get_weekly_briefing,
 
         # Sleeper API Tools - Strategic Planning (New from main)
         get_strategic_matchup_preview,
@@ -2509,3 +2511,41 @@ if FEATURE_LEAGUE_LEADERS:
             "success": True,
             "error": None,
         }
+
+
+@timing_decorator("get_weekly_briefing", tool_type="fantasy")
+async def get_weekly_briefing(
+    league_id: str,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    week: int | None = None,
+    season: int | None = None,
+) -> dict:
+    """START HERE for "how should I line up this week" - one call, not six.
+
+    Joins roster, opponent, league scoring/slots, schedule, weather, trailing
+    usage and projections into a single answer, then names the lineup changes
+    worth making. Doing this by hand across separate tools is where week
+    boundaries and team-code variants slip in.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        week: NFL week (defaults to the current one)
+        season: Season (defaults to the current one)
+
+    Returns: {
+        league {name, scoring, slots}, week, record, win_probability,
+        projected_points, opponent_projected_points, recommended_lineup,
+        changes [{slot, start, projected_points}], bench, injury_changes,
+        not_projected, success
+    }
+
+    Example: get_weekly_briefing(league_id="123", roster_id=7)
+    Example: get_weekly_briefing(league_id="123", user_id="456", week=3)
+    """
+    return await briefing_tools.get_weekly_briefing(
+        league_id=league_id, roster_id=roster_id, user_id=user_id,
+        week=week, season=season,
+    )

@@ -1004,6 +1004,37 @@ class NFLDatabase:
             logger.debug(f"get_opponent failed: {e}")
             return None
 
+    def get_week_opponents(self, season: int, week: int) -> dict[str, str]:
+        """``{team: opponent}`` for one week, from the cached schedule.
+
+        One query instead of 32 `get_opponent` round-trips, and the schedule is
+        the right source for "who plays whom" — the odds feed publishes several
+        weeks at once and cannot answer it unambiguously.
+        """
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT team, opponent FROM schedule_games WHERE season=? AND week=?",
+                    (season, week),
+                )
+                return {row["team"]: row["opponent"] for row in cur.fetchall()}
+        except Exception as e:
+            logger.debug(f"get_week_opponents failed: {e}")
+            return {}
+
+    def get_usage_for_week(self, season: int, week: int) -> list[dict]:
+        """All recorded usage rows for one week (empty before it is ingested)."""
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT * FROM player_usage_stats WHERE season=? AND week=?",
+                    (season, week),
+                )
+                return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_usage_for_week failed: {e}")
+            return []
+
     def get_kickoff_week_index(self, season: int) -> dict[tuple[str, str], int]:
         """Map ``(team, 'YYYY-MM-DD')`` to the NFL week of that kickoff.
 
