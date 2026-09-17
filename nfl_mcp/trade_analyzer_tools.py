@@ -11,7 +11,7 @@ from collections import defaultdict
 
 from .errors import ErrorType, create_error_response, create_success_response
 from .player_values import get_values_service
-from .sleeper_tools import get_league, get_rosters, get_trending_players
+from .sleeper_tools import active_enriched, get_league, get_rosters, get_trending_players
 
 logger = logging.getLogger(__name__)
 
@@ -117,27 +117,24 @@ class TradeAnalyzer:
         """
         needs = defaultdict(int)
 
-        players = roster.get("players_enriched", [])
-        starters = roster.get("starters_enriched", [])
+        # Depth means *available* depth; IR and taxi bodies do not fill a slot.
+        players = active_enriched(roster)
 
         # Count by position
         position_counts = defaultdict(int)
-        starter_counts = defaultdict(int)
 
         for player in players:
             pos = player.get("position", "")
             if pos:
                 position_counts[pos] += 1
 
-        for starter in starters:
-            pos = starter.get("position", "")
-            if pos:
-                starter_counts[pos] += 1
-
-        # Calculate needs based on position depth
+        # A parallel `starter_counts` was built here and never read — the
+        # result was `starter_counts.get(pos, 0)` as a bare expression
+        # statement. Removed rather than wired up: weighting need by who
+        # currently starts would change trade recommendations, which is a
+        # feature decision, not a bug fix.
         for pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
             total = position_counts.get(pos, 0)
-            starter_counts.get(pos, 0)
 
             # More need if fewer players at position
             if pos == "QB":

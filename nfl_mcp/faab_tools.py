@@ -22,7 +22,13 @@ import logging
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .player_values import get_values_service
-from .sleeper_tools import get_league, get_nfl_state, get_rosters, get_trending_players
+from .sleeper_tools import (
+    active_enriched,
+    get_league,
+    get_nfl_state,
+    get_rosters,
+    get_trending_players,
+)
 from .trade_analyzer_tools import league_format_from_settings
 
 logger = logging.getLogger(__name__)
@@ -111,7 +117,10 @@ async def recommend_faab_bid(
                 break
         if my_roster is not None:
             my_pos_vals = []
-            for p in my_roster.get("players_enriched", []):
+            # Exclude IR/taxi: a stashed RB1 counted as a live starter, which
+            # inflated `replacement_value` and produced "you're already strong
+            # at RB" for exactly the roster that needs the replacement.
+            for p in active_enriched(my_roster):
                 if (p.get("position") or "").upper() == position:
                     v = service.lookup(values, player_id=p.get("player_id"), name=p.get("full_name"))
                     if v and v.get("value") is not None:
