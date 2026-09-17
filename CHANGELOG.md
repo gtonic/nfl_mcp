@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`get_weekly_briefing` — the whole "how should I line up this week" question
+  in one call.** Answering it previously meant chaining six calls and joining
+  the results by hand: rosters, matchups, league settings, schedule, weather,
+  trailing usage, projections, then the optimizer. That join is exactly where
+  week boundaries and team-code variants slip in — both bugs fixed earlier in
+  this release were found while doing it manually.
+
+  The tool reads league scoring and starting slots from Sleeper rather than
+  assuming them (a half-PPR league was otherwise given full-PPR advice),
+  resolves opponents from the cached schedule rather than the odds feed, and
+  returns the *named changes* worth making instead of a lineup to diff by eye.
+  It also reports the roster's injury transitions from the last seven days,
+  using the `injury_history` timeline added earlier in this release.
+
+  Team defenses are listed under `not_projected` rather than counted as zero:
+  there is no DST projection model yet, and a nameless 0-point candidate would
+  quietly drag every lineup total down.
+
+  Accepts `roster_id` or `user_id`; passing neither is refused rather than
+  guessed.
+
 ### Changed
 - **One canonical team mapping, applied at the source.** Sleeper's athlete rows
   say `WAS` and `OAK` where the odds feed and ESPN say `WSH` and `LV`, and
