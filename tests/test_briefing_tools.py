@@ -21,7 +21,8 @@ class TestSlotParsing:
         positions = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX",
                      "K", "DEF", "BN", "BN", "BN", "IR", "TAXI"]
         slots = briefing_tools._slots_from_positions(positions)
-        assert slots == {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1}
+        # Sleeper says DEF, the optimizer's slot vocabulary says DST.
+        assert slots == {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DST": 1}
 
     def test_sleeper_flex_aliases_are_normalized(self):
         slots = briefing_tools._slots_from_positions(["SUPER_FLEX", "WRRB_FLEX", "REC_FLEX"])
@@ -47,10 +48,19 @@ class TestBuildPlayer:
     def test_bye_week_player_is_skipped(self):
         assert briefing_tools._build_player("p1", self._athlete(), {}, {}, {}) is None
 
-    def test_team_defense_is_not_projected(self):
-        # A nameless 0-point candidate would drag every lineup total down.
+    def test_team_defense_is_named_after_its_team(self):
+        # Defenses carry no name in the athlete rows; the id is the team code,
+        # which is what a lineup should display. They are projected now that
+        # `defense_base` prices them off the opponent's implied total.
         rows = {"SF": {"full_name": "", "position": "DEF", "team_id": "SF"}}
-        assert briefing_tools._build_player("SF", rows, {"SF": "MIA"}, {}, {}) is None
+        player = briefing_tools._build_player("SF", rows, {"SF": "MIA"}, {}, {})
+        assert player is not None
+        assert player["name"] == "SF"
+        assert player["position"] == "DEF"
+
+    def test_nameless_non_defense_is_still_skipped(self):
+        rows = {"x": {"full_name": "", "position": "WR", "team_id": "SF"}}
+        assert briefing_tools._build_player("x", rows, {"SF": "MIA"}, {}, {}) is None
 
     def test_weather_and_usage_are_attached_when_known(self):
         weather = {"WSH": {"wind_mph": 12.0, "precip_in": 0.5, "temp_f": 50, "is_dome": False}}

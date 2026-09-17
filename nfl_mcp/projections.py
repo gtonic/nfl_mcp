@@ -85,6 +85,50 @@ def _environment_mult(implied_total: float | None, is_fallback: bool) -> float:
     return 0.92
 
 
+DEFENSE_POSITIONS = {"DST", "DEF"}
+
+# Defense scoring is dominated by how little the *opponent* is expected to
+# score: sacks, turnovers and a shutout bonus all track a bad offensive day.
+# Points are the projection itself rather than a multiplier, because a flat
+# 7.0 baseline scaled by the defense's own team total — which is what the
+# generic path did — has the causality backwards.
+def defense_base(opponent_implied_total: float | None) -> float:
+    """Expected fantasy points for a team defense, from the opponent's total."""
+    if opponent_implied_total is None:
+        return 7.0
+    if opponent_implied_total <= 16:
+        return 11.0
+    if opponent_implied_total <= 19:
+        return 9.5
+    if opponent_implied_total <= 22:
+        return 8.0
+    if opponent_implied_total <= 25:
+        return 6.5
+    if opponent_implied_total <= 28:
+        return 5.0
+    return 3.5
+
+
+def kicker_base(implied_total: float | None) -> float:
+    """Expected fantasy points for a kicker, from his own team's total.
+
+    Rises with scoring but flattens at the top: a team expected to score 30 is
+    trading field goals for touchdowns, which pays the kicker one point
+    instead of three.
+    """
+    if implied_total is None:
+        return 8.0
+    if implied_total >= 28:
+        return 9.0
+    if implied_total >= 24:
+        return 9.5
+    if implied_total >= 21:
+        return 8.5
+    if implied_total >= 18:
+        return 7.5
+    return 6.5
+
+
 def _usage_mult(snap_pct: float | None, usage_trend: str | None) -> float:
     mult = 1.0
     if snap_pct:
@@ -156,16 +200,38 @@ class ProjectionEngine:
 
         # 3) Game environment (Vegas implied team total)
         implied_total = None
+        opponent_implied_total = None
         env_is_fallback = True
         if team:
             try:
                 game = self.vegas.get_game_lines(team, lines)
                 is_home = game.get("home_team") == team
                 implied_total = game.get("home_implied_total") if is_home else game.get("away_implied_total")
+                opponent_implied_total = (
+                    game.get("away_implied_total") if is_home else game.get("home_implied_total")
+                )
                 env_is_fallback = bool(game.get("is_fallback"))
             except Exception:
                 pass
         env_mult = _environment_mult(implied_total, env_is_fallback)
+
+        # Defenses and kickers are priced off the game total directly rather
+        # than off a positional-rank baseline: neither has a market value to
+        # rank against, so both used to return a constant (7.0 / 8.0) for every
+        # team in every matchup. A defense keys on the *opponent's* total — the
+        # generic path scaled it by its own, which is backwards.
+        if position in DEFENSE_POSITIONS:
+            usable = None if env_is_fallback else opponent_implied_total
+            base = defense_base(usable)
+            base_source = "opponent_total"
+            matchup_mult = 1.0
+            env_mult = 1.0
+        elif position == "K":
+            usable = None if env_is_fallback else implied_total
+            base = kicker_base(usable)
+            base_source = "team_total"
+            matchup_mult = 1.0
+            env_mult = 1.0
 
         # 4) Usage & 5) injury. The opportunity base already embeds volume/usage
         #    trend, so skip the usage multiplier there to avoid double-counting.
@@ -224,6 +290,7 @@ class ProjectionEngine:
             "confidence_level": conf_level,
             "matchup_tier": matchup_tier,
             "implied_total": implied_total,
+            "opponent_implied_total": opponent_implied_total,
             "vegas_active": not env_is_fallback,
             "breakdown": {
                 "base_ppg": base,

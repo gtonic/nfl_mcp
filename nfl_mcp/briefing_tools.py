@@ -20,11 +20,13 @@ from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
 
-# Sleeper slot names that hold a projectable skill player. Team defenses have
-# no projection yet, so they are reported separately rather than silently
-# counted as zero.
-_PROJECTABLE = {"QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "K", "WRRB_FLEX", "REC_FLEX"}
-_SLOT_RENAME = {"SUPER_FLEX": "SUPERFLEX", "WRRB_FLEX": "FLEX", "REC_FLEX": "FLEX"}
+# Sleeper slot names that hold a projectable player. Defenses are priced off
+# the opponent's implied total, so they belong in the optimized lineup rather
+# than in a separate "not projected" list.
+_PROJECTABLE = {"QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "K",
+                "WRRB_FLEX", "REC_FLEX", "DEF", "DST"}
+_SLOT_RENAME = {"SUPER_FLEX": "SUPERFLEX", "WRRB_FLEX": "FLEX",
+                "REC_FLEX": "FLEX", "DEF": "DST"}
 
 
 def _scoring_label(league: dict) -> str:
@@ -67,17 +69,17 @@ def _build_player(
     position = row["position"]
     if not team or not position:
         return None
-    # Team defenses carry no name and have no projection model; reporting them
-    # as a nameless 0-point candidate would quietly drag every lineup total
-    # down and make the bench list unreadable.
-    if position in ("DEF", "DST") or not row.get("full_name"):
+    # Team defenses have no name in the athlete rows; the id *is* the team
+    # code, which is what a lineup should display.
+    name = row.get("full_name") or (team if position in ("DEF", "DST") else None)
+    if not name:
         return None
     opponent = opponents.get(team)
     if not opponent:
         return None  # bye week, or the schedule cache is cold for this team
 
     player = {
-        "name": row["full_name"],
+        "name": name,
         "position": position,
         "team": team,
         "opponent": opponent,
@@ -257,7 +259,13 @@ async def get_weekly_briefing(
         if pid not in projected_ids
     ]
 
+    # Whether live Vegas lines reached the projections. Without them defenses
+    # and kickers fall back to a constant and every game-script signal is
+    # neutral, which is worth stating rather than leaving to be inferred.
+    vegas_active = bool((my_proj or {}).get("vegas_active"))
+
     return create_success_response({
+        "vegas_active": vegas_active,
         "league": {
             "league_id": league_id, "name": league.get("name"),
             "scoring": scoring, "slots": slots, "num_teams": num_teams,
@@ -277,6 +285,6 @@ async def get_weekly_briefing(
         "changes": changes,
         "bench": bench,
         "injury_changes": injury_changes,
-        # DEF has no projection yet, so it is listed rather than counted as 0.
+        # Byes, and anything the projection layer could not price.
         "not_projected": unprojectable,
     })

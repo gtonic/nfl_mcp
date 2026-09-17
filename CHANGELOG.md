@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Defenses and kickers are projected instead of returning a constant.**
+  `base_ppg` gave every DST 7.0 and every kicker 8.0 regardless of opponent,
+  and the generic path then scaled the defense by *its own* team's implied
+  total — so a defense on a high-scoring team was rewarded, which has the
+  causality backwards. A defense scores when the **opponent** does not.
+
+  `defense_base()` prices a DST off the opponent's implied total (11.0 against
+  a team implied at 16 or less, down to 3.5 against 28+), and `kicker_base()`
+  off the kicker's own team total with a deliberate flattening at the top,
+  since a team expected to score 30 trades field goals for touchdowns. Both
+  fall back to the previous constant when Vegas lines are unavailable rather
+  than inventing a number, and the projection now reports
+  `opponent_implied_total` alongside the team's own.
+
+  This closes the last structural gap in the model: lineup totals were
+  understated by roughly 8–10 points per team, and `get_win_probability_lineup`
+  could only compare 9 of 10 slots. `get_weekly_briefing` now returns a
+  complete lineup with an empty `not_projected`.
+
+  Measured on week 2: SF (facing a team implied at 16.0) projects 11.0 while
+  TEN (facing 23.2) projects 6.5 — a 4.5-point spread where the old code
+  returned 7.0 for both.
+
+- **`get_weekly_briefing` reports `vegas_active`.** A transient odds-API
+  failure silently degrades defenses and kickers to their constant and flattens
+  every game-script signal. The flag makes that visible instead of leaving it
+  to be inferred from suspiciously round numbers.
+
+### Added
 - **`get_weekly_briefing` — the whole "how should I line up this week" question
   in one call.** Answering it previously meant chaining six calls and joining
   the results by hand: rosters, matchups, league settings, schedule, weather,
