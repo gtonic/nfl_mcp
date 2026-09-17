@@ -228,11 +228,16 @@ async def get_weekly_briefing(
     )
 
     # 6) What to actually change, named rather than left as a diff to eyeball
-    current_names = {
-        name
-        for pid in ((my_matchup or {}).get("starters") or mine.get("starters") or [])
-        if (name := (athletes.get(pid) or {}).get("full_name"))
-    }
+    # Resolve current starters the same way `_build_player` names them, or a
+    # defense — which has no `full_name` — is never recognised as already
+    # starting and shows up as a change every single week.
+    current_names = set()
+    for pid in ((my_matchup or {}).get("starters") or mine.get("starters") or []):
+        row = athletes.get(pid)
+        if not row:
+            continue
+        name = row.get("full_name") or normalize_team(row.get("team_id")) or pid
+        current_names.add(name)
     recommended = (lineup or {}).get("recommended_lineup") or []
     recommended_names = {s["player"] for s in recommended}
     changes = [
