@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`get_weekly_briefing` could recommend starting a player on IR.** Reserve
+  and taxi players were treated as ordinary lineup candidates, so whenever one
+  out-projected a healthy bench player the tool proposed a lineup the league
+  will not accept. Seen live: an IR running back (thumb surgery) placed in a
+  FLEX slot. They are now excluded from the candidate pool and reported under a
+  separate `reserve` key — they are on the roster deliberately, not a gap.
+
+### Fixed
 - **`get_weekly_briefing` reported a team defense as a lineup change every
   week, even when it was already starting.** Current starters were resolved via
   `full_name`, which is empty for defenses, while the candidate side named them

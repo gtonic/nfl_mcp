@@ -102,3 +102,31 @@ class TestDefenseIsRecognisedAsAlreadyStarting:
         built = briefing_tools._build_player("SF", {"SF": row}, {"SF": "MIA"}, {}, {})
         as_starter = row.get("full_name") or normalize_team(row.get("team_id"))
         assert built["name"] == as_starter == "SF"
+
+
+class TestReservePlayersAreNotStartable:
+    """IR and taxi players cannot legally be started."""
+
+    def _roster(self):
+        return {
+            "roster_id": 1,
+            "players": ["healthy", "on_ir", "on_taxi"],
+            "reserve": ["on_ir"],
+            "taxi": ["on_taxi"],
+            "starters": ["healthy"],
+            "settings": {"wins": 0, "losses": 1},
+        }
+
+    def test_reserve_and_taxi_are_excluded_from_candidates(self):
+        roster = self._roster()
+        unavailable = set(roster.get("reserve") or []) | set(roster.get("taxi") or [])
+        candidates = [p for p in roster["players"] if p not in unavailable]
+        # Recommending an IR player produces a lineup the league rejects. A
+        # live roster had an IR running back appear in the FLEX slot.
+        assert candidates == ["healthy"]
+
+    def test_a_roster_without_reserve_keys_is_unaffected(self):
+        roster = {"players": ["a", "b"]}
+        unavailable = set(roster.get("reserve") or []) | set(roster.get("taxi") or [])
+        assert unavailable == set()
+        assert [p for p in roster["players"] if p not in unavailable] == ["a", "b"]

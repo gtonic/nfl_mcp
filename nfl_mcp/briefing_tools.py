@@ -188,11 +188,16 @@ async def get_weekly_briefing(
         list(mine.get("players") or []) + list((opponent_matchup or {}).get("starters") or [])
     )
 
-    # 5) Project mine and the opponent's projected starters
+    # 5) Project mine and the opponent's projected starters.
+    #    Reserve (IR) and taxi players cannot legally be started, so they must
+    #    not compete for a slot — recommending one produces a lineup the league
+    #    will reject.
+    unavailable = set(mine.get("reserve") or []) | set(mine.get("taxi") or [])
     my_inputs = [
         p for p in (
             _build_player(pid, athletes, opponents, weather, usage)
             for pid in (mine.get("players") or [])
+            if pid not in unavailable
         ) if p
     ]
     opp_ids = (opponent_matchup or {}).get("starters") or []
@@ -261,7 +266,13 @@ async def get_weekly_briefing(
         # id, which for a DEF *is* the team code.
         (athletes.get(pid) or {}).get("full_name") or pid
         for pid in (mine.get("players") or [])
-        if pid not in projected_ids
+        if pid not in projected_ids and pid not in unavailable
+    ]
+    # Stashed players are listed separately: they are on the roster on purpose,
+    # not a gap to fill.
+    reserved = [
+        (athletes.get(pid) or {}).get("full_name") or pid
+        for pid in sorted(unavailable)
     ]
 
     # Whether live Vegas lines reached the projections. Without them defenses
@@ -292,4 +303,5 @@ async def get_weekly_briefing(
         "injury_changes": injury_changes,
         # Byes, and anything the projection layer could not price.
         "not_projected": unprojectable,
+        "reserve": reserved,
     })
