@@ -137,6 +137,26 @@ async def get_league(league_id: str) -> dict:
         })
 
 
+def active_enriched(roster: dict) -> list[dict]:
+    """A roster's enriched players minus anyone on IR or the taxi squad.
+
+    ``players_enriched`` mirrors ``players``, which includes reserve and taxi.
+    Any question of the form "how strong am I here" or "do I need this
+    position" must exclude them: a stashed RB1 otherwise counts as a live
+    starter and suppresses the very recommendation you are asking for.
+
+    Availability questions ("is he rostered") are the opposite — there, an IR
+    player *is* taken — so those callers should keep reading ``players``.
+    """
+    unavailable = set(roster.get("reserve") or []) | set(roster.get("taxi") or [])
+    if not unavailable:
+        return list(roster.get("players_enriched") or [])
+    return [
+        p for p in (roster.get("players_enriched") or [])
+        if str(p.get("player_id")) not in unavailable
+    ]
+
+
 async def get_rosters(league_id: str) -> dict:
     """
     Get all rosters in a fantasy league from Sleeper API.

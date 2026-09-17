@@ -10,7 +10,7 @@ import logging
 from collections import defaultdict
 
 from .errors import ErrorType, create_error_response, create_success_response
-from .sleeper_tools import get_league_users, get_matchups, get_rosters
+from .sleeper_tools import active_enriched, get_league_users, get_matchups, get_rosters
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +294,9 @@ class OpponentAnalyzer:
             Dict with complete opponent analysis
         """
         # Get players and starters
-        all_players = opponent_roster.get("players_enriched", [])
+        # IR/taxi players cannot start, so they must not make an opponent
+        # look deep at a position they are actually thin at.
+        all_players = active_enriched(opponent_roster)
         starters = opponent_roster.get("starters_enriched", [])
 
         # An empty (undrafted / pre-draft) roster isn't "100% vulnerable" —

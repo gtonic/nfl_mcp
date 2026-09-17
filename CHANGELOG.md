@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Roster-strength calculations counted players who cannot play.**
+  `players_enriched` mirrors `players`, which includes reserve (IR) and taxi.
+  Three tools read it as if every entry were available:
+  `recommend_faab_bid` derived your replacement value from it, so a stashed
+  RB1 counted as a live starter, collapsed the computed upgrade to zero and
+  emitted *"You're already strong at RB — this is depth, not an upgrade"* for
+  exactly the roster that needs the replacement; `analyze_trade`'s positional
+  need scoring counted IR bodies as depth; and `analyze_opponent` read an
+  opponent with two backs on IR as deep at the position. A shared
+  `sleeper_tools.active_enriched()` now filters them. Availability questions
+  ("is he rostered") deliberately keep reading `players`, where an IR player
+  *is* taken.
+- **Dead starter-weighting in `analyze_trade`.** `_calculate_positional_needs`
+  built a `starter_counts` map and then evaluated `starter_counts.get(pos, 0)`
+  as a bare expression statement — computed, discarded, never read. Removed
+  rather than wired up: weighting need by who currently starts would change
+  trade recommendations, which is a feature decision rather than a fix.
+
+### Fixed
 - **`get_weekly_briefing` could recommend starting a player on IR.** Reserve
   and taxi players were treated as ordinary lineup candidates, so whenever one
   out-projected a healthy bench player the tool proposed a lineup the league
