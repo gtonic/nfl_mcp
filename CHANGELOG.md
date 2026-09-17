@@ -7,96 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **Roster-strength calculations counted players who cannot play.**
-  `players_enriched` mirrors `players`, which includes reserve (IR) and taxi.
-  Three tools read it as if every entry were available:
-  `recommend_faab_bid` derived your replacement value from it, so a stashed
-  RB1 counted as a live starter, collapsed the computed upgrade to zero and
-  emitted *"You're already strong at RB — this is depth, not an upgrade"* for
-  exactly the roster that needs the replacement; `analyze_trade`'s positional
-  need scoring counted IR bodies as depth; and `analyze_opponent` read an
-  opponent with two backs on IR as deep at the position. A shared
-  `sleeper_tools.active_enriched()` now filters them. Availability questions
-  ("is he rostered") deliberately keep reading `players`, where an IR player
-  *is* taken.
-- **Dead starter-weighting in `analyze_trade`.** `_calculate_positional_needs`
-  built a `starter_counts` map and then evaluated `starter_counts.get(pos, 0)`
-  as a bare expression statement — computed, discarded, never read. Removed
-  rather than wired up: weighting need by who currently starts would change
-  trade recommendations, which is a feature decision rather than a fix.
-- **The draft board's handcuff bonus never fired.** `_handcuff_index` tested
-  `if starter not in names` — a raw string compare between Sleeper draft
-  metadata (`"James Cook"`) and an ESPN depth chart (`"James Cook III"`). Every
-  player with a suffix, accent or punctuation failed the test and was skipped
-  with no log line, so the index came back mostly empty, the `1.30` handcuff
-  multiplier never applied and `handcuff_for` was always `None`. The asymmetry
-  was the tell: `_norm_name` was applied to the backup but not to the starter.
-  Both sides are normalized now, and an unresolvable starter is logged.
-- **`get_playoff_odds` could lose every team name at once.**
-  `u.get("metadata", {}).get("team_name")` raises on Sleeper's explicit
-  `"metadata": null` — the `{}` default covers a missing key, not a null. A
-  single such user aborted the whole comprehension, and the surrounding bare
-  `except: pass` hid it completely, so every team silently degraded to
-  "Roster 1", "Roster 2". Guarded with `or {}`, and the handler now logs.
-- **Three silent `except: continue` handlers in `sleeper_strategy`** dropped a
-  team from the bye-week and playoff-schedule scans with no log line, so a
-  total upstream outage returned an empty result that still reported success —
-  the same failure mode that let the injury fetcher return zero records for
-  months. They log a warning naming the team now. A test asserts structurally
-  that neither module regains a handler whose body is only `pass`/`continue`.
+## [0.8.1] - 2026-09-17
 
-### Fixed
-- **`get_weekly_briefing` could recommend starting a player on IR.** Reserve
-  and taxi players were treated as ordinary lineup candidates, so whenever one
-  out-projected a healthy bench player the tool proposed a lineup the league
-  will not accept. Seen live: an IR running back (thumb surgery) placed in a
-  FLEX slot. They are now excluded from the candidate pool and reported under a
-  separate `reserve` key — they are on the roster deliberately, not a gap.
-- **`get_handcuff_map` never found a handcuff for anyone.** It matched the
-  starter's name against each depth-chart row's `position` field — but
-  `get_depth_chart` returns `{"position": "RB", "players": [starter,
-  backup, ...]}`, where `position` is a position *label*. A label can never
-  equal a player name, so the lookup always fell through to the
-  "you_roster_a_backup" branch and reported no handcuff and
-  `0 securable free-agent handcuffs` — for every roster, every time.
+A defect-hunting release. Every entry under *Fixed* is a bug that produced
+plausible-looking output rather than an error — wrong implied totals, empty
+handcuff maps, lineups containing players who cannot be started. Several were
+found only because a previous fix made the next layer's silence visible.
 
-  The producer had moved to this shape while the consumer kept reading the
-  older one (row keyed by starter name, `players` holding only backups). Both
-  shapes are now handled, with the current one first. On a live roster the tool
-  went from 0 findings to correctly mapping four running backs and surfacing
-  two free handcuffs.
-- **Projections priced home-team players off the *opponent's* implied total
-  when the caller used a non-canonical team code.** `get_game_lines`
-  normalizes its lookup but returns the canonical spelling, so
-  `game["home_team"] == team` failed whenever a caller passed Sleeper's
-  `WAS`/`JAC` or nflverse's `LA` — and the code then read the away side.
-  Reproduced live: `LA` yielded an implied total of 20.4 where `LAR` gave 27.5
-  for the same player in the same game, with `vegas_active: true` reported
-  either way. The comparison is now canonical on both sides.
-- **`get_coaching_staff` and `get_scheme_classification` failed for
-  Washington.** Both lookup tables were keyed on `WAS` while the rest of the
-  codebase emits the canonical `WSH`, so `get_coaching_staff("WSH")` sent
-  the literal string to ESPN as a numeric team id and got HTTP 400, and the
-  scheme lookup reported "not found". Both tables are canonical now and both
-  entry points normalize their input.
-- **A fourth hand-rolled team normalizer in `get_matchup_difficulty`** handled
-  only `WAS` and `JAC`; `LA`, `STL`, `OAK`, `SD` and every full name fell
-  through to a neutral matchup tier. It now calls `normalize_team`.
-- **The Vegas lookup in `projections` swallowed every exception silently.** A
-  payload-shape change would have sent every player to the neutral fallback
-  with no trace in the logs — the same failure mode that hid the injury fetcher
-  returning zero records for months. It logs a warning now.
-
-### Fixed
-- **`get_weekly_briefing` reported a team defense as a lineup change every
-  week, even when it was already starting.** Current starters were resolved via
-  `full_name`, which is empty for defenses, while the candidate side named them
-  after their team code — so the two sides of the comparison never matched.
-  Both now use the same resolution. Caught against a live roster where the
-  defense was correctly in the lineup and still appeared under `changes`.
+Three shapes recur, and each now has a structural guard rather than a
+one-off patch: a mapping duplicated until the copies drifted, a `.get(k, {})`
+default that does not cover an explicit `null`, and an exception handler that
+skips an item without logging.
 
 ### Added
+- **`get_weekly_briefing` — the whole "how should I line up this week" question
+  in one call.** Answering it previously meant chaining six calls and joining
+  the results by hand: rosters, matchups, league settings, schedule, weather,
+  trailing usage, projections, then the optimizer. That join is exactly where
+  week boundaries and team-code variants slip in — both bugs fixed earlier in
+  this release were found while doing it manually.
+
+  The tool reads league scoring and starting slots from Sleeper rather than
+  assuming them (a half-PPR league was otherwise given full-PPR advice),
+  resolves opponents from the cached schedule rather than the odds feed, and
+  returns the *named changes* worth making instead of a lineup to diff by eye.
+  It also reports the roster's injury transitions from the last seven days,
+  using the `injury_history` timeline added earlier in this release.
+
+  Team defenses are listed under `not_projected` rather than counted as zero:
+  there is no DST projection model yet, and a nameless 0-point candidate would
+  quietly drag every lineup total down.
+
+  Accepts `roster_id` or `user_id`; passing neither is refused rather than
+  guessed.
+- **`get_weekly_briefing` reports `vegas_active`.** A transient odds-API
+  failure silently degrades defenses and kickers to their constant and flattens
+  every game-script signal. The flag makes that visible instead of leaving it
+  to be inferred from suspiciously round numbers.
 - **Defenses and kickers are projected instead of returning a constant.**
   `base_ppg` gave every DST 7.0 and every kicker 8.0 regardless of opponent,
   and the generic path then scaled the defense by *its own* team's implied
@@ -120,34 +67,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TEN (facing 23.2) projects 6.5 — a 4.5-point spread where the old code
   returned 7.0 for both.
 
-- **`get_weekly_briefing` reports `vegas_active`.** A transient odds-API
-  failure silently degrades defenses and kickers to their constant and flattens
-  every game-script signal. The flag makes that visible instead of leaving it
-  to be inferred from suspiciously round numbers.
-
-### Added
-- **`get_weekly_briefing` — the whole "how should I line up this week" question
-  in one call.** Answering it previously meant chaining six calls and joining
-  the results by hand: rosters, matchups, league settings, schedule, weather,
-  trailing usage, projections, then the optimizer. That join is exactly where
-  week boundaries and team-code variants slip in — both bugs fixed earlier in
-  this release were found while doing it manually.
-
-  The tool reads league scoring and starting slots from Sleeper rather than
-  assuming them (a half-PPR league was otherwise given full-PPR advice),
-  resolves opponents from the cached schedule rather than the odds feed, and
-  returns the *named changes* worth making instead of a lineup to diff by eye.
-  It also reports the roster's injury transitions from the last seven days,
-  using the `injury_history` timeline added earlier in this release.
-
-  Team defenses are listed under `not_projected` rather than counted as zero:
-  there is no DST projection model yet, and a nameless 0-point candidate would
-  quietly drag every lineup total down.
-
-  Accepts `roster_id` or `user_id`; passing neither is refused rather than
-  guessed.
-
 ### Changed
+- **The injury prefetch now delegates to `injury_service` instead of carrying
+  its own copy of the ESPN crawl.** `sleeper_enrichment._fetch_injuries` walked
+  32 teams and every injury detail sequentially; `injury_service` has done the
+  same work concurrently for a while, with semaphores over both teams and
+  injury details, an athlete-name cache, ETag/If-Modified-Since handling and a
+  CBS merge on top. Measured against the live API, the duplicate needed **589s
+  for 1600 single-source records** where the service needs **44s for 1906
+  multi-source ones**. A full prefetch cycle drops from 418s to **47s**, which
+  matters against a 900s interval that also has to fit schedules, snaps, usage
+  and practice reports.
+
+  This removes 169 lines and, more to the point, the second implementation:
+  having two copies of one crawl is what allowed the v0.8.0 athlete-id bug to
+  sit undetected in the unused one while the maintained one stayed correct. The
+  end-to-end regression test moved with the parsing, onto `injury_service`.
+
+  `_fetch_injuries` keeps its name, signature and return shape, so both callers
+  (the prefetch loop and `_fetch_practice_reports`, which derives practice
+  status from the same feed) are unaffected. It passes no `db`, because the
+  callers own persistence — letting the service cache too would double-write.
 - **One canonical team mapping, applied at the source.** Sleeper's athlete rows
   say `WAS` and `OAK` where the odds feed and ESPN say `WSH` and `LV`, and
   nflverse says `LA` for the Rams. Three separate normalizers existed —
@@ -191,28 +131,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `week` filter. Games whose week cannot be resolved are kept rather than
   dropped, so a cold schedule cache degrades to the old behaviour instead of
   returning an empty slate.
+- **`get_weekly_briefing` reported a team defense as a lineup change every
+  week, even when it was already starting.** Current starters were resolved via
+  `full_name`, which is empty for defenses, while the candidate side named them
+  after their team code — so the two sides of the comparison never matched.
+  Both now use the same resolution. Caught against a live roster where the
+  defense was correctly in the lineup and still appeared under `changes`.
+- **The Vegas lookup in `projections` swallowed every exception silently.** A
+  payload-shape change would have sent every player to the neutral fallback
+  with no trace in the logs — the same failure mode that hid the injury fetcher
+  returning zero records for months. It logs a warning now.
+- **A fourth hand-rolled team normalizer in `get_matchup_difficulty`** handled
+  only `WAS` and `JAC`; `LA`, `STL`, `OAK`, `SD` and every full name fell
+  through to a neutral matchup tier. It now calls `normalize_team`.
+- **`get_coaching_staff` and `get_scheme_classification` failed for
+  Washington.** Both lookup tables were keyed on `WAS` while the rest of the
+  codebase emits the canonical `WSH`, so `get_coaching_staff("WSH")` sent
+  the literal string to ESPN as a numeric team id and got HTTP 400, and the
+  scheme lookup reported "not found". Both tables are canonical now and both
+  entry points normalize their input.
+- **Projections priced home-team players off the *opponent's* implied total
+  when the caller used a non-canonical team code.** `get_game_lines`
+  normalizes its lookup but returns the canonical spelling, so
+  `game["home_team"] == team` failed whenever a caller passed Sleeper's
+  `WAS`/`JAC` or nflverse's `LA` — and the code then read the away side.
+  Reproduced live: `LA` yielded an implied total of 20.4 where `LAR` gave 27.5
+  for the same player in the same game, with `vegas_active: true` reported
+  either way. The comparison is now canonical on both sides.
+- **`get_handcuff_map` never found a handcuff for anyone.** It matched the
+  starter's name against each depth-chart row's `position` field — but
+  `get_depth_chart` returns `{"position": "RB", "players": [starter,
+  backup, ...]}`, where `position` is a position *label*. A label can never
+  equal a player name, so the lookup always fell through to the
+  "you_roster_a_backup" branch and reported no handcuff and
+  `0 securable free-agent handcuffs` — for every roster, every time.
 
-### Changed
-- **The injury prefetch now delegates to `injury_service` instead of carrying
-  its own copy of the ESPN crawl.** `sleeper_enrichment._fetch_injuries` walked
-  32 teams and every injury detail sequentially; `injury_service` has done the
-  same work concurrently for a while, with semaphores over both teams and
-  injury details, an athlete-name cache, ETag/If-Modified-Since handling and a
-  CBS merge on top. Measured against the live API, the duplicate needed **589s
-  for 1600 single-source records** where the service needs **44s for 1906
-  multi-source ones**. A full prefetch cycle drops from 418s to **47s**, which
-  matters against a 900s interval that also has to fit schedules, snaps, usage
-  and practice reports.
-
-  This removes 169 lines and, more to the point, the second implementation:
-  having two copies of one crawl is what allowed the v0.8.0 athlete-id bug to
-  sit undetected in the unused one while the maintained one stayed correct. The
-  end-to-end regression test moved with the parsing, onto `injury_service`.
-
-  `_fetch_injuries` keeps its name, signature and return shape, so both callers
-  (the prefetch loop and `_fetch_practice_reports`, which derives practice
-  status from the same feed) are unaffected. It passes no `db`, because the
-  callers own persistence — letting the service cache too would double-write.
+  The producer had moved to this shape while the consumer kept reading the
+  older one (row keyed by starter name, `players` holding only backups). Both
+  shapes are now handled, with the current one first. On a live roster the tool
+  went from 0 findings to correctly mapping four running backs and surfacing
+  two free handcuffs.
+- **`get_weekly_briefing` could recommend starting a player on IR.** Reserve
+  and taxi players were treated as ordinary lineup candidates, so whenever one
+  out-projected a healthy bench player the tool proposed a lineup the league
+  will not accept. Seen live: an IR running back (thumb surgery) placed in a
+  FLEX slot. They are now excluded from the candidate pool and reported under a
+  separate `reserve` key — they are on the roster deliberately, not a gap.
+- **Three silent `except: continue` handlers in `sleeper_strategy`** dropped a
+  team from the bye-week and playoff-schedule scans with no log line, so a
+  total upstream outage returned an empty result that still reported success —
+  the same failure mode that let the injury fetcher return zero records for
+  months. They log a warning naming the team now. A test asserts structurally
+  that neither module regains a handler whose body is only `pass`/`continue`.
+- **`get_playoff_odds` could lose every team name at once.**
+  `u.get("metadata", {}).get("team_name")` raises on Sleeper's explicit
+  `"metadata": null` — the `{}` default covers a missing key, not a null. A
+  single such user aborted the whole comprehension, and the surrounding bare
+  `except: pass` hid it completely, so every team silently degraded to
+  "Roster 1", "Roster 2". Guarded with `or {}`, and the handler now logs.
+- **The draft board's handcuff bonus never fired.** `_handcuff_index` tested
+  `if starter not in names` — a raw string compare between Sleeper draft
+  metadata (`"James Cook"`) and an ESPN depth chart (`"James Cook III"`). Every
+  player with a suffix, accent or punctuation failed the test and was skipped
+  with no log line, so the index came back mostly empty, the `1.30` handcuff
+  multiplier never applied and `handcuff_for` was always `None`. The asymmetry
+  was the tell: `_norm_name` was applied to the backup but not to the starter.
+  Both sides are normalized now, and an unresolvable starter is logged.
+- **Dead starter-weighting in `analyze_trade`.** `_calculate_positional_needs`
+  built a `starter_counts` map and then evaluated `starter_counts.get(pos, 0)`
+  as a bare expression statement — computed, discarded, never read. Removed
+  rather than wired up: weighting need by who currently starts would change
+  trade recommendations, which is a feature decision rather than a fix.
+- **Roster-strength calculations counted players who cannot play.**
+  `players_enriched` mirrors `players`, which includes reserve (IR) and taxi.
+  Three tools read it as if every entry were available:
+  `recommend_faab_bid` derived your replacement value from it, so a stashed
+  RB1 counted as a live starter, collapsed the computed upgrade to zero and
+  emitted *"You're already strong at RB — this is depth, not an upgrade"* for
+  exactly the roster that needs the replacement; `analyze_trade`'s positional
+  need scoring counted IR bodies as depth; and `analyze_opponent` read an
+  opponent with two backs on IR as deep at the position. A shared
+  `sleeper_tools.active_enriched()` now filters them. Availability questions
+  ("is he rostered") deliberately keep reading `players`, where an IR player
+  *is* taken.
 
 ### Documentation
 - **`AGENT.md` now documents all 78 tools.** It described 44 across seven
@@ -225,9 +226,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Also fixes counts that had gone stale (the Sleeper category claimed 18 tools
   and listed 17) and a duplicated section number (two sections numbered 3).
-  Both documents now state 78: 77 always on, plus `get_league_leaders` behind
-  the `league_leaders` feature flag, which is why a naive count of the registry
-  returns 77.
+  Both documents now state **79**, counting `get_weekly_briefing` added in this
+  release and `get_league_leaders` behind the `league_leaders` feature flag —
+  which is why a naive count of the registry returns 78.
 
 ## [0.8.0] - 2026-09-16
 
