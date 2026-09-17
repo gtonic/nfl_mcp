@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as a bare expression statement — computed, discarded, never read. Removed
   rather than wired up: weighting need by who currently starts would change
   trade recommendations, which is a feature decision rather than a fix.
+- **The draft board's handcuff bonus never fired.** `_handcuff_index` tested
+  `if starter not in names` — a raw string compare between Sleeper draft
+  metadata (`"James Cook"`) and an ESPN depth chart (`"James Cook III"`). Every
+  player with a suffix, accent or punctuation failed the test and was skipped
+  with no log line, so the index came back mostly empty, the `1.30` handcuff
+  multiplier never applied and `handcuff_for` was always `None`. The asymmetry
+  was the tell: `_norm_name` was applied to the backup but not to the starter.
+  Both sides are normalized now, and an unresolvable starter is logged.
 
 ### Fixed
 - **`get_weekly_briefing` could recommend starting a player on IR.** Reserve

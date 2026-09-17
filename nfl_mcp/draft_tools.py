@@ -434,9 +434,20 @@ async def _handcuff_index(my_players: list[dict], db=None) -> dict[str, str]:
             rbs = next((r.get("players") or [] for r in rows
                         if (r.get("position") or "").upper() == "RB"), [])
             names = [n for n in rbs if n]
-            if starter not in names:
+            # Normalize BOTH sides. `starter` comes from Sleeper draft metadata
+            # ("James Cook"), `names` from ESPN's depth chart
+            # ("James Cook III"), so a raw compare missed every player with a
+            # suffix, an accent or punctuation — and skipped them silently,
+            # leaving the handcuff index mostly empty and the 1.30 boost dead.
+            keys = [_norm_name(n) for n in names]
+            starter_key = _norm_name(starter)
+            if starter_key not in keys:
+                logger.debug(
+                    "handcuff: %s not found on the %s depth chart (%s)",
+                    starter, team, names,
+                )
                 continue
-            idx = names.index(starter)
+            idx = keys.index(starter_key)
             for backup in names[idx + 1:idx + 3]:  # the next two carry the load
                 out.setdefault(_norm_name(backup), starter)
     except Exception as exc:
