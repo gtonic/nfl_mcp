@@ -19,10 +19,17 @@ from .opportunity_tools import norm_name
 
 logger = logging.getLogger(__name__)
 
-# ESPN's depth page is a grid: each row's first cell is the *starter* and the
-# rest are backups in depth order; player names carry a trailing injury tag
-# (e.g. "Isaac GuerendoO", "Christian KirkQ") we strip. There is no position
-# label per row — the row is keyed by the starter's name.
+# `get_depth_chart` returns one row per position: {"position": "RB",
+# "players": ["Starter", "Backup", ...]} in depth order, where `position` is a
+# POSITION LABEL and the starter is the first entry of `players`. Player names
+# carry a trailing injury tag ("Isaac GuerendoO", "Christian KirkQ") we strip.
+#
+# This module used to read a different shape entirely — row keyed by the
+# starter's name, `players` holding only the backups. Since a position label can
+# never equal a player name, every lookup silently returned "no handcuff"
+# instead of failing. Supporting both is not worth it: a row like
+# {"position": "Star", "players": ["Guy", ...]} is ambiguous between the two,
+# and nothing in this codebase produces the old one.
 
 
 def _clean_name(name: str | None) -> str:
@@ -41,19 +48,20 @@ def handcuff_from_depth(depth_chart: list[dict], starter_name: str) -> tuple[str
       - ``not_on_depth_chart`` — couldn't place them.
     """
     s = norm_name(starter_name)
-    # 1) Starter is a row key -> the first non-empty backup is the handcuff.
+
+    # Find the row listing the player, and take the next usable name after him
+    # as the handcuff.
     for row in depth_chart or []:
-        if norm_name(_clean_name(row.get("position"))) == s:
-            for p in row.get("players") or []:
-                cleaned = _clean_name(p)
-                if cleaned and cleaned != "-":
-                    return cleaned, "depth"
-            return None, "no_backup_listed"
-    # 2) Player appears only as a backup -> they're the contingent value already.
-    for row in depth_chart or []:
-        for p in row.get("players") or []:
-            if norm_name(_clean_name(p)) == s:
-                return None, "you_roster_a_backup"
+        names = [_clean_name(p) for p in (row.get("players") or [])]
+        names = [n for n in names if n and n != "-"]
+        for idx, name in enumerate(names):
+            if norm_name(name) != s:
+                continue
+            for backup in names[idx + 1:]:
+                return backup, "depth"
+            # Last on the chart at his position: he *is* the contingent value.
+            return None, ("no_backup_listed" if idx == 0 else "you_roster_a_backup")
+
     return None, "not_on_depth_chart"
 
 

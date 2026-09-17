@@ -14,6 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   will not accept. Seen live: an IR running back (thumb surgery) placed in a
   FLEX slot. They are now excluded from the candidate pool and reported under a
   separate `reserve` key — they are on the roster deliberately, not a gap.
+- **`get_handcuff_map` never found a handcuff for anyone.** It matched the
+  starter's name against each depth-chart row's `position` field — but
+  `get_depth_chart` returns `{"position": "RB", "players": [starter,
+  backup, ...]}`, where `position` is a position *label*. A label can never
+  equal a player name, so the lookup always fell through to the
+  "you_roster_a_backup" branch and reported no handcuff and
+  `0 securable free-agent handcuffs` — for every roster, every time.
+
+  The producer had moved to this shape while the consumer kept reading the
+  older one (row keyed by starter name, `players` holding only backups). Both
+  shapes are now handled, with the current one first. On a live roster the tool
+  went from 0 findings to correctly mapping four running backs and surfacing
+  two free handcuffs.
 
 ### Fixed
 - **`get_weekly_briefing` reported a team defense as a lineup change every

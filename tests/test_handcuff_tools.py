@@ -21,24 +21,31 @@ class TestCleanName:
 
 
 class TestHandcuffFromDepth:
+    """Rows are {"position": <position label>, "players": [starter, backup...]}.
+
+    These previously used a player name as `position`, a shape nothing
+    produces — which is precisely why the lookup could be dead code and still
+    show green.
+    """
+
     def test_first_backup_is_the_handcuff(self):
-        dc = [{"position": "Christian McCaffrey", "players": ["Jordan James", "Kaelon Black"]}]
+        dc = [{"position": "RB", "players": ["Christian McCaffrey", "Jordan James"]}]
         assert handcuff_from_depth(dc, "Christian McCaffrey") == ("Jordan James", "depth")
 
-    def test_cleans_tags_on_key_and_backup(self):
-        dc = [{"position": "Isaac GuerendoO", "players": ["Backup GuyQ", "-"]}]
+    def test_cleans_tags_on_starter_and_backup(self):
+        dc = [{"position": "RB", "players": ["Isaac GuerendoO", "Backup GuyQ", "-"]}]
         assert handcuff_from_depth(dc, "Isaac Guerendo") == ("Backup Guy", "depth")
 
     def test_no_backup_listed(self):
-        dc = [{"position": "Lead Back", "players": ["-", "-"]}]
+        dc = [{"position": "RB", "players": ["Lead Back", "-", "-"]}]
         assert handcuff_from_depth(dc, "Lead Back") == (None, "no_backup_listed")
 
     def test_player_is_already_a_backup(self):
-        dc = [{"position": "Star", "players": ["Your Guy", "Third"]}]
+        dc = [{"position": "RB", "players": ["Star", "Your Guy"]}]
         assert handcuff_from_depth(dc, "Your Guy") == (None, "you_roster_a_backup")
 
     def test_not_on_chart(self):
-        dc = [{"position": "Star", "players": ["Backup"]}]
+        dc = [{"position": "RB", "players": ["Star", "Backup"]}]
         assert handcuff_from_depth(dc, "Traded Away") == (None, "not_on_depth_chart")
 
 
@@ -86,8 +93,13 @@ class TestGetHandcuffMap:
         return {"rosters": rosters, "success": True}
 
     async def _run(self, hc_owner=None):
-        # Real ESPN shape: row keyed by the starter, backups follow (with a tag).
-        depth = {"depth_chart": [{"position": "Star Back", "players": ["Handcuff BackO", "-"]}]}
+        # Real get_depth_chart shape: position label, starter first in `players`
+        # (with an injury tag on the backup). The previous mock keyed the row by
+        # the starter's name — a shape nothing produces, which is how the
+        # lookup stayed dead code with a green suite.
+        depth = {"depth_chart": [
+            {"position": "RB", "players": ["Star Back", "Handcuff BackO", "-"]}
+        ]}
         with patch("nfl_mcp.sleeper_tools.get_rosters", new=AsyncMock(return_value=self._rosters(hc_owner))), \
              patch("nfl_mcp.nfl_tools.get_depth_chart", new=AsyncMock(return_value=depth)):
             return await get_handcuff_map("123", roster_id=1, db=self._db())
