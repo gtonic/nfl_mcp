@@ -132,12 +132,20 @@ async def get_playoff_odds(
     names = {}
     try:
         users_res = await get_league_users(league_id)
-        user_names = {u.get("user_id"): (u.get("display_name") or u.get("metadata", {}).get("team_name"))
-                      for u in (users_res.get("users", []) if users_res.get("success") else [])}
+        # Sleeper sends `"metadata": null`, so the `{}` default never applies
+        # and `.get` on it raises. One such user used to wipe out the whole
+        # name map — and the bare `except: pass` below hid that completely, so
+        # every team silently degraded to "Roster 1", "Roster 2".
+        user_names = {
+            u.get("user_id"): (
+                u.get("display_name") or (u.get("metadata") or {}).get("team_name")
+            )
+            for u in (users_res.get("users", []) if users_res.get("success") else [])
+        }
         for r in rosters:
             names[r.get("roster_id")] = user_names.get(r.get("owner_id")) or f"Roster {r.get('roster_id')}"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"team names unavailable, falling back to roster ids: {e}")
 
     # Build teams with current record + season scoring
     teams = []

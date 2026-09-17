@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   multiplier never applied and `handcuff_for` was always `None`. The asymmetry
   was the tell: `_norm_name` was applied to the backup but not to the starter.
   Both sides are normalized now, and an unresolvable starter is logged.
+- **`get_playoff_odds` could lose every team name at once.**
+  `u.get("metadata", {}).get("team_name")` raises on Sleeper's explicit
+  `"metadata": null` — the `{}` default covers a missing key, not a null. A
+  single such user aborted the whole comprehension, and the surrounding bare
+  `except: pass` hid it completely, so every team silently degraded to
+  "Roster 1", "Roster 2". Guarded with `or {}`, and the handler now logs.
+- **Three silent `except: continue` handlers in `sleeper_strategy`** dropped a
+  team from the bye-week and playoff-schedule scans with no log line, so a
+  total upstream outage returned an empty result that still reported success —
+  the same failure mode that let the injury fetcher return zero records for
+  months. They log a warning naming the team now. A test asserts structurally
+  that neither module regains a handler whose body is only `pass`/`continue`.
 
 ### Fixed
 - **`get_weekly_briefing` could recommend starting a player on IR.** Reserve
