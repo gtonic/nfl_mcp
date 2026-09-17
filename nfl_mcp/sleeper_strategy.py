@@ -157,8 +157,8 @@ async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks
                             "week": target_week,
                             "team": team
                         })
-            except Exception:
-                # Skip team if schedule unavailable
+            except Exception as e:
+                logger.warning(f"bye-week scan skipped {team}: {e}")
                 continue
 
         # Add strategic insights based on week timing
@@ -281,7 +281,8 @@ async def get_season_bye_week_coordination(league_id: str, season: int = 2026) -
                 week_num = team_schedule.get("bye_week")
                 if week_num:
                     bye_weeks_by_week.setdefault(week_num, []).append(team)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"bye-week lookup skipped {team}: {e}")
             continue
 
     # Organize bye weeks in calendar format
@@ -618,7 +619,8 @@ async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dic
                         "key_insights": fantasy_implications[:3],  # Top 3 insights
                         "recommendation": "Target" if len(playoff_games) >= 3 else "Monitor"
                     }
-        except Exception:
+        except Exception as e:
+            logger.warning(f"playoff schedule scan skipped {team}: {e}")
             continue
 
     # Generate specific recommendations based on timeline
