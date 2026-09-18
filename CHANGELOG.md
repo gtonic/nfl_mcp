@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`get_scheme_classification` asserted a hand-maintained table as current
+  fact.** Schemes were keyed by *team*, with no date and no fallback marker —
+  the one place in this codebase that presented curated data with the
+  confidence of a live fetch. Roughly a quarter of the league changes
+  coordinator every offseason, so the table silently became last regime's
+  answer: it still had Baltimore on the Roman-era power-run offense and Detroit
+  on "McVay Offense" long after those staffs moved on.
+
+  A scheme belongs to the play-caller, not the franchise, so it is now keyed by
+  **coach** and the coach is resolved live through `get_coaching_staff`
+  (coordinator first, then head coach). A staff change is picked up
+  automatically, without editing a table every January. Checked live against
+  Baltimore, whose current head coach the old table had never heard of.
+
+  When no scheme is on file for the resolved coach it falls back to the team
+  table — and says so, per side: `source: "team_table"`, `is_fallback: true`,
+  `as_of`, and a warning naming the coach it could not match. `get_coaching_tree`
+  likewise carries `as_of` and now states that lineage is *history*, not current
+  employment, and that `found: false` means "not in this curated list of six
+  major lineages" rather than "this coach has no lineage".
+
 - **Projections ignored the league's scoring and were always full PPR.**
   `scoring` reached only the FantasyCalc *value* lookup; the points scale was
   hard-wired — `opportunity.py` set `REC = 1.0` and `base_ppg()` was documented

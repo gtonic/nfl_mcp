@@ -104,13 +104,28 @@ Coaching staff information, coaching trees, and scheme analysis:
 - **`get_coaching_tree`**: Get coaching tree information for a coach
   - Parameters: `coach_name` (required, e.g., "Andy Reid", "Bill Belichick")
   - Use case: Understand coaching lineage, mentors, and proteges
-  - Returns: Mentors, proteges, scheme family, what coach is known for
+  - Returns: Mentors, proteges, scheme family, what coach is known for, `as_of`
   - Available coaches: Andy Reid, Bill Belichick, Kyle Shanahan, Sean McVay, Mike Tomlin, Sean Payton
+  - **This is lineage history, not current employment** — an entry says who a
+    coach learned under, not where he works. `found: false` means "not in this
+    curated list", not "has no lineage"
 
-- **`get_scheme_classification`**: Get offensive/defensive scheme for a team
-  - Parameters: `team_id` (required, e.g., "SF", "KC")
+- **`get_scheme_classification`**: Get offensive/defensive scheme for a team,
+  resolved from its **current** coaching staff
+  - Parameters: `team_id` (required, e.g., "SF", "KC"), `season` (optional),
+    `use_live_staff` (optional, default True — False skips the network call)
   - Use case: Analyze scheme fit for players, understand play-calling tendencies
-  - Returns: Offensive scheme (West Coast, Shanahan, McVay, etc.), defensive base, scheme notes
+  - Returns: offensive/defensive scheme, `offense`/`defense` provenance
+    (`{scheme, source, attributed_to, role}`), head_coach, scheme_notes,
+    `is_fallback`, `as_of`, `warnings`
+  - **Check `source` before trusting it.** `coach` means the scheme was read off
+    the named, live-fetched coordinator or head coach. `team_table` means no
+    scheme is on file for that coach and the answer is a dated team-level guess
+    — possibly a regime out of date; `warnings` names who could not be matched
+
+  A scheme belongs to the play-caller, not the franchise, which is why this is
+  keyed on the coach: roughly a quarter of the league changes coordinator every
+  offseason, and a per-team table silently becomes last regime's answer.
 
 ### 3. Player/Athlete Tools (4 tools)
 

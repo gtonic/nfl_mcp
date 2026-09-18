@@ -117,12 +117,12 @@ class TestGetCoachingTree:
 
 
 class TestGetSchemeClassification:
-    """Test get_scheme_classification function."""
+    """Test get_scheme_classification function (offline: no live staff)."""
 
     @pytest.mark.asyncio
     async def test_known_team(self):
         """Test classification for known team."""
-        result = await get_scheme_classification("KC")
+        result = await get_scheme_classification("KC", use_live_staff=False)
         assert result["success"] is True
         assert result["found"] is True
         assert "offensive_scheme" in result
@@ -131,7 +131,7 @@ class TestGetSchemeClassification:
     @pytest.mark.asyncio
     async def test_unknown_team(self):
         """Test classification for unknown team."""
-        result = await get_scheme_classification("UNKNOWN")
+        result = await get_scheme_classification("UNKNOWN", use_live_staff=False)
         assert result["success"] is True
         assert result["found"] is False
 
@@ -144,7 +144,7 @@ class TestGetSchemeClassification:
     @pytest.mark.asyncio
     async def test_scheme_notes_generated(self):
         """Test that scheme notes are generated."""
-        result = await get_scheme_classification("SF")
+        result = await get_scheme_classification("SF", use_live_staff=False)
         assert result["success"] is True
         assert "scheme_notes" in result
         assert len(result["scheme_notes"]) > 0
