@@ -37,6 +37,14 @@ SCENARIOS = [
         "expect": ["analyze_trade"],
         "args": {"league_id": "555"},
     },
+    {
+        # Finding a deal is a different question from grading one. Routing to
+        # `analyze_trade` here would be wrong: there is no trade to grade yet.
+        "id": "trade_discovery",
+        "prompt": "I'm roster 7 in league 555 and I need a running back. Who should I trade with?",
+        "expect": ["find_trade_targets"],
+        "args": {"league_id": "555", "roster_id": 7},
+    },
     # --- Weekly management --------------------------------------------------
     {
         "id": "faab_bid",

@@ -32,7 +32,7 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server provides **80 MCP tools** organized into logical categories — 79
+The server provides **81 MCP tools** organized into logical categories — 80
 always on, plus `get_league_leaders` behind the `league_leaders` feature flag
 (enabled by default). Every tool also ships its own parameter schema over MCP,
 so an agent can introspect the authoritative signature at runtime; this list is
@@ -246,13 +246,26 @@ Advanced waiver wire intelligence:
   - Use case: Complete waiver wire intelligence in one call
   - Returns: Combined analysis from waiver log and re-entry tools
 
-### 8. Trade Analysis Tools (1 tool)
+### 8. Trade Analysis Tools (2 tools)
 
-Trade evaluation and optimization:
+Trade evaluation and discovery:
 
-- **`analyze_trade`**: Evaluate potential trades
+- **`find_trade_targets`**: **START HERE for "who should I trade with"** — finds
+  the deal rather than grading one you already have
+  - Parameters: `league_id` (required), `roster_id` or `user_id`, `week`,
+    `season`, `positions` (optional), `limit` (optional, default 10)
+  - Use case: the trade question. Scores every one-for-one swap against every
+    other roster by recomputing **both** teams' best legal starting lineup
+    before and after, and returns only trades where both sides gain — a trade
+    the other manager loses is a wish, not a deal
+  - Returns: proposals (you_give, you_get, your_gain, their_gain, mutual_gain,
+    partner), your_replacement_levels, candidates_considered, caveats
+  - **Gains are this week's lineup points, not rest-of-season value.** Run the
+    chosen deal through `analyze_trade` before sending it
+
+- **`analyze_trade`**: Evaluate a specific proposed trade
   - Parameters: Trade-specific parameters
-  - Use case: Assess trade fairness and value
+  - Use case: Assess fairness and market value of a deal already on the table
   - Returns: Trade analysis with recommendations
 
 ### 9. Draft & Player Values (5 tools)

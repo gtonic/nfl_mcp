@@ -118,6 +118,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not acquire an opinion about injuries).
 
 ### Added
+- **`find_trade_targets` — finds the deal instead of grading one.**
+  `analyze_trade` evaluates a trade you already have in mind; the harder half of
+  the question came first and had no tool. Answering it by hand means reading
+  eleven rosters and guessing who is thin where.
+
+  Every one-for-one swap against every other roster is scored by recomputing
+  **both** teams' best legal starting lineup before and after it, with the same
+  optimizer the weekly briefing uses — so FLEX and SUPERFLEX are filled the way
+  the league fills them, and a surplus player who never cracks the lineup
+  correctly costs nothing to trade. A proposal survives only if both totals go
+  up: a trade the other manager loses is a wish, not a deal. One proposal per
+  partner, so the output is a set of conversations to have rather than twenty
+  variations on one.
+
+  Deliberately one-for-one, and deliberately weekly: the gains are this week's
+  lineup points, not rest-of-season value, which the response says in
+  `caveats` and which `analyze_trade` is there to check.
+
+  The roster maths behind it (`slot_counts`, `replacement_levels`,
+  `lineup_total`, `surplus_players`) moved into `nfl_mcp/roster_needs.py`, since
+  the waiver question and the trade question reduce to the same measurement;
+  `get_waiver_targets` now uses that one implementation.
+
 - **`get_waiver_targets` — the waiver question finally has a tool.** The weekly
   cycle is lineup / waivers / trades: `get_weekly_briefing` answered the first
   and `analyze_trade` the third, while the middle one had only adjacent tools.

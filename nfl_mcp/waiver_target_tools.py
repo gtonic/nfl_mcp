@@ -19,6 +19,7 @@ import logging
 
 from .database import NFLDatabase
 from .errors import create_success_response
+from .roster_needs import replacement_levels, slot_counts
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -33,48 +34,6 @@ _INACTIVE_STATUSES = {"Inactive", "Non Football Injury", "Practice Squad"}
 # Below this the "upgrade" is inside the noise of a weekly projection (MAE is
 # ~5.8 points), so calling it an upgrade would be false precision.
 _MEANINGFUL_UPGRADE = 1.5
-
-
-def _slot_counts(roster_positions: list[str] | None) -> dict[str, int]:
-    """Starting slots per position, with FLEX spread over RB/WR/TE."""
-    counts: dict[str, int] = {}
-    flex = 0
-    for raw in roster_positions or []:
-        if raw in ("BN", "IR", "TAXI"):
-            continue
-        if raw in ("FLEX", "WRRB_FLEX", "REC_FLEX", "SUPER_FLEX"):
-            flex += 1
-            continue
-        slot = "DEF" if raw == "DST" else raw
-        counts[slot] = counts.get(slot, 0) + 1
-    # A flex seat is a real starting job; attribute it to the positions that can
-    # fill it so the replacement level reflects how deep you actually start.
-    for pos in ("RB", "WR", "TE"):
-        counts[pos] = counts.get(pos, 0) + flex / 3.0
-    return counts
-
-
-def replacement_levels(
-    my_projections: list[dict], slots: dict[str, int]
-) -> dict[str, float]:
-    """The projection of the weakest player who still starts, per position.
-
-    That is the bar a claim has to clear: adding a WR4 to a roster that starts
-    two WRs changes nothing, however good he looks in isolation.
-    """
-    levels: dict[str, float] = {}
-    by_position: dict[str, list[float]] = {}
-    for p in my_projections:
-        by_position.setdefault((p.get("position") or "").upper(), []).append(
-            float(p.get("projected_points") or 0.0)
-        )
-    for position, points in by_position.items():
-        points.sort(reverse=True)
-        starters = max(1, round(slots.get(position, 1)))
-        # Fewer players than slots means the slot is effectively empty, so
-        # anything at all is an upgrade.
-        levels[position] = points[starters - 1] if len(points) >= starters else 0.0
-    return levels
 
 
 def _is_claimable(row: dict) -> bool:
@@ -131,7 +90,7 @@ async def get_waiver_targets(
     league = (league_resp or {}).get("league") or {}
     scoring_exact = str(_scoring_ppr(league))
     num_teams = int(league.get("total_rosters") or 12)
-    slots = _slot_counts(league.get("roster_positions"))
+    slots = slot_counts(league.get("roster_positions"))
     settings = league.get("settings") or {}
     is_faab = settings.get("waiver_type") == 2 and (settings.get("waiver_budget") or 0) > 0
 

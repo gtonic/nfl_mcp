@@ -31,6 +31,7 @@ from . import (
     sos_tools,
     streaming_tools,
     trade_analyzer_tools,
+    trade_finder_tools,
     vegas_tools,
     waiver_target_tools,
     waiver_tools,
@@ -130,6 +131,7 @@ def get_all_tools() -> list[Callable]:
 
         # Trade Analyzer Tools
         analyze_trade,
+        find_trade_targets,
 
         # Player Value Tools (real market-consensus values)
         get_player_values,
@@ -2611,6 +2613,52 @@ async def get_weekly_briefing(
     return await briefing_tools.get_weekly_briefing(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
         week=week, season=season,
+    )
+
+
+@timing_decorator("find_trade_targets", tool_type="trade")
+async def find_trade_targets(
+    league_id: str,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    week: int | None = None,
+    season: int | None = None,
+    positions: list[str] | None = None,
+    limit: int = 10,
+) -> dict:
+    """START HERE for "who should I trade with" - finds the deal, not just grades one.
+
+    analyze_trade evaluates a trade you already have in mind; this finds which
+    trades are worth proposing. Every one-for-one swap against every other roster
+    is scored by recomputing BOTH teams' best legal starting lineup before and
+    after it, and only trades where both sides gain are returned — a trade the
+    other manager loses is a wish, not a deal.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        week: NFL week (defaults to the current one)
+        season: Season (defaults to the current one)
+        positions: Only propose receiving these positions, e.g. ["RB"]
+        limit: Max proposals, one per partner (default 10)
+
+    Returns: {
+        proposals [{partner, partner_roster_id, you_give, you_get, your_gain,
+                    their_gain, mutual_gain}],
+        your_replacement_levels, candidates_considered, caveats, league, week,
+        season, success
+    }
+
+    Gains are this week's lineup points, not rest-of-season value — run the
+    chosen deal through analyze_trade before sending it.
+
+    Example: find_trade_targets(league_id="123", roster_id=7)
+    Example: find_trade_targets(league_id="123", roster_id=7, positions=["RB"])
+    """
+    return await trade_finder_tools.find_trade_targets(
+        league_id=league_id, roster_id=roster_id, user_id=user_id,
+        week=week, season=season, positions=positions, limit=limit,
     )
 
 

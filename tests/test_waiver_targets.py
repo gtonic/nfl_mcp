@@ -6,11 +6,8 @@ import pytest
 
 from nfl_mcp import waiver_target_tools
 from nfl_mcp.database import NFLDatabase
-from nfl_mcp.waiver_target_tools import (
-    _slot_counts,
-    get_waiver_targets,
-    replacement_levels,
-)
+from nfl_mcp.roster_needs import replacement_levels, slot_counts
+from nfl_mcp.waiver_target_tools import get_waiver_targets
 
 LEAGUE = "L1"
 
@@ -96,7 +93,7 @@ def _stub_sleeper(monkeypatch, points):
 
 class TestSlotCounts:
     def test_flex_is_spread_over_the_positions_that_can_fill_it(self):
-        counts = _slot_counts(["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "BN", "IR"])
+        counts = slot_counts(["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "BN", "IR"])
         assert counts["QB"] == 1
         assert counts["RB"] == pytest.approx(2 + 1 / 3)
         assert "BN" not in counts and "IR" not in counts
