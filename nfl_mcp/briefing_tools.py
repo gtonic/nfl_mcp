@@ -12,6 +12,7 @@ delta from the recorded ``injury_history`` timeline.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from .database import NFLDatabase
@@ -54,6 +55,23 @@ def _slots_from_positions(roster_positions: list[str] | None) -> dict[str, int]:
     return slots
 
 
+def _injury_status(row: dict | None) -> str | None:
+    """Sleeper's injury status for an athlete row, or None.
+
+    Read from the stored raw payload: the top-level `status` column carries
+    roster status ("Active"/"Inactive"), which is a different question.
+    """
+    if not row:
+        return None
+    raw = row.get("raw")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+    return (raw or {}).get("injury_status") if isinstance(raw, dict) else None
+
+
 def _build_player(
     player_id: str,
     athletes: dict,
@@ -85,6 +103,12 @@ def _build_player(
         "opponent": opponent,
         "player_id": player_id,
     }
+    # Without this the projection cannot apply `_injury_mult`, and a player on
+    # IR who is parked on the active roster (rather than in Sleeper's reserve
+    # slot) gets a full projection and wins a starting slot.
+    status = _injury_status(athletes.get(player_id))
+    if status:
+        player["injury"] = {"status": status}
     if team in weather:
         player["weather"] = weather[team]
     snap = (usage.get(player_id) or {}).get("snap_share")
@@ -280,8 +304,18 @@ async def get_weekly_briefing(
     # neutral, which is worth stating rather than leaving to be inferred.
     vegas_active = bool((my_proj or {}).get("vegas_active"))
 
+    # Points already on the board. `win_probability` is computed from
+    # projections for the whole slate and does NOT subtract them, so a lopsided
+    # Thursday night reads as a comfortable lead when it is the opposite.
+    # Surfacing both lets a caller see that rather than infer it.
+    points_so_far = (my_matchup or {}).get("points")
+    opponent_points_so_far = (opponent_matchup or {}).get("points")
+
     return create_success_response({
         "vegas_active": vegas_active,
+        "points_so_far": points_so_far,
+        "opponent_points_so_far": opponent_points_so_far,
+        "win_probability_basis": "full-slate projections; points already scored are not subtracted",
         "league": {
             "league_id": league_id, "name": league.get("name"),
             "scoring": scoring, "slots": slots, "num_teams": num_teams,
