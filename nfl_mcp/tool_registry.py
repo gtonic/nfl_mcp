@@ -1661,6 +1661,9 @@ async def get_start_sit_recommendation(
     injury_status: str | None = None,
     practice_status: str | None = None,
     projected_points: float | None = None,
+    scoring: str = "ppr",
+    season: int | None = None,
+    week: int | None = None,
 ) -> dict:
     """Get a start/sit recommendation for a single player.
 
@@ -1678,9 +1681,15 @@ async def get_start_sit_recommendation(
         injury_status (str, optional): Injury status (healthy, questionable, doubtful, out)
         practice_status (str, optional): Practice status (full, limited, dnp)
         projected_points (float, optional): Projected fantasy points
+        scoring (str, default 'ppr'): League scoring - 'ppr', 'half_ppr',
+            'standard', or a raw per-reception value like '0.5'. Pass the real
+            setting: it changes the points AND what counts as a good week.
+        season (int, optional), week (int, optional): pass both (week > 1) to
+            project off trailing volume instead of the positional-rank baseline
 
     Returns: {
-        recommendation: {player, position, team, opponent, decision, decision_display},
+        recommendation: {player, position, team, opponent, decision,
+                         decision_display, projected_points, floor, ceiling},
         confidence: float (0-100),
         confidence_level: str (high/medium/low),
         matchup_tier: str,
@@ -1718,6 +1727,9 @@ async def get_start_sit_recommendation(
             injury_status=injury_status,
             practice_status=practice_status,
             projected_points=projected_points,
+            scoring=scoring,
+            season=season,
+            week=week,
         )
     except ValueError as e:
         return {
@@ -1732,7 +1744,9 @@ async def get_start_sit_recommendation(
 async def get_roster_recommendations(
     players: list[dict],
     week: int | None = None,
-    include_reasoning: bool = True
+    include_reasoning: bool = True,
+    scoring: str = "ppr",
+    season: int | None = None,
 ) -> dict:
     """Get start/sit recommendations for multiple players.
 
@@ -1748,8 +1762,12 @@ async def get_roster_recommendations(
             - usage (dict, optional): {target_share, snap_percentage}
             - injury (dict, optional): {status, practice_status}
             - projection (dict, optional): {projected_points}
-        week (int, optional): NFL week number
+        week (int, optional): NFL week - with `season` and week > 1 this selects
+            the opportunity baseline for the projections, not just a response label
         include_reasoning (bool, default True): Whether to include detailed reasoning
+        scoring (str, default 'ppr'): League scoring - 'ppr', 'half_ppr',
+            'standard', or a raw per-reception value like '0.5'
+        season (int, optional): Season year, needed with `week`
 
     Returns: {
         recommendations: list of player analyses sorted by confidence,
@@ -1788,14 +1806,19 @@ async def get_roster_recommendations(
     return await lineup_optimizer_tools.get_roster_recommendations(
         players=players,
         week=week,
-        include_reasoning=include_reasoning
+        include_reasoning=include_reasoning,
+        scoring=scoring,
+        season=season,
     )
 
 
 @timing_decorator("compare_players_for_slot", tool_type="lineup")
 async def compare_players_for_slot(
     players: list[dict],
-    slot: str = "FLEX"
+    slot: str = "FLEX",
+    scoring: str = "ppr",
+    season: int | None = None,
+    week: int | None = None,
 ) -> dict:
     """Compare multiple players competing for the same roster slot.
 
@@ -1807,6 +1830,12 @@ async def compare_players_for_slot(
             Each should have: name, position, team, opponent
             Optional: usage, injury, projection dicts
         slot (str, default "FLEX"): The roster slot being filled (e.g., "WR2", "FLEX", "RB1")
+        scoring (str, default 'ppr'): League scoring - 'ppr', 'half_ppr',
+            'standard', or a raw per-reception value like '0.5'. This is the
+            comparison most sensitive to it: half PPR is what makes a runner
+            competitive with a volume receiver for a flex spot.
+        season (int, optional), week (int, optional): pass both (week > 1) to
+            project off trailing volume
 
     Returns: {
         winner: dict with recommended player details,
@@ -1842,14 +1871,19 @@ async def compare_players_for_slot(
 
     return await lineup_optimizer_tools.compare_players_for_slot(
         players=players,
-        slot=slot
+        slot=slot,
+        scoring=scoring,
+        season=season,
+        week=week,
     )
 
 
 @timing_decorator("analyze_full_lineup", tool_type="lineup")
 async def analyze_full_lineup(
     lineup: dict,
-    week: int | None = None
+    week: int | None = None,
+    scoring: str = "ppr",
+    season: int | None = None,
 ) -> dict:
     """Analyze a complete fantasy lineup with optimal lineup suggestions.
 
@@ -1866,7 +1900,11 @@ async def analyze_full_lineup(
                 "FLEX": [...],
                 "BENCH": [...]
             }
-        week (int, optional): NFL week number
+        week (int, optional): NFL week - with `season` and week > 1 this selects
+            the opportunity baseline for the projections, not just a label
+        scoring (str, default 'ppr'): League scoring - 'ppr', 'half_ppr',
+            'standard', or a raw per-reception value like '0.5'
+        season (int, optional): Season year, needed with `week`
 
     Returns: {
         starters: dict of starter analyses by position,
@@ -1911,7 +1949,9 @@ async def analyze_full_lineup(
 
     return await lineup_optimizer_tools.analyze_full_lineup(
         lineup=lineup,
-        week=week
+        week=week,
+        scoring=scoring,
+        season=season,
     )
 
 

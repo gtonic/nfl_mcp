@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The start/sit tools answered in full PPR off the weaker baseline.**
+  `lineup_optimizer_tools` was the only place in the codebase that called the
+  projection engine with no `scoring`, `season` or `week`. Everything else
+  threads them, so after the scoring fix two tools in the same server disagreed
+  about the same player: `get_start_sit_recommendation` said **17.7** where
+  `get_weekly_briefing` said **14.9** for a 0.5-PPR league — a 19% gap, with
+  start/sit on the wrong side of it.
+
+  `week` made this hard to notice. `get_roster_recommendations` and
+  `analyze_full_lineup` accepted it, validated it, echoed it back in the
+  response — and never passed it to `analyze_player`, so the opportunity
+  baseline (the better model, per the backtest) could not engage. The docstrings
+  said "Optional NFL week number", which reads like it does something.
+
+  All four tools (`get_start_sit_recommendation`, `get_roster_recommendations`,
+  `compare_players_for_slot`, `analyze_full_lineup`) now take `scoring`,
+  `season` and `week` and thread them through. Two follow-on repairs: the
+  per-position "good game" marks were full-PPR constants applied to a
+  now-format-dependent scale, which demoted every pass catcher in a half-PPR
+  league by a confidence step, and are rebased the same way `base_ppg` is; and
+  the single-player response dropped `floor`/`ceiling` entirely, leaving only a
+  points string — so the calibrated band was invisible exactly where a start/sit
+  call needs it.
 - **`get_scheme_classification` asserted a hand-maintained table as current
   fact.** Schemes were keyed by *team*, with no date and no fallback marker —
   the one place in this codebase that presented curated data with the
