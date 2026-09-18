@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`get_weekly_briefing` recommended starting a player who is out injured.**
+  The briefing filtered Sleeper's `reserve` list, but a hurt player parked on
+  the *active* roster — the normal state when the single IR slot is already
+  occupied — was passed to the projection with no injury information at all.
+  `_injury_mult` maps `IR`/`Out`/`PUP`/`Suspended` to `0.0` and would have
+  zeroed him, but it never saw the status. Seen live: a receiver on IR with an
+  ankle sprain won a FLEX slot. The status now travels with the player.
+
+### Added
+- **The briefing reports `points_so_far` and `opponent_points_so_far`**, plus
+  an explicit `win_probability_basis`. `win_probability` is computed from
+  full-slate projections and does **not** subtract points already scored, so a
+  lopsided Thursday night reads as a comfortable lead when it is the opposite —
+  live, 95.8% while trailing 20.3 to 57.82. Surfacing the actual score makes
+  that visible instead of leaving it to be inferred.
+
 ## [0.8.1] - 2026-09-17
 
 A defect-hunting release. Every entry under *Fixed* is a bug that produced
