@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Playoff odds gave every team the same scoring spread.** `score_sd = 25.0`
+  was hard-coded for the whole league, and that constant is what decides how
+  often the weaker team wins — so a boom/bust roster and a metronome at equal
+  points-per-game came out with identical odds. The means were computed from
+  real results; only the variance was assumed.
+
+  Each team's spread is now measured from its own played weeks and shrunk toward
+  the league's pooled spread (about four games of league-average evidence mixed
+  in), so a two-week sample cannot claim a roster is steady. The pooling is done
+  around each *team's* mean rather than the league's, which keeps it a measure of
+  week-to-week volatility rather than of how unequal the league is. `score_sd`
+  survives as an explicit override.
+
+  Every team's `score_sd` and `games_scored` are reported alongside its
+  probability, plus `score_sd_source` (`measured` / `default` / `caller`), so a
+  surprising number can be traced to the spread behind it and a thin sample is
+  visible as one. Early in a season this correctly reports `default`.
 - **The start/sit tools answered in full PPR off the weaker baseline.**
   `lineup_optimizer_tools` was the only place in the codebase that called the
   projection engine with no `scoring`, `season` or `week`. Everything else
