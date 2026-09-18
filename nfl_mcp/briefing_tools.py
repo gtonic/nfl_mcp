@@ -342,11 +342,14 @@ async def get_weekly_briefing(
     # 7) Injury moves on my roster since a week ago
     from datetime import UTC, datetime, timedelta
     since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-    my_player_ids = set(mine.get("players") or [])
-    injury_changes = [
-        c for c in db.get_injury_status_changes(since=since, limit=500)
-        if c.get("player_id") in my_player_ids
-    ]
+    my_player_ids = [str(p) for p in (mine.get("players") or [])]
+    # Filtered in SQL, not afterwards: a league-wide page of 500 can be filled
+    # entirely by other teams' players (or by a feed backfill) and leave the
+    # briefing claiming nothing moved on a roster where something did.
+    injury_changes = (
+        db.get_injury_status_changes(since=since, limit=100, player_ids=my_player_ids)
+        if my_player_ids else []
+    )
 
     projected_ids = {p["player_id"] for p in my_inputs}
     unprojectable = [

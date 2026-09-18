@@ -30,6 +30,10 @@ from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
 
+# Severity for a status the caller's map does not know, matching what the injury
+# service assumes for an unrecognised designation (MODERATE).
+_DEFAULT_SEVERITY = 3
+
 
 @dataclass
 class ConnectionPoolConfig:
@@ -1555,7 +1559,9 @@ class NFLDatabase:
             return []
 
     def get_injury_status_changes(
-        self, since: str, teams: list[str] | None = None, limit: int = 100
+        self, since: str, teams: list[str] | None = None, limit: int = 100,
+        player_ids: list[str] | None = None, direction: str | None = None,
+        severity_map: dict[str, int] | None = None,
     ) -> list[dict]:
         """Status transitions recorded since an ISO timestamp, newest first.
 
@@ -1563,17 +1569,60 @@ class NFLDatabase:
         player's first sighting) so callers can tell a downgrade from a
         recovery, plus the player's name and position from the current report.
 
+        Every filter is applied *before* ``limit``. Filtering the returned rows
+        instead silently drops matches: a single feed backfill writes thousands
+        of first sightings in one timestamp, so "the newest 500 rows, then keep
+        the downgrades" can legitimately return nothing while downgrades exist.
+
         Args:
             since: ISO-8601 cutoff; only changes at or after this are returned.
             teams: Optional team abbreviations to filter to.
-            limit: Max rows.
+            limit: Max rows, applied after every filter.
+            player_ids: Optional player ids to filter to.
+            direction: "worse", "better", "lateral" or "new" — needs
+                ``severity_map``; the severity vocabulary lives with the injury
+                service, not here.
+            severity_map: status -> severity rank, for ``direction``.
         """
         try:
-            params: list = [since]
-            team_clause = ""
+            params: list = []
+            # Severity is resolved in SQL so `direction` can filter before the
+            # LIMIT. Without a map there is nothing to compare, so the caller's
+            # direction is ignored rather than guessed at.
+            direction = (direction or "").lower() or None
+            _COMPARISONS = {"worse": ">", "better": "<", "lateral": "="}
+            use_severity = bool(direction in _COMPARISONS and severity_map)
+
+            def _case(column: str) -> str:
+                branches = []
+                for status, severity in severity_map.items():  # type: ignore[union-attr]
+                    branches.append("WHEN ? THEN ?")
+                    params.extend([status, int(severity)])
+                params.append(_DEFAULT_SEVERITY)
+                return f"CASE {column} {' '.join(branches)} ELSE ? END"
+
+            if use_severity:
+                severity_cols = (
+                    f",\n                            {_case('injury_status')} AS new_severity"
+                    f",\n                            {_case('previous_status')} AS prev_severity"
+                )
+            else:
+                severity_cols = ""
+
+            params.append(since)
+            where = ["h.recorded_at >= ?"]
             if teams:
-                team_clause = f" AND h.team_id IN ({','.join('?' * len(teams))})"
+                where.append(f"h.team_id IN ({','.join('?' * len(teams))})")
                 params.extend(t.upper() for t in teams)
+            if player_ids:
+                where.append(f"h.player_id IN ({','.join('?' * len(player_ids))})")
+                params.extend(str(p) for p in player_ids)
+            if direction == "new":
+                where.append("h.previous_status IS NULL")
+            elif use_severity:
+                comparison = _COMPARISONS[direction]  # type: ignore[index]
+                where.append("h.previous_status IS NOT NULL")
+                where.append(f"h.new_severity {comparison} h.prev_severity")
             params.append(limit)
 
             with self._pool.get_connection() as conn:
@@ -1588,15 +1637,21 @@ class NFLDatabase:
                                 ORDER BY recorded_at, id
                             ) AS previous_status
                         FROM injury_history
+                    ),
+                    scored AS (
+                        SELECT
+                            id, player_id, team_id, injury_status, injury_type,
+                            recorded_at, previous_status{severity_cols}
+                        FROM ordered
                     )
                     SELECT
                         h.player_id, h.team_id, h.injury_status, h.injury_type,
                         h.previous_status, h.recorded_at,
                         p.player_name, p.position, p.injury_description
-                    FROM ordered h
+                    FROM scored h
                     LEFT JOIN player_injuries p
                         ON p.player_id = h.player_id AND p.team_id = h.team_id
-                    WHERE h.recorded_at >= ?{team_clause}
+                    WHERE {' AND '.join(where)}
                     -- `id` breaks ties: several transitions can share a
                     -- timestamp when one feed refresh moves a player twice.
                     ORDER BY h.recorded_at DESC, h.id DESC

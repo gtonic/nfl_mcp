@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Two injury queries filtered *after* the row limit and silently lost data.**
+  `get_injury_trends(direction="worse")` fetched the newest N rows and then kept
+  the downgrades, so a window that opens with a bulk feed backfill returned
+  nothing — real: 3241 first sightings landed in a single day, against a limit
+  capped at 500. The weekly briefing had the same shape, pulling 500 league-wide
+  changes before narrowing to one roster's ~15 players. Both filters now run in
+  SQL, with `LIMIT` applied last; `get_injury_status_changes` takes `player_ids`
+  and `direction` (with the severity vocabulary passed in, so the database layer
+  does not acquire an opinion about injuries).
+
 ### Added
 - **The weekly briefing scores a matchup in progress instead of guessing at
   it.** `win_probability` used full-slate projections throughout, so points
