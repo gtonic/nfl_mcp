@@ -32,7 +32,7 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server provides **79 MCP tools** organized into logical categories — 78
+The server provides **80 MCP tools** organized into logical categories — 79
 always on, plus `get_league_leaders` behind the `league_leaders` feature flag
 (enabled by default). Every tool also ships its own parameter schema over MCP,
 so an agent can introspect the authoritative signature at runtime; this list is
@@ -201,9 +201,20 @@ Advanced multi-week fantasy football planning:
   - Use case: Prepare roster for fantasy playoffs
   - Returns: Preparation plan with readiness score (0-100)
 
-### 7. Waiver Wire Analysis Tools (3 tools)
+### 7. Waiver Wire Analysis Tools (4 tools)
 
 Advanced waiver wire intelligence:
+
+- **`get_waiver_targets`**: **START HERE for "who should I pick up"** — ranks the
+  players nobody in *your* league rosters by how much they would upgrade *your*
+  lineup
+  - Parameters: `league_id` (required), `roster_id` or `user_id`, `week`,
+    `season`, `positions` (optional), `limit` (optional, default 12)
+  - Use case: the weekly waiver claim. Prefer this over `get_trending_players`,
+    which reports league-agnostic add counts and includes players already taken
+  - Returns: targets (with projected_points, floor/ceiling, replacement_level,
+    upgrade_points, trending_adds, verdict), drop_candidates,
+    replacement_levels, thin_positions, waiver_type, pool_size
 
 - **`get_waiver_log`**: Waiver transactions with de-duplication
   - Parameters: `league_id`, `round` (optional), `dedupe` (optional, default true)

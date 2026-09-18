@@ -42,6 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not acquire an opinion about injuries).
 
 ### Added
+- **`get_waiver_targets` — the waiver question finally has a tool.** The weekly
+  cycle is lineup / waivers / trades: `get_weekly_briefing` answered the first
+  and `analyze_trade` the third, while the middle one had only adjacent tools.
+  `get_trending_players` is league-agnostic and includes players already
+  rostered in your league, `recommend_faab_bid` needs you to know the name
+  already, and `get_waiver_wire_dashboard` reads the transaction log rather than
+  the pool.
+
+  This starts from the pool: every athlete nobody in the league rosters,
+  projected for the coming week in the league's own scoring, ranked by the only
+  thing that makes a claim worth making — points above the weakest player who
+  currently starts for you at that position. Flex seats are spread across the
+  positions that can fill them, so the replacement level reflects how deep you
+  actually start. Returns drop candidates and thin positions alongside.
+
+  It only considers positions the league *starts*: a league with no kicker slot
+  was otherwise told to claim kickers, which scored as a large upgrade precisely
+  because there was no kicker to compare against. Without live Vegas lines,
+  defenses and kickers are priced off a constant, so they are reported as
+  `no_signal` instead of being dressed up as a ranking. When nothing beats your
+  starters it says so, rather than ranking players who would all make the lineup
+  worse.
+
 - **The weekly briefing scores a matchup in progress instead of guessing at
   it.** `win_probability` used full-slate projections throughout, so points
   already on the board were ignored: live, it read 93% while the roster trailed
