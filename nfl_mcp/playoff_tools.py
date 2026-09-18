@@ -9,12 +9,21 @@ lands in a playoff seed.
 Team strength defaults to season points-per-game (from Sleeper roster totals),
 which is a simple, robust estimate; when the season hasn't produced enough games
 it falls back to the league average.
+
+Spread is measured rather than assumed. Every team used to share one hard-coded
+weekly sd of 25, which decides how often the weaker team wins and therefore the
+whole probability: a consistent roster and a boom/bust one had identical odds at
+equal points-per-game. Each team's own weekly scores now set its sd, shrunk
+toward the league's pooled spread so a two-game sample cannot claim a team is
+metronomic.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import random
+import statistics
 from typing import Any
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
@@ -24,31 +33,76 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PLAYOFF_TEAMS = 6
 DEFAULT_PLAYOFF_WEEK_START = 15  # regular season = weeks 1..14
+# Fallback weekly scoring spread, used before a league has played enough games
+# to measure its own, and as the prior every team's sd is shrunk toward.
 DEFAULT_SCORE_SD = 25.0
+# Games of league-average evidence mixed into each team's variance. A team needs
+# roughly this many of its own before its measured spread outweighs the prior —
+# four weeks of fantasy scores are not enough to call a roster steady.
+SD_SHRINKAGE_GAMES = 4.0
+MIN_GAMES_FOR_SD = 2
 
 
 def _rank_key(w: float, p: float):
     return (w, p)
 
 
+def shrunk_sd(scores: list[float], prior_sd: float,
+              prior_games: float = SD_SHRINKAGE_GAMES) -> float:
+    """A team's weekly scoring sd, shrunk toward the league's.
+
+    Variances are pooled rather than the standard deviations, because variance is
+    what adds. With fewer than two games there is nothing to measure and the
+    prior stands on its own.
+    """
+    if len(scores) < MIN_GAMES_FOR_SD:
+        return prior_sd
+    sample_var = statistics.variance(scores)
+    n = float(len(scores))
+    pooled = (n * sample_var + prior_games * prior_sd ** 2) / (n + prior_games)
+    return math.sqrt(max(pooled, 0.0))
+
+
+def league_prior_sd(scores_by_team: dict[int, list[float]]) -> float:
+    """The league's own weekly spread, pooled across teams around each team mean.
+
+    Pooling around the *team* mean rather than the league mean keeps this a
+    measure of week-to-week volatility, not of how unequal the league is.
+    """
+    deviations: list[float] = []
+    for scores in scores_by_team.values():
+        if len(scores) < MIN_GAMES_FOR_SD:
+            continue
+        mean = sum(scores) / len(scores)
+        deviations.extend((s - mean) ** 2 for s in scores)
+    if len(deviations) < MIN_GAMES_FOR_SD:
+        return DEFAULT_SCORE_SD
+    return math.sqrt(sum(deviations) / len(deviations))
+
+
 def _simulate(
     teams: list[dict], schedule: list[tuple[int, int]], playoff_teams: int,
-    num_sims: int, score_sd: float, rng: random.Random,
+    num_sims: int, score_sd: float | dict[int, float], rng: random.Random,
 ) -> dict[int, dict[str, float]]:
-    """Monte-Carlo the remaining schedule. teams: [{roster_id, wins, points, mean}]."""
+    """Monte-Carlo the remaining schedule. teams: [{roster_id, wins, points, mean}].
+
+    `score_sd` is either one spread for the whole league or a per-roster mapping.
+    """
     made = {t["roster_id"]: 0 for t in teams}
     seed_sum = {t["roster_id"]: 0 for t in teams}
     ids = [t["roster_id"] for t in teams]
     base_w = {t["roster_id"]: t["wins"] for t in teams}
     base_p = {t["roster_id"]: t["points"] for t in teams}
     mean = {t["roster_id"]: t["mean"] for t in teams}
+    sd = (score_sd if isinstance(score_sd, dict)
+          else dict.fromkeys(ids, float(score_sd)))
 
     for _ in range(num_sims):
         w = dict(base_w)
         p = dict(base_p)
         for a, b in schedule:
-            sa = rng.gauss(mean[a], score_sd)
-            sb = rng.gauss(mean[b], score_sd)
+            sa = rng.gauss(mean[a], sd.get(a, DEFAULT_SCORE_SD))
+            sb = rng.gauss(mean[b], sd.get(b, DEFAULT_SCORE_SD))
             p[a] += sa
             p[b] += sb
             if sa >= sb:
@@ -90,27 +144,67 @@ async def _build_remaining_schedule(league_id: str, weeks: list[int]) -> list[tu
     return schedule
 
 
+async def _fetch_weekly_scores(league_id: str, weeks: list[int]) -> dict[int, list[float]]:
+    """``{roster_id: [points, ...]}`` for played weeks, from Sleeper matchups.
+
+    A zero is skipped rather than recorded: Sleeper reports 0.0 both for a team
+    that scored nothing and for a week it has not published, and treating the
+    second as the first would invent volatility no roster actually has.
+    """
+    scores: dict[int, list[float]] = {}
+    for wk in weeks:
+        try:
+            res = await get_matchups(league_id, wk)
+        except Exception as e:
+            logger.debug(f"weekly scores unavailable for week {wk}: {e}")
+            continue
+        if not res.get("success"):
+            continue
+        for m in res.get("matchups", []):
+            rid = m.get("roster_id")
+            points = m.get("points")
+            if rid is None or points is None:
+                continue
+            try:
+                value = float(points)
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"week {wk}: roster {rid} has unparseable points {points!r}, "
+                    "excluded from its scoring spread"
+                )
+                continue
+            if value > 0:
+                scores.setdefault(rid, []).append(value)
+    return scores
+
+
 @handle_http_errors(default_data={"odds": []}, operation_name="computing playoff odds")
 async def get_playoff_odds(
     league_id: str,
     current_week: int | None = None,
     num_sims: int = 10000,
-    score_sd: float = DEFAULT_SCORE_SD,
+    score_sd: float | None = None,
     my_roster_id: int | None = None,
     seed: int | None = None,
     db=None,
 ) -> dict:
     """Compute playoff probabilities by simulating the rest of the regular season.
 
+    Each team's weekly scoring spread is measured from its own played weeks and
+    shrunk toward the league's pooled spread, so a boom/bust roster and a steady
+    one at the same points-per-game no longer get identical odds.
+
     Args:
         league_id: Sleeper league id.
         current_week: First not-yet-played week (defaults to NFL state / inferred).
         num_sims: Monte-Carlo iterations (default 10000).
-        score_sd: Weekly scoring standard deviation (default 25).
+        score_sd: Override the measured spread with one value for every team.
+            Leave unset to measure it (falls back to 25 before ~2 games played).
         my_roster_id: If given, also returns your win-this-week vs lose-this-week swing.
         seed: RNG seed for reproducibility.
 
-    Returns: {odds: [{roster_id, name, record, mean_ppg, playoff_pct, avg_seed}], ...}
+    Returns: {odds: [{roster_id, name, record, mean_ppg, score_sd, games_scored,
+              playoff_pct, avg_seed}], score_sd_source, league_score_sd, ...}
     """
     league_res = await get_league(league_id)
     if not league_res.get("success") or not league_res.get("league"):
@@ -203,8 +297,35 @@ async def get_playoff_odds(
                         "games (preseason or schedule not available)."),
         })
 
+    # Weekly spread, per team, from the weeks already played. An explicit
+    # `score_sd` overrides it — the caller asked for a specific assumption.
+    played_weeks = list(range(1, current_week))
+    scores_by_team: dict[int, list[float]] = {}
+    if score_sd is None and played_weeks:
+        scores_by_team = await _fetch_weekly_scores(league_id, played_weeks)
+
+    if score_sd is not None:
+        prior_sd = float(score_sd)
+        sd_by_team: float | dict[int, float] = prior_sd
+        sd_source = "caller"
+    else:
+        prior_sd = league_prior_sd(scores_by_team)
+        sd_by_team = {
+            t["roster_id"]: shrunk_sd(scores_by_team.get(t["roster_id"], []), prior_sd)
+            for t in teams
+        }
+        measured = any(
+            len(scores_by_team.get(t["roster_id"], [])) >= MIN_GAMES_FOR_SD for t in teams
+        )
+        sd_source = "measured" if measured else "default"
+
     rng = random.Random(seed)
-    sim = _simulate(teams, schedule, playoff_teams, max(100, min(int(num_sims), 50000)), score_sd, rng)
+    sim = _simulate(teams, schedule, playoff_teams, max(100, min(int(num_sims), 50000)),
+                    sd_by_team, rng)
+
+    def _team_sd(roster_id) -> float:
+        return (sd_by_team.get(roster_id, prior_sd)
+                if isinstance(sd_by_team, dict) else sd_by_team)
 
     odds = []
     for t in teams:
@@ -214,6 +335,10 @@ async def get_playoff_odds(
             "name": names.get(rid, f"Roster {rid}"),
             "record": t["record"],
             "mean_ppg": round(t["mean"], 1),
+            # Reported so a surprising probability can be traced to the spread
+            # behind it, and so a small sample is visible as a small sample.
+            "score_sd": round(_team_sd(rid), 1),
+            "games_scored": len(scores_by_team.get(rid, [])),
             "playoff_pct": sim[rid]["playoff_pct"],
             "avg_seed": sim[rid]["avg_seed"],
         })
@@ -226,6 +351,8 @@ async def get_playoff_odds(
         "current_week": current_week,
         "games_remaining": len(schedule),
         "num_sims": max(100, min(int(num_sims), 50000)),
+        "score_sd_source": sd_source,
+        "league_score_sd": round(prior_sd, 1),
         "message": (f"Playoff odds over {len(schedule)} remaining games "
                     f"({max(100, min(int(num_sims), 50000))} sims); top {playoff_teams} make it"),
     }
@@ -246,8 +373,10 @@ async def get_playoff_odds(
                     cloned.append(c)
                 return cloned
 
-            win_sim = _simulate(_clone(my_roster_id), rest, playoff_teams, 5000, score_sd, random.Random(seed))
-            lose_sim = _simulate(_clone(opp), rest, playoff_teams, 5000, score_sd, random.Random(seed))
+            win_sim = _simulate(_clone(my_roster_id), rest, playoff_teams, 5000,
+                                sd_by_team, random.Random(seed))
+            lose_sim = _simulate(_clone(opp), rest, playoff_teams, 5000,
+                                 sd_by_team, random.Random(seed))
             result["this_week_swing"] = {
                 "my_roster_id": my_roster_id,
                 "opponent_roster_id": opp,

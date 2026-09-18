@@ -658,7 +658,7 @@ async def get_playoff_odds(
     league_id: str,
     current_week: int | None = None,
     num_sims: int | None = 10000,
-    score_sd: float | None = 25.0,
+    score_sd: float | None = None,
     my_roster_id: int | None = None,
     seed: int | None = None,
 ) -> dict:
@@ -666,17 +666,22 @@ async def get_playoff_odds(
 
     Simulates every remaining regular-season matchup (each team scores ~ Normal
     around its points-per-game), ranks by record then points, and counts how
-    often each team makes a playoff seed.
+    often each team makes a playoff seed. Each team's weekly spread is measured
+    from its own played weeks and shrunk toward the league's, so a boom/bust
+    roster and a steady one at equal points-per-game get different odds.
 
     Parameters:
         league_id (str, required): Sleeper league id.
         current_week (int, optional): First unplayed week (defaults to NFL state).
         num_sims (int): Iterations (default 10000, capped 100..50000).
-        score_sd (float): Weekly scoring std-dev (default 25).
+        score_sd (float, optional): Override the measured spread with one value
+            for every team. Leave unset to measure it.
         my_roster_id (int, optional): Also returns your win/lose-this-week swing.
         seed (int, optional): RNG seed for reproducibility.
-    Returns: {odds:[{roster_id, name, record, mean_ppg, playoff_pct, avg_seed}],
-              this_week_swing?, playoff_teams, current_week, success}
+    Returns: {odds:[{roster_id, name, record, mean_ppg, score_sd, games_scored,
+              playoff_pct, avg_seed}], score_sd_source ('measured'|'default'|
+              'caller'), league_score_sd, this_week_swing?, playoff_teams,
+              current_week, success}
 
     IMPORTANT FOR LLM AGENTS: Render the odds immediately without asking for confirmation.
     """
@@ -690,7 +695,7 @@ async def get_playoff_odds(
         return {"odds": [], "success": False, "error": f"Invalid input: {e!s}"}
     return await playoff_tools.get_playoff_odds(
         league_id=league_id, current_week=current_week, num_sims=num_sims or 10000,
-        score_sd=score_sd or 25.0, my_roster_id=my_roster_id, seed=seed, db=get_db(),
+        score_sd=score_sd, my_roster_id=my_roster_id, seed=seed, db=get_db(),
     )
 
 
