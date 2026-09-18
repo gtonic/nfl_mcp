@@ -2228,8 +2228,11 @@ async def get_injury_trends(
         teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
         max_rows = max(1, min(int(limit or 50), 500))
 
+        # The direction filter runs in SQL: applying it to an already-truncated
+        # page returns nothing whenever the window opens with a bulk backfill.
         rows = get_db().get_injury_status_changes(
-            since=since, teams=teams_list or None, limit=max_rows
+            since=since, teams=teams_list or None, limit=max_rows,
+            direction=direction, severity_map=STATUS_SEVERITY,
         )
 
         changes = []
@@ -2246,9 +2249,8 @@ async def get_injury_trends(
                 row_direction = "worse" if delta > 0 else "better" if delta < 0 else "lateral"
             changes.append({**row, "direction": row_direction, "severity_delta": delta})
 
-        if direction:
-            wanted = str(direction).lower()
-            changes = [c for c in changes if c["direction"] == wanted]
+        # No post-filter on `direction`: the query already applied it, and doing
+        # it again here is what capped the result at "whatever survived the page".
 
         return {
             "changes": changes,
