@@ -12,25 +12,38 @@ of hot/cold weeks doesn't dominate).
     expected_points = exp_attempts · ppa + exp_carries · ppc         (QB)
 
 where exp_* are recency-weighted trailing volumes and pp* are the player's own
-points-per-opportunity shrunk toward a position prior. All PPR.
+points-per-opportunity shrunk toward a position prior.
+
+Scoring: everything is expressed per point-per-reception (``ppr``), so the same
+model serves full PPR (1.0), half PPR (0.5) and standard (0.0). Reception value
+is the only lever that changes the *shape* of the ranking — it is what makes a
+volume receiver worth more than a runner — so getting it from the league instead
+of assuming full PPR matters more than any multiplier in the stack.
 
 This module is pure and unit-testable; whether it becomes the live baseline is
 decided by the backtest (see ``evals/backtest``), not asserted.
 """
 from __future__ import annotations
 
-# Standard PPR scoring weights (match nflverse `fantasy_points_ppr`).
+# Scoring weights that do not vary by league format (match nflverse
+# `fantasy_points_ppr` apart from the per-reception value, which is a parameter).
 PASS_YD, PASS_TD, INT = 0.04, 4.0, -2.0
 RUSH_YD, RUSH_TD = 0.1, 6.0
 REC, REC_YD, REC_TD = 1.0, 0.1, 6.0
+FULL_PPR = 1.0
 
-# Position priors: PPR points per opportunity (per target / carry / pass attempt).
+# Position priors: **full-PPR** points per opportunity (per target / carry /
+# pass attempt). `_prior_ppt` rebases the per-target prior for other formats.
 _PRIORS: dict[str, dict[str, float]] = {
     "WR": {"ppt": 1.55, "ppc": 0.50},
     "TE": {"ppt": 1.35, "ppc": 0.50},
     "RB": {"ppt": 1.45, "ppc": 0.62},
     "QB": {"ppa": 0.45, "ppc": 0.75},
 }
+# League-average catch rate per target, by position. A target is worth one
+# reception this often, so lowering the per-reception value removes exactly
+# `(1 - ppr) × catch_rate` from the per-target prior.
+_CATCH_RATE: dict[str, float] = {"WR": 0.62, "TE": 0.68, "RB": 0.75, "QB": 0.0}
 # Shrinkage strength, in opportunity units: a player needs ~this many targets/
 # carries/attempts before their own efficiency outweighs the position prior.
 _K_TARGETS, _K_CARRIES, _K_ATTEMPTS = 20.0, 25.0, 60.0
@@ -39,10 +52,16 @@ DEFAULT_LOOKBACK = 6
 OPPORTUNITY_POSITIONS = ("QB", "RB", "WR", "TE")
 
 
-def rec_points(g: dict) -> float:
-    return (g.get("receptions", 0.0) * REC
+def rec_points(g: dict, ppr: float = FULL_PPR) -> float:
+    return (g.get("receptions", 0.0) * ppr
             + g.get("receiving_yards", 0.0) * REC_YD
             + g.get("receiving_tds", 0.0) * REC_TD)
+
+
+def _prior_ppt(position: str, ppr: float) -> float:
+    """Per-target prior rebased from full PPR to this league's reception value."""
+    priors = _PRIORS[position]
+    return priors["ppt"] - (FULL_PPR - ppr) * _CATCH_RATE.get(position, 0.0)
 
 
 def rush_points(g: dict) -> float:
@@ -69,8 +88,9 @@ def project_opportunity(
     prior_games: list[dict],
     position: str,
     lookback: int = DEFAULT_LOOKBACK,
+    ppr: float = FULL_PPR,
 ) -> float | None:
-    """Expected PPR points for the next game from trailing opportunity.
+    """Expected fantasy points for the next game from trailing opportunity.
 
     Args:
         prior_games: the player's earlier weekly stat dicts (each with targets,
@@ -78,6 +98,7 @@ def project_opportunity(
             MUST contain only games before the one being predicted (leak-free).
         position: QB/RB/WR/TE.
         lookback: how many most-recent games to weight (recency-weighted linearly).
+        ppr: points per reception for the league (1.0 full, 0.5 half, 0.0 standard).
 
     Returns expected points, or None if the position/data can't be projected.
     """
@@ -105,6 +126,6 @@ def project_opportunity(
 
     exp_targets = _weighted_mean([g.get("targets", 0.0) for g in games], weights)
     tot_targets = sum(g.get("targets", 0.0) for g in games)
-    tot_rec_pts = sum(rec_points(g) for g in games)
-    ppt = _shrunk_rate(tot_rec_pts, tot_targets, priors["ppt"], _K_TARGETS)
+    tot_rec_pts = sum(rec_points(g, ppr) for g in games)
+    ppt = _shrunk_rate(tot_rec_pts, tot_targets, _prior_ppt(pos, ppr), _K_TARGETS)
     return max(0.0, exp_targets * ppt + exp_carries * ppc)

@@ -249,6 +249,14 @@ Trade evaluation and optimization:
 
 ### 10. Weekly Projections (4 tools)
 
+**Scoring matters and is honoured.** `scoring` sets the points scale, not just
+which market values are consulted: both baselines are rebased to the league's
+per-reception value, so a half-PPR league gets half-PPR points *and* the
+receiver-vs-runner ordering that follows. `get_weekly_briefing` reads the exact
+value out of the league's own `scoring_settings`; pass `scoring` yourself for the
+lower-level tools (`'ppr'`, `'half_ppr'`, `'standard'`, or a raw value like
+`'0.5'`).
+
 - **`get_weekly_briefing`**: One call for "how should I line up this week". Mid-week, players whose game has kicked off carry their actual points with no remaining variance and their slots leave the optimization.
   - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional)
   - Returns: league, week, record, win_probability, projected_points, opponent_projected_points, recommended_lineup, changes, bench, injury_changes, not_projected
@@ -259,9 +267,9 @@ Trade evaluation and optimization:
 - **`project_players`**: Project weekly fantasy points for multiple players at once.
   - Parameters: `players` (required), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `num_teams` (optional, default 12), `season` (optional), `week` (optional)
   - Returns: projections, total
-- **`get_opportunity_projections`**: Opportunity-based PPR projections from trailing volume (beats trailing-PPG).
-  - Parameters: `season` (required), `week` (required), `players` (optional), `lookback` (optional, default 6), `min_games` (optional, default 2), `top_n` (optional, default 50)
-  - Returns: season, week, lookback, count, projections, player_id, name, position
+- **`get_opportunity_projections`**: Opportunity-based projections from trailing volume (beats trailing-PPG).
+  - Parameters: `season` (required), `week` (required), `players` (optional), `lookback` (optional, default 6), `min_games` (optional, default 2), `top_n` (optional, default 50), `scoring` (optional, default 'ppr')
+  - Returns: season, week, lookback, scoring, ppr, count, projections, player_id, name, position
 
 ### 11. Start/Sit & Lineup Optimization (5 tools)
 

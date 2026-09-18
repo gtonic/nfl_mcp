@@ -13,6 +13,11 @@ signals the server already has:
 Every factor is reported in a `breakdown` so the number is explainable, and a
 `confidence` reflects how many real signals were available. No API key needed
 (FantasyCalc + ESPN); Vegas is optional (ODDS_API_KEY improves it).
+
+`scoring` sets the points scale, not just which market values are consulted:
+both baselines are rebased to the league's per-reception value, so a half-PPR
+league gets half-PPR points and the receiver-vs-runner ordering that follows
+from them.
 """
 
 from __future__ import annotations
@@ -32,23 +37,39 @@ logger = logging.getLogger(__name__)
 VBD_POSITIONS = {"QB", "RB", "WR", "TE"}
 
 
-def base_ppg(position: str, pos_rank: int | None) -> float:
-    """Baseline PPR points/game from a player's positional rank."""
+# Share of a full-PPR baseline that *is* the per-reception bonus, by position —
+# i.e. receptions per game divided by PPR points per game (a WR averaging 14.5
+# PPR points catches roughly 4.5 balls). Removing `(1 - ppr) × share` rebases the
+# bucket from full PPR to the league's actual reception value.
+_RECEPTION_SHARE = {"WR": 0.31, "TE": 0.36, "RB": 0.23, "QB": 0.0, "K": 0.0,
+                    "DST": 0.0, "DEF": 0.0}
+
+
+def base_ppg(position: str, pos_rank: int | None, ppr: float = 1.0) -> float:
+    """Baseline points/game from a player's positional rank.
+
+    Buckets are full-PPR and then rebased to `ppr` (1.0 full, 0.5 half, 0.0
+    standard). This is the fallback baseline — it is used before a player has
+    enough games for the opportunity projection — so the rebasing is a
+    position-average estimate rather than a per-player reception count.
+    """
     p = (position or "").upper()
     r = pos_rank if (isinstance(pos_rank, int) and pos_rank > 0) else 999
     if p == "QB":
-        return 22.0 if r <= 3 else 20.0 if r <= 8 else 18.0 if r <= 12 else 16.0 if r <= 20 else 14.0
-    if p == "RB":
-        return 19.0 if r <= 3 else 16.0 if r <= 8 else 13.0 if r <= 15 else 11.0 if r <= 24 else 8.5 if r <= 36 else 6.0
-    if p == "WR":
-        return 17.0 if r <= 5 else 14.5 if r <= 12 else 12.0 if r <= 24 else 9.5 if r <= 36 else 7.5 if r <= 48 else 5.5
-    if p == "TE":
-        return 14.0 if r <= 3 else 11.0 if r <= 6 else 8.5 if r <= 12 else 6.5 if r <= 20 else 5.0
-    if p == "K":
-        return 8.0
-    if p in ("DST", "DEF"):
-        return 7.0
-    return 8.0
+        full = 22.0 if r <= 3 else 20.0 if r <= 8 else 18.0 if r <= 12 else 16.0 if r <= 20 else 14.0
+    elif p == "RB":
+        full = 19.0 if r <= 3 else 16.0 if r <= 8 else 13.0 if r <= 15 else 11.0 if r <= 24 else 8.5 if r <= 36 else 6.0
+    elif p == "WR":
+        full = 17.0 if r <= 5 else 14.5 if r <= 12 else 12.0 if r <= 24 else 9.5 if r <= 36 else 7.5 if r <= 48 else 5.5
+    elif p == "TE":
+        full = 14.0 if r <= 3 else 11.0 if r <= 6 else 8.5 if r <= 12 else 6.5 if r <= 20 else 5.0
+    elif p == "K":
+        full = 8.0
+    elif p in ("DST", "DEF"):
+        full = 7.0
+    else:
+        full = 8.0
+    return round(full * (1.0 - (1.0 - ppr) * _RECEPTION_SHARE.get(p, 0.0)), 2)
 
 
 # Tier -> baseline point-swing from an average matchup (before position scaling).
@@ -166,7 +187,7 @@ class ProjectionEngine:
 
     def _project_one(
         self, player: dict, values_index: dict, rankings: dict, lines: dict,
-        opp_index: dict | None = None, week: int | None = None,
+        opp_index: dict | None = None, week: int | None = None, ppr: float = 1.0,
     ) -> dict:
         name = player.get("name") or player.get("player_name")
         position = (player.get("position") or "").upper()
@@ -181,10 +202,12 @@ class ProjectionEngine:
         #    otherwise fall back to the positional-rank baseline.
         market = self.values.lookup(values_index, player_id=player_id, name=name, position=position)
         pos_rank = (market or {}).get("position_rank")
-        base = base_ppg(position, pos_rank)
+        base = base_ppg(position, pos_rank, ppr)
         base_source = "rank_bucket"
         if opp_index and week and name:
-            opp_base = opportunity_tools.opportunity_base_for(opp_index, name, position, week)
+            opp_base = opportunity_tools.opportunity_base_for(
+                opp_index, name, position, week, ppr=ppr
+            )
             if opp_base is not None:
                 base = round(opp_base, 1)
                 base_source = "opportunity"
@@ -320,8 +343,9 @@ class ProjectionEngine:
         self, players: list[dict], scoring: str = "ppr", superflex: bool = False,
         num_teams: int = 12, season: int | None = None, week: int | None = None,
     ) -> dict:
+        ppr = scoring_to_ppr(scoring)
         values_index = await self.values.get_values(
-            scoring_to_ppr(scoring), 2 if superflex else 1, num_teams, False
+            ppr, 2 if superflex else 1, num_teams, False
         )
         try:
             rankings = await self.defense.fetch_defense_rankings()
@@ -344,7 +368,7 @@ class ProjectionEngine:
                 opp_index = {}
 
         projections = [
-            self._project_one(p, values_index, rankings, lines, opp_index, week)
+            self._project_one(p, values_index, rankings, lines, opp_index, week, ppr)
             for p in players
         ]
         return {
@@ -352,6 +376,10 @@ class ProjectionEngine:
             "values_source": values_index.get("source"),
             "vegas_active": bool(lines),
             "opportunity_active": bool(opp_index),
+            # Stated rather than assumed: the same roster is worth visibly
+            # different points in full vs half PPR, and the FLEX order changes.
+            "scoring": scoring,
+            "ppr": ppr,
         }
 
 

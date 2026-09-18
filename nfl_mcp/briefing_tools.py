@@ -31,13 +31,18 @@ _SLOT_RENAME = {"SUPER_FLEX": "SUPERFLEX", "WRRB_FLEX": "FLEX",
                 "REC_FLEX": "FLEX", "DEF": "DST"}
 
 
-def _scoring_label(league: dict) -> str:
-    """Sleeper's per-reception value as a scoring label."""
+def _scoring_ppr(league: dict) -> float:
+    """Sleeper's per-reception value, defaulting to full PPR when unreadable."""
     rec = ((league or {}).get("scoring_settings") or {}).get("rec")
     try:
-        rec = float(rec)
+        return float(rec)
     except (TypeError, ValueError):
-        return "ppr"
+        return 1.0
+
+
+def _scoring_label(league: dict) -> str:
+    """Sleeper's per-reception value as a scoring label (for the report)."""
+    rec = _scoring_ppr(league)
     if rec >= 0.75:
         return "ppr"
     if rec >= 0.25:
@@ -154,6 +159,9 @@ async def get_weekly_briefing(
     league_resp = await sleeper_tools.get_league(league_id)
     league = (league_resp or {}).get("league") or {}
     scoring = _scoring_label(league)
+    # The projections get the league's exact per-reception value rather than the
+    # three-way label, so a 0.6-PPR league is not quietly projected as 0.5.
+    scoring_exact = str(_scoring_ppr(league))
     slots = _slots_from_positions(league.get("roster_positions"))
     num_teams = int(league.get("total_rosters") or 12)
 
@@ -244,10 +252,10 @@ async def get_weekly_briefing(
     ]
 
     my_proj = await project_players(
-        my_inputs, scoring=scoring, num_teams=num_teams, season=season, week=week
+        my_inputs, scoring=scoring_exact, num_teams=num_teams, season=season, week=week
     )
     opp_proj = await project_players(
-        opp_inputs, scoring=scoring, num_teams=num_teams, season=season, week=week
+        opp_inputs, scoring=scoring_exact, num_teams=num_teams, season=season, week=week
     )
 
     def _as_candidates(result):
@@ -387,7 +395,8 @@ async def get_weekly_briefing(
         "locked_players": (lineup or {}).get("locked_players") or [],
         "league": {
             "league_id": league_id, "name": league.get("name"),
-            "scoring": scoring, "slots": slots, "num_teams": num_teams,
+            "scoring": scoring, "ppr": _scoring_ppr(league),
+            "slots": slots, "num_teams": num_teams,
         },
         "week": week,
         "season": season,
