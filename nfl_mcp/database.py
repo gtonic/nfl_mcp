@@ -1022,6 +1022,20 @@ class NFLDatabase:
             logger.debug(f"get_week_opponents failed: {e}")
             return {}
 
+    def get_week_kickoffs(self, season: int, week: int) -> dict[str, str]:
+        """``{team: kickoff}`` for one week, so callers can tell what has been
+        played from what is still to come."""
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT team, kickoff FROM schedule_games WHERE season=? AND week=?",
+                    (season, week),
+                )
+                return {row["team"]: row["kickoff"] for row in cur.fetchall() if row["kickoff"]}
+        except Exception as e:
+            logger.debug(f"get_week_kickoffs failed: {e}")
+            return {}
+
     def get_usage_for_week(self, season: int, week: int) -> list[dict]:
         """All recorded usage rows for one week (empty before it is ingested)."""
         try:

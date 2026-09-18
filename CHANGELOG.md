@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The weekly briefing scores a matchup in progress instead of guessing at
+  it.** `win_probability` used full-slate projections throughout, so points
+  already on the board were ignored: live, it read 93% while the roster trailed
+  20.3 to 57.82 after a Thursday night in which the opponent's quarterback
+  scored 38.82. It now reports **63.6%** for the same matchup.
+
+  A player whose game has kicked off carries his **actual** points and **no
+  remaining variance** — which is the part that matters, because a settled
+  lead cannot be lost to variance the way a projected one can. His slot leaves
+  the optimization, since it can no longer be refilled, and a bench player
+  whose game has started is no longer offered. Games in progress blend banked
+  points with the untouched share of the projection.
+
+  `nfl_mcp/game_clock.py` derives this from kickoff plus a nominal game length;
+  the feeds carry no live clock. That is exact at both ends and approximate
+  only during the ~3h window in between — when those lineups are locked anyway.
+  An unknown kickoff counts as *not started*, deliberately: keeping a player in
+  the optimizer is the recoverable error, freezing a changeable lineup is not.
+
+  `optimize_win_probability` takes a `locked_players` argument for this, and
+  optimizes the open slots against a residual target — `P(locked + open > opp)`
+  is `P(open > opp - locked)` when the locked share has zero variance.
+
 ### Fixed
 - **`get_weekly_briefing` recommended starting a player who is out injured.**
   The briefing filtered Sleeper's `reserve` list, but a hurt player parked on
