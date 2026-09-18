@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Projections ignored the league's scoring and were always full PPR.**
+  `scoring` reached only the FantasyCalc *value* lookup; the points scale was
+  hard-wired — `opportunity.py` set `REC = 1.0` and `base_ppg()` was documented
+  as "Baseline PPR points/game". Nothing converted, so from week 2 on (the
+  opportunity baseline) the projection was byte-identical for `ppr`, `half_ppr`
+  and `standard`. A 0.5-PPR league was quoted full-PPR numbers: a receiver on
+  9 targets / 6 receptions / 70 yards projected **14.6** where he is worth
+  **≈11.6**.
+
+  Worse than the points: it removed the ordering half PPR exists to create. A
+  volume receiver outranked a runner in every format, which is exactly the FLEX
+  call the setting is supposed to flip.
+
+  Both baselines are now rebased to the league's per-reception value — the
+  opportunity model takes `ppr` through to the reception weight *and* its
+  per-target prior (rebased by position catch rate), and the rank buckets are
+  scaled by the share of a full-PPR baseline that is reception bonus.
+  `get_weekly_briefing` reads the exact value out of the league's own
+  `scoring_settings` rather than rounding it to a three-way label, so a 0.6-PPR
+  league is no longer projected as 0.5. `get_opportunity_projections` takes a
+  `scoring` argument, and every projection response now reports the `scoring`
+  and `ppr` it used.
+
 - **Two injury queries filtered *after* the row limit and silently lost data.**
   `get_injury_trends(direction="worse")` fetched the newest N rows and then kept
   the downgrades, so a window that opens with a bulk feed backfill returned

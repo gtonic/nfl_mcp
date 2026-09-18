@@ -16,6 +16,7 @@ from . import opportunity
 from .config import LONG_TIMEOUT, create_http_client
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .matchup_tools import NFLVERSE_PLAYER_STATS_URL
+from .player_values import scoring_to_ppr
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ def opportunity_base_for(
     week: int,
     lookback: int = opportunity.DEFAULT_LOOKBACK,
     min_games: int = 2,
+    ppr: float = opportunity.FULL_PPR,
 ) -> float | None:
     """Opportunity projection for a player (by name) usable as a projection base.
 
@@ -125,15 +127,20 @@ def opportunity_base_for(
     prior = [g for g in entry["games"] if g["week"] < week]
     if len(prior) < min_games:
         return None
-    return opportunity.project_opportunity(prior, position, lookback=lookback)
+    return opportunity.project_opportunity(prior, position, lookback=lookback, ppr=ppr)
 
 
-def _project_entry(entry: dict, week: int, lookback: int, min_games: int) -> dict | None:
+def _project_entry(
+    entry: dict, week: int, lookback: int, min_games: int,
+    ppr: float = opportunity.FULL_PPR,
+) -> dict | None:
     """Project one player from games before `week`. None if too few prior games."""
     prior = [g for g in entry["games"] if g["week"] < week]
     if len(prior) < min_games:
         return None
-    proj = opportunity.project_opportunity(prior, entry["position"], lookback=lookback)
+    proj = opportunity.project_opportunity(
+        prior, entry["position"], lookback=lookback, ppr=ppr
+    )
     if proj is None:
         return None
     window = sorted(prior, key=lambda g: g["week"])[-lookback:]
@@ -144,7 +151,10 @@ def _project_entry(entry: dict, week: int, lookback: int, min_games: int) -> dic
         "name": entry["name"],
         "position": entry["position"],
         "team": entry["team"],
+        # Kept under the historical key so existing callers keep working; it
+        # carries this call's scoring, which `ppr` reports alongside.
         "projected_ppr": round(proj, 1),
+        "projected_points": round(proj, 1),
         "games_used": len(window),
         "exp_targets": exp_targets,
         "exp_carries": exp_carries,
@@ -162,8 +172,9 @@ async def get_opportunity_projections(
     lookback: int = opportunity.DEFAULT_LOOKBACK,
     min_games: int = 2,
     top_n: int = 50,
+    scoring: str = "ppr",
 ) -> dict:
-    """Opportunity-based PPR projections for `week` from trailing volume.
+    """Opportunity-based projections for `week` from trailing volume.
 
     Projects each player's next-week points from recency-weighted trailing
     targets/carries (QB: pass attempts) × their points-per-opportunity shrunk
@@ -178,13 +189,17 @@ async def get_opportunity_projections(
         lookback: Trailing games to weight (default 6).
         min_games: Minimum prior games required to project a player (default 2).
         top_n: Cap when `players` is omitted (default 50).
+        scoring: League scoring — 'ppr', 'half_ppr', 'standard', or a raw
+            per-reception value like '0.5'. Changes both the points and the
+            ordering (receivers vs runners), so pass your league's real setting.
 
     Returns a dict with `projections` (highest-first), each carrying the expected
-    volume and projected PPR points.
+    volume and projected points in the requested scoring.
     """
     default_data = {"season": season, "week": week, "projections": []}
     if not isinstance(week, int) or week < 2:
         return handle_validation_error("week must be an integer >= 2 (needs prior weeks)", default_data)
+    ppr = scoring_to_ppr(scoring)
 
     logs = await _fetch_game_logs(season)
     if not logs:
@@ -197,8 +212,10 @@ async def get_opportunity_projections(
     else:
         entries = list(logs.values())
 
-    projections = [p for e in entries if (p := _project_entry(e, week, lookback, min_games))]
-    projections.sort(key=lambda p: p["projected_ppr"], reverse=True)
+    projections = [
+        p for e in entries if (p := _project_entry(e, week, lookback, min_games, ppr))
+    ]
+    projections.sort(key=lambda p: p["projected_points"], reverse=True)
     if not players and top_n:
         projections = projections[:top_n]
 
@@ -206,11 +223,14 @@ async def get_opportunity_projections(
         "season": season,
         "week": week,
         "lookback": lookback,
+        "scoring": scoring,
+        "ppr": ppr,
         "count": len(projections),
         "projections": projections,
         "method": (
             "opportunity baseline: recency-weighted trailing volume × "
-            "position-shrunk points-per-opportunity (PPR). Beats trailing-PPG on backtest."
+            f"position-shrunk points-per-opportunity ({ppr} pts/reception). "
+            "Beats trailing-PPG on backtest."
         ),
         "message": (
             f"Opportunity projections for week {week} of {season} "
