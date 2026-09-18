@@ -89,8 +89,20 @@ def matchup_multiplier(position: str, tier: str) -> float:
     strength = _MATCHUP_POS_STRENGTH.get((position or "").upper(), _DEFAULT_POS_STRENGTH)
     return round(1.0 + strength * dev, 4)
 
-# Higher fantasy scoring variance = wider floor/ceiling band.
-_VOLATILITY = {"QB": 0.22, "RB": 0.30, "WR": 0.38, "TE": 0.40, "K": 0.35, "DST": 0.45, "DEF": 0.45}
+# Higher fantasy scoring variance = wider floor/ceiling band. floor/ceiling are
+# `mean ± volatility·mean`, i.e. a ±1σ band under the Normal the win-probability
+# optimizer assumes, so reality should land inside ~68% of the time.
+#
+# Measured by evals/backtest/calibration.py (2023-24, n~5.2k player-weeks): the
+# hand-picked values covered only 36%, the stated floor was breached 36% of the
+# time rather than 16%, and the win probability was badly over-confident as a
+# result (matchups called 96% were won 79% of the time). These are the widths
+# that hit 68.3% coverage per position.
+_VOLATILITY = {"QB": 0.54, "RB": 0.65, "WR": 0.72, "TE": 0.74,
+               # K/DST are not in the nflverse player-stats sample the
+               # calibration runs on, so these carry the overall ~2x correction
+               # rather than a per-position measurement.
+               "K": 0.70, "DST": 0.90, "DEF": 0.90}
 
 
 def _environment_mult(implied_total: float | None, is_fallback: bool) -> float:
