@@ -249,7 +249,7 @@ Trade evaluation and optimization:
 
 ### 10. Weekly Projections (4 tools)
 
-- **`get_weekly_briefing`**: One call for "how should I line up this week".
+- **`get_weekly_briefing`**: One call for "how should I line up this week". Mid-week, players whose game has kicked off carry their actual points with no remaining variance and their slots leave the optimization.
   - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional)
   - Returns: league, week, record, win_probability, projected_points, opponent_projected_points, recommended_lineup, changes, bench, injury_changes, not_projected
 

@@ -130,3 +130,40 @@ class TestReservePlayersAreNotStartable:
         unavailable = set(roster.get("reserve") or []) | set(roster.get("taxi") or [])
         assert unavailable == set()
         assert [p for p in roster["players"] if p not in unavailable] == ["a", "b"]
+
+
+class TestInjuryStatusReachesTheProjection:
+    """An IR player parked on the active roster must not win a slot."""
+
+    def _row(self, injury_status):
+        import json as _json
+        return {
+            "full_name": "A.J. Brown", "position": "WR", "team_id": "NE",
+            "raw": _json.dumps({"injury_status": injury_status}),
+        }
+
+    def test_ir_status_is_passed_through(self):
+        # Sleeper's reserve list only covers players actually placed in the IR
+        # slot. A hurt player on the active roster looked perfectly healthy to
+        # the projection, which has no other way to learn he is out.
+        player = briefing_tools._build_player(
+            "p", {"p": self._row("IR")}, {"NE": "PIT"}, {}, {}
+        )
+        assert player["injury"] == {"status": "IR"}
+
+    def test_healthy_player_carries_no_injury_key(self):
+        player = briefing_tools._build_player(
+            "p", {"p": self._row(None)}, {"NE": "PIT"}, {}, {}
+        )
+        assert "injury" not in player
+
+    def test_projection_zeroes_an_ir_player(self):
+        from nfl_mcp.projections import _injury_mult
+        assert _injury_mult("IR") == 0.0
+        assert _injury_mult("Out") == 0.0
+
+    def test_malformed_raw_payload_is_tolerated(self):
+        for raw in ("not json", None, 123):
+            row = {"full_name": "X", "position": "WR", "team_id": "NE", "raw": raw}
+            player = briefing_tools._build_player("p", {"p": row}, {"NE": "PIT"}, {}, {})
+            assert player is not None and "injury" not in player
