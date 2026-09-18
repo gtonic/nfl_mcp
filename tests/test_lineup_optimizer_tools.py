@@ -340,15 +340,27 @@ class TestAutoProjection:
         opt = lo.LineupOptimizer(db=None, auto_project=True, defense_analyzer=self._fresh_defense())
 
         class FakeEngine:
-            async def project_many(self, players):
+            def __init__(self):
+                self.calls = []
+
+            async def project_many(self, players, **kwargs):
+                self.calls.append(kwargs)
                 return {"projections": [{"projected_points": 18.5, "floor": 12.0, "ceiling": 25.0}]}
 
-        with patch("nfl_mcp.projections.get_projection_engine", return_value=FakeEngine()):
-            analysis = await opt.analyze_player("Some WR", "", "WR", "MIA", "NE")
+        engine = FakeEngine()
+        with patch("nfl_mcp.projections.get_projection_engine", return_value=engine):
+            analysis = await opt.analyze_player(
+                "Some WR", "", "WR", "MIA", "NE",
+                scoring="half_ppr", season=2026, week=6,
+            )
 
         assert analysis.projected_points == 18.5
         assert analysis.floor == 12.0
         assert analysis.ceiling == 25.0
+        # The request's scoring/season/week must reach the engine. Defaulting
+        # them here produced full-PPR points off the rank-bucket baseline, so
+        # start/sit and get_weekly_briefing disagreed about the same player.
+        assert engine.calls == [{"scoring": "half_ppr", "season": 2026, "week": 6}]
 
     @pytest.mark.asyncio
     async def test_auto_project_disabled_leaves_zero(self):

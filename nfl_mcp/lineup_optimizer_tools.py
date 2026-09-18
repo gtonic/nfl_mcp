@@ -18,8 +18,29 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
+from .player_values import scoring_to_ppr
+from .projections import _RECEPTION_SHARE
 
 logger = logging.getLogger(__name__)
+
+# Full-PPR points that mark a merely-adequate and a genuinely good week, per
+# position. Rebased to the league's scoring by `_good_game_thresholds`.
+_GOOD_GAME_PPR = {
+    "QB": (18, 25),
+    "RB": (12, 18),
+    "WR": (10, 16),
+    "TE": (8, 14),
+    "K": (7, 10),
+    "DST": (6, 10),
+}
+_GOOD_GAME_DEFAULT = (10, 16)
+
+
+def _good_game_thresholds(position: str, ppr: float = 1.0) -> tuple[float, float]:
+    """(adequate, good) point marks for a position in a league's scoring."""
+    low, high = _GOOD_GAME_PPR.get((position or "").upper(), _GOOD_GAME_DEFAULT)
+    scale = 1.0 - (1.0 - ppr) * _RECEPTION_SHARE.get((position or "").upper(), 0.0)
+    return low * scale, high * scale
 
 
 class StartSitDecision(Enum):
@@ -181,9 +202,16 @@ class LineupOptimizer:
             except Exception as e:
                 logger.debug(f"Defense analyzer init failed: {e}")
 
-    def calculate_confidence(self, analysis: PlayerAnalysis) -> tuple[float, str, list[str]]:
+    def calculate_confidence(
+        self, analysis: PlayerAnalysis, ppr: float = 1.0
+    ) -> tuple[float, str, list[str]]:
         """
         Calculate confidence score and generate reasoning.
+
+        Args:
+            analysis: the player analysis to score
+            ppr: the league's per-reception value, so "a good game" is judged on
+                the same scale the projection is on
 
         Returns:
             Tuple of (confidence_score, confidence_level, reasoning_list)
@@ -244,18 +272,10 @@ class LineupOptimizer:
         # 4. Projection score
         projection_score = 50  # Default
         if analysis.projected_points > 0:
-            # Scale based on position expectations
-            position_thresholds = {
-                "QB": (18, 25),  # Floor, ceiling for "good" game
-                "RB": (12, 18),
-                "WR": (10, 16),
-                "TE": (8, 14),
-                "K": (7, 10),
-                "DST": (6, 10),
-            }
-            floor_thresh, ceil_thresh = position_thresholds.get(
-                analysis.position, (10, 16)
-            )
+            # Scale based on position expectations, rebased to this league's
+            # scoring — these are full-PPR "good game" marks, and comparing a
+            # half-PPR projection against them demoted every pass catcher.
+            floor_thresh, ceil_thresh = _good_game_thresholds(analysis.position, ppr)
 
             if analysis.projected_points >= ceil_thresh:
                 projection_score = 90
@@ -343,6 +363,9 @@ class LineupOptimizer:
         usage_data: dict | None = None,
         injury_data: dict | None = None,
         projection_data: dict | None = None,
+        scoring: str = "ppr",
+        season: int | None = None,
+        week: int | None = None,
     ) -> PlayerAnalysis:
         """
         Analyze a single player for start/sit recommendation.
@@ -356,6 +379,9 @@ class LineupOptimizer:
             usage_data: Optional usage statistics
             injury_data: Optional injury information
             projection_data: Optional projection data
+            scoring: League scoring for the auto-projection ('ppr', 'half_ppr',
+                'standard', or a raw per-reception value like '0.5')
+            season, week: pass both to use the opportunity baseline (week > 1)
 
         Returns:
             PlayerAnalysis with decision and confidence
@@ -404,12 +430,17 @@ class LineupOptimizer:
             try:
                 from .projections import get_projection_engine
                 engine = get_projection_engine(self.db)
+                # scoring/season/week travel with the request rather than being
+                # defaulted here: without them this path silently produced
+                # full-PPR points off the weaker rank-bucket baseline, so a
+                # half-PPR league got a different answer from start/sit than
+                # from get_weekly_briefing for the very same player.
                 pr = await engine.project_many([{
                     "name": player_name, "player_id": player_id,
                     "position": position.upper(), "team": team.upper(),
                     "opponent": opponent.upper(),
                     "usage": usage_data or {}, "injury": injury_data or {},
-                }])
+                }], scoring=scoring, season=season, week=week)
                 if pr.get("projections"):
                     pp = pr["projections"][0]
                     analysis.projected_points = pp["projected_points"]
@@ -419,7 +450,9 @@ class LineupOptimizer:
                 logger.debug(f"Auto-projection failed for {player_name}: {e}")
 
         # Calculate confidence and decision
-        confidence, confidence_level, reasoning = self.calculate_confidence(analysis)
+        confidence, confidence_level, reasoning = self.calculate_confidence(
+            analysis, ppr=scoring_to_ppr(scoring)
+        )
 
         analysis.confidence = round(confidence, 1)
         analysis.confidence_level = confidence_level
@@ -440,14 +473,18 @@ class LineupOptimizer:
     async def analyze_roster(
         self,
         players: list[dict],
-        week: int | None = None
+        week: int | None = None,
+        season: int | None = None,
+        scoring: str = "ppr",
     ) -> dict[str, list[PlayerAnalysis]]:
         """
         Analyze a full roster and return sorted recommendations by position.
 
         Args:
             players: List of player dicts with name, position, team, opponent
-            week: Optional NFL week number
+            week: NFL week — reaches the projection, not just the response
+            season: Season; with `week` > 1 this selects the opportunity baseline
+            scoring: League scoring for the projections
 
         Returns:
             Dict mapping position to sorted list of player analyses
@@ -466,6 +503,9 @@ class LineupOptimizer:
                 usage_data=player.get("usage"),
                 injury_data=player.get("injury"),
                 projection_data=player.get("projection"),
+                scoring=scoring,
+                season=season,
+                week=week,
             )
             tasks.append(task)
 
@@ -521,6 +561,9 @@ async def get_start_sit_recommendation(
     injury_status: str | None = None,
     practice_status: str | None = None,
     projected_points: float | None = None,
+    scoring: str = "ppr",
+    season: int | None = None,
+    week: int | None = None,
 ) -> dict:
     """
     Get a start/sit recommendation for a single player.
@@ -541,14 +584,20 @@ async def get_start_sit_recommendation(
         injury_status: Optional injury status (healthy, questionable, doubtful, out)
         practice_status: Optional practice status (full, limited, dnp)
         projected_points: Optional projected fantasy points
+        scoring: League scoring ('ppr', 'half_ppr', 'standard', or '0.5').
+            Pass your league's real setting — it changes both the points and
+            what counts as a good week.
+        season, week: pass both (week > 1) for the opportunity baseline
 
     Returns:
         Dictionary containing:
-        - recommendation: Start/sit decision details
+        - recommendation: Start/sit decision details, with projected_points,
+          floor and ceiling
         - confidence: Confidence score (0-100)
         - confidence_level: high/medium/low
         - reasoning: List of factors in the decision
         - matchup_tier: Matchup difficulty tier
+        - scoring: The scoring the projection was made in
 
     Example:
         get_start_sit_recommendation(
@@ -589,6 +638,9 @@ async def get_start_sit_recommendation(
         usage_data=usage_data if usage_data else None,
         injury_data=injury_data if injury_data else None,
         projection_data=projection_data if projection_data else None,
+        scoring=scoring,
+        season=season,
+        week=week,
     )
 
     # Format decision display
@@ -610,12 +662,18 @@ async def get_start_sit_recommendation(
             "opponent": analysis.opponent,
             "decision": analysis.decision,
             "decision_display": decision_display,
+            # The band is calibrated (see evals/backtest/calibration.py) and was
+            # being dropped here, leaving only a points string in `factors`.
+            "projected_points": analysis.projected_points,
+            "floor": analysis.floor,
+            "ceiling": analysis.ceiling,
         },
         "confidence": analysis.confidence,
         "confidence_level": analysis.confidence_level,
         "matchup_tier": analysis.matchup_tier,
         "matchup_rank": analysis.matchup_rank,
         "reasoning": analysis.reasoning,
+        "scoring": scoring,
         "factors": {
             "matchup": f"#{analysis.matchup_rank} ({analysis.matchup_tier})",
             "usage": f"Snaps: {analysis.snap_percentage}%, Targets: {analysis.target_share}%",
@@ -633,7 +691,9 @@ async def get_start_sit_recommendation(
 async def get_roster_recommendations(
     players: list[dict],
     week: int | None = None,
-    include_reasoning: bool = True
+    include_reasoning: bool = True,
+    scoring: str = "ppr",
+    season: int | None = None,
 ) -> dict:
     """
     Get start/sit recommendations for multiple players.
@@ -652,8 +712,11 @@ async def get_roster_recommendations(
             - usage (dict, optional): {target_share, snap_percentage}
             - injury (dict, optional): {status, practice_status}
             - projection (dict, optional): {projected_points}
-        week: Optional NFL week number
+        week: NFL week — with `season` and week > 1 this selects the opportunity
+            baseline for the projections, not just a label on the response
         include_reasoning: Whether to include detailed reasoning (default: True)
+        scoring: League scoring ('ppr', 'half_ppr', 'standard', or '0.5')
+        season: Season year, needed with `week` for the opportunity baseline
 
     Returns:
         Dictionary containing:
@@ -680,7 +743,9 @@ async def get_roster_recommendations(
     optimizer = get_lineup_optimizer()
 
     # Analyze roster
-    analyses_by_position = await optimizer.analyze_roster(players, week)
+    analyses_by_position = await optimizer.analyze_roster(
+        players, week=week, season=season, scoring=scoring
+    )
 
     # Flatten and convert to dicts
     all_recommendations = []
@@ -723,6 +788,7 @@ async def get_roster_recommendations(
         "summary": summary_lines,
         "total_analyzed": len(all_recommendations),
         "week": week,
+        "scoring": scoring,
         "message": f"Analyzed {len(all_recommendations)} players"
     })
 
@@ -733,7 +799,10 @@ async def get_roster_recommendations(
 )
 async def compare_players_for_slot(
     players: list[dict],
-    slot: str = "FLEX"
+    slot: str = "FLEX",
+    scoring: str = "ppr",
+    season: int | None = None,
+    week: int | None = None,
 ) -> dict:
     """
     Compare multiple players competing for the same roster slot.
@@ -748,6 +817,10 @@ async def compare_players_for_slot(
             Each should have: name, position, team, opponent
             Optional: usage, injury, projection dicts
         slot: The roster slot being filled (e.g., "WR2", "FLEX", "RB1")
+        scoring: League scoring ('ppr', 'half_ppr', 'standard', or '0.5').
+            This is the comparison most sensitive to it — half PPR is what makes
+            a runner competitive with a volume receiver for a flex spot.
+        season, week: pass both (week > 1) for the opportunity baseline
 
     Returns:
         Dictionary containing:
@@ -789,6 +862,9 @@ async def compare_players_for_slot(
             usage_data=player.get("usage"),
             injury_data=player.get("injury"),
             projection_data=player.get("projection"),
+            scoring=scoring,
+            season=season,
+            week=week,
         )
         analyses.append(analysis)
 
@@ -855,7 +931,9 @@ async def compare_players_for_slot(
 )
 async def analyze_full_lineup(
     lineup: dict[str, list[dict]],
-    week: int | None = None
+    week: int | None = None,
+    scoring: str = "ppr",
+    season: int | None = None,
 ) -> dict:
     """
     Analyze a complete fantasy lineup with optimal lineup suggestions.
@@ -878,7 +956,10 @@ async def analyze_full_lineup(
                 "FLEX": [...],
                 "BENCH": [...]
             }
-        week: Optional NFL week number
+        week: NFL week — with `season` and week > 1 this selects the opportunity
+            baseline for the projections, not just a label on the response
+        scoring: League scoring ('ppr', 'half_ppr', 'standard', or '0.5')
+        season: Season year, needed with `week` for the opportunity baseline
 
     Returns:
         Dictionary containing:
@@ -943,6 +1024,9 @@ async def analyze_full_lineup(
                 usage_data=player.get("usage"),
                 injury_data=player.get("injury"),
                 projection_data=player.get("projection"),
+                scoring=scoring,
+                season=season,
+                week=week,
             )
             position_analyses.append(analysis)
             all_starter_analyses.append(analysis)
@@ -973,6 +1057,9 @@ async def analyze_full_lineup(
                 usage_data=player.get("usage"),
                 injury_data=player.get("injury"),
                 projection_data=player.get("projection"),
+                scoring=scoring,
+                season=season,
+                week=week,
             )
             bench_analysis.append(analysis)
 
@@ -1018,5 +1105,6 @@ async def analyze_full_lineup(
         "total_projected": round(total_projected, 1),
         "total_starters": len(all_starter_analyses),
         "week": week,
+        "scoring": scoring,
         "message": f"Lineup Grade: {grade} | Avg Confidence: {avg_confidence:.0f}%"
     })
