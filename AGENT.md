@@ -268,6 +268,10 @@ value out of the league's own `scoring_settings`; pass `scoring` yourself for th
 lower-level tools (`'ppr'`, `'half_ppr'`, `'standard'`, or a raw value like
 `'0.5'`).
 
+**Floor and ceiling are calibrated**, not decorative: they are a ±1σ band that
+covers the real outcome ~68% of the time, measured in
+`evals/backtest/calibration.py`. Treat the floor as a real floor.
+
 - **`get_weekly_briefing`**: One call for "how should I line up this week". Mid-week, players whose game has kicked off carry their actual points with no remaining variance and their slots leave the optimization.
   - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional)
   - Returns: league, week, record, win_probability, projected_points, opponent_projected_points, recommended_lineup, changes, bench, injury_changes, not_projected

@@ -168,6 +168,84 @@ Layer A is for.
 
 ---
 
+## Layer A — uncertainty calibration (`evals/backtest/calibration.py`)
+
+### What it answers
+> The projection reports a **floor** and a **ceiling**, and
+> `get_win_probability_lineup` turns them into *"you have a 72% chance to win"*.
+> Do those numbers mean what they say?
+
+Two properties, measured separately because they fail differently:
+
+1. **Band coverage.** `floor/ceiling = mean ± volatility·mean` is a symmetric ±1σ
+   band under the Normal the optimizer assumes, so reality should land inside
+   **68.3%** of the time with **15.9%** in each tail.
+2. **Win-probability calibration.** Of the matchups called 70%, do ~70% get won?
+   Reported as a **Brier score** plus a reliability table. A model can rank
+   perfectly and still be badly calibrated — and miscalibration is not cosmetic
+   here: the optimizer tilts toward *ceiling* when it thinks you are the
+   underdog, so a wrong probability picks a wrong lineup.
+
+### Method
+Same leak-free walk-forward as the accuracy backtest: projections from the live
+opportunity baseline on prior weeks only, `sd` from the live `_VOLATILITY` via
+`win_probability.player_sd` — production's constants, not a copy.
+
+There are no historical league matchups to test win probability against, so
+matchups are **synthesised**: within a week, players are shuffled with a fixed
+seed into two lineups of nine, P(win) comes from the projections, and the actual
+points decide it. Both sides face the same week, so nothing systematic separates
+them. Weeks are re-partitioned 5× — that buys precision on the curve, not
+independent samples.
+
+```bash
+python -m evals.backtest.calibration --seasons 2023,2024 --start-week 5
+python -m evals.backtest.calibration --seasons 2024 --ppr 0.5   # half-PPR league
+```
+
+### Findings (2023–24, n ≈ 5.2k player-weeks, 1385 synthetic matchups)
+
+The hand-picked volatilities were **about half as wide as reality**:
+
+```
+inside the band   35.9%   (claims 68.3%)
+below the floor   35.5%   (claims 15.9%)   <- the floor was not a floor
+z: mean=0.14 sd=2.40      (honest uncertainty => mean 0, sd 1)
+
+Win probability   Brier 0.2348  (base-rate baseline 0.2498)
+  called 96% -> won 79%      badly over-confident at both extremes
+  called  4% -> won 19%
+```
+
+### ✅ Loop closed — applied and re-measured
+
+`_VOLATILITY` is now set per position to the width that actually covers 68.3%
+(QB 0.22→0.54, RB 0.30→0.65, WR 0.38→0.72, TE 0.40→0.74; K/DST carry the overall
+≈2× correction since they are not in the nflverse player-stats sample):
+
+```
+                   before            after
+inside             35.9%             68.5%     (want 68.3%)
+tails         35.5% / 28.6%     14.6% / 16.9%  (want 15.9% each)
+z_sd               2.40              1.18
+Brier             0.2348            0.2137
+called 90-100% -> 79% won        -> 88.5% won
+best sd scale       2.0              1.25       (i.e. ~right)
+```
+
+> **Read the floor as a floor now, not before.** This did not make the
+> projections more accurate — MAE is untouched — it made the *stated
+> uncertainty* honest, which is what the win probability and the floor/ceiling
+> tilt are built on.
+
+### Limitations
+- Synthetic matchups are random lineups, not real rosters; a real league has
+  correlated, self-selected teams. The calibration direction is trustworthy, the
+  third decimal of the Brier is not.
+- K/DST volatility is inferred, not measured.
+- Coverage is measured on fantasy-relevant players (`--min-trailing 5`); deep
+  bench players are noisier still.
+
 ---
 
 ## Layer B — data-source contract checks (`evals/contracts/`)
@@ -243,9 +321,12 @@ regressions are caught on every PR without a key.
 - ~~Apply the finding: position-aware matchup multipliers, then re-measure.~~ ✅ done.
 - ~~Layer B — live source contract checks.~~ ✅ done (`evals/contracts/`).
 - ~~Layer C — agent tool-routing evals.~~ ✅ done (`evals/agent/`).
+- ~~Win-probability **calibration** (Brier score) and floor/ceiling coverage.~~
+  ✅ done (`evals/backtest/calibration.py`); the finding was applied to
+  `_VOLATILITY` and re-measured.
 - **More Layer A targets:** backtest start/sit hit-rate, defense-ranking
   predictive validity (split-sample), FAAB bid ↔ realized value, and playoff-odds
-  **calibration** (Brier score) once multi-season snapshots exist.
+  calibration against real league outcomes once multi-season snapshots exist.
 - **Deeper Layer C:** faithfulness/safety judging (execute the tool, then check
   the rendered answer doesn't present fallback/stale/unknown data as confident) —
   needs a multi-turn loop + LLM-as-judge.

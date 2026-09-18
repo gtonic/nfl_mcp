@@ -30,8 +30,17 @@ jobs:
         run: |
           python -m evals.backtest.backtest --seasons 2023,2024 --start-week 5 --min-trailing 5
 
+      - name: Run uncertainty calibration
+        # Does the floor/ceiling band cover what it claims, and is the win
+        # probability calibrated? Separate question from accuracy: a projection
+        # can have a fine MAE and still lie about how sure it is.
+        run: |
+          python -m evals.backtest.calibration --seasons 2023,2024 --start-week 5
+
       - name: Metric unit tests
         # pytest-asyncio is required even for a sync-only test file: pyproject
         # sets `asyncio_mode = "auto"`, and plain pytest aborts with
         # `Unknown config option: asyncio_mode` (exit 4).
-        run: pip install pytest pytest-asyncio && pytest tests/test_eval_metrics.py -q
+        run: |
+          pip install pytest pytest-asyncio
+          pytest tests/test_eval_metrics.py tests/test_eval_calibration.py -q

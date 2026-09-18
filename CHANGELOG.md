@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scoring` argument, and every projection response now reports the `scoring`
   and `ppr` it used.
 
+- **Floor, ceiling and win probability claimed more certainty than they had.**
+  `floor/ceiling = mean ± volatility·mean` is a ±1σ band under the Normal the
+  lineup optimizer assumes, so reality should land inside 68.3% of the time.
+  Measured over 2023–24 (n≈5.2k player-weeks) it landed inside **35.9%**, and
+  the stated floor was breached **35.5%** of the time rather than 16% — the
+  floor was not a floor. The win probability inherited it: matchups called 96%
+  were won 79% of the time (Brier 0.2348 against a 0.2498 base-rate baseline).
+
+  `_VOLATILITY` is now set per position to the width that actually covers 68.3%
+  (QB 0.22→0.54, RB 0.30→0.65, WR 0.38→0.72, TE 0.40→0.74; K/DST carry the
+  overall ≈2× correction, since they are not in the sample). Re-measured:
+  coverage **68.5%**, tails 14.6% / 16.9%, Brier **0.2137**, and the best sd
+  scale moves from 2.0 to 1.25 — i.e. about right. Accuracy is untouched (MAE
+  5.823); what changed is that the uncertainty is now honest.
+
 - **Two injury queries filtered *after* the row limit and silently lost data.**
   `get_injury_trends(direction="worse")` fetched the newest N rows and then kept
   the downgrades, so a window that opens with a bulk feed backfill returned
@@ -64,6 +79,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `no_signal` instead of being dressed up as a ranking. When nothing beats your
   starters it says so, rather than ranking players who would all make the lineup
   worse.
+
+- **An uncertainty-calibration eval** (`evals/backtest/calibration.py`, Layer A):
+  floor/ceiling coverage plus win-probability calibration (Brier score and a
+  reliability table) against real nflverse outcomes, leak-free and walk-forward,
+  using the live constants. Win probability has no historical league matchups to
+  test against, so matchups are synthesised within a week from a fixed seed.
+  Runs in the scheduled evals workflow; offline guards run on every PR.
 
 - **The weekly briefing scores a matchup in progress instead of guessing at
   it.** `win_probability` used full-slate projections throughout, so points

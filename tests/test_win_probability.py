@@ -34,8 +34,23 @@ class TestPlayerSd:
         assert player_sd({"projected_points": 12, "floor": 8, "ceiling": 16}) == 4.0
 
     def test_position_volatility_fallback(self):
-        # WR volatility 0.38 -> sd = 10 * 0.38 = 3.8
-        assert player_sd({"projected_points": 10, "position": "WR"}) == pytest.approx(3.8)
+        # sd = mean × the position's volatility, whatever the calibration has
+        # set it to (evals/backtest/calibration.py owns the number).
+        from nfl_mcp.projections import _VOLATILITY
+
+        assert player_sd({"projected_points": 10, "position": "WR"}) == pytest.approx(
+            10 * _VOLATILITY["WR"]
+        )
+
+    def test_the_band_is_calibrated_not_hand_picked(self):
+        """Guards the calibration finding: the old widths covered ~36%, not 68%."""
+        from nfl_mcp.projections import _VOLATILITY
+
+        for position in ("QB", "RB", "WR", "TE"):
+            assert _VOLATILITY[position] >= 0.5, (
+                f"{position} volatility looks hand-picked again — re-run "
+                "python -m evals.backtest.calibration before lowering it"
+            )
 
 
 class TestOptimizeWinProbability:
