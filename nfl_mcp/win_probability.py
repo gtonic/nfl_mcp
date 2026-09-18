@@ -148,8 +148,16 @@ def optimize_win_probability(
     opponent_players: list[dict],
     slots: dict[str, int] | None = None,
     stack_correlation: float = STACK_CORRELATION,
+    locked_players: list[dict] | None = None,
 ) -> dict:
     """Pick the lineup maximizing P(win) vs the given opponent.
+
+    ``locked_players`` are already committed and cannot be changed — mid-week,
+    anyone whose game has kicked off. Each entry should carry its slot under
+    ``"slot"``. They contribute to the team total and their slots are removed
+    from the optimization, so the search only considers what you can still
+    move. A settled player carries ``sd`` 0, which correctly makes the outcome
+    less uncertain rather than merely shifting the mean.
 
     Returns the recommended lineup, its win probability, the E[points]-optimal
     lineup for comparison, and a floor/ceiling strategy label. ``stack_correlation``
@@ -157,10 +165,34 @@ def optimize_win_probability(
     """
     slots = slots or DEFAULT_SLOTS
     slot_list = expand_slots(slots)
+    locked_players = locked_players or []
+
+    # Remove one slot per locked player, matching on the slot they occupy.
+    if locked_players:
+        remaining = list(slot_list)
+        for p in locked_players:
+            slot = (p.get("slot") or "").upper()
+            if slot in remaining:
+                remaining.remove(slot)
+            elif remaining:
+                # Slot missing or renamed: drop any slot the player is
+                # eligible for rather than optimizing a seat that is taken.
+                fallback = next(
+                    (s for s in remaining if _eligible(s, p.get("position"))), remaining[0]
+                )
+                remaining.remove(fallback)
+        slot_list = remaining
+
+    locked_mean, locked_var = _team_stats(locked_players, stack_correlation)
     opp_mean, opp_var = _team_stats(opponent_players, stack_correlation)
 
+    # Optimize the open slots against a residual target: locked points are a
+    # certainty on my side, so P(locked + open > opp) == P(open > opp - locked).
+    residual_mean = opp_mean - locked_mean
+    residual_var = opp_var + locked_var
+
     mean_lineup = greedy_mean_lineup(candidates, slot_list)
-    mean_p_win = _p_win_of(mean_lineup, opp_mean, opp_var, stack_correlation)
+    mean_p_win = _p_win_of(mean_lineup, residual_mean, residual_var, stack_correlation)
 
     # Local search: greedily apply the bench swap that most improves P(win).
     current = list(mean_lineup)
@@ -174,14 +206,14 @@ def optimize_win_probability(
                     continue
                 trial = list(current)
                 trial[i] = b
-                gain = _p_win_of(trial, opp_mean, opp_var, stack_correlation) - current_p
+                gain = _p_win_of(trial, residual_mean, residual_var, stack_correlation) - current_p
                 if gain > best_gain:
                     best_gain, best_swap = gain, (i, b)
         if not best_swap:
             break
         i, b = best_swap
         current[i] = b
-        current_p = _p_win_of(current, opp_mean, opp_var, stack_correlation)
+        current_p = _p_win_of(current, residual_mean, residual_var, stack_correlation)
 
     def _fmt(lineup):
         return [
@@ -193,8 +225,11 @@ def optimize_win_probability(
 
     rec_starters = [p for p in current if p is not None]
     rec_mean, rec_var = _team_stats(rec_starters, stack_correlation)
+    rec_mean += locked_mean
+    rec_var += locked_var
     mo_starters = [p for p in mean_lineup if p is not None]
     _, mo_var = _team_stats(mo_starters, stack_correlation)
+    mo_var += locked_var
 
     underdog = rec_mean < opp_mean
     if rec_var > mo_var * 1.02:
@@ -204,8 +239,16 @@ def optimize_win_probability(
     else:
         strategy = "balanced (the points-optimal lineup already maximizes P(win))"
 
+    locked_fmt = [
+        {"slot": (p.get("slot") or "").upper(), "player": p.get("name") or p.get("player"),
+         "position": (p.get("position") or "").upper(),
+         "mean": round(player_mean(p), 1), "sd": round(player_sd(p), 1), "locked": True}
+        for p in locked_players
+    ]
+
     return {
-        "recommended_lineup": _fmt(current),
+        "recommended_lineup": locked_fmt + _fmt(current),
+        "locked_players": locked_fmt,
         "win_probability": round(current_p * 100, 1),
         "projected_points": round(rec_mean, 1),
         "opponent_projected_points": round(opp_mean, 1),
@@ -228,6 +271,7 @@ async def get_win_probability_lineup(
     opponent_players: list[dict],
     slots: dict[str, int] | None = None,
     stack_correlation: float = STACK_CORRELATION,
+    locked_players: list[dict] | None = None,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
 
@@ -245,6 +289,9 @@ async def get_win_probability_lineup(
             (the default). FLEX = RB/WR/TE; SUPERFLEX adds QB.
         stack_correlation: QB↔same-team pass-catcher correlation (default 0.35;
             0 disables the stacking effect).
+        locked_players: players already committed — mid-week, anyone whose game
+            has kicked off. Each needs its `slot`; they count toward the total
+            and their slots leave the optimization.
 
     Returns the recommended lineup, its win probability, any QB stacks, the
     points-optimal lineup for comparison, and a floor/ceiling strategy label.
@@ -256,7 +303,8 @@ async def get_win_probability_lineup(
         return handle_validation_error("opponent_players is required", default_data)
 
     result = optimize_win_probability(
-        your_players, opponent_players, slots, stack_correlation=stack_correlation
+        your_players, opponent_players, slots,
+        stack_correlation=stack_correlation, locked_players=locked_players,
     )
     rec = result["you_are"]
     return create_success_response({

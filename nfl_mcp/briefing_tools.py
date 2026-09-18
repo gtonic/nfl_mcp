@@ -17,6 +17,7 @@ import logging
 
 from .database import NFLDatabase
 from .errors import create_success_response
+from .game_clock import game_progress, settle
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,15 @@ def _build_player(
     return player
 
 
+def _with_ids(candidates: list[dict], inputs: list[dict]) -> list[dict]:
+    """Re-attach player ids, which the projection output drops."""
+    by_name = {(p["name"], p["team"]): p["player_id"] for p in inputs}
+    return [
+        {**c, "player_id": by_name.get((c.get("name"), c.get("team")))}
+        for c in candidates
+    ]
+
+
 async def get_weekly_briefing(
     league_id: str,
     roster_id: int | None = None,
@@ -204,6 +214,7 @@ async def get_weekly_briefing(
     except Exception as e:  # weather is additive; never fail the briefing on it
         logger.debug(f"weather unavailable for the briefing: {e}")
 
+    kickoffs = db.get_week_kickoffs(season, week)
     usage = {
         row["player_id"]: row
         for row in db.get_usage_for_week(season, max(1, week - 1))
@@ -250,10 +261,63 @@ async def get_weekly_briefing(
         ]
 
     lineup_slots = {k: v for k, v in slots.items() if k in _PROJECTABLE}
+
+    # Split what is already decided from what can still be changed. A player
+    # whose game has kicked off carries his real score and no remaining
+    # uncertainty; his slot leaves the optimization because it cannot be
+    # refilled.
+    my_points = (my_matchup or {}).get("players_points") or {}
+    opp_points = (opponent_matchup or {}).get("players_points") or {}
+    current_starters = list(
+        (my_matchup or {}).get("starters") or mine.get("starters") or []
+    )
+    slot_names = []
+    for slot, count in lineup_slots.items():
+        slot_names.extend([slot] * int(count))
+    # Deliberately not strict: an empty slot (Sleeper sends "0") or a roster
+    # mid-edit makes the two lists disagree, and a missing slot label is
+    # handled downstream.
+    slot_of = dict(zip(current_starters, slot_names, strict=False))
+
+    def _settled(candidates, points, slot_by_id=None):
+        """Split into (locked, still open), folding in actual scores."""
+        locked, open_ = [], []
+        for cand in candidates:
+            pid = cand.get("player_id")
+            progress = game_progress(kickoffs.get(cand.get("team")))
+            if progress <= 0.0:
+                open_.append(cand)
+                continue
+            mean, share = settle(
+                cand.get("projected_points") or 0.0, points.get(pid), progress
+            )
+            sd = (cand.get("ceiling", 0) - cand.get("floor", 0)) / 2.0 * share
+            entry = {**cand, "projected_points": round(mean, 2), "sd": round(sd, 2)}
+            if slot_by_id is not None:
+                entry["slot"] = slot_by_id.get(pid)
+            locked.append(entry)
+        return locked, open_
+
+    my_all = _with_ids(_as_candidates(my_proj), my_inputs)
+    opp_all = _with_ids(_as_candidates(opp_proj), opp_inputs)
+    # Only players actually in the lineup are locked; a bench player whose game
+    # has started is simply no longer available.
+    started_ids = set(current_starters)
+    my_locked, my_open = _settled(
+        [c for c in my_all if c.get("player_id") in started_ids], my_points, slot_of
+    )
+    my_open += [
+        c for c in my_all
+        if c.get("player_id") not in started_ids
+        and game_progress(kickoffs.get(c.get("team"))) <= 0.0
+    ]
+    opp_locked, opp_open = _settled(opp_all, opp_points)
+
     lineup = await get_win_probability_lineup(
-        your_players=_as_candidates(my_proj),
-        opponent_players=_as_candidates(opp_proj),
+        your_players=my_open,
+        opponent_players=opp_locked + opp_open,
         slots=lineup_slots or None,
+        locked_players=my_locked,
     )
 
     # 6) What to actually change, named rather than left as a diff to eyeball
@@ -304,10 +368,8 @@ async def get_weekly_briefing(
     # neutral, which is worth stating rather than leaving to be inferred.
     vegas_active = bool((my_proj or {}).get("vegas_active"))
 
-    # Points already on the board. `win_probability` is computed from
-    # projections for the whole slate and does NOT subtract them, so a lopsided
-    # Thursday night reads as a comfortable lead when it is the opposite.
-    # Surfacing both lets a caller see that rather than infer it.
+    # Points already on the board, reported alongside the probability that now
+    # accounts for them.
     points_so_far = (my_matchup or {}).get("points")
     opponent_points_so_far = (opponent_matchup or {}).get("points")
 
@@ -315,7 +377,11 @@ async def get_weekly_briefing(
         "vegas_active": vegas_active,
         "points_so_far": points_so_far,
         "opponent_points_so_far": opponent_points_so_far,
-        "win_probability_basis": "full-slate projections; points already scored are not subtracted",
+        "win_probability_basis": (
+            "live: actual points for players whose game has kicked off "
+            "(no remaining variance), projections for the rest"
+        ),
+        "locked_players": (lineup or {}).get("locked_players") or [],
         "league": {
             "league_id": league_id, "name": league.get("name"),
             "scoring": scoring, "slots": slots, "num_teams": num_teams,
