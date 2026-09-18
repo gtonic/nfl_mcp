@@ -2432,6 +2432,36 @@ class NFLDatabase:
             )
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_athletes_by_positions(
+        self, positions: list[str], exclude_ids: set[str] | None = None
+    ) -> list[dict]:
+        """Athletes at the given positions, optionally excluding known ids.
+
+        Built for waiver discovery: the exclusion set is the league's rostered
+        players, which is far smaller than the athlete table, so it is applied
+        in Python rather than as a multi-thousand-parameter NOT IN.
+
+        Args:
+            positions: Position codes (e.g. ["RB", "WR"]). Empty means all.
+            exclude_ids: Athlete ids to leave out.
+
+        Returns:
+            Athlete dicts with a team, newest data first is not guaranteed.
+        """
+        exclude_ids = exclude_ids or set()
+        clause, params = "", []
+        if positions:
+            upper = [p.upper() for p in positions]
+            clause = f" WHERE position IN ({','.join('?' * len(upper))})"
+            params = upper
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(f"SELECT * FROM athletes{clause}", params)
+            return [
+                row_dict for row in cursor.fetchall()
+                if (row_dict := dict(row))["id"] not in exclude_ids
+            ]
+
     def get_athlete_count(self) -> int:
         """
         Get the total number of athletes in the database.

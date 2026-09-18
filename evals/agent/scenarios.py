@@ -75,6 +75,15 @@ SCENARIOS = [
         "prompt": "Who are the most-added players across Sleeper right now?",
         "expect": ["get_trending_players"],
     },
+    {
+        # The league-specific pickup question. `get_trending_players` answers a
+        # different one (league-agnostic add counts, including players already
+        # rostered here), so routing there would be wrong.
+        "id": "waiver_targets",
+        "prompt": "Who should I pick up off waivers in league 555? I'm roster 7.",
+        "expect": ["get_waiver_targets"],
+        "args": {"league_id": "555", "roster_id": 7},
+    },
     # --- Strategy -----------------------------------------------------------
     {
         "id": "playoff_odds",

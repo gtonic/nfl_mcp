@@ -32,6 +32,7 @@ from . import (
     streaming_tools,
     trade_analyzer_tools,
     vegas_tools,
+    waiver_target_tools,
     waiver_tools,
     weather_tools,
     web_tools,
@@ -123,6 +124,7 @@ def get_all_tools() -> list[Callable]:
         get_waiver_log,
         check_re_entry_status,
         get_waiver_wire_dashboard,
+        get_waiver_targets,
         recommend_faab_bid,
         get_handcuff_map,
 
@@ -2550,4 +2552,48 @@ async def get_weekly_briefing(
     return await briefing_tools.get_weekly_briefing(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
         week=week, season=season,
+    )
+
+
+@timing_decorator("get_waiver_targets", tool_type="waiver")
+async def get_waiver_targets(
+    league_id: str,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    week: int | None = None,
+    season: int | None = None,
+    positions: list[str] | None = None,
+    limit: int = 12,
+) -> dict:
+    """START HERE for "who should I pick up" - the waiver question, for YOUR league.
+
+    Ranks the players nobody in your league rosters by how much they would
+    actually upgrade your lineup: each is projected for the coming week in your
+    league's scoring, then compared against the weakest player who currently
+    starts for you at that position. Use this instead of get_trending_players,
+    which reports league-agnostic add counts and includes players already taken.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        week: NFL week (defaults to the current one)
+        season: Season (defaults to the current one)
+        positions: Restrict to positions, e.g. ["RB","WR"] (default all claimable)
+        limit: Max targets to return (default 12)
+
+    Returns: {
+        targets [{name, position, team, opponent, projected_points, floor,
+                  ceiling, replacement_level, upgrade_points, trending_adds,
+                  verdict}],
+        drop_candidates, replacement_levels, thin_positions, waiver_type,
+        pool_size, league, week, season, success
+    }
+
+    Example: get_waiver_targets(league_id="123", roster_id=7)
+    Example: get_waiver_targets(league_id="123", user_id="456", positions=["RB"])
+    """
+    return await waiver_target_tools.get_waiver_targets(
+        league_id=league_id, roster_id=roster_id, user_id=user_id,
+        week=week, season=season, positions=positions, limit=limit,
     )
