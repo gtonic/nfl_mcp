@@ -483,7 +483,17 @@ async def get_all_coaching_staffs() -> dict:
         })
 
 
-# Known coaching trees for major NFL coaching lineages
+# When the curated tables below were last reviewed. Surfaced in every response
+# that uses them: a hand-maintained table with no date is indistinguishable from
+# a fresh one, and the rest of this codebase is scrupulous about labelling data
+# it did not just fetch (`is_fallback`, `stale`, placeholder warnings).
+CURATED_AS_OF = "2026-09-18"
+
+# Known coaching trees for major NFL coaching lineages.
+#
+# This is *lineage history* — who learned under whom — not current employment.
+# A coach staying in the table after he stops coaching is correct; the tree is
+# the record of where a scheme came from.
 COACHING_TREES = {
     "Andy Reid": {
         "mentors": ["Mike Holmgren"],
@@ -563,7 +573,13 @@ async def get_coaching_tree(coach_name: str) -> dict:
             "proteges": tree_data.get("proteges", []),
             "scheme_family": tree_data.get("scheme_family", "Unknown"),
             "known_for": tree_data.get("known_for", []),
-            "found": True
+            "found": True,
+            "source": "curated",
+            "as_of": CURATED_AS_OF,
+            "note": (
+                "Coaching lineage is historical (who learned under whom), not a "
+                f"statement about current employment. Curated list, reviewed {CURATED_AS_OF}."
+            ),
         })
 
     # Check if the name appears as a protege in any tree
@@ -576,7 +592,9 @@ async def get_coaching_tree(coach_name: str) -> dict:
                 "scheme_family": data.get("scheme_family", "Unknown"),
                 "known_for": [],
                 "found": True,
-                "note": f"Coach found as protege of {head_coach}"
+                "source": "curated",
+                "as_of": CURATED_AS_OF,
+                "note": f"Coach found as protege of {head_coach}",
             })
 
     return create_success_response({
@@ -586,11 +604,99 @@ async def get_coaching_tree(coach_name: str) -> dict:
         "scheme_family": None,
         "known_for": [],
         "found": False,
-        "message": f"Coach '{coach_name}' not found in coaching tree database. Available coaches: {list(COACHING_TREES.keys())}"
+        "source": "curated",
+        "as_of": CURATED_AS_OF,
+        # Absence means "not in this list", not "has no coaching lineage" — the
+        # list is a handful of major trees, not a league-wide database.
+        "message": (
+            f"'{coach_name}' is not in the curated coaching-tree list "
+            f"({len(COACHING_TREES)} major lineages, reviewed {CURATED_AS_OF}). "
+            "This means no entry exists, not that the coach has no lineage. "
+            f"Covered: {list(COACHING_TREES.keys())}"
+        ),
     })
 
 
-# Scheme classifications for all 32 NFL teams
+# A scheme belongs to the play-caller, not to the franchise.
+#
+# Keying it by team is what made this data rot: roughly a quarter of the league
+# changes coordinator every offseason, and the team table then asserts last
+# regime's scheme as current fact. Keyed by coach, an entry stays true for as
+# long as the coach exists, and a staff change is picked up automatically
+# because the *name* is resolved live from `get_coaching_staff`.
+#
+# A coach missing from these tables yields "unknown" — which is the honest
+# answer, and far better than confidently returning his predecessor's scheme.
+COACH_OFFENSIVE_SCHEMES = {
+    # Shanahan outside-zone tree
+    "Kyle Shanahan": "Shanahan Wide Zone",
+    "Mike Shanahan": "Shanahan Wide Zone",
+    "Mike McDaniel": "Shanahan Wide Zone",
+    "Matt LaFleur": "Shanahan Wide Zone",
+    "Mike LaFleur": "Shanahan Wide Zone",
+    "Bobby Slowik": "Shanahan Wide Zone",
+    "Klint Kubiak": "Shanahan Wide Zone",
+    "Gary Kubiak": "Shanahan Wide Zone",
+    # McVay tree (Shanahan-derived, motion- and condensed-formation heavy)
+    "Sean McVay": "McVay Offense",
+    "Kevin O'Connell": "McVay Offense",
+    "Zac Taylor": "McVay Offense",
+    "Liam Coen": "McVay Offense",
+    # West Coast / Reid tree
+    "Andy Reid": "West Coast/Spread",
+    "Doug Pederson": "West Coast",
+    "Matt Nagy": "West Coast/Spread",
+    "Eric Bieniemy": "West Coast/Spread",
+    # Erhardt-Perkins (concept-based)
+    "Josh McDaniels": "Erhardt-Perkins",
+    "Bill O'Brien": "Erhardt-Perkins",
+    "Sean Payton": "Erhardt-Perkins/West Coast",
+    # Spread / RPO
+    "Shane Steichen": "Spread/RPO",
+    "Nick Sirianni": "Spread/RPO",
+    "Kliff Kingsbury": "Air Raid/Spread",
+    # Vertical / Coryell
+    "Todd Monken": "Coryell/Vertical",
+    "Kellen Moore": "Coryell/Spread",
+    # Power run / play-action
+    "Greg Roman": "Power Run/RPO",
+    "Arthur Smith": "Power Run/Play Action",
+    "Ben Johnson": "Motion-heavy Play Action",
+}
+
+COACH_DEFENSIVE_SCHEMES = {
+    # Fangio two-high tree
+    "Vic Fangio": "Fangio Multiple (2-high)",
+    "Mike Macdonald": "Fangio/Ravens Multiple",
+    "Jesse Minter": "Fangio/Ravens Multiple",
+    "Ejiro Evero": "Fangio 3-4",
+    "Brandon Staley": "Fangio Multiple (2-high)",
+    # Blitz-heavy
+    "Steve Spagnuolo": "Multiple, blitz-heavy",
+    "Wink Martindale": "3-4, blitz-heavy",
+    "Todd Bowles": "3-4, blitz-heavy",
+    "Brian Flores": "Multiple, blitz-heavy",
+    # Wide-9 / one-gap 4-3
+    "Jim Schwartz": "4-3 Wide-9",
+    "DeMeco Ryans": "4-3 Wide-9",
+    "Robert Saleh": "4-3 Wide-9",
+    "Jeff Hafley": "4-3 Wide-9",
+    # Seattle Cover-3 tree
+    "Pete Carroll": "Cover 3 4-3",
+    "Gus Bradley": "Cover 3 4-3",
+    "Dan Quinn": "Multiple, Cover 3 roots",
+    "Raheem Morris": "Multiple, Cover 3 roots",
+    # Other established identities
+    "Dennis Allen": "4-3 Multiple",
+    "Lou Anarumo": "Multiple, disguise-heavy",
+    "Aaron Glenn": "Multiple",
+    "Bill Belichick": "Multiple (game-plan specific)",
+}
+
+# Last-resort team-level scheme classification. Superseded by the coach lookup
+# above whenever the live staff resolves; kept because a team's identity is a
+# better guess than nothing when ESPN/Wikipedia are unreachable. Always reported
+# with `is_fallback: true` and `as_of` so a stale entry is visible as such.
 TEAM_SCHEMES = {
     "ARI": {"offense": "Spread/Air Raid", "defense": "3-4 Base"},
     "ATL": {"offense": "Shanahan Wide Zone", "defense": "3-4 Base"},
@@ -627,22 +733,74 @@ TEAM_SCHEMES = {
 }
 
 
-async def get_scheme_classification(team_id: str) -> dict:
+def _scheme_notes(offense: str | None, defense: str | None) -> list[str]:
+    """Plain-language tendencies implied by a scheme label."""
+    notes = []
+    offense = offense or ""
+    defense = defense or ""
+
+    if "Shanahan" in offense:
+        notes.append("Emphasizes outside zone running and play-action")
+    if "McVay" in offense:
+        notes.append("Heavy pre-snap motion and quick passing game")
+    if "West Coast" in offense:
+        notes.append("Short/intermediate passing, timing routes")
+    if "Spread" in offense or "Air Raid" in offense:
+        notes.append("Multiple receiver sets, space creation")
+    if "Erhardt-Perkins" in offense:
+        notes.append("Concept-based playcalling, flexibility")
+    if "RPO" in offense:
+        notes.append("Run-pass options off the same look")
+    if "Coryell" in offense or "Vertical" in offense:
+        notes.append("Deep play-action shots, vertical route tree")
+    if "Power Run" in offense or "Play Action" in offense:
+        notes.append("Heavy personnel, play-action off the run")
+
+    if "3-4" in defense:
+        notes.append("Two-gap technique, versatile edge rushers")
+    if "4-3" in defense:
+        notes.append("One-gap technique, penetrating defensive line")
+    if "Multiple" in defense:
+        notes.append("Situational base changes, versatile personnel")
+    if "blitz-heavy" in defense:
+        notes.append("High pressure rate, man coverage behind it")
+    if "2-high" in defense or "Fangio" in defense:
+        notes.append("Two-high shells, takes away explosives")
+    if "Cover 3" in defense:
+        notes.append("Single-high zone, funnels throws underneath")
+    return notes
+
+
+async def get_scheme_classification(
+    team_id: str, season: int | None = None, use_live_staff: bool = True
+) -> dict:
     """
     Get the offensive and defensive scheme classification for an NFL team.
 
-    This tool provides the general scheme philosophy for a team's
-    offense and defense, useful for player fit analysis.
+    The scheme is resolved from the team's **current coaching staff** — a scheme
+    travels with the play-caller, not the franchise, so a coordinator change is
+    picked up automatically. The coordinators come from `get_coaching_staff`
+    (ESPN head coach + best-effort Wikipedia coordinators); each side falls back
+    to the head coach, and then to a curated team-level table.
+
+    Every answer says where it came from: `offense.source` is `coach` (resolved
+    from the named, live-fetched coach) or `team_table` (a dated guess). Treat a
+    `team_table` answer as possibly a regime out of date.
 
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE')
+        season: Season for the staff lookup (defaults to current)
+        use_live_staff: Set False to skip the network call and use the team table
 
     Returns:
         A dictionary containing:
         - team_id: The team identifier
-        - offensive_scheme: The team's offensive scheme family
-        - defensive_scheme: The team's defensive base alignment
-        - scheme_notes: Additional notes about scheme tendencies
+        - offensive_scheme / defensive_scheme: The scheme labels
+        - offense / defense: {scheme, source, attributed_to, role} provenance
+        - scheme_notes: Tendencies implied by the schemes
+        - is_fallback: True if either side came from the dated team table
+        - as_of: When the curated tables were last reviewed
+        - warnings: Stated when an answer is a dated guess
         - success: Whether the request was successful
     """
     if not team_id or not isinstance(team_id, str):
@@ -652,47 +810,79 @@ async def get_scheme_classification(team_id: str) -> dict:
         )
 
     team_id_upper = team_id.upper().strip()
+    canonical = normalize_team(team_id_upper) or team_id_upper
+    team_data = TEAM_SCHEMES.get(canonical)
 
-    # Keyed on canonical codes; normalize so WAS and WSH both resolve.
-    scheme_data = TEAM_SCHEMES.get(normalize_team(team_id_upper) or team_id_upper)
+    head_coach = offensive_coordinator = defensive_coordinator = None
+    if use_live_staff:
+        try:
+            staff = await get_coaching_staff(team_id_upper, season=season)
+            if staff.get("success"):
+                head_coach = (staff.get("head_coach") or {}).get("name")
+                offensive_coordinator = (staff.get("offensive_coordinator") or {}).get("name")
+                defensive_coordinator = (staff.get("defensive_coordinator") or {}).get("name")
+        except Exception as e:  # the team table still answers; never fail here
+            logger.warning(f"[Coaching] live staff lookup failed for {team_id_upper}: {e}")
 
-    if scheme_data:
-        # Generate scheme notes based on classification
-        notes = []
-        offense = scheme_data["offense"]
-        defense = scheme_data["defense"]
+    def _resolve(table: dict[str, str], coordinator: str | None, role: str,
+                 fallback_key: str) -> dict:
+        """Coordinator first, then the head coach, then the team table."""
+        for name, attributed_role in ((coordinator, role), (head_coach, "Head Coach")):
+            if name and name in table:
+                return {"scheme": table[name], "source": "coach",
+                        "attributed_to": name, "role": attributed_role}
+        return {
+            "scheme": (team_data or {}).get(fallback_key),
+            "source": "team_table",
+            "attributed_to": None,
+            "role": None,
+            # Name whoever we did resolve, so the gap is "we don't know this
+            # coach's scheme" rather than "we didn't look".
+            "unmatched_coach": coordinator or head_coach,
+        }
 
-        if "Shanahan" in offense:
-            notes.append("Emphasizes outside zone running and play-action")
-        if "McVay" in offense:
-            notes.append("Heavy pre-snap motion and quick passing game")
-        if "West Coast" in offense:
-            notes.append("Short/intermediate passing, timing routes")
-        if "Spread" in offense:
-            notes.append("Multiple receiver sets, space creation")
-        if "Erhardt-Perkins" in offense:
-            notes.append("Concept-based playcalling, flexibility")
+    offense = _resolve(COACH_OFFENSIVE_SCHEMES, offensive_coordinator,
+                       "Offensive Coordinator", "offense")
+    defense = _resolve(COACH_DEFENSIVE_SCHEMES, defensive_coordinator,
+                       "Defensive Coordinator", "defense")
 
-        if "3-4" in defense:
-            notes.append("Two-gap technique, versatile edge rushers")
-        if "4-3" in defense:
-            notes.append("One-gap technique, penetrating defensive line")
-        if "Multiple" in defense:
-            notes.append("Situational base changes, versatile personnel")
-
+    if offense["scheme"] is None and defense["scheme"] is None:
         return create_success_response({
             "team_id": team_id_upper,
-            "offensive_scheme": offense,
-            "defensive_scheme": defense,
-            "scheme_notes": notes,
-            "found": True
+            "offensive_scheme": None,
+            "defensive_scheme": None,
+            "scheme_notes": [],
+            "found": False,
+            "as_of": CURATED_AS_OF,
+            "message": (
+                f"No scheme resolved for '{team_id}'. Not a known team code, and "
+                "no scheme is on file for its current staff. "
+                f"Valid abbreviations: {list(TEAM_SCHEMES.keys())}"
+            ),
         })
+
+    is_fallback = "team_table" in (offense["source"], defense["source"])
+    warnings = []
+    for side, data in (("offensive", offense), ("defensive", defense)):
+        if data["source"] == "team_table":
+            unmatched = data.get("unmatched_coach")
+            warnings.append(
+                f"The {side} scheme is the team-level entry reviewed "
+                f"{CURATED_AS_OF}, not a read of the current staff"
+                + (f" (no scheme on file for {unmatched})." if unmatched
+                   else " (the staff lookup returned no coach).")
+            )
 
     return create_success_response({
         "team_id": team_id_upper,
-        "offensive_scheme": None,
-        "defensive_scheme": None,
-        "scheme_notes": [],
-        "found": False,
-        "message": f"Team '{team_id}' not found in scheme database. Valid abbreviations: {list(TEAM_SCHEMES.keys())}"
+        "offensive_scheme": offense["scheme"],
+        "defensive_scheme": defense["scheme"],
+        "offense": offense,
+        "defense": defense,
+        "head_coach": head_coach,
+        "scheme_notes": _scheme_notes(offense["scheme"], defense["scheme"]),
+        "found": True,
+        "is_fallback": is_fallback,
+        "as_of": CURATED_AS_OF,
+        "warnings": warnings,
     })
