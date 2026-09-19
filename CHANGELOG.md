@@ -7,117 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **Playoff odds gave every team the same scoring spread.** `score_sd = 25.0`
-  was hard-coded for the whole league, and that constant is what decides how
-  often the weaker team wins — so a boom/bust roster and a metronome at equal
-  points-per-game came out with identical odds. The means were computed from
-  real results; only the variance was assumed.
+## [0.8.2] - 2026-09-19
 
-  Each team's spread is now measured from its own played weeks and shrunk toward
-  the league's pooled spread (about four games of league-average evidence mixed
-  in), so a two-week sample cannot claim a roster is steady. The pooling is done
-  around each *team's* mean rather than the league's, which keeps it a measure of
-  week-to-week volatility rather than of how unequal the league is. `score_sd`
-  survives as an explicit override.
+A release about numbers that were confidently wrong. Nothing here crashed or
+errored — every entry under *Fixed* produced a plausible-looking figure that
+happened not to mean what it said: points on the wrong scale, an uncertainty
+band half as wide as reality, a variance nobody had ever measured, a curated
+table presented with the confidence of a live fetch.
 
-  Every team's `score_sd` and `games_scored` are reported alongside its
-  probability, plus `score_sd_source` (`measured` / `default` / `caller`), so a
-  surprising number can be traced to the spread behind it and a thin sample is
-  visible as one. Early in a season this correctly reports `default`.
-- **The start/sit tools answered in full PPR off the weaker baseline.**
-  `lineup_optimizer_tools` was the only place in the codebase that called the
-  projection engine with no `scoring`, `season` or `week`. Everything else
-  threads them, so after the scoring fix two tools in the same server disagreed
-  about the same player: `get_start_sit_recommendation` said **17.7** where
-  `get_weekly_briefing` said **14.9** for a 0.5-PPR league — a 19% gap, with
-  start/sit on the wrong side of it.
+Three of them are the same mistake at different levels. A hand-picked constant
+carrying a number the user reads — the per-reception value, the floor/ceiling
+volatility, the weekly scoring spread — was replaced by a measurement, and in
+each case the measurement disagreed with the constant. The projection band
+covered 36% where it claimed 68%; the win probability called matchups at 96%
+that were won 79% of the time.
 
-  `week` made this hard to notice. `get_roster_recommendations` and
-  `analyze_full_lineup` accepted it, validated it, echoed it back in the
-  response — and never passed it to `analyze_player`, so the opportunity
-  baseline (the better model, per the backtest) could not engage. The docstrings
-  said "Optional NFL week number", which reads like it does something.
-
-  All four tools (`get_start_sit_recommendation`, `get_roster_recommendations`,
-  `compare_players_for_slot`, `analyze_full_lineup`) now take `scoring`,
-  `season` and `week` and thread them through. Two follow-on repairs: the
-  per-position "good game" marks were full-PPR constants applied to a
-  now-format-dependent scale, which demoted every pass catcher in a half-PPR
-  league by a confidence step, and are rebased the same way `base_ppg` is; and
-  the single-player response dropped `floor`/`ceiling` entirely, leaving only a
-  points string — so the calibrated band was invisible exactly where a start/sit
-  call needs it.
-- **`get_scheme_classification` asserted a hand-maintained table as current
-  fact.** Schemes were keyed by *team*, with no date and no fallback marker —
-  the one place in this codebase that presented curated data with the
-  confidence of a live fetch. Roughly a quarter of the league changes
-  coordinator every offseason, so the table silently became last regime's
-  answer: it still had Baltimore on the Roman-era power-run offense and Detroit
-  on "McVay Offense" long after those staffs moved on.
-
-  A scheme belongs to the play-caller, not the franchise, so it is now keyed by
-  **coach** and the coach is resolved live through `get_coaching_staff`
-  (coordinator first, then head coach). A staff change is picked up
-  automatically, without editing a table every January. Checked live against
-  Baltimore, whose current head coach the old table had never heard of.
-
-  When no scheme is on file for the resolved coach it falls back to the team
-  table — and says so, per side: `source: "team_table"`, `is_fallback: true`,
-  `as_of`, and a warning naming the coach it could not match. `get_coaching_tree`
-  likewise carries `as_of` and now states that lineage is *history*, not current
-  employment, and that `found: false` means "not in this curated list of six
-  major lineages" rather than "this coach has no lineage".
-
-- **Projections ignored the league's scoring and were always full PPR.**
-  `scoring` reached only the FantasyCalc *value* lookup; the points scale was
-  hard-wired — `opportunity.py` set `REC = 1.0` and `base_ppg()` was documented
-  as "Baseline PPR points/game". Nothing converted, so from week 2 on (the
-  opportunity baseline) the projection was byte-identical for `ppr`, `half_ppr`
-  and `standard`. A 0.5-PPR league was quoted full-PPR numbers: a receiver on
-  9 targets / 6 receptions / 70 yards projected **14.6** where he is worth
-  **≈11.6**.
-
-  Worse than the points: it removed the ordering half PPR exists to create. A
-  volume receiver outranked a runner in every format, which is exactly the FLEX
-  call the setting is supposed to flip.
-
-  Both baselines are now rebased to the league's per-reception value — the
-  opportunity model takes `ppr` through to the reception weight *and* its
-  per-target prior (rebased by position catch rate), and the rank buckets are
-  scaled by the share of a full-PPR baseline that is reception bonus.
-  `get_weekly_briefing` reads the exact value out of the league's own
-  `scoring_settings` rather than rounding it to a three-way label, so a 0.6-PPR
-  league is no longer projected as 0.5. `get_opportunity_projections` takes a
-  `scoring` argument, and every projection response now reports the `scoring`
-  and `ppr` it used.
-
-- **Floor, ceiling and win probability claimed more certainty than they had.**
-  `floor/ceiling = mean ± volatility·mean` is a ±1σ band under the Normal the
-  lineup optimizer assumes, so reality should land inside 68.3% of the time.
-  Measured over 2023–24 (n≈5.2k player-weeks) it landed inside **35.9%**, and
-  the stated floor was breached **35.5%** of the time rather than 16% — the
-  floor was not a floor. The win probability inherited it: matchups called 96%
-  were won 79% of the time (Brier 0.2348 against a 0.2498 base-rate baseline).
-
-  `_VOLATILITY` is now set per position to the width that actually covers 68.3%
-  (QB 0.22→0.54, RB 0.30→0.65, WR 0.38→0.72, TE 0.40→0.74; K/DST carry the
-  overall ≈2× correction, since they are not in the sample). Re-measured:
-  coverage **68.5%**, tails 14.6% / 16.9%, Brier **0.2137**, and the best sd
-  scale moves from 2.0 to 1.25 — i.e. about right. Accuracy is untouched (MAE
-  5.823); what changed is that the uncertainty is now honest.
-
-- **Two injury queries filtered *after* the row limit and silently lost data.**
-  `get_injury_trends(direction="worse")` fetched the newest N rows and then kept
-  the downgrades, so a window that opens with a bulk feed backfill returned
-  nothing — real: 3241 first sightings landed in a single day, against a limit
-  capped at 500. The weekly briefing had the same shape, pulling 500 league-wide
-  changes before narrowing to one roster's ~15 players. Both filters now run in
-  SQL, with `LIMIT` applied last; `get_injury_status_changes` takes `player_ids`
-  and `direction` (with the severity vocabulary passed in, so the database layer
-  does not acquire an opinion about injuries).
+*Added* closes the two missing thirds of the weekly cycle. `get_weekly_briefing`
+already answered "how do I line up"; `get_waiver_targets` and
+`find_trade_targets` answer "who do I pick up" and "who do I trade with",
+both from the same measurement of which players actually win a starting slot.
 
 ### Added
+
 - **`find_trade_targets` — finds the deal instead of grading one.**
   `analyze_trade` evaluates a trade you already have in mind; the harder half of
   the question came first and had no tool. Answering it by hand means reading
@@ -164,13 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   starters it says so, rather than ranking players who would all make the lineup
   worse.
 
-- **An uncertainty-calibration eval** (`evals/backtest/calibration.py`, Layer A):
-  floor/ceiling coverage plus win-probability calibration (Brier score and a
-  reliability table) against real nflverse outcomes, leak-free and walk-forward,
-  using the live constants. Win probability has no historical league matchups to
-  test against, so matchups are synthesised within a week from a fixed seed.
-  Runs in the scheduled evals workflow; offline guards run on every PR.
-
 - **The weekly briefing scores a matchup in progress instead of guessing at
   it.** `win_probability` used full-slate projections throughout, so points
   already on the board were ignored: live, it read 93% while the roster trailed
@@ -194,7 +98,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optimizes the open slots against a residual target — `P(locked + open > opp)`
   is `P(open > opp - locked)` when the locked share has zero variance.
 
+- **The briefing reports `points_so_far` and `opponent_points_so_far`**, plus
+  an explicit `win_probability_basis`. `win_probability` is computed from
+  full-slate projections and does **not** subtract points already scored, so a
+  lopsided Thursday night reads as a comfortable lead when it is the opposite —
+  live, 95.8% while trailing 20.3 to 57.82. Surfacing the actual score makes
+  that visible instead of leaving it to be inferred.
+
+- **An uncertainty-calibration eval** (`evals/backtest/calibration.py`, Layer A):
+  floor/ceiling coverage plus win-probability calibration (Brier score and a
+  reliability table) against real nflverse outcomes, leak-free and walk-forward,
+  using the live constants. Win probability has no historical league matchups to
+  test against, so matchups are synthesised within a week from a fixed seed.
+  Runs in the scheduled evals workflow; offline guards run on every PR.
+
 ### Fixed
+
+- **Projections ignored the league's scoring and were always full PPR.**
+  `scoring` reached only the FantasyCalc *value* lookup; the points scale was
+  hard-wired — `opportunity.py` set `REC = 1.0` and `base_ppg()` was documented
+  as "Baseline PPR points/game". Nothing converted, so from week 2 on (the
+  opportunity baseline) the projection was byte-identical for `ppr`, `half_ppr`
+  and `standard`. A 0.5-PPR league was quoted full-PPR numbers: a receiver on
+  9 targets / 6 receptions / 70 yards projected **14.6** where he is worth
+  **≈11.6**.
+
+  Worse than the points: it removed the ordering half PPR exists to create. A
+  volume receiver outranked a runner in every format, which is exactly the FLEX
+  call the setting is supposed to flip.
+
+  Both baselines are now rebased to the league's per-reception value — the
+  opportunity model takes `ppr` through to the reception weight *and* its
+  per-target prior (rebased by position catch rate), and the rank buckets are
+  scaled by the share of a full-PPR baseline that is reception bonus.
+  `get_weekly_briefing` reads the exact value out of the league's own
+  `scoring_settings` rather than rounding it to a three-way label, so a 0.6-PPR
+  league is no longer projected as 0.5. `get_opportunity_projections` takes a
+  `scoring` argument, and every projection response now reports the `scoring`
+  and `ppr` it used.
+
+- **The start/sit tools answered in full PPR off the weaker baseline.**
+  `lineup_optimizer_tools` was the only place in the codebase that called the
+  projection engine with no `scoring`, `season` or `week`. Everything else
+  threads them, so after the scoring fix two tools in the same server disagreed
+  about the same player: `get_start_sit_recommendation` said **17.7** where
+  `get_weekly_briefing` said **14.9** for a 0.5-PPR league — a 19% gap, with
+  start/sit on the wrong side of it.
+
+  `week` made this hard to notice. `get_roster_recommendations` and
+  `analyze_full_lineup` accepted it, validated it, echoed it back in the
+  response — and never passed it to `analyze_player`, so the opportunity
+  baseline (the better model, per the backtest) could not engage. The docstrings
+  said "Optional NFL week number", which reads like it does something.
+
+  All four tools (`get_start_sit_recommendation`, `get_roster_recommendations`,
+  `compare_players_for_slot`, `analyze_full_lineup`) now take `scoring`,
+  `season` and `week` and thread them through. Two follow-on repairs: the
+  per-position "good game" marks were full-PPR constants applied to a
+  now-format-dependent scale, which demoted every pass catcher in a half-PPR
+  league by a confidence step, and are rebased the same way `base_ppg` is; and
+  the single-player response dropped `floor`/`ceiling` entirely, leaving only a
+  points string — so the calibrated band was invisible exactly where a start/sit
+  call needs it.
+
+- **Floor, ceiling and win probability claimed more certainty than they had.**
+  `floor/ceiling = mean ± volatility·mean` is a ±1σ band under the Normal the
+  lineup optimizer assumes, so reality should land inside 68.3% of the time.
+  Measured over 2023–24 (n≈5.2k player-weeks) it landed inside **35.9%**, and
+  the stated floor was breached **35.5%** of the time rather than 16% — the
+  floor was not a floor. The win probability inherited it: matchups called 96%
+  were won 79% of the time (Brier 0.2348 against a 0.2498 base-rate baseline).
+
+  `_VOLATILITY` is now set per position to the width that actually covers 68.3%
+  (QB 0.22→0.54, RB 0.30→0.65, WR 0.38→0.72, TE 0.40→0.74; K/DST carry the
+  overall ≈2× correction, since they are not in the sample). Re-measured:
+  coverage **68.5%**, tails 14.6% / 16.9%, Brier **0.2137**, and the best sd
+  scale moves from 2.0 to 1.25 — i.e. about right. Accuracy is untouched (MAE
+  5.823); what changed is that the uncertainty is now honest.
+
+- **`get_scheme_classification` asserted a hand-maintained table as current
+  fact.** Schemes were keyed by *team*, with no date and no fallback marker —
+  the one place in this codebase that presented curated data with the
+  confidence of a live fetch. Roughly a quarter of the league changes
+  coordinator every offseason, so the table silently became last regime's
+  answer: it still had Baltimore on the Roman-era power-run offense and Detroit
+  on "McVay Offense" long after those staffs moved on.
+
+  A scheme belongs to the play-caller, not the franchise, so it is now keyed by
+  **coach** and the coach is resolved live through `get_coaching_staff`
+  (coordinator first, then head coach). A staff change is picked up
+  automatically, without editing a table every January. Checked live against
+  Baltimore, whose current head coach the old table had never heard of.
+
+  When no scheme is on file for the resolved coach it falls back to the team
+  table — and says so, per side: `source: "team_table"`, `is_fallback: true`,
+  `as_of`, and a warning naming the coach it could not match. `get_coaching_tree`
+  likewise carries `as_of` and now states that lineage is *history*, not current
+  employment, and that `found: false` means "not in this curated list of six
+  major lineages" rather than "this coach has no lineage".
+
+- **Playoff odds gave every team the same scoring spread.** `score_sd = 25.0`
+  was hard-coded for the whole league, and that constant is what decides how
+  often the weaker team wins — so a boom/bust roster and a metronome at equal
+  points-per-game came out with identical odds. The means were computed from
+  real results; only the variance was assumed.
+
+  Each team's spread is now measured from its own played weeks and shrunk toward
+  the league's pooled spread (about four games of league-average evidence mixed
+  in), so a two-week sample cannot claim a roster is steady. The pooling is done
+  around each *team's* mean rather than the league's, which keeps it a measure of
+  week-to-week volatility rather than of how unequal the league is. `score_sd`
+  survives as an explicit override.
+
+  Every team's `score_sd` and `games_scored` are reported alongside its
+  probability, plus `score_sd_source` (`measured` / `default` / `caller`), so a
+  surprising number can be traced to the spread behind it and a thin sample is
+  visible as one. Early in a season this correctly reports `default`.
+
+- **Two injury queries filtered *after* the row limit and silently lost data.**
+  `get_injury_trends(direction="worse")` fetched the newest N rows and then kept
+  the downgrades, so a window that opens with a bulk feed backfill returned
+  nothing — real: 3241 first sightings landed in a single day, against a limit
+  capped at 500. The weekly briefing had the same shape, pulling 500 league-wide
+  changes before narrowing to one roster's ~15 players. Both filters now run in
+  SQL, with `LIMIT` applied last; `get_injury_status_changes` takes `player_ids`
+  and `direction` (with the severity vocabulary passed in, so the database layer
+  does not acquire an opinion about injuries).
+
 - **`get_weekly_briefing` recommended starting a player who is out injured.**
   The briefing filtered Sleeper's `reserve` list, but a hurt player parked on
   the *active* roster — the normal state when the single IR slot is already
@@ -202,14 +232,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_injury_mult` maps `IR`/`Out`/`PUP`/`Suspended` to `0.0` and would have
   zeroed him, but it never saw the status. Seen live: a receiver on IR with an
   ankle sprain won a FLEX slot. The status now travels with the player.
-
-### Added
-- **The briefing reports `points_so_far` and `opponent_points_so_far`**, plus
-  an explicit `win_probability_basis`. `win_probability` is computed from
-  full-slate projections and does **not** subtract points already scored, so a
-  lopsided Thursday night reads as a comfortable lead when it is the opposite —
-  live, 95.8% while trailing 20.3 to 57.82. Surfacing the actual score makes
-  that visible instead of leaving it to be inferred.
 
 ## [0.8.1] - 2026-09-17
 
