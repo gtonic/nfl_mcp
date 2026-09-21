@@ -89,6 +89,7 @@ def project_opportunity(
     position: str,
     lookback: int = DEFAULT_LOOKBACK,
     ppr: float = FULL_PPR,
+    extra_volume: dict[str, float] | None = None,
 ) -> float | None:
     """Expected fantasy points for the next game from trailing opportunity.
 
@@ -99,9 +100,15 @@ def project_opportunity(
         position: QB/RB/WR/TE.
         lookback: how many most-recent games to weight (recency-weighted linearly).
         ppr: points per reception for the league (1.0 full, 0.5 half, 0.0 standard).
+        extra_volume: opportunities inherited from an unavailable teammate, as
+            ``{"targets": n, "carries": n, "attempts": n}``. Added to the
+            expected volume and converted at *this* player's own shrunk
+            efficiency, which is the point: a backup inheriting ten targets is
+            worth what he does with a target, not what the starter did.
 
     Returns expected points, or None if the position/data can't be projected.
     """
+    extra = extra_volume or {}
     pos = position.upper()
     priors = _PRIORS.get(pos)
     if priors is None or not prior_games:
@@ -112,19 +119,22 @@ def project_opportunity(
     # Recency weights: oldest .. newest -> 1 .. n.
     weights = list(range(1, n + 1))
 
-    exp_carries = _weighted_mean([g.get("carries", 0.0) for g in games], weights)
+    exp_carries = _weighted_mean([g.get("carries", 0.0) for g in games], weights) \
+        + extra.get("carries", 0.0)
     tot_carries = sum(g.get("carries", 0.0) for g in games)
     tot_rush_pts = sum(rush_points(g) for g in games)
     ppc = _shrunk_rate(tot_rush_pts, tot_carries, priors["ppc"], _K_CARRIES)
 
     if pos == "QB":
-        exp_attempts = _weighted_mean([g.get("attempts", 0.0) for g in games], weights)
+        exp_attempts = _weighted_mean([g.get("attempts", 0.0) for g in games], weights) \
+            + extra.get("attempts", 0.0)
         tot_attempts = sum(g.get("attempts", 0.0) for g in games)
         tot_pass_pts = sum(pass_points(g) for g in games)
         ppa = _shrunk_rate(tot_pass_pts, tot_attempts, priors["ppa"], _K_ATTEMPTS)
         return max(0.0, exp_attempts * ppa + exp_carries * ppc)
 
-    exp_targets = _weighted_mean([g.get("targets", 0.0) for g in games], weights)
+    exp_targets = _weighted_mean([g.get("targets", 0.0) for g in games], weights) \
+        + extra.get("targets", 0.0)
     tot_targets = sum(g.get("targets", 0.0) for g in games)
     tot_rec_pts = sum(rec_points(g, ppr) for g in games)
     ppt = _shrunk_rate(tot_rec_pts, tot_targets, _prior_ppt(pos, ppr), _K_TARGETS)

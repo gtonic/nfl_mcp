@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A backup now inherits volume when the starter ahead of him is out.** The
+  projection priced a player off his market rank, so an unavailable teammate
+  moved him not at all — `get_handcuff_map` covered this for RBs only, and only
+  as a roster note, never in the number.
+
+  Depth comes from the market values (team + `position_rank`), availability from
+  the ESPN/CBS report table, and the inherited volume from the out player's own
+  recency-weighted trailing volume at a conservative 50% share. It is converted
+  at the *backup's* efficiency, not the starter's: inheriting ten targets is
+  worth what he does with a target. `starters_out_ahead` and `vacated_volume`
+  are reported in the breakdown, so the assumption is visible rather than baked
+  into a number.
+
+  The deliberate limit matters more than the feature. A starter who has been out
+  **all season** vacates nothing, because the backup's own trailing volume
+  already describes him as the starter — boosting there would invent points out
+  of an absence. Checked against the case that motivated this: Brock Bowers has
+  no 2026 game logs, so Michael Mayer is correctly detected as
+  `starters_out_ahead: ["Brock Bowers"]` with `vacated_volume: {}` and an
+  unchanged 4.7. A manual override that "corrected" that projection upward in
+  live use was wrong, and this feature declines to repeat it.
+
+  Accuracy is untouched where there is no depth data: the backtest still reports
+  MAE 5.823 for the opportunity baseline.
+
 ### Fixed
 - **A weak FLEX slot matched any bench player, including ineligible ones.**
   `analyze_full_lineup` treated `weak["position"] == "FLEX"` as "anything
