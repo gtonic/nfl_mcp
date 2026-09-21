@@ -172,37 +172,36 @@ class TestLineupOptimizer:
         assert "⚠️" in str(reasoning)  # Should have warning indicators
 
     def test_determine_decision_must_start(self):
-        """Test must_start decision for high confidence + good matchup."""
+        """A strong projection is a must-start regardless of the matchup.
+
+        The old rule required a smash/favorable matchup, so a star facing a top
+        defense could never be a must-start.
+        """
         optimizer = LineupOptimizer(db=None, defense_analyzer=None)
 
         decision = optimizer.determine_decision(
-            confidence=85,
-            matchup_tier="smash",
-            health_score=100
+            projected_points=18.0, position="WR", health_score=100
         )
 
         assert decision == "must_start"
 
     def test_determine_decision_must_sit_injured(self):
-        """Test must_sit decision for injured player."""
+        """Availability overrides the projection entirely."""
         optimizer = LineupOptimizer(db=None, defense_analyzer=None)
 
         decision = optimizer.determine_decision(
-            confidence=60,
-            matchup_tier="neutral",
-            health_score=20  # Out or IR
+            projected_points=20.0, position="WR", health_score=20  # Out or IR
         )
 
         assert decision == "must_sit"
 
     def test_determine_decision_flex(self):
-        """Test flex decision for medium confidence."""
+        """Below the adequate mark but not far below it is a judgement call."""
         optimizer = LineupOptimizer(db=None, defense_analyzer=None)
 
+        # WR adequate mark is 10.0 in full PPR; 8.0 sits in the flex band.
         decision = optimizer.determine_decision(
-            confidence=55,
-            matchup_tier="neutral",
-            health_score=100
+            projected_points=8.0, position="WR", health_score=100
         )
 
         assert decision == "flex"
