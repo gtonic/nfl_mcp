@@ -1396,6 +1396,32 @@ class NFLDatabase:
             logger.error(f"upsert_injuries failed: {e}")
             return 0
 
+    def get_all_current_injuries(self) -> list[dict]:
+        """Every player's latest injury report, league-wide.
+
+        The league-wide counterpart to ``get_team_injuries_from_cache``, for
+        callers that hold a roster rather than a team — a fantasy roster spans
+        a dozen teams, and asking per team would be a dozen queries.
+
+        No TTL filter: the caller decides what age is acceptable and is told
+        how old the data is (see ``get_injury_data_age_hours``), rather than
+        silently receiving an empty list.
+        """
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT player_id, player_name, team_id, position,
+                           injury_status, injury_type, injury_description,
+                           game_status, severity, confidence, sources, updated_at
+                    FROM player_injuries
+                    """
+                )
+                return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.warning(f"get_all_current_injuries failed: {e}")
+            return []
+
     def get_team_injuries_from_cache(
         self,
         team_id: str,

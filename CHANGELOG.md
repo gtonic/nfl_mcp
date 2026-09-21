@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The weekly briefing read only one of the two injury feeds.**
+  `_injury_status` took Sleeper's player list; the multi-source ESPN/CBS reports
+  sitting in `player_injuries` — with severity and confidence — were never
+  consulted. Around kickoff Sleeper is routinely the slower of the two, and
+  taking the milder reading is what puts a hurt player in a lineup: on
+  2026-09-20 ESPN had Brock Bowers at **doubtful** while Sleeper still said
+  **questionable**, so the briefing applied a 0.9 multiplier and recommended
+  starting him over a healthy tight end. He did not play.
+
+  Both feeds are now combined and the **more severe** designation wins — erring
+  toward the bench is the recoverable direction. The two id spaces are
+  unrelated (`player_injuries` carries ESPN athlete ids, `athletes` carries
+  Sleeper ids; 12 of 2638 rows collide by accident), so the join goes through
+  the normalized name, reusing the same `norm_name` the nflverse lookup uses.
+
+  The response gains `injury_source_conflicts`, naming every player where the
+  feeds disagreed and which reading was used — the lineup call made on the
+  milder one is exactly the thing worth seeing. `worst_status` treats an
+  unrecognised designation as MODERATE rather than best-casing it, so a feed
+  change cannot quietly downgrade the whole roster.
+
 ## [0.8.2] - 2026-09-19
 
 A release about numbers that were confidently wrong. Nothing here crashed or

@@ -113,6 +113,26 @@ STATUS_SEVERITY = {
 _ATHLETE_ID_PATTERN = re.compile(r"/athletes/(\d+)(?:/|\?|$)")
 
 
+def status_severity(status: str | None) -> int:
+    """Severity rank for a status string, MODERATE for anything unrecognised."""
+    return int(STATUS_SEVERITY.get(status, InjurySeverity.MODERATE)) if status else 0
+
+
+def worst_status(*statuses: str | None) -> str | None:
+    """The most severe of several status strings, or None if all are empty.
+
+    Sources disagree, and routinely: Sleeper's player list lags ESPN's injury
+    feed by hours around kickoff. Taking the milder reading means projecting a
+    player at 90% who one source already has at doubtful, which is the error
+    that puts him in a lineup. Taking the worse one errs toward the bench,
+    which is the recoverable direction.
+    """
+    known = [s for s in statuses if s]
+    if not known:
+        return None
+    return max(known, key=status_severity)
+
+
 def extract_athlete_id(athlete_url: str | None) -> str | None:
     """ESPN athlete id from a Core-API ``$ref`` URL, or None.
 

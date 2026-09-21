@@ -18,6 +18,8 @@ import logging
 from .database import NFLDatabase
 from .errors import create_success_response
 from .game_clock import game_progress, settle
+from .injury_service import worst_status
+from .opportunity_tools import norm_name
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -78,12 +80,63 @@ def _injury_status(row: dict | None) -> str | None:
     return (raw or {}).get("injury_status") if isinstance(raw, dict) else None
 
 
+def build_injury_index(injuries: list[dict]) -> dict[tuple[str, str], dict]:
+    """Index the multi-source injury reports by (normalized name, team).
+
+    `player_injuries` carries ESPN athlete ids while `athletes` carries Sleeper
+    ids — the two id spaces are unrelated (12 of 2638 rows collide by accident),
+    so the join has to go through the name, using the same normalization the
+    nflverse lookup uses.
+    """
+    index: dict[tuple[str, str], dict] = {}
+    for row in injuries:
+        name = norm_name(row.get("player_name"))
+        team = normalize_team(row.get("team_id")) or ""
+        if name:
+            index[(name, team)] = row
+    return index
+
+
+def resolve_injury(
+    athlete_row: dict | None, injury_index: dict[tuple[str, str], dict], team: str
+) -> dict | None:
+    """Combine Sleeper's status with the ESPN/CBS report, worst case wins.
+
+    Returns ``{status, source, sleeper_status, report_status}`` or None when
+    neither source says anything. Disagreement is the normal state around
+    kickoff, not an anomaly: on 2026-09-20 ESPN had Brock Bowers at doubtful
+    while Sleeper still said questionable, and taking the milder reading put a
+    0.9 multiplier on a player who did not play.
+    """
+    sleeper_status = _injury_status(athlete_row)
+    name = norm_name((athlete_row or {}).get("full_name"))
+    report = injury_index.get((name, team)) if name else None
+    report_status = (report or {}).get("injury_status")
+    # "Active" is the report's way of saying "no injury", so it must not beat a
+    # real designation from the other source.
+    if report_status == "Active":
+        report_status = None
+
+    status = worst_status(sleeper_status, report_status)
+    if not status:
+        return None
+    return {
+        "status": status,
+        "source": ("both" if sleeper_status and report_status
+                   else "report" if report_status else "sleeper"),
+        "sleeper_status": sleeper_status,
+        "report_status": report_status,
+        "injury_type": (report or {}).get("injury_type"),
+    }
+
+
 def _build_player(
     player_id: str,
     athletes: dict,
     opponents: dict[str, str],
     weather: dict[str, dict],
     usage: dict[str, dict],
+    injury_index: dict[tuple[str, str], dict] | None = None,
 ) -> dict | None:
     """Projection input for one roster slot, or None if it is not projectable."""
     row = athletes.get(player_id)
@@ -111,10 +164,12 @@ def _build_player(
     }
     # Without this the projection cannot apply `_injury_mult`, and a player on
     # IR who is parked on the active roster (rather than in Sleeper's reserve
-    # slot) gets a full projection and wins a starting slot.
-    status = _injury_status(athletes.get(player_id))
-    if status:
-        player["injury"] = {"status": status}
+    # slot) gets a full projection and wins a starting slot. Both feeds are
+    # consulted, worst case wins — see `resolve_injury`.
+    injury = resolve_injury(row, injury_index or {}, team)
+    if injury:
+        player["injury"] = {"status": injury["status"]}
+        player["injury_detail"] = injury
     if team in weather:
         player["weather"] = weather[team]
     snap = (usage.get(player_id) or {}).get("snap_share")
@@ -230,6 +285,9 @@ async def get_weekly_briefing(
     athletes = db.get_athletes_by_ids(
         list(mine.get("players") or []) + list((opponent_matchup or {}).get("starters") or [])
     )
+    # Sleeper's player list is not the only injury source, and around kickoff it
+    # is routinely the slower one. `player_injuries` holds the ESPN/CBS reports.
+    injury_index = build_injury_index(db.get_all_current_injuries())
 
     # 5) Project mine and the opponent's projected starters.
     #    Reserve (IR) and taxi players cannot legally be started, so they must
@@ -238,7 +296,7 @@ async def get_weekly_briefing(
     unavailable = set(mine.get("reserve") or []) | set(mine.get("taxi") or [])
     my_inputs = [
         p for p in (
-            _build_player(pid, athletes, opponents, weather, usage)
+            _build_player(pid, athletes, opponents, weather, usage, injury_index)
             for pid in (mine.get("players") or [])
             if pid not in unavailable
         ) if p
@@ -246,7 +304,7 @@ async def get_weekly_briefing(
     opp_ids = (opponent_matchup or {}).get("starters") or []
     opp_inputs = [
         p for p in (
-            _build_player(pid, athletes, opponents, weather, usage)
+            _build_player(pid, athletes, opponents, weather, usage, injury_index)
             for pid in opp_ids
         ) if p
     ]
@@ -413,6 +471,17 @@ async def get_weekly_briefing(
         "changes": changes,
         "bench": bench,
         "injury_changes": injury_changes,
+        # Where the two injury feeds disagreed on one of your players. The more
+        # severe reading was used; this says which and from where, because a
+        # lineup call made on the milder one is the error worth seeing.
+        "injury_source_conflicts": [
+            {"player": p["name"], "used": p["injury_detail"]["status"],
+             "sleeper": p["injury_detail"]["sleeper_status"],
+             "report": p["injury_detail"]["report_status"]}
+            for p in my_inputs
+            if p.get("injury_detail")
+            and p["injury_detail"]["sleeper_status"] != p["injury_detail"]["report_status"]
+        ],
         # Byes, and anything the projection layer could not price.
         "not_projected": unprojectable,
         "reserve": reserved,
