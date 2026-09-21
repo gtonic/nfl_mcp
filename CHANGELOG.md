@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`get_waiver_targets` reports the league's waiver configuration** as
+  `waiver_rules`: priority vs FAAB, daily vs weekly processing, the waiver
+  weekday, clear days, and what the configuration does *not* settle.
+
+  It deliberately does **not** return an "instant add vs claim" verdict. That
+  was inferred twice in live use and was wrong both times — first by reasoning
+  "never dropped, therefore not on waivers, therefore instant" (false under
+  weekly waivers, where the whole free-agent pool is locked during the game
+  week), then by reading `daily_waivers=1` as instant (also false; the league's
+  own app showed the claim processing on the waiver day anyway). Which days
+  daily waivers run is encoded in `daily_waivers_days` as a bitmask, and the
+  observed processing time matches none of the exposed fields.
+
+  So the output names the bitmask it cannot decode and points at the app, which
+  shows the real answer per player. `how_to_confirm` also states that pending
+  claims are not exposed by the API at all — their absence from a transaction
+  list does not mean none exist, which is the inference that produced a
+  confident "you have no claims pending" while two were.
+
+### Added
 - **Every roster tool now reports how old its data is.** `get_weekly_briefing`,
   `get_waiver_targets` and `find_trade_targets` return `data_freshness` (age in
   hours per feed: injuries, athletes, practice status) plus
