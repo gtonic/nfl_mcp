@@ -35,6 +35,11 @@ _GOOD_GAME_PPR = {
 }
 _GOOD_GAME_DEFAULT = (10, 16)
 
+# A suggested swap has to beat the projection's own error to be worth making.
+# The backtest puts weekly MAE at ~5.8 points; below a couple of points a
+# "better" player is indistinguishable from the one already in the slot.
+MEANINGFUL_SWAP_GAIN = 2.0
+
 
 def _good_game_thresholds(position: str, ppr: float = 1.0) -> tuple[float, float]:
     """(adequate, good) point marks for a position in a league's scoring."""
@@ -317,41 +322,50 @@ class LineupOptimizer:
 
     def determine_decision(
         self,
-        confidence: float,
-        matchup_tier: str,
-        health_score: float
+        projected_points: float,
+        position: str,
+        health_score: float,
+        ppr: float = 1.0,
+        confidence: float | None = None,
     ) -> str:
-        """
-        Determine start/sit decision based on confidence and factors.
+        """Start/sit decision from expected points, not from how much we know.
 
-        Returns:
-            Decision string: must_start, start, flex, sit, must_sit
+        This used to key off `confidence`, which is a *data-quality* score:
+        25% matchup, 25% snap share, 20% health, 15% projection, 15% trend. The
+        expected points — the only quantity that decides a lineup — carried 15%
+        of the weight and were quantised into four buckets. The result was an
+        inverted ranking: a 17-point receiver in a tough matchup came out below
+        an 8-point receiver in a smash matchup.
+
+        Worse, `must_start` required a "smash" or "favorable" matchup, so a star
+        facing a top defense could never be a must-start — while the projection
+        engine's own backtest had already concluded that matchup is worth
+        *nothing* for WRs (`_MATCHUP_POS_STRENGTH["WR"] == 0.0`). The ranking
+        layer weighted the same signal at 25% and contradicted the model
+        underneath it.
+
+        Points are compared against the position's "good week" marks, rebased to
+        the league's scoring. `confidence` is still reported — it answers "how
+        much do we know", which is a real question, just not this one.
         """
-        # Auto-sit injured players
+        # An unavailable player is not a lineup question.
         if health_score <= 25:
             return StartSitDecision.MUST_SIT.value
 
-        # High confidence with good matchup = must start
-        if confidence >= 80 and matchup_tier in ["smash", "favorable"]:
-            return StartSitDecision.MUST_START.value
-
-        # High confidence = start
-        if confidence >= 70:
-            return StartSitDecision.START.value
-
-        # Medium confidence = flex consideration
-        if confidence >= 50:
+        adequate, good = _good_game_thresholds(position, ppr)
+        if projected_points <= 0:
+            # No projection at all: say we cannot tell rather than implying a
+            # read. FLEX is the honest "your call" bucket.
             return StartSitDecision.FLEX.value
-
-        # Low confidence with bad matchup = must sit
-        if confidence <= 35 and matchup_tier in ["elite", "tough"]:
-            return StartSitDecision.MUST_SIT.value
-
-        # Low confidence = sit
-        if confidence < 45:
+        if projected_points >= good:
+            return StartSitDecision.MUST_START.value
+        if projected_points >= adequate:
+            return StartSitDecision.START.value
+        if projected_points >= adequate * 0.7:
+            return StartSitDecision.FLEX.value
+        if projected_points >= adequate * 0.45:
             return StartSitDecision.SIT.value
-
-        return StartSitDecision.FLEX.value
+        return StartSitDecision.MUST_SIT.value
 
     async def analyze_player(
         self,
@@ -463,9 +477,11 @@ class LineupOptimizer:
             analysis.injury_status.lower(), 100
         )
         analysis.decision = self.determine_decision(
-            confidence,
-            analysis.matchup_tier,
-            health_score
+            analysis.projected_points,
+            analysis.position,
+            health_score,
+            ppr=scoring_to_ppr(scoring),
+            confidence=analysis.confidence,
         )
 
         return analysis
@@ -765,7 +781,12 @@ async def get_roster_recommendations(
                 sits.append(f"{analysis.player_name} ({analysis.position})")
 
     # Sort all by confidence
-    all_recommendations.sort(key=lambda x: x["confidence"], reverse=True)
+    # Ranked by expected points. `confidence` breaks ties only: it measures how
+    # much we know about a player, which is not the same question as who scores
+    # more, and sorting by it inverted the ranking (see `determine_decision`).
+    all_recommendations.sort(
+        key=lambda x: (x["projected_points"], x["confidence"]), reverse=True
+    )
 
     # Convert by_position to serializable format
     by_position = {
@@ -868,22 +889,33 @@ async def compare_players_for_slot(
         )
         analyses.append(analysis)
 
-    # Sort by confidence
-    analyses.sort(key=lambda x: x.confidence, reverse=True)
+    # Points decide the slot, confidence only breaks a tie.
+    analyses.sort(key=lambda x: (x.projected_points, x.confidence), reverse=True)
 
     # Get winner and runner up
     winner = analyses[0]
     runner_up = analyses[1] if len(analyses) > 1 else None
 
     confidence_gap = winner.confidence - runner_up.confidence if runner_up else 100
+    # The gap that matters for a slot decision is in points, not in how much we
+    # know. Compared against the projection's own error (MAE ~5.8), so "clear"
+    # means clear relative to what the model can actually resolve.
+    points_gap = round(winner.projected_points - runner_up.projected_points, 1) if runner_up else 0.0
 
-    # Generate verdict
-    if confidence_gap >= 20:
-        verdict = f"Clear choice: {winner.player_name} is significantly better this week"
-    elif confidence_gap >= 10:
-        verdict = f"Edge to {winner.player_name}, but {runner_up.player_name} is a reasonable alternative"
+    # Verdict scaled to the projection's own error. The backtest puts weekly
+    # MAE at ~5.8 points, so a 1-point edge is not an edge — calling it one is
+    # the false precision this tool used to trade in.
+    if not runner_up:
+        verdict = f"Only {winner.player_name} to consider"
+    elif points_gap >= 5.0:
+        verdict = (f"Clear choice: {winner.player_name} projects {points_gap} more "
+                   f"points than {runner_up.player_name}")
+    elif points_gap >= 2.0:
+        verdict = (f"Edge to {winner.player_name} (+{points_gap}), but "
+                   f"{runner_up.player_name} is a reasonable alternative")
     else:
-        verdict = f"Coin flip between {winner.player_name} and {runner_up.player_name}"
+        verdict = (f"Coin flip: {winner.player_name} and {runner_up.player_name} are "
+                   f"{points_gap} points apart, inside the model's error")
 
     # Decision emoji for display
     decision_emoji = {
@@ -901,6 +933,10 @@ async def compare_players_for_slot(
             "player": analysis.player_name,
             "position": analysis.position,
             "opponent": analysis.opponent,
+            "projected_points": analysis.projected_points,
+            "floor": analysis.floor,
+            "ceiling": analysis.ceiling,
+            # Reported, not ranked on: this says how much we know, not who wins.
             "confidence": analysis.confidence,
             "decision": analysis.decision,
             "decision_display": f"{decision_emoji.get(analysis.decision, '⚪')} {analysis.decision.upper().replace('_', ' ')}",
@@ -913,15 +949,20 @@ async def compare_players_for_slot(
         "winner": {
             "player": winner.player_name,
             "position": winner.position,
+            "projected_points": winner.projected_points,
+            "floor": winner.floor,
+            "ceiling": winner.ceiling,
             "confidence": winner.confidence,
             "decision": winner.decision,
             "reasoning": winner.reasoning,
         },
         "comparison": comparison_list,
+        "points_gap": points_gap,
         "confidence_gap": round(confidence_gap, 1),
         "verdict": verdict,
         "total_compared": len(analyses),
-        "message": f"For {slot}: Start {winner.player_name} ({winner.confidence:.0f}% confidence)"
+        "message": (f"For {slot}: Start {winner.player_name} "
+                    f"({winner.projected_points} projected, {winner.confidence:.0f}% confidence)")
     })
 
 
@@ -1032,13 +1073,19 @@ async def analyze_full_lineup(
             all_starter_analyses.append(analysis)
             total_projected += analysis.projected_points
 
-            # Track weak spots
-            if analysis.confidence < 45:
+            # Track weak spots. A slot is weak when it projects poorly for the
+            # position, not when we happen to know little about the player —
+            # a well-documented 3-point starter is the weak spot, a thinly
+            # covered 18-point starter is not.
+            adequate, _ = _good_game_thresholds(analysis.position, scoring_to_ppr(scoring))
+            if analysis.projected_points < adequate * 0.7:
                 weak_spots.append({
                     "position": position,
                     "player": analysis.player_name,
+                    "projected_points": analysis.projected_points,
                     "confidence": analysis.confidence,
-                    "issue": analysis.reasoning[0] if analysis.reasoning else "Low overall confidence"
+                    "issue": (f"projects {analysis.projected_points} "
+                              f"(adequate for {analysis.position} is {adequate:.1f})"),
                 })
 
         starters_analysis[position] = [a.to_dict() for a in position_analyses]
@@ -1063,37 +1110,51 @@ async def analyze_full_lineup(
             )
             bench_analysis.append(analysis)
 
-            # Check if bench player should start over a starter
-            if analysis.decision in ["must_start", "start"]:
-                for weak in weak_spots:
-                    if analysis.position == weak.get("slot_position", weak["position"]) or weak["position"] == "FLEX":
-                        if analysis.confidence > weak["confidence"] + 10:
-                            suggested_changes.append({
-                                "action": "swap",
-                                "bench_in": analysis.player_name,
-                                "bench_in_confidence": analysis.confidence,
-                                "bench_out": weak["player"],
-                                "bench_out_confidence": weak["confidence"],
-                                "reason": f"{analysis.player_name} has better matchup/usage"
-                            })
+            # Check if a bench player should start over a starter. Compared in
+            # points, not confidence: a bench player can be better known and
+            # still project fewer points, and swapping on that basis lowers the
+            # lineup total. The margin is wide enough to sit outside noise.
+            for weak in weak_spots:
+                if analysis.position == weak.get("slot_position", weak["position"]) or weak["position"] == "FLEX":
+                    gain = analysis.projected_points - weak.get("projected_points", 0.0)
+                    if gain >= MEANINGFUL_SWAP_GAIN:
+                        suggested_changes.append({
+                            "action": "swap",
+                            "bench_in": analysis.player_name,
+                            "bench_in_points": analysis.projected_points,
+                            "bench_out": weak["player"],
+                            "bench_out_points": weak.get("projected_points", 0.0),
+                            "gain": round(gain, 1),
+                            "reason": (f"{analysis.player_name} projects "
+                                       f"{round(gain, 1)} more points"),
+                        })
 
-    # Calculate lineup grade
+    # Grade the lineup, not the data. This used to average `confidence`, which
+    # scores how much we know about the starters — a roster of well-documented
+    # mediocrities graded an A. What a lineup grade should answer is "did you
+    # start your best available players", so it is the share of the points you
+    # could have had, the same thing Sleeper's own best-manager metric measures.
     if all_starter_analyses:
         avg_confidence = sum(a.confidence for a in all_starter_analyses) / len(all_starter_analyses)
+        best_possible = total_projected + sum(
+            max(0.0, c["gain"]) for c in suggested_changes
+        )
+        efficiency = (total_projected / best_possible * 100) if best_possible > 0 else 100.0
 
-        if avg_confidence >= 75:
+        if efficiency >= 99:
             grade = "A"
-        elif avg_confidence >= 65:
+        elif efficiency >= 95:
             grade = "B"
-        elif avg_confidence >= 55:
+        elif efficiency >= 90:
             grade = "C"
-        elif avg_confidence >= 45:
+        elif efficiency >= 82:
             grade = "D"
         else:
             grade = "F"
     else:
         grade = "N/A"
         avg_confidence = 0
+        efficiency = 0.0
 
     return create_success_response({
         "starters": starters_analysis,
@@ -1101,10 +1162,14 @@ async def analyze_full_lineup(
         "suggested_changes": suggested_changes[:5],  # Top 5 changes
         "weak_spots": weak_spots,
         "lineup_grade": grade,
+        # Share of the points available from starters+bench that you actually
+        # started. This is what the grade is based on.
+        "lineup_efficiency_pct": round(efficiency, 1),
         "average_confidence": round(avg_confidence, 1),
         "total_projected": round(total_projected, 1),
         "total_starters": len(all_starter_analyses),
         "week": week,
         "scoring": scoring,
-        "message": f"Lineup Grade: {grade} | Avg Confidence: {avg_confidence:.0f}%"
+        "message": (f"Lineup Grade: {grade} | {efficiency:.0f}% of available points started "
+                    f"| {len(suggested_changes)} change(s) suggested")
     })

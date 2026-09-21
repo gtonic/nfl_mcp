@@ -8,6 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Start/sit ranked players by how much we knew about them, not by expected
+  points.** `compare_players_for_slot`, `get_roster_recommendations` and
+  `analyze_full_lineup` sorted on `confidence` — a *data-quality* score built
+  from 25% matchup, 25% snap share, 20% health, 15% projection and 15% trend,
+  with the projection share quantised into four buckets. The only quantity that
+  decides a lineup carried 15% of the weight, and the ranking came out inverted:
+
+  ```
+  WR1  17.0 pts, tough matchup   -> conf 62.5   ranked 3rd
+  WR4   8.0 pts, smash matchup   -> conf 72.8   ranked 1st  <- recommended
+  RB1  16.0 pts, questionable    -> conf 59.7   ranked 4th
+  RB3   9.0 pts, favorable       -> conf 67.8   ranked 2nd
+  ```
+
+  `must_start` additionally required a "smash" or "favorable" matchup, so a star
+  facing a top defense could never be one — while the projection engine's own
+  backtest had already concluded matchup is worth *nothing* for WRs
+  (`_MATCHUP_POS_STRENGTH["WR"] == 0.0`). The ranking layer weighted the same
+  signal at 25% and contradicted the model underneath it.
+  `get_win_probability_lineup` was doing it correctly all along; the three
+  commonly used tools were not.
+
+  All three now rank by projected points, with `confidence` as a tiebreak and
+  reported alongside — "how much do we know" is a real question, just not this
+  one. `determine_decision` compares points against the position's good-week
+  marks, rebased to league scoring, with availability as a hard override and no
+  projection yielding `flex` rather than a confident read.
+
+  Three downstream consequences fixed with it: the verdict in
+  `compare_players_for_slot` is now a **points gap** scaled to the model's own
+  error (below 2.0 it says "coin flip … inside the model's error" instead of
+  "Edge to X"); a suggested bench swap must gain at least 2.0 points rather
+  than 10 confidence points; and `lineup_grade` grades the *lineup* — the share
+  of available points actually started, like Sleeper's own best-manager metric —
+  instead of averaging confidence, which used to award an A to a roster of
+  well-documented mediocrities. Weak spots are likewise identified by a poor
+  projection for the position rather than by thin data coverage.
+
+### Fixed
 - **`get_transactions` now says that pending waiver claims are invisible to it.**
   Sleeper exposes a claim only once it has been *processed*; a claim sitting in a
   manager's queue appears in no API response. The docstring did not mention it,

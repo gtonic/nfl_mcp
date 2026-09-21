@@ -129,24 +129,24 @@ class TestLineupOptimizer:
         assert any("injury" in r.lower() or "practice" in r.lower() for r in reasoning)
 
     def test_determine_decision_must_start(self, optimizer):
-        """Test must_start decision."""
-        decision = optimizer.determine_decision(85.0, "smash", 100.0)
-        assert decision == "must_start"
+        """Decided on points, not on matchup or confidence."""
+        assert optimizer.determine_decision(18.0, "WR", 100.0) == "must_start"
 
     def test_determine_decision_must_sit(self, optimizer):
-        """Test must_sit decision."""
-        decision = optimizer.determine_decision(30.0, "elite", 20.0)
-        assert decision == "must_sit"
+        """Unavailable beats any projection."""
+        assert optimizer.determine_decision(18.0, "WR", 20.0) == "must_sit"
 
     def test_determine_decision_flex(self, optimizer):
-        """Test flex decision."""
-        decision = optimizer.determine_decision(60.0, "neutral", 80.0)
-        assert decision == "flex"
+        # WR adequate mark 10.0; 8.0 is a judgement call.
+        assert optimizer.determine_decision(8.0, "WR", 80.0) == "flex"
 
     def test_determine_decision_sit(self, optimizer):
-        """Test sit decision."""
-        decision = optimizer.determine_decision(40.0, "neutral", 80.0)
-        assert decision == "sit"
+        # Well below adequate, but not a zero.
+        assert optimizer.determine_decision(5.0, "WR", 80.0) == "sit"
+
+    def test_determine_decision_start(self, optimizer):
+        """Between adequate and good is a plain start."""
+        assert optimizer.determine_decision(12.0, "WR", 100.0) == "start"
 
     def test_determine_decision_auto_sit_injured(self, optimizer):
         """Test auto-sit for injured players."""
