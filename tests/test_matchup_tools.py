@@ -332,8 +332,17 @@ class TestNflverseRankings:
         assert wr[0]["source"] == "nflverse"
         # nflverse "WAS" normalized to "WSH"
         assert any(t["team"] == "WSH" for t in wr)
-        # postseason row excluded (KC average stays 5, not inflated by the 99)
-        assert wr[0]["points_allowed_avg"] == 5.0
+        # postseason row excluded — the raw average stays 5, not inflated by 99.
+        # `points_allowed_avg` is now shrunk toward the league mean, so the
+        # unshrunk figure is what carries this assertion.
+        assert wr[0]["points_allowed_observed"] == 5.0
+        # Two games per team: below the tier threshold, so the tier is withheld
+        # and the sample size is stated.
+        assert wr[0]["games_sampled"] == 2
+        assert wr[0]["is_provisional"] is True
+        assert all(t["matchup_tier"] == "neutral" for t in wr)
+        # Shrinkage pulled the reported figure toward the league average.
+        assert wr[0]["points_allowed_avg"] > 5.0
 
     @pytest.mark.asyncio
     async def test_404_returns_none(self):

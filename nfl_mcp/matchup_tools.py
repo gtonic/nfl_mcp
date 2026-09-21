@@ -56,6 +56,17 @@ MATCHUP_TIERS = {
 }
 
 
+# Games of league-average evidence blended into each defense's points allowed.
+# Two real games then count for a quarter of the estimate, which is about how
+# much they deserve.
+SHRINKAGE_GAMES = 6.0
+# Below this every tier is reported as neutral. Tiers are derived from the rank,
+# so shrinking the underlying points does not move them — the ordering is
+# preserved almost exactly. Withholding the tier is the only thing that stops a
+# two-game sample from arriving as a confident "smash".
+MIN_GAMES_FOR_TIERS = 4
+
+
 def _get_matchup_tier(rank: int) -> str:
     """Convert numeric rank to tier label."""
     for (low, high), tier in MATCHUP_TIERS.items():
@@ -217,25 +228,48 @@ class DefenseRankingsAnalyzer:
 
         rankings: dict[str, list[dict]] = {}
         for pos in ("QB", "RB", "WR", "TE"):
-            per_team = []
+            raw = []
             for (opp, p), total in totals.items():
                 if p != pos:
                     continue
                 games = max(1, len(weeks_seen.get((opp, pos), {1})))
-                per_team.append((opp, round(total / games, 1)))
-            if not per_team:
+                raw.append((opp, total / games, games))
+            if not raw:
                 continue
+
+            # Shrink each defense toward the league average. Two games of
+            # fantasy points allowed is noise: early in 2026 this put Houston
+            # at #3 elite against RBs (12.4/game) and #31 smash against WRs
+            # (43.0/game) simultaneously. Same pattern the opportunity model
+            # and the playoff variance already use.
+            league_mean = sum(v for _, v, _ in raw) / len(raw)
+            min_games = min(g for _, _, g in raw)
+            per_team = []
+            for team, observed, games in raw:
+                shrunk = (games * observed + SHRINKAGE_GAMES * league_mean) / (
+                    games + SHRINKAGE_GAMES
+                )
+                per_team.append((team, round(shrunk, 1), round(observed, 1), games))
+
             # Fewest points allowed = toughest defense = rank 1 (elite).
             per_team.sort(key=lambda x: x[1])
+            # Tiers come from the rank, so shrinking the points alone would
+            # leave every tier untouched — the ordering barely moves. Below a
+            # usable sample the tier itself has to be withheld, or a two-game
+            # artifact keeps arriving as "smash" with full confidence.
+            provisional = min_games < MIN_GAMES_FOR_TIERS
             ranked = []
-            for rank, (team, ppg) in enumerate(per_team, 1):
-                tier = _get_matchup_tier(rank)
+            for rank, (team, shrunk, observed, games) in enumerate(per_team, 1):
+                tier = "neutral" if provisional else _get_matchup_tier(rank)
                 ranked.append({
                     "team": team,
                     "rank": rank,
-                    "points_allowed_avg": ppg,
+                    "points_allowed_avg": shrunk,
+                    "points_allowed_observed": observed,
+                    "games_sampled": games,
                     "matchup_tier": tier,
                     "tier_indicator": _get_tier_color(tier),
+                    "is_provisional": provisional,
                     "source": "nflverse",
                     "season": season,
                 })

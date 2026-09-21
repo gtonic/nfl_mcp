@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Defense-vs-position rankings were two games of noise presented as a tier.**
+  `_fetch_nflverse_rankings` averaged fantasy points allowed over whatever
+  weeks existed, ranked 1-32 and assigned a tier — with no shrinkage and no
+  blend with the prior season. Early in 2026 that put **Houston at #3 "elite"
+  against RBs (12.4/game) and #31 "smash" against WRs (43.0/game) at the same
+  time**, off two games. Those tiers feed the RB projection multiplier at full
+  weight.
+
+  Two changes, because one alone would not have worked. The reported
+  `points_allowed_avg` is now shrunk toward the league mean with six games of
+  prior weight, so the figure stops being a two-game artifact (Houston vs RB:
+  12.4 observed → 19.0 reported, with `points_allowed_observed` keeping the raw
+  number). But tiers are derived from the **rank**, and shrinkage preserves the
+  ordering almost exactly — so it would have left every tier untouched. Below
+  four games the tier is therefore withheld entirely: everything reports
+  `neutral` with `is_provisional: true` and `games_sampled`.
+
+  Neutral is the harmless value — `matchup_multiplier` returns exactly 1.0 for
+  it across every position, so an unusable sample now has no effect rather than
+  a wrong one. That is also consistent with what the engine's own backtest
+  already concluded: matchup is worth nothing for WRs and little elsewhere.
+
+### Fixed
 - **Omitting `season`/`week` silently halved the projections.** They are
   optional, and omitting them is the common case — an agent rarely knows the
   current NFL week — but it dropped the projection to the positional-rank
