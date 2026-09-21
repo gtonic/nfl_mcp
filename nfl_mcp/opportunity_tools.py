@@ -107,6 +107,64 @@ def build_name_index(logs: dict[str, dict]) -> dict[str, dict]:
     return {norm_name(e["name"]): e for e in logs.values()}
 
 
+# Share of an unavailable starter's recent volume that the next man up actually
+# inherits. An estimate, not a measurement: the rest disperses across the other
+# players at the position and into a different play mix. Flagged in the
+# projection breakdown so the assumption is visible, and deliberately
+# conservative — half of a real workload beats a guess at all of it.
+VACATED_VOLUME_SHARE = 0.5
+
+
+def trailing_volume(
+    name_index: dict[str, dict],
+    name: str,
+    week: int,
+    lookback: int = opportunity.DEFAULT_LOOKBACK,
+) -> dict[str, float] | None:
+    """Recency-weighted trailing volume for a player, or None without data.
+
+    Leak-free in the same way as the projection: only games before `week`.
+    Returns None when the player has no prior games at all, which is the normal
+    case for someone who has been out all season — and the reason this cannot
+    manufacture volume out of an absence.
+    """
+    entry = name_index.get(norm_name(name))
+    if not entry:
+        return None
+    prior = [g for g in entry["games"] if g["week"] < week]
+    if not prior:
+        return None
+    games = sorted(prior, key=lambda g: g.get("week", 0))[-lookback:]
+    weights = list(range(1, len(games) + 1))
+    return {
+        field: opportunity._weighted_mean([g.get(field, 0.0) for g in games], weights)
+        for field in ("targets", "carries", "attempts")
+    }
+
+
+def vacated_volume(
+    name_index: dict[str, dict],
+    out_players: list[str],
+    week: int,
+    share: float = VACATED_VOLUME_SHARE,
+    lookback: int = opportunity.DEFAULT_LOOKBACK,
+) -> dict[str, float]:
+    """Volume freed up by unavailable teammates, scaled by the inherited share.
+
+    Empty when none of them has recent volume — a starter who has been out all
+    season vacates nothing, because the backup's own trailing numbers already
+    describe him as the starter.
+    """
+    total = {"targets": 0.0, "carries": 0.0, "attempts": 0.0}
+    for name in out_players:
+        volume = trailing_volume(name_index, name, week, lookback)
+        if not volume:
+            continue
+        for field, value in volume.items():
+            total[field] += value * share
+    return {k: round(v, 2) for k, v in total.items() if v > 0}
+
+
 def opportunity_base_for(
     name_index: dict[str, dict],
     name: str,
@@ -115,6 +173,7 @@ def opportunity_base_for(
     lookback: int = opportunity.DEFAULT_LOOKBACK,
     min_games: int = 2,
     ppr: float = opportunity.FULL_PPR,
+    extra_volume: dict[str, float] | None = None,
 ) -> float | None:
     """Opportunity projection for a player (by name) usable as a projection base.
 
@@ -127,7 +186,9 @@ def opportunity_base_for(
     prior = [g for g in entry["games"] if g["week"] < week]
     if len(prior) < min_games:
         return None
-    return opportunity.project_opportunity(prior, position, lookback=lookback, ppr=ppr)
+    return opportunity.project_opportunity(
+        prior, position, lookback=lookback, ppr=ppr, extra_volume=extra_volume
+    )
 
 
 def _project_entry(

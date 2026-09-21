@@ -218,10 +218,50 @@ def _injury_mult(status: str | None) -> float:
     return 0.9
 
 
+def _depth_map(values_index: dict) -> dict[tuple[str, str], list[dict]]:
+    """``{(team, position): [entries, best first]}`` from the market values.
+
+    Market rank is the only league-wide depth signal available here — the ESPN
+    depth chart is a separate fetch per team, and an unavailable starter is
+    almost always the higher-valued player anyway.
+    """
+    depth: dict[tuple[str, str], list[dict]] = {}
+    for entry in (values_index or {}).get("list", []) or []:
+        team = normalize_team(entry.get("team")) or (entry.get("team") or "").upper()
+        position = (entry.get("position") or "").upper()
+        if not team or not position:
+            continue
+        depth.setdefault((team, position), []).append(entry)
+    for entries in depth.values():
+        entries.sort(key=lambda e: e.get("position_rank") or 999)
+    return depth
+
+
+def _starters_ahead(
+    depth: dict[tuple[str, str], list[dict]], team: str, position: str,
+    pos_rank: int | None, status_of,
+) -> list[str]:
+    """Names of higher-valued teammates at this position who cannot play."""
+    if pos_rank is None:
+        return []
+    out = []
+    for entry in depth.get((team, position), []):
+        rank = entry.get("position_rank") or 999
+        if rank >= pos_rank:
+            break
+        name = entry.get("name")
+        if name and _injury_mult(status_of(name, team)) == 0.0:
+            out.append(name)
+    return out
+
+
 class ProjectionEngine:
     """Projects fantasy points by combining value, matchup, environment, usage."""
 
     def __init__(self, db=None):
+        # Kept so teammate availability can be looked up: depth pricing needs
+        # the status of players who are not on the roster being projected.
+        self.db = db
         self.values = get_values_service(db)
         self.defense = get_defense_analyzer()
         self.vegas = get_vegas_analyzer()
@@ -229,6 +269,7 @@ class ProjectionEngine:
     def _project_one(
         self, player: dict, values_index: dict, rankings: dict, lines: dict,
         opp_index: dict | None = None, week: int | None = None, ppr: float = 1.0,
+        depth: dict | None = None, status_of=None,
     ) -> dict:
         name = player.get("name") or player.get("player_name")
         position = (player.get("position") or "").upper()
@@ -245,9 +286,21 @@ class ProjectionEngine:
         pos_rank = (market or {}).get("position_rank")
         base = base_ppg(position, pos_rank, ppr)
         base_source = "rank_bucket"
+        # A higher-valued teammate at the same position who cannot play frees up
+        # volume. Only counts when he has *recent* volume to free: a starter who
+        # has been out all season vacates nothing, because the backup's own
+        # trailing numbers already describe him as the starter. That distinction
+        # is what keeps this from inventing points out of an absence.
+        starters_out: list[str] = []
+        vacated: dict[str, float] = {}
+        if depth and status_of and team and opp_index and week:
+            starters_out = _starters_ahead(depth, team, position, pos_rank, status_of)
+            if starters_out:
+                vacated = opportunity_tools.vacated_volume(opp_index, starters_out, week)
         if opp_index and week and name:
             opp_base = opportunity_tools.opportunity_base_for(
-                opp_index, name, position, week, ppr=ppr
+                opp_index, name, position, week, ppr=ppr,
+                extra_volume=vacated or None,
             )
             if opp_base is not None:
                 base = round(opp_base, 1)
@@ -373,12 +426,49 @@ class ProjectionEngine:
                 "usage_mult": round(usage_mult, 3),
                 "weather_mult": round(weather_mult, 3),
                 "injury_mult": round(inj_mult, 3),
+                # Which unavailable teammates were priced in, and the volume
+                # inherited from them. Empty when nobody ahead is out, or when
+                # they have no recent volume to vacate.
+                "starters_out_ahead": starters_out,
+                "vacated_volume": vacated,
             },
             "value_source": (
                 "opportunity" if base_source == "opportunity"
                 else "fantasycalc" if market else "baseline"
             ),
         }
+
+    def _status_lookup(self):
+        """``(name, team) -> injury status`` from the ESPN/CBS report table.
+
+        Returns a function so a missing database degrades to "everyone
+        available" rather than to an exception. Uses the report table rather
+        than Sleeper's player list because a teammate's availability has to be
+        known for players who are not on the roster being projected.
+        """
+        index: dict[tuple[str, str], str] = {}
+        # `getattr`, not `self.db`: the engine is legitimately built via
+        # `__new__` with only the dependencies a caller needs stubbed, and a
+        # missing handle must degrade to "everyone available" rather than raise
+        # from inside a projection.
+        db = getattr(self, "db", None)
+        if db is not None:
+            try:
+                from .opportunity_tools import norm_name
+                for row in db.get_all_current_injuries():
+                    name = norm_name(row.get("player_name"))
+                    team = normalize_team(row.get("team_id")) or ""
+                    status = row.get("injury_status")
+                    if name and status:
+                        index[(name, team)] = status
+            except Exception as e:
+                logger.debug(f"injury lookup unavailable for depth pricing: {e}")
+
+        def _get(name: str, team: str) -> str | None:
+            from .opportunity_tools import norm_name
+            return index.get((norm_name(name), team))
+
+        return _get
 
     async def project_many(
         self, players: list[dict], scoring: str = "ppr", superflex: bool = False,
@@ -408,8 +498,14 @@ class ProjectionEngine:
             except Exception:
                 opp_index = {}
 
+        # Depth + availability, so a backup whose starter is out inherits some
+        # of the vacated volume instead of being priced as a backup.
+        depth = _depth_map(values_index)
+        status_of = self._status_lookup()
+
         projections = [
-            self._project_one(p, values_index, rankings, lines, opp_index, week, ppr)
+            self._project_one(p, values_index, rankings, lines, opp_index, week, ppr,
+                              depth, status_of)
             for p in players
         ]
         return {
@@ -431,6 +527,11 @@ def get_projection_engine(db=None) -> ProjectionEngine:
     global _engine
     if _engine is None:
         _engine = ProjectionEngine(db=db)
+    elif db is not None and getattr(_engine, "db", None) is None:
+        # The singleton is often created by a caller that had no database, and
+        # depth pricing needs one. Adopt the first real handle offered rather
+        # than staying blind for the process lifetime.
+        _engine.db = db
     return _engine
 
 
