@@ -183,6 +183,24 @@ class InjuryAggregator:
         self._team_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TEAMS)
         self._injury_semaphore = asyncio.Semaphore(MAX_CONCURRENT_INJURIES)
 
+    def _require_client(self) -> None:
+        """Fail loudly when used outside ``async with``.
+
+        Without a client every team fetch raises ``'NoneType' object has no
+        attribute 'get'`` from ``self._http_client.get``, which the per-team
+        handler logs at debug level as "ESPN page 1 failed for BUF". That reads
+        like a broken upstream payload — it cost a real debugging session
+        chasing an ESPN feed that was perfectly intact. 32 teams then return
+        zero records and the caller sees an empty, successful-looking result.
+        """
+        if self._http_client is None:
+            raise RuntimeError(
+                "InjuryAggregator has no HTTP client. Use it as a context "
+                "manager (`async with InjuryAggregator(db=db) as agg:`) or pass "
+                "`http_client=`. Without one every fetch fails and returns an "
+                "empty list that looks like 'no injuries'."
+            )
+
     async def __aenter__(self):
         """Async context manager entry."""
         if self._http_client is None:
@@ -288,7 +306,11 @@ class InjuryAggregator:
 
         Returns:
             List of InjuryReport objects
+
+        Raises:
+            RuntimeError: when used outside ``async with`` (no HTTP client).
         """
+        self._require_client()
         teams = teams or self.NFL_TEAMS
 
         try:
