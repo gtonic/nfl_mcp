@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`InjuryAggregator` used outside `async with` failed silently.** Without a
+  context manager `self._http_client` is None, so every team fetch raised
+  `'NoneType' object has no attribute 'get'` — which the per-team handler logged
+  at *debug* level as "ESPN page 1 failed for BUF". That reads like a broken
+  upstream payload, and it cost a real debugging session against an ESPN feed
+  that turned out to be perfectly intact. All 32 teams then returned nothing and
+  the caller got an empty, successful-looking result that was indistinguishable
+  from "no injuries in the league".
+
+  Both public entry points now check first and raise a message naming the two
+  ways to fix it, plus why the old behaviour was dangerous. Passing
+  `http_client=` explicitly remains supported.
+
 ### Added
 - **`get_waiver_targets` reports the league's waiver configuration** as
   `waiver_rules`: priority vs FAAB, daily vs weekly processing, the waiver
