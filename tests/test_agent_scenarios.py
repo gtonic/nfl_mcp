@@ -52,3 +52,18 @@ def test_required_params_detected():
     # sanity: a tool with a required-first-arg is captured
     assert "draft_id" in defs["recommend_draft_pick"]["input_schema"]["required"]
     assert "league_id" in defs["get_playoff_odds"]["input_schema"]["required"]
+
+
+def test_transactions_docstring_warns_about_pending_claims():
+    """An agent must not read an empty transaction list as "no claims pending".
+
+    Sleeper exposes a waiver claim only after processing, so pending claims are
+    invisible here. That inference produced a confident "you have no claims
+    pending" while two were waiting in the league app.
+    """
+    from nfl_mcp import sleeper_transactions, tool_registry
+
+    for fn in (tool_registry.get_transactions, sleeper_transactions.get_transactions):
+        doc = (fn.__doc__ or "")
+        assert "pending" in doc.lower(), f"{fn.__name__} does not mention pending claims"
+        assert "not" in doc.lower()

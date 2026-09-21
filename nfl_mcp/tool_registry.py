@@ -530,7 +530,19 @@ async def get_playoff_bracket(league_id: str, bracket_type: str = "winners") -> 
 
 @timing_decorator("get_transactions", tool_type="sleeper")
 async def get_transactions(league_id: str, week: int | None = None, round: int | None = None) -> dict:
-    """Get league transactions for a specific week (round) with validation (week required)."""
+    """Get COMPLETED league transactions for a week (adds, drops, trades, waivers).
+
+    Does NOT include pending waiver claims. Sleeper exposes a claim only after it
+    has been processed, so a claim sitting in someone's queue appears nowhere in
+    this response. An empty list means "nothing processed yet", not "nobody has
+    claims in" — do not report the absence of claims from this tool. The league
+    app is the only place pending claims are visible.
+
+    Parameters:
+        league_id (str, required): Sleeper league id.
+        week (int, required): NFL week (alias: `round`).
+    Returns: {transactions: [...], week, count, success, error?}
+    """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         # Accept either week or deprecated round
