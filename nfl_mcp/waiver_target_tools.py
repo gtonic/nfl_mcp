@@ -22,6 +22,7 @@ from .database import NFLDatabase
 from .errors import create_success_response
 from .roster_needs import replacement_levels, slot_counts
 from .teams import normalize_team
+from .waiver_rules import waiver_rules
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,8 @@ async def get_waiver_targets(
     scoring_exact = str(_scoring_ppr(league))
     num_teams = int(league.get("total_rosters") or 12)
     slots = slot_counts(league.get("roster_positions"))
-    settings = league.get("settings") or {}
-    is_faab = settings.get("waiver_type") == 2 and (settings.get("waiver_budget") or 0) > 0
+    rules = waiver_rules(league)
+    is_faab = rules["waiver_type"] == "faab"
 
     rosters_resp = await sleeper_tools.get_rosters(league_id)
     rosters = (rosters_resp or {}).get("rosters") or []
@@ -257,7 +258,10 @@ async def get_waiver_targets(
         "season": season,
         "week": week,
         "roster_id": roster_id,
-        "waiver_type": "faab" if is_faab else "priority",
+        "waiver_type": rules["waiver_type"],
+        # Whether you can add a player now or have to wait for the waiver run.
+        # Inferring this from the raw settings is how it got got wrong before.
+        "waiver_rules": rules,
         "pool_size": len(pool_scored),
         "data_freshness": freshness,
         "stale_data_warnings": _staleness_warnings(freshness),
