@@ -92,7 +92,16 @@ class TestScoringReachesTheProjection:
                    for c in engine.calls)
 
     @pytest.mark.asyncio
-    async def test_full_ppr_remains_the_default(self):
+    async def test_full_ppr_remains_the_default(self, monkeypatch):
+        """Scoring still defaults to full PPR; season/week are now inferred.
+
+        They used to stay None, which silently dropped the projection to the
+        positional-rank baseline — see tests/test_season_week_inference.py.
+        """
+        async def _state():
+            return (2026, 4)
+        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _state)
+
         engine = _RecordingEngine()
         with patch("nfl_mcp.projections.get_projection_engine", return_value=engine), \
              patch.object(lo, "get_lineup_optimizer",
@@ -100,7 +109,7 @@ class TestScoringReachesTheProjection:
             await lo.get_start_sit_recommendation(
                 player_name="Some WR", position="WR", team="MIA", opponent="NE")
 
-        assert engine.calls == [{"scoring": "ppr", "season": None, "week": None}]
+        assert engine.calls == [{"scoring": "ppr", "season": 2026, "week": 4}]
 
 
 class TestGoodGameThresholds:
