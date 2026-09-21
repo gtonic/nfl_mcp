@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A weak FLEX slot matched any bench player, including ineligible ones.**
+  `analyze_full_lineup` treated `weak["position"] == "FLEX"` as "anything
+  qualifies", so a quarterback, a kicker or a defense could be suggested for a
+  flex spot — none of which can legally fill one. `slot_accepts` now mirrors the
+  eligibility rules `win_probability` has always enforced, and an unknown slot
+  falls back to an exact position match rather than to "anything goes".
+
+- **Players without a position were silently treated as receivers.** Both the
+  starter loop (`player.get("position", position)` with a `"WR"` fallback for
+  ineligible flex entries) and the bench loop (`player.get("position", "WR")`)
+  guessed. A kicker in a flex slot was analysed against WR baselines. A bench
+  entry with no position is now skipped with a warning, and a starter whose
+  position cannot legally fill its slot is analysed as given and logged rather
+  than quietly reassigned.
+
+### Changed
+- **The README start/sit example now shows what the code decides on.** It read
+  *"18.7 projected … ✅ high snap share, smash matchup. Start Nacua with
+  confidence"*, which suggested points drove the call while the code ranked on
+  confidence. Points do drive it now, so the example states the comparison and
+  the margin instead of the vibes.
+
+### Fixed
 - **Defense-vs-position rankings were two games of noise presented as a tier.**
   `_fetch_nflverse_rankings` averaged fantasy points allowed over whatever
   weeks existed, ranked 1-32 and assigned a tier — with no shrinkage and no

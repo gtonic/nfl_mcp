@@ -26,7 +26,7 @@ assistant** and answers the question you actually asked.
 
 > **You:** *"Start Puka Nacua or DeVonta Smith this week?"*
 >
-> **🏈 NFL MCP:** *Nacua — 18.7 projected (floor 11.6 / ceiling 25.8), ✅ high snap share, smash matchup. Start Nacua with confidence.*
+> **🏈 NFL MCP:** *Nacua — 18.7 projected vs Smith's 11.2, a 7.5-point edge (floor 4.9 / ceiling 32.5). Clear choice.*
 
 > **You:** *"Is trading my Bijan for their CeeDee + a WR2 fair?"*
 >
@@ -42,7 +42,7 @@ assistant** and answers the question you actually asked.
 - **Rehearse first** — run 100 mock drafts from your slot before you're on the clock.
 
 **📊 Every week**
-- **Start/sit with automatic projections** — no manual point entry. `value × matchup × Vegas game-script × usage × injury`, with floor/ceiling and a transparent breakdown.
+- **Start/sit with automatic projections** — no manual point entry. `value × matchup × Vegas game-script × usage × injury`, with floor/ceiling and a transparent breakdown. **Decided on projected points**, with a verdict scaled to the model's own error, so a half-point difference is reported as a coin flip rather than an edge.
 - **A real matchup edge** — which defense a player actually feasts on, from real weekly results (not a stale rankings page).
 - **Streaming planner** — the best DST / K / QB / TE to stream over the next 1-3 weeks (soft defense, weak opposing offense, strong own offense).
 - **Weather / wind** — fade passing and kickers in the ugly-weather games (wind ≥ 15 mph), dome games flagged neutral.

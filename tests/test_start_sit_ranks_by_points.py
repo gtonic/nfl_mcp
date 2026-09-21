@@ -180,3 +180,72 @@ class TestSwapThreshold:
     def test_good_game_thresholds_are_used_for_weak_spots(self):
         adequate, good = _good_game_thresholds("WR", 1.0)
         assert adequate == 10 and good == 16
+
+
+class TestSlotEligibility:
+    def test_flex_takes_only_flex_eligible_positions(self):
+        from nfl_mcp.lineup_optimizer_tools import slot_accepts
+
+        for position in ("RB", "WR", "TE"):
+            assert slot_accepts("FLEX", position)
+        # The bug: a weak FLEX matched any bench player, so a kicker or a
+        # defense was offered for a flex spot.
+        for position in ("QB", "K", "DST", "DEF"):
+            assert not slot_accepts("FLEX", position)
+
+    def test_superflex_also_takes_a_quarterback(self):
+        from nfl_mcp.lineup_optimizer_tools import slot_accepts
+
+        assert slot_accepts("SUPERFLEX", "QB")
+        assert not slot_accepts("SUPERFLEX", "K")
+
+    def test_defense_slot_accepts_either_spelling(self):
+        from nfl_mcp.lineup_optimizer_tools import slot_accepts
+
+        assert slot_accepts("DST", "DEF") and slot_accepts("DEF", "DST")
+
+    def test_an_unknown_slot_requires_an_exact_match(self):
+        """Falls back to strict, not to "anything goes"."""
+        from nfl_mcp.lineup_optimizer_tools import slot_accepts
+
+        assert slot_accepts("QB", "QB")
+        assert not slot_accepts("QB", "RB")
+        assert not slot_accepts("SOMETHING_NEW", "RB")
+
+    @pytest.mark.asyncio
+    async def test_a_kicker_is_never_suggested_for_a_flex(self, monkeypatch):
+        monkeypatch.setattr(lo, "get_lineup_optimizer",
+                            lambda: lo.LineupOptimizer(db=None, auto_project=False,
+                                                       defense_analyzer=_analyzer()))
+
+        async def _state():
+            return (2026, 4)
+        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _state)
+
+        lineup = {
+            "FLEX": [{"name": "WeakFlex", "team": "KC", "opponent": "OPP",
+                      "position": "WR", "projection": {"projected_points": 2.0}}],
+            "BENCH": [{"name": "BigKicker", "team": "KC", "opponent": "OPP",
+                       "position": "K", "projection": {"projected_points": 14.0}}],
+        }
+        out = await lo.analyze_full_lineup(lineup)
+        assert all(c["bench_in"] != "BigKicker" for c in out["suggested_changes"])
+
+    @pytest.mark.asyncio
+    async def test_a_bench_player_without_a_position_is_skipped_not_guessed(self, monkeypatch):
+        monkeypatch.setattr(lo, "get_lineup_optimizer",
+                            lambda: lo.LineupOptimizer(db=None, auto_project=False,
+                                                       defense_analyzer=_analyzer()))
+
+        async def _state():
+            return (2026, 4)
+        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _state)
+
+        lineup = {
+            "WR": [{"name": "Starter", "team": "KC", "opponent": "OPP", "position": "WR",
+                    "projection": {"projected_points": 3.0}}],
+            "BENCH": [{"name": "Mystery", "team": "KC", "opponent": "OPP",
+                       "projection": {"projected_points": 20.0}}],
+        }
+        out = await lo.analyze_full_lineup(lineup)
+        assert all(b["player_name"] != "Mystery" for b in out["bench"])
