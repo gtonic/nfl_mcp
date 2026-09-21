@@ -104,6 +104,15 @@ STATUS_SEVERITY = {
     "PUP": InjurySeverity.SEVERE,
     "NFI": InjurySeverity.SEVERE,
     "Suspended": InjurySeverity.SEVERE,
+    # Sleeper's short codes, which the player feed actually sends. Verified
+    # against the live cache: `NA` (96 players, almost all unrostered),
+    # `Sus` (10, body part literally "Suspension"), `DNR` (2, one of them an
+    # ACL case), `COV` (2). All four previously fell through to the MODERATE
+    # default and projected at full points.
+    "Sus": InjurySeverity.SEVERE,
+    "NA": InjurySeverity.SEVERE,
+    "DNR": InjurySeverity.SEVERE,
+    "COV": InjurySeverity.SEVERE,
 }
 
 
