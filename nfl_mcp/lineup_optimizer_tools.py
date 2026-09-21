@@ -48,6 +48,32 @@ def _good_game_thresholds(position: str, ppr: float = 1.0) -> tuple[float, float
     return low * scale, high * scale
 
 
+# Which positions may legally fill a slot. Mirrors `win_probability._eligible`,
+# which the win-probability optimizer already enforces.
+SLOT_ELIGIBILITY = {
+    "FLEX": frozenset({"RB", "WR", "TE"}),
+    "WRT": frozenset({"RB", "WR", "TE"}),
+    "SUPERFLEX": frozenset({"QB", "RB", "WR", "TE"}),
+    "SUPER_FLEX": frozenset({"QB", "RB", "WR", "TE"}),
+    "DST": frozenset({"DST", "DEF"}),
+    "DEF": frozenset({"DST", "DEF"}),
+}
+
+
+def slot_accepts(slot: str, position: str) -> bool:
+    """True when `position` may be started in `slot`.
+
+    The swap suggester used to treat a weak FLEX as matching *any* bench player,
+    so it would offer a quarterback, a kicker or a defense for a flex spot —
+    none of which can legally fill one. An unknown slot falls back to an exact
+    position match rather than to "anything goes".
+    """
+    slot = (slot or "").upper()
+    position = (position or "").upper()
+    allowed = SLOT_ELIGIBILITY.get(slot)
+    return position in allowed if allowed else slot == position
+
+
 class StartSitDecision(Enum):
     """Enum for start/sit recommendation types."""
     MUST_START = "must_start"
@@ -1106,10 +1132,19 @@ async def analyze_full_lineup(
 
         position_analyses = []
         for player in players:
-            # Determine actual position (FLEX might have RB/WR/TE)
-            actual_position = player.get("position", position)
-            if position == "FLEX" and actual_position not in ["RB", "WR", "TE"]:
-                actual_position = "WR"  # Default assumption
+            # The slot says where he plays; his own `position` says what he is,
+            # and that is what the projection needs. A flex entry carrying an
+            # ineligible position used to be silently rewritten to WR, which
+            # projected a kicker off receiver baselines — now it is reported.
+            actual_position = (player.get("position") or "").upper()
+            if not actual_position:
+                actual_position = position.upper()
+            if not slot_accepts(position, actual_position):
+                logger.warning(
+                    f"{player.get('name', '?')!r} is a {actual_position} in a "
+                    f"{position} slot, which cannot legally hold one — analysed "
+                    "as given rather than reassigned"
+                )
 
             analysis = await optimizer.analyze_player(
                 player_name=player.get("name", "Unknown"),
@@ -1148,7 +1183,16 @@ async def analyze_full_lineup(
     # Analyze bench
     if lineup.get(bench_key):
         for player in lineup[bench_key]:
-            actual_position = player.get("position", "WR")
+            # No silent default: a bench entry without a position used to be
+            # treated as a WR, which made a kicker or a defense eligible for a
+            # flex spot and projected it off WR baselines.
+            actual_position = (player.get("position") or "").upper()
+            if not actual_position:
+                logger.warning(
+                    f"bench player {player.get('name', '?')!r} has no position; "
+                    "skipped rather than guessed at"
+                )
+                continue
 
             analysis = await optimizer.analyze_player(
                 player_name=player.get("name", "Unknown"),
@@ -1170,7 +1214,8 @@ async def analyze_full_lineup(
             # still project fewer points, and swapping on that basis lowers the
             # lineup total. The margin is wide enough to sit outside noise.
             for weak in weak_spots:
-                if analysis.position == weak.get("slot_position", weak["position"]) or weak["position"] == "FLEX":
+                slot = weak.get("slot_position", weak["position"])
+                if slot_accepts(slot, analysis.position):
                     gain = analysis.projected_points - weak.get("projected_points", 0.0)
                     if gain >= MEANINGFUL_SWAP_GAIN:
                         suggested_changes.append({
