@@ -91,6 +91,10 @@ class PlayerAnalysis:
     projected_points: float = 0.0
     floor: float = 0.0
     ceiling: float = 0.0
+    # Which baseline produced it. `rank_bucket` means a static per-position
+    # placeholder, not a read on this player — worth surfacing rather than
+    # letting a generic number pass for a projection.
+    base_source: str | None = None
 
     # Analysis results
     decision: str = "start"
@@ -117,6 +121,7 @@ class PlayerAnalysis:
             "projected_points": self.projected_points,
             "floor": self.floor,
             "ceiling": self.ceiling,
+            "base_source": self.base_source,
             "decision": self.decision,
             "confidence": self.confidence,
             "confidence_level": self.confidence_level,
@@ -180,6 +185,33 @@ USAGE_TREND_SCORES = {
     "stable": 60,
     "downward": 35,
 }
+
+
+async def _resolve_season_week(
+    season: int | None, week: int | None
+) -> tuple[int | None, int | None, bool]:
+    """Fill in season/week from NFL state when the caller omitted them.
+
+    Omitting them is the common case — an agent rarely knows the current week —
+    and it silently downgraded every projection to the positional-rank baseline:
+    six static values per position, so a workhorse RB came out at 16.8 instead
+    of 31.1 for the same week. All differentiation then came from the matchup
+    tier, which the engine's own backtest rates at zero for WRs.
+
+    Returns ``(season, week, inferred)`` so callers can report which values were
+    used rather than leaving it to be guessed from the numbers.
+    """
+    if season is not None and week is not None:
+        return season, week, False
+    try:
+        from .nfl_tools import get_current_season_and_week
+        got_season, got_week = await get_current_season_and_week()
+    except Exception as e:
+        logger.debug(f"season/week inference failed: {e}")
+        return season, week, False
+    resolved_season = season if season is not None else got_season
+    resolved_week = week if week is not None else got_week
+    return resolved_season, resolved_week, True
 
 
 class LineupOptimizer:
@@ -469,6 +501,7 @@ class LineupOptimizer:
                     analysis.projected_points = pp["projected_points"]
                     analysis.floor = pp["floor"]
                     analysis.ceiling = pp["ceiling"]
+                    analysis.base_source = (pp.get("breakdown") or {}).get("base_source")
             except Exception as e:
                 logger.debug(f"Auto-projection failed for {player_name}: {e}")
 
@@ -635,6 +668,7 @@ async def get_start_sit_recommendation(
         )
     """
     optimizer = get_lineup_optimizer()
+    season, week, week_inferred = await _resolve_season_week(season, week)
 
     # Build optional data dicts
     usage_data = {}
@@ -692,6 +726,7 @@ async def get_start_sit_recommendation(
             "projected_points": analysis.projected_points,
             "floor": analysis.floor,
             "ceiling": analysis.ceiling,
+            "base_source": analysis.base_source,
         },
         "confidence": analysis.confidence,
         "confidence_level": analysis.confidence_level,
@@ -699,6 +734,9 @@ async def get_start_sit_recommendation(
         "matchup_rank": analysis.matchup_rank,
         "reasoning": analysis.reasoning,
         "scoring": scoring,
+        "season": season,
+        "week": week,
+        "week_inferred": week_inferred,
         "factors": {
             "matchup": f"#{analysis.matchup_rank} ({analysis.matchup_tier})",
             "usage": f"Snaps: {analysis.snap_percentage}%, Targets: {analysis.target_share}%",
@@ -768,6 +806,7 @@ async def get_roster_recommendations(
     optimizer = get_lineup_optimizer()
 
     # Analyze roster
+    season, week, week_inferred = await _resolve_season_week(season, week)
     analyses_by_position = await optimizer.analyze_roster(
         players, week=week, season=season, scoring=scoring
     )
@@ -818,6 +857,8 @@ async def get_roster_recommendations(
         "summary": summary_lines,
         "total_analyzed": len(all_recommendations),
         "week": week,
+        "season": season,
+        "week_inferred": week_inferred,
         "scoring": scoring,
         "message": f"Analyzed {len(all_recommendations)} players"
     })
@@ -879,6 +920,7 @@ async def compare_players_for_slot(
         players = players[:5]  # Limit to 5 players
 
     optimizer = get_lineup_optimizer()
+    season, week, week_inferred = await _resolve_season_week(season, week)
 
     # Analyze all players
     analyses = []
@@ -967,6 +1009,9 @@ async def compare_players_for_slot(
         },
         "comparison": comparison_list,
         "points_gap": points_gap,
+        "season": season,
+        "week": week,
+        "week_inferred": week_inferred,
         "confidence_gap": round(confidence_gap, 1),
         "verdict": verdict,
         "total_compared": len(analyses),
@@ -1038,6 +1083,7 @@ async def analyze_full_lineup(
         )
 
     optimizer = get_lineup_optimizer()
+    season, week, week_inferred = await _resolve_season_week(season, week)
 
     starter_positions = ["QB", "RB", "WR", "TE", "FLEX", "K", "DST"]
     bench_key = "BENCH"
@@ -1178,6 +1224,8 @@ async def analyze_full_lineup(
         "total_projected": round(total_projected, 1),
         "total_starters": len(all_starter_analyses),
         "week": week,
+        "season": season,
+        "week_inferred": week_inferred,
         "scoring": scoring,
         "message": (f"Lineup Grade: {grade} | {efficiency:.0f}% of available points started "
                     f"| {len(suggested_changes)} change(s) suggested")

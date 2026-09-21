@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Omitting `season`/`week` silently halved the projections.** They are
+  optional, and omitting them is the common case — an agent rarely knows the
+  current NFL week — but it dropped the projection to the positional-rank
+  baseline: six static values per position, so every WR13-24 got the same 12.0.
+  Measured on one player for one week: **16.8 points instead of 31.1**. All
+  differentiation then came from the matchup tier, which the engine's own
+  backtest rates at zero for WRs.
+
+  All four lineup tools now fill them in from `get_current_season_and_week()`
+  (which already existed) when either is missing, and report `season`, `week`
+  and `week_inferred` so the values used are visible rather than inferred from
+  the numbers. A caller-supplied value always wins; a failing state lookup
+  degrades to the old behaviour instead of raising.
+
+  The projection's `base_source` is surfaced too: `rank_bucket` means a static
+  per-position placeholder rather than a read on that player, which is worth
+  seeing on a number presented as a projection.
+
+### Fixed
 - **Sleeper's short injury codes were unrecognised, so suspended players
   projected at full points.** `_injury_mult` and `INJURY_STATUS_SCORES` knew
   `out`/`ir`/`pup`/`suspended`; the player feed actually sends `Sus`, `NA`,
