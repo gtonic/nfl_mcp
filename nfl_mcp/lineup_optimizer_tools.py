@@ -146,12 +146,21 @@ MATCHUP_TIER_SCORES = {
 INJURY_STATUS_SCORES = {
     "healthy": 100,
     "active": 95,
+    "probable": 95,
     "questionable": 60,
     "doubtful": 25,
     "out": 0,
     "ir": 0,
+    "injured reserve": 0,
     "suspended": 0,
     "pup": 0,
+    "nfi": 0,
+    # Sleeper's short codes — what the player feed actually sends. Without
+    # these a suspended player scored 100 on health and was never auto-benched.
+    "sus": 0,
+    "na": 0,
+    "dnr": 0,
+    "cov": 0,
 }
 
 # Practice status scores

@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Sleeper's short injury codes were unrecognised, so suspended players
+  projected at full points.** `_injury_mult` and `INJURY_STATUS_SCORES` knew
+  `out`/`ir`/`pup`/`suspended`; the player feed actually sends `Sus`, `NA`,
+  `DNR` and `COV`. Audited against the live cache: **110 players** carried one
+  of those four, every one with multiplier 1.0 and health score 100 — a
+  suspended receiver was a startable recommendation, never auto-benched.
+
+  Their meaning was confirmed from the data rather than assumed: `Sus` (10
+  players) has `injury_body_part` literally "Suspension"; `NA` (96) is almost
+  entirely unrostered players with `active: false`; `DNR` (2) includes an ACL
+  case; `COV` (2) is the COVID list. All four mean the player will not take the
+  field, so all four now map to unavailable across the projection multiplier,
+  the health score and the severity table.
+
+  The deeper fix is the default: an unrecognised *non-empty* status is now
+  treated as questionable (0.9) and logged, rather than as healthy. Sleeper only
+  populates `injury_status` when something is wrong, so "a designation exists
+  that we do not know" is evidence against the player. Defaulting to 1.0 is what
+  hid these four for as long as it did; the next new code will degrade safely
+  and show up in the logs.
+
+### Fixed
 - **Start/sit ranked players by how much we knew about them, not by expected
   points.** `compare_players_for_slot`, `get_roster_recommendations` and
   `analyze_full_lineup` sorted on `confidence` — a *data-quality* score built

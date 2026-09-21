@@ -178,15 +178,44 @@ def _usage_mult(snap_pct: float | None, usage_trend: str | None) -> float:
     return mult
 
 
+# Statuses that mean the player will not take the field. Sleeper's short codes
+# are in here alongside the long forms, because the short ones are what the
+# player feed actually sends: `Sus` (suspension), `NA` (not active — almost
+# always an unrostered player), `DNR` (did not report), `COV` (COVID list).
+# Verified against the live cache: 110 players carried one of those four and
+# every one of them was projected at full points and never auto-benched.
+UNAVAILABLE_STATUSES = frozenset({
+    "out", "ir", "injured reserve", "suspended", "sus", "pup", "nfi",
+    "na", "dnr", "cov", "doubtful_out",
+})
+DOUBTFUL_STATUSES = frozenset({"doubtful"})
+QUESTIONABLE_STATUSES = frozenset({"questionable", "q", "dnp", "lp"})
+
+
 def _injury_mult(status: str | None) -> float:
-    s = (status or "").lower()
-    if s in ("out", "ir", "suspended", "pup", "injured reserve"):
+    """Availability multiplier for a status string.
+
+    An unrecognised *non-empty* status is treated as questionable rather than
+    healthy. Sleeper only populates `injury_status` when something is wrong, so
+    "a designation exists that we do not know" is evidence against the player,
+    not evidence for him — and defaulting to 1.0 is what let `Sus` and `NA`
+    project at full points. New upstream codes now degrade safely and noisily
+    instead of silently.
+    """
+    s = (status or "").strip().lower()
+    if not s or s in ("active", "healthy", "probable", "fp"):
+        return 1.0
+    if s in UNAVAILABLE_STATUSES:
         return 0.0
-    if s == "doubtful":
+    if s in DOUBTFUL_STATUSES:
         return 0.35
-    if s == "questionable":
+    if s in QUESTIONABLE_STATUSES:
         return 0.9
-    return 1.0
+    logger.warning(
+        f"unrecognised injury status {status!r} — treating as questionable (0.9). "
+        "Add it to the status tables in projections.py / injury_service.py."
+    )
+    return 0.9
 
 
 class ProjectionEngine:
