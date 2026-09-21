@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`get_transactions` now says that pending waiver claims are invisible to it.**
+  Sleeper exposes a claim only once it has been *processed*; a claim sitting in a
+  manager's queue appears in no API response. The docstring did not mention it,
+  and the natural reading of an empty list — "nobody has claims in" — produced a
+  confident "you have no claims pending" while two were waiting in the league
+  app. There is no public endpoint for pending claims, so this is documentation
+  rather than a code fix, with a test asserting the warning stays put.
+
+### Fixed
 - **`InjuryAggregator` used outside `async with` failed silently.** Without a
   context manager `self._http_client` is None, so every team fetch raised
   `'NoneType' object has no attribute 'get'` — which the per-team handler logged

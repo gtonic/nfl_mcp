@@ -28,7 +28,16 @@ logger = logging.getLogger(__name__)
 
 
 async def get_transactions(league_id: str, round: int | None = None, week: int | None = None) -> dict:
-    """Get transactions for a specific (or inferred) week of a Sleeper league with robustness.
+    """Get COMPLETED transactions for a week of a Sleeper league.
+
+    IMPORTANT — pending waiver claims are not here. Sleeper exposes a claim only
+    once it has been processed; a claim sitting in a manager's queue appears in
+    no API response. An empty list therefore means "nothing has been processed",
+    NOT "nobody has claims in". Reading it as the latter produced a confident
+    "you have no claims pending" while two were waiting in the league app.
+
+    There is no public endpoint for pending claims. The league app is the only
+    place to see them.
 
     Robustness features:
     - Week auto-inference (existing behavior)
