@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 
+from .briefing_tools import _staleness_warnings
 from .database import NFLDatabase
 from .errors import create_success_response
 from .roster_needs import lineup_slots, replacement_levels, slot_counts, starting_lineup_total
@@ -113,6 +114,8 @@ async def find_trade_targets(
             "error": f"No roster found in league {league_id} for the given identifier.",
         })
     roster_id = mine["roster_id"]
+
+    freshness = db.get_data_freshness()
 
     opponents: dict[str, str] = {}
     for team, opp in db.get_week_opponents(season, week).items():
@@ -258,6 +261,8 @@ async def find_trade_targets(
         "season": season,
         "week": week,
         "roster_id": roster_id,
+        "data_freshness": freshness,
+        "stale_data_warnings": _staleness_warnings(freshness),
         "your_replacement_levels": {k: round(v, 1) for k, v in levels.items()},
         "proposals": top,
         "candidates_considered": len(proposals),

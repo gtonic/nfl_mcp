@@ -130,6 +130,34 @@ def resolve_injury(
     }
 
 
+# Beyond this the injury picture can have moved without us knowing. Kept tight
+# because the number that matters is gameday: designations flip in the last
+# hours before kickoff, and the prefetch runs on a 15-minute cycle when it runs
+# at all.
+STALE_INJURY_HOURS = 6.0
+STALE_ATHLETES_HOURS = 36.0
+
+
+def _staleness_warnings(freshness: dict[str, dict]) -> list[str]:
+    """Plain-language warnings for feeds too old to base a lineup on."""
+    warnings = []
+    checks = (("injuries", STALE_INJURY_HOURS, "injury report"),
+              ("athletes", STALE_ATHLETES_HOURS, "roster/player data"))
+    for key, limit, label in checks:
+        age = (freshness.get(key) or {}).get("age_hours")
+        if age is None:
+            warnings.append(
+                f"No {label} cached at all — injury status is unknown, not clear."
+            )
+        elif age > limit:
+            warnings.append(
+                f"The {label} is {age:.0f}h old (limit {limit:.0f}h) — a status "
+                "may have changed since. Refresh the prefetch before trusting a "
+                "start/sit call."
+            )
+    return warnings
+
+
 def _build_player(
     player_id: str,
     athletes: dict,
@@ -288,6 +316,7 @@ async def get_weekly_briefing(
     # Sleeper's player list is not the only injury source, and around kickoff it
     # is routinely the slower one. `player_injuries` holds the ESPN/CBS reports.
     injury_index = build_injury_index(db.get_all_current_injuries())
+    freshness = db.get_data_freshness()
 
     # 5) Project mine and the opponent's projected starters.
     #    Reserve (IR) and taxi players cannot legally be started, so they must
@@ -444,6 +473,11 @@ async def get_weekly_briefing(
 
     return create_success_response({
         "vegas_active": vegas_active,
+        # How old the feeds behind this advice are. A lineup call made against a
+        # day-old injury report looks identical to one made against a fresh one
+        # unless the age is stated.
+        "data_freshness": freshness,
+        "stale_data_warnings": _staleness_warnings(freshness),
         "points_so_far": points_so_far,
         "opponent_points_so_far": opponent_points_so_far,
         "win_probability_basis": (

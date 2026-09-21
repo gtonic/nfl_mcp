@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 
+from .briefing_tools import _staleness_warnings
 from .database import NFLDatabase
 from .errors import create_success_response
 from .roster_needs import replacement_levels, slot_counts
@@ -118,6 +119,8 @@ async def get_waiver_targets(
     for roster in rosters:
         for key in ("players", "reserve", "taxi"):
             taken.update(str(p) for p in (roster.get(key) or []))
+
+    freshness = db.get_data_freshness()
 
     opponents: dict[str, str] = {}
     for team, opp in db.get_week_opponents(season, week).items():
@@ -256,6 +259,8 @@ async def get_waiver_targets(
         "roster_id": roster_id,
         "waiver_type": "faab" if is_faab else "priority",
         "pool_size": len(pool_scored),
+        "data_freshness": freshness,
+        "stale_data_warnings": _staleness_warnings(freshness),
         "positions_considered": sorted(wanted),
         "vegas_active": vegas_active,
         "warnings": ([] if vegas_active else [

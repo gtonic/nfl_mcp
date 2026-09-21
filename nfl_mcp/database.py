@@ -2499,6 +2499,45 @@ class NFLDatabase:
             cursor = conn.execute("SELECT COUNT(*) FROM athletes")
             return cursor.fetchone()[0]
 
+    def get_data_freshness(self) -> dict[str, dict]:
+        """How old each cached feed is, in hours.
+
+        Advice built on a stale feed looks exactly like advice built on a fresh
+        one. Everything else here labels a guess (`is_fallback`, `stale`,
+        placeholder warnings) — injury and roster data did not, so a lineup
+        recommendation could be made against a day-old injury report with
+        nothing in the output to say so.
+
+        Returns ``{feed: {updated_at, age_hours}}``; a feed with no rows at all
+        reports ``age_hours: None`` rather than 0, because "never fetched" and
+        "just fetched" must not look alike.
+        """
+        feeds = {
+            "injuries": ("player_injuries", "updated_at"),
+            "athletes": ("athletes", "updated_at"),
+            "practice_status": ("player_practice_status", "updated_at"),
+        }
+        now = datetime.now(UTC)
+        out: dict[str, dict] = {}
+        for label, (table, column) in feeds.items():
+            try:
+                with self._pool.get_connection() as conn:
+                    newest = conn.execute(f"SELECT MAX({column}) FROM {table}").fetchone()[0]
+            except Exception as e:
+                logger.debug(f"freshness check failed for {table}: {e}")
+                newest = None
+            age = None
+            if newest:
+                try:
+                    ts = datetime.fromisoformat(str(newest).replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=UTC)
+                    age = round((now - ts).total_seconds() / 3600.0, 1)
+                except (TypeError, ValueError):
+                    age = None
+            out[label] = {"updated_at": newest, "age_hours": age}
+        return out
+
     def get_last_updated(self) -> str | None:
         """
         Get the timestamp of the most recent update.
