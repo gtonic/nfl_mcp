@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Every roster tool now reports how old its data is.** `get_weekly_briefing`,
+  `get_waiver_targets` and `find_trade_targets` return `data_freshness` (age in
+  hours per feed: injuries, athletes, practice status) plus
+  `stale_data_warnings` in plain language.
+
+  This is the one place the codebase was not honest about a guess. Vegas lines
+  carry `is_fallback`, defense rankings carry `stale`, the scheme table carries
+  `as_of` — but a start/sit recommendation built on a day-old injury report
+  looked exactly like one built on a fresh one. Found the hard way: gameday
+  advice was given against a **32-hour-old** injury feed, noticed only by
+  querying `MAX(updated_at)` by hand.
+
+  The thresholds are deliberately tight for injuries (6h) and loose for the
+  athlete cache (36h), because designations flip in the last hours before
+  kickoff while roster membership does not. A feed with no rows reports
+  `age_hours: None` rather than 0 — "never fetched" and "just fetched" must not
+  look alike.
+
 ### Fixed
 - **The weekly briefing read only one of the two injury feeds.**
   `_injury_status` took Sleeper's player list; the multi-source ESPN/CBS reports
