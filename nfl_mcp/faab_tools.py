@@ -22,6 +22,7 @@ import logging
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .player_values import get_values_service
+from .roster_needs import lineup_gain, lineup_slots
 from .sleeper_tools import (
     active_enriched,
     get_league,
@@ -33,12 +34,15 @@ from .trade_analyzer_tools import league_format_from_settings
 
 logger = logging.getLogger(__name__)
 
-# Starter slots per position (used to find your replacement-level player).
-_STARTER_SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1, "DST": 1}
 # Regular-season fantasy weeks (playoffs typically start week 15).
 _FANTASY_REGULAR_WEEKS = 14
 # Never recommend blowing more than this share of budget on a single player.
 _MAX_BID_PCT = 75.0
+
+
+def _slot_takes(slot: str, position: str) -> bool:
+    from .win_probability import _eligible
+    return _eligible(slot, position)
 
 
 def _tier(pct: float) -> str:
@@ -116,21 +120,26 @@ async def recommend_faab_bid(
                 my_roster = r
                 break
         if my_roster is not None:
-            my_pos_vals = []
+            # The league's own slots, FLEX included, scored as the change in the
+            # best starting lineup at market value. A fixed table (RB2/WR2/TE1,
+            # no FLEX, always a K) called a TE who would start over the TE1
+            # "depth" while get_waiver_targets ranked him the top claim.
+            slots = lineup_slots(league.get("roster_positions"))
+            mine = []
             # Exclude IR/taxi: a stashed RB1 counted as a live starter, which
-            # inflated `replacement_value` and produced "you're already strong
-            # at RB" for exactly the roster that needs the replacement.
+            # inflated the bar and produced "you're already strong at RB" for
+            # exactly the roster that needs the replacement.
             for p in active_enriched(my_roster):
-                if (p.get("position") or "").upper() == position:
-                    v = service.lookup(values, player_id=p.get("player_id"), name=p.get("full_name"))
-                    if v and v.get("value") is not None:
-                        my_pos_vals.append(float(v["value"]))
-            my_pos_vals.sort(reverse=True)
-            slots = _STARTER_SLOTS.get(position, 2)
-            if len(my_pos_vals) >= slots:
-                replacement_value = my_pos_vals[slots - 1]  # your last starter at the position
-            upgrade = max(0.0, target_value - replacement_value)
-            if upgrade <= 0:
+                v = service.lookup(values, player_id=p.get("player_id"), name=p.get("full_name"))
+                if v and v.get("value") is not None:
+                    mine.append({"position": (p.get("position") or "").upper(),
+                                 "projected_points": float(v["value"])})
+            upgrade = max(0.0, lineup_gain(mine, slots, {"position": position,
+                                                          "projected_points": target_value}))
+            replacement_value = target_value - upgrade
+            if not any(_slot_takes(slot, position) for slot in slots):
+                warnings.append(f"League {league_id} starts no {position} — he cannot enter your lineup")
+            elif upgrade <= 0:
                 warnings.append(f"You're already strong at {position} — this is depth, not an upgrade")
         else:
             warnings.append(f"Roster {my_roster_id} not found; bidding on absolute value only")
@@ -195,7 +204,8 @@ async def recommend_faab_bid(
 
     reasoning = [
         f"Market value {int(target_value)} ({position} #{target.get('position_rank')})",
-        (f"Marginal upgrade for you: +{int(upgrade)} over your replacement ({int(replacement_value)})"
+        (f"Marginal upgrade for you: +{int(upgrade)} to your best starting lineup "
+         f"(he displaces {int(replacement_value)} of value)"
          if my_roster_id is not None else "No roster context — absolute value used"),
         f"League demand: {demand_label}",
     ]
@@ -222,6 +232,9 @@ async def recommend_faab_bid(
             },
         },
         "is_faab_league": is_faab,
+        # Market value is season-long; get_waiver_targets answers for this week.
+        # A player can be a strong claim for one and depth for the other.
+        "horizon": "rest_of_season",
         "total_budget": total_budget if is_faab else None,
         "remaining_budget": remaining_budget,
         "message": (

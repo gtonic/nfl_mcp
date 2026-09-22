@@ -21,7 +21,13 @@ from .briefing_tools import _staleness_warnings
 from .database import NFLDatabase
 from .errors import create_success_response
 from .injury_match import build_injury_index, injury_for_row, misses_this_week
-from .roster_needs import replacement_levels, slot_counts
+from .roster_needs import (
+    lineup_bars,
+    lineup_gain,
+    lineup_slots,
+    slot_counts,
+    starting_lineup_total,
+)
 from .teams import normalize_team
 from .waiver_rules import waiver_rules
 
@@ -207,7 +213,10 @@ async def get_waiver_targets(
 
     mine_scored = _named(my_proj, my_inputs)
     pool_scored = _named(pool_proj, pool_inputs)
-    levels = replacement_levels(mine_scored, slots)
+    whole_slots = lineup_slots(league.get("roster_positions"))
+    base_total = starting_lineup_total(mine_scored, whole_slots)
+    # The weakest player actually starting where each position could play.
+    levels = lineup_bars(mine_scored, whole_slots)
 
     trending: dict[str, int] = {}
     try:
@@ -229,7 +238,9 @@ async def get_waiver_targets(
     for candidate in pool_scored:
         position = candidate["position"]
         level = levels.get(position, 0.0)
-        upgrade = round(candidate["projected_points"] - level, 1)
+        # Scored on the whole lineup, FLEX included, rather than against the
+        # per-position bar — see `lineup_gain`.
+        upgrade = round(lineup_gain(mine_scored, whole_slots, candidate, base_total), 1)
         adds = trending.get(str(candidate.get("player_id")), 0)
         if position in undifferentiated:
             verdict = "no_signal"
@@ -239,7 +250,9 @@ async def get_waiver_targets(
         # adding in bulk is usually one carrying news we have not priced yet —
         # worth a speculative claim rather than a start. Only near replacement
         # level though: hype does not make a clearly worse player a claim.
-        elif adds > 0 and upgrade >= -_MEANINGFUL_UPGRADE:
+        # The lineup gain never goes below zero, so "close" is still measured
+        # against the position's bar.
+        elif adds > 0 and candidate["projected_points"] - level >= -_MEANINGFUL_UPGRADE:
             verdict = "speculative"
         else:
             verdict = "no"
@@ -302,10 +315,11 @@ async def get_waiver_targets(
             for p in injured_held
         ],
         "thin_positions": empty_slots,
+        "horizon": "this_week",
         "method": (
             "free agents (nobody in the league rosters them) projected for the "
-            "coming week in this league's scoring, ranked by points above the "
-            "weakest player who currently starts for you at that position"
+            "coming week in this league's scoring, ranked by how many points they "
+            "add to your best legal starting lineup (FLEX included)"
         ),
         "message": (
             (f"{len(top)} claim(s) worth making from {len(pool_scored)} free agents "

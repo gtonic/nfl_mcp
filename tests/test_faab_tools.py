@@ -32,6 +32,10 @@ VALUES = {
     "elite1": {"player_id": "elite1", "name": "Elite RB A", "position": "RB", "value": 9500, "position_rank": 2},
     "elite2": {"player_id": "elite2", "name": "Elite RB B", "position": "RB", "value": 9300, "position_rank": 3},
     "weak": {"player_id": "weak", "name": "Weak RB", "position": "RB", "value": 800, "position_rank": 60},
+    "elite3": {"player_id": "elite3", "name": "Elite RB C", "position": "RB", "value": 9400, "position_rank": 4},
+    "te1": {"player_id": "te1", "name": "My TE", "position": "TE", "value": 3000, "position_rank": 12},
+    "te_fa": {"player_id": "te_fa", "name": "Free TE", "position": "TE", "value": 4500, "position_rank": 8},
+    "k_fa": {"player_id": "k_fa", "name": "Free K", "position": "K", "value": 500, "position_rank": 1},
 }
 
 
@@ -74,17 +78,50 @@ class TestFaab:
         assert res["remaining_budget"] == 80
 
     async def test_redundant_add_is_cheaper_and_warns(self):
-        # I roster two RBs better than the target -> it's depth, not an upgrade.
+        # Three RBs better than the target fill both RB slots and the FLEX ->
+        # it's depth, not an upgrade. (With only two, the FLEX would be empty
+        # and he would start.)
         rosters = {"success": True, "rosters": [
             {"roster_id": 1, "players_enriched": [
                 {"player_id": "9509", "full_name": "Bijan Robinson", "position": "RB"},
                 {"player_id": "elite1", "full_name": "Elite RB A", "position": "RB"},
+                {"player_id": "elite3", "full_name": "Elite RB C", "position": "RB"},
             ], "settings": {"waiver_budget_used": 0}}]}
         # Target the weaker RB (value 9300, below my last starter 9500).
         res = await _run(league_id="1", player_id="elite2", my_roster_id=1, rosters=rosters)
         r = res["recommendation"]
         assert r["breakdown"]["upgrade_score"] == 0.0   # no upgrade
         assert any("strong at RB" in w for w in r["warnings"])
+
+    async def test_an_empty_flex_makes_the_same_rb_an_upgrade(self):
+        rosters = {"success": True, "rosters": [
+            {"roster_id": 1, "players_enriched": [
+                {"player_id": "9509", "full_name": "Bijan Robinson", "position": "RB"},
+                {"player_id": "elite1", "full_name": "Elite RB A", "position": "RB"},
+            ], "settings": {"waiver_budget_used": 0}}]}
+        res = await _run(league_id="1", player_id="elite2", my_roster_id=1, rosters=rosters)
+        assert res["recommendation"]["breakdown"]["upgrade_score"] == 1.0
+        assert res["horizon"] == "rest_of_season"
+
+    async def test_a_te_who_beats_your_te1_is_an_upgrade_not_depth(self):
+        # The Dalton Schultz case: a fixed TE=1 table with no FLEX called him depth.
+        rosters = {"success": True, "rosters": [
+            {"roster_id": 1, "players_enriched": [
+                {"player_id": "9509", "full_name": "Bijan Robinson", "position": "RB"},
+                {"player_id": "elite1", "full_name": "Elite RB A", "position": "RB"},
+                {"player_id": "elite3", "full_name": "Elite RB C", "position": "RB"},
+                {"player_id": "te1", "full_name": "My TE", "position": "TE"},
+            ], "settings": {"waiver_budget_used": 0}}]}
+        res = await _run(league_id="1", player_id="te_fa", my_roster_id=1, rosters=rosters)
+        r = res["recommendation"]
+        assert r["breakdown"]["upgrade_score"] > 0
+        assert not any("strong at TE" in w for w in r["warnings"])
+
+    async def test_a_position_the_league_does_not_start(self):
+        rosters = {"success": True, "rosters": [
+            {"roster_id": 1, "players_enriched": [], "settings": {"waiver_budget_used": 0}}]}
+        res = await _run(league_id="1", player_id="k_fa", my_roster_id=1, rosters=rosters)
+        assert any("starts no K" in w for w in res["recommendation"]["warnings"])
 
     async def test_non_faab_league(self):
         res = await _run(league_id="1", player_id="9509", league=_league(faab=False))
