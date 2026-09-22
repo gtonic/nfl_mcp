@@ -48,8 +48,12 @@ def db(monkeypatch):
         yield database
 
 
-def _stub_sleeper(monkeypatch, points):
-    """Sleeper + projection stubs; `points` maps player name -> projection."""
+def _stub_sleeper(monkeypatch, points, roster_positions=None, mine=None):
+    """Sleeper + projection stubs; `points` maps player name -> projection.
+
+    No FLEX by default: the fixture roster is three players deep, and an empty
+    FLEX seat makes *any* free agent a genuine lineup upgrade.
+    """
     from nfl_mcp import sleeper_tools
 
     async def _state():
@@ -59,13 +63,13 @@ def _stub_sleeper(monkeypatch, points):
         return {"league": {
             "name": "Test", "total_rosters": 12,
             "scoring_settings": {"rec": 0.5},
-            "roster_positions": ["QB", "RB", "RB", "WR", "WR", "FLEX", "BN", "BN"],
+            "roster_positions": roster_positions or ["QB", "RB", "RB", "WR", "WR", "BN", "BN"],
             "settings": {"waiver_type": 0},
         }}
 
     async def _rosters(_):
         return {"rosters": [
-            {"roster_id": 7, "owner_id": "me", "players": ["m1", "m2", "m3"]},
+            {"roster_id": 7, "owner_id": "me", "players": mine or ["m1", "m2", "m3"]},
             {"roster_id": 2, "owner_id": "them", "players": ["o1"]},
         ]}
 
@@ -241,3 +245,66 @@ class TestWaiverTargets:
         out = await get_waiver_targets(LEAGUE, roster_id=7, week=17)
         assert out["success"] is False
         assert "schedule" in out["error"]
+
+
+class TestLineupGain:
+    """The Dalton Schultz case: a TE who beats your TE1 but not your flex.
+
+    Two FLEX seats spread over RB/WR/TE rounded the roster's second TE into a
+    starter, so the free agent was scored against a player who never starts
+    (+8.7 instead of +5.7), while `recommend_faab_bid` ignored FLEX and called
+    the same player depth.
+    """
+
+    @pytest.mark.asyncio
+    async def test_upgrade_is_the_change_in_the_best_lineup(self, db, monkeypatch):
+        db.upsert_athletes(dict([
+            _athlete("t1", "My TE1", "TE", "BUF"),
+            _athlete("t2", "My TE2", "TE", "KC"),
+            _athlete("r2", "My RB2", "RB", "NYJ"),
+            _athlete("x1", "My Flex WR", "WR", "BUF"),
+            _athlete("x2", "My Flex RB", "RB", "KC"),
+            _athlete("f5", "Free TE", "TE", "DET"),
+        ]))
+        _stub_sleeper(
+            monkeypatch,
+            {"My Starter WR": 14.0, "My Second WR": 10.3, "My Weak RB": 10.1,
+             "My RB2": 10.2, "My Flex WR": 9.9, "My Flex RB": 9.8,
+             "My TE1": 7.4, "My TE2": 4.4, "Free TE": 13.1},
+            roster_positions=["RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "BN"],
+            mine=["m1", "m2", "m3", "r2", "x1", "x2", "t1", "t2"],
+        )
+        out = await get_waiver_targets(LEAGUE, roster_id=7, positions=["TE"])
+        free_te = next(t for t in out["targets"] if t["name"] == "Free TE")
+        # Takes the TE slot from the 7.4, who cannot beat either flex (9.9/9.8);
+        # the 4.4 never started, so he is not the bar.
+        assert free_te["upgrade_points"] == pytest.approx(13.1 - 7.4, abs=0.1)
+        assert out["horizon"] == "this_week"
+
+
+class TestLineupBars:
+    def _roster(self):
+        return [
+            {"position": "WR", "projected_points": 14.0},
+            {"position": "WR", "projected_points": 10.3},
+            {"position": "RB", "projected_points": 10.2},
+            {"position": "RB", "projected_points": 10.1},
+            {"position": "WR", "projected_points": 9.9},
+            {"position": "RB", "projected_points": 9.8},
+            {"position": "TE", "projected_points": 7.4},
+            {"position": "TE", "projected_points": 4.4},
+        ]
+
+    def test_the_bar_is_the_weakest_player_who_actually_starts(self):
+        from nfl_mcp.roster_needs import lineup_bars
+        bars = lineup_bars(self._roster(), {"RB": 2, "WR": 2, "TE": 1, "FLEX": 2})
+        # TE1 at 7.4 is the weakest TE-eligible starter; the 4.4 never starts.
+        assert bars["TE"] == 7.4
+        assert bars["WR"] == bars["RB"] == 9.8
+        assert "FLEX" not in bars
+
+    def test_an_empty_eligible_slot_is_a_zero_bar(self):
+        from nfl_mcp.roster_needs import lineup_bars
+        bars = lineup_bars([{"position": "RB", "projected_points": 9.0}],
+                           {"QB": 1, "RB": 2})
+        assert bars == {"QB": 0.0, "RB": 0.0}

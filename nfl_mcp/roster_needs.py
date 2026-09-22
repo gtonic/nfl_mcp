@@ -12,7 +12,7 @@ way the league fills them.
 """
 from __future__ import annotations
 
-from .win_probability import expand_slots, greedy_mean_lineup, player_mean
+from .win_probability import _eligible, expand_slots, greedy_mean_lineup, player_mean
 
 # Slots that hold no projectable player, or hold one who cannot be started.
 _NON_STARTING_SLOTS = {"BN", "IR", "TAXI"}
@@ -86,6 +86,48 @@ def lineup_total(players: list[dict], slot_list: list[str]) -> float:
 def starting_lineup_total(players: list[dict], slots: dict[str, int]) -> float:
     """`lineup_total` from whole slot counts."""
     return lineup_total(players, expand_slots(slots))
+
+
+def lineup_gain(players: list[dict], slots: dict[str, int], candidate: dict,
+                base: float | None = None) -> float:
+    """How much adding `candidate` improves the best legal starting lineup.
+
+    The honest measure of an addition. A per-position bar gets FLEX wrong both
+    ways: spreading two FLEX seats over RB/WR/TE rounded a roster's *second*
+    TE into a starter, so a free-agent TE was scored against a player who never
+    starts; ignoring FLEX entirely called a real upgrade "depth". Pass `base`
+    (the roster's own total) when scoring many candidates against one roster.
+    """
+    if base is None:
+        base = starting_lineup_total(players, slots)
+    return round(starting_lineup_total([*players, candidate], slots) - base, 2)
+
+
+def lineup_bars(players: list[dict], slots: dict[str, int]) -> dict[str, float]:
+    """Per position, the weakest starter a new player at it would have to beat.
+
+    Read off the real lineup: the lowest-projected player sitting in any slot
+    the position can fill (its own slot or a FLEX), or 0 when such a slot is
+    empty. `replacement_levels` spreads FLEX fractionally and rounds, which can
+    make a roster's never-starting TE2 the bar.
+    """
+    slot_list = expand_slots(slots)
+    assignment = greedy_mean_lineup(players, slot_list)
+    bars: dict[str, float] = {}
+    positions = {_position_of(slot) for slot in slot_list} - {"FLEX", "SUPERFLEX"}
+    for position in positions | set(_FLEX_ELIGIBLE):
+        held = [
+            player_mean(p) if p else 0.0
+            for slot, p in zip(slot_list, assignment, strict=True)
+            if _eligible(slot, position)
+        ]
+        if held:
+            bars[position] = min(held)
+    return bars
+
+
+def _position_of(slot: str) -> str:
+    return "DEF" if slot == "DST" else slot
 
 
 def surplus_players(
