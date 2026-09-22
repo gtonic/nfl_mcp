@@ -53,18 +53,21 @@ class TestStringValidation:
         result = validate_string_input("Patrick Mahomes", "athlete_name")
         assert result == "Patrick Mahomes"
 
+        # Returned as typed: the value is a lookup key, and an escaped
+        # apostrophe matches no player.
         result = validate_string_input("D'Andre Swift", "athlete_name")
-        assert result == "D&#x27;Andre Swift"  # HTML escaped
+        assert result == "D'Andre Swift"
 
-    def test_html_escaping(self):
-        """Test HTML escaping works correctly."""
-        # For general content, it should detect script tags as dangerous
+    def test_apostrophe_names_survive_as_lookup_keys(self):
+        for name in ("Ja'Marr Chase", "De'Von Achane", "D'Andre Swift"):
+            assert validate_string_input(name, "player_name") == name
+
+    def test_dangerous_input_is_rejected_not_escaped(self):
+        """Validation rejects injection; it does not rewrite safe content."""
         with pytest.raises(ValueError, match="dangerous pattern"):
             validate_string_input("<script>alert('xss')</script>", "general")
 
-        # But basic HTML escaping should work for safe content
-        result = validate_string_input("Hello & World", "general")
-        assert "&amp;" in result
+        assert validate_string_input("  Hello & World ", "general") == "Hello & World"
 
     def test_sql_injection_detection(self):
         """Test SQL injection pattern detection."""
