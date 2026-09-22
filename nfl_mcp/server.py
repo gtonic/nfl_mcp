@@ -272,10 +272,11 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                                 f"season={season}, week={snap_week}"
                             )
                             snap_rows = await _fetch_week_player_snaps(season, snap_week)
-                            # Take only first 2000 to avoid huge memory churn
+                            # All rows: a cap of 2000 dropped the tail of a
+                            # 2351-row week, including starters (Jayden Daniels
+                            # sat at index 2173 and lost his snap share).
                             if snap_rows:
-                                subset = snap_rows[:2000]
-                                inserted = nfl_db.upsert_player_week_stats(subset)
+                                inserted = nfl_db.upsert_player_week_stats(snap_rows)
                                 total_snap_rows_inserted += inserted
                                 logger.info(
                                     f"[Prefetch Cycle #{cycle_count}] Snaps (week {snap_week}): "

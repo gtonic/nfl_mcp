@@ -726,11 +726,11 @@ class TestVegasEnrichment:
 
                 result = _enrich_usage_and_opponent(mock_db, athlete, 2024, 15)
 
-                # Should use fallback values
-                assert result.get("game_total") == 45.0
-                assert result.get("implied_team_total") == 22.5
-                assert result.get("game_environment") == "average"
-                assert result.get("vegas_source") == "fallback"
+                # No placeholder numbers that would read as a real line
+                assert "game_total" not in result
+                assert "implied_team_total" not in result
+                assert "game_environment" not in result
+                assert result.get("vegas_source") == "unavailable"
 
     def test_vegas_enrichment_skipped_for_def(self):
         """Test Vegas enrichment is skipped for DEF position."""

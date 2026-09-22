@@ -610,8 +610,11 @@ def validate_string_input(value: str, input_type: str = 'general', max_length: i
     if input_type in SAFE_PATTERNS and not SAFE_PATTERNS[input_type].match(value):
         raise ValueError(f"Input does not match required pattern for {input_type}")
 
-    # Sanitize the input
-    sanitized = html.escape(value.strip())
+    # Returned unescaped. These values are lookup keys and URL parameters, never
+    # HTML: escaping here turned "Ja'Marr Chase" into "Ja&#x27;Marr Chase",
+    # which matched no market value or game log, so every apostrophe name fell
+    # back to a generic rank projection. Output escaping is `sanitize_content`.
+    sanitized = value.strip()
 
     # Check for dangerous patterns only if not a specific safe pattern type
     # and if injection detection is enabled

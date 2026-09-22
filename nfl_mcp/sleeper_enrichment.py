@@ -5,6 +5,7 @@ plus the usage/opponent enrichment helpers. These are LEAF helpers — the publi
 Sleeper tools call into them, not the reverse — so extracting them is cycle-free.
 Re-exported from ``sleeper_tools`` for backward compatibility.
 """
+import json
 import logging
 import os
 from datetime import UTC, datetime
@@ -703,6 +704,26 @@ def _calculate_usage_trend(weekly_data: list[dict], metric: str) -> str | None:
     else:
         return "flat"
 
+def _cached_defense_rankings(analyzer, nfl_db, season: int | None) -> dict | None:
+    """Defense-vs-position rankings without a network call, or None.
+
+    Enrichment is synchronous, so it cannot fetch. The analyzer's in-memory
+    cache holds whatever a matchup tool fetched this session; the database
+    holds what any earlier session persisted. Season-long averages only move
+    once a week, so a week-old row is still the current one.
+    """
+    if not season:
+        return None
+    cached = getattr(analyzer, "_rankings_cache", {}).get(f"defense_rankings_{season}")
+    if cached and isinstance(cached.get("data"), dict) and cached["data"]:
+        return cached["data"]
+    if hasattr(nfl_db, "get_defense_rankings"):
+        rankings = nfl_db.get_defense_rankings(int(season), max_age_hours=24 * 7)
+        if isinstance(rankings, dict) and rankings:
+            return rankings
+    return None
+
+
 # Sleeper/ESPN designations that mean the player is not practising at all.
 # None of them contains "OUT", so a substring test alone read an IR or
 # suspended player as a full participant.
@@ -740,6 +761,13 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
         else:
             depth_rank = None
             raw_field = athlete.get("raw")
+            if isinstance(raw_field, str):
+                # Stored as JSON text; the dict check alone never matched, so
+                # the depth-chart estimate never ran.
+                try:
+                    raw_field = json.loads(raw_field)
+                except (ValueError, TypeError):
+                    raw_field = None
             if isinstance(raw_field, dict):
                 depth_rank = raw_field.get("depth_chart_order")
             est = _estimate_snap_pct(depth_rank, position)  # Pass position for better estimates
@@ -892,8 +920,11 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
             from .matchup_tools import get_defense_analyzer
             analyzer = get_defense_analyzer()
 
-            # Get matchup difficulty (synchronous - uses cached rankings)
-            matchup = analyzer.get_matchup_difficulty(position, opponent)
+            # Without `rankings` the analyzer always answers from its neutral
+            # placeholder table, so every player came back rank 16 / unknown
+            # while real rankings sat in the database.
+            rankings = _cached_defense_rankings(analyzer, nfl_db, season)
+            matchup = analyzer.get_matchup_difficulty(position, opponent, rankings)
 
             if matchup and not matchup.get("is_fallback", True):
                 enriched_additions["matchup_rank"] = matchup.get("rank")
@@ -901,6 +932,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
                 enriched_additions["matchup_indicator"] = matchup.get("tier_indicator")
                 enriched_additions["matchup_recommendation"] = matchup.get("recommendation")
                 enriched_additions["defense_pts_allowed_avg"] = matchup.get("points_allowed_avg")
+                enriched_additions["matchup_source"] = "defense_rankings"
                 logger.debug(
                     f"[Enrichment] {player_name}: matchup vs {opponent} = "
                     f"{matchup.get('matchup_tier')} (#{matchup.get('rank')})"
@@ -915,8 +947,9 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
         except Exception as e:
             logger.debug(f"[Enrichment] {player_name}: matchup analysis failed: {e}")
 
-    # Vegas lines game environment analysis - QB, RB, WR, TE only
-    team = athlete.get("team")
+    # Vegas lines game environment analysis - QB, RB, WR, TE only. Athlete rows
+    # carry `team_id`; reading only `team` skipped this block for everyone.
+    team = athlete.get("team_id") or athlete.get("team")
     if team and position in ("QB", "RB", "WR", "TE"):
         try:
             from .vegas_tools import get_vegas_analyzer
@@ -925,7 +958,10 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
             # Get game lines for the team (synchronous - uses cached lines)
             game = vegas.get_game_lines(team)
 
-            if game and not game.get("is_fallback", True):
+            # Real lines carry no `is_fallback` key at all — only the neutral
+            # placeholder sets it — so defaulting the lookup to True filed every
+            # real line as a fallback.
+            if game and not game.get("is_fallback"):
                 # Determine if home or away
                 team_norm = vegas._normalize_team(team)
                 is_home = game.get("home_team") == team_norm
@@ -938,6 +974,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
                 enriched_additions["game_total"] = game.get("total")
                 enriched_additions["implied_team_total"] = implied_total
                 enriched_additions["spread"] = spread
+                enriched_additions["vegas_source"] = "lines"
 
                 # Game environment
                 env = game.get("game_environment", {})
@@ -957,12 +994,11 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
                     f"implied={implied_total}, env={env.get('tier')}"
                 )
             else:
-                # Fallback - still provide basic neutral data
-                enriched_additions["game_total"] = 45.0
-                enriched_additions["implied_team_total"] = 22.5
-                enriched_additions["game_environment"] = "average"
-                enriched_additions["game_environment_indicator"] = "➡️"
-                enriched_additions["vegas_source"] = "fallback"
+                # No numbers: a placeholder 45.0 / 22.5 is indistinguishable
+                # from a real line once it leaves this function. Enrichment is
+                # synchronous and cannot fetch, so this is the normal state
+                # until a Vegas-aware tool has loaded lines this session.
+                enriched_additions["vegas_source"] = "unavailable"
                 logger.debug(f"[Enrichment] {player_name}: Vegas data unavailable (fallback)")
         except Exception as e:
             logger.debug(f"[Enrichment] {player_name}: Vegas analysis failed: {e}")
