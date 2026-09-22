@@ -360,7 +360,7 @@ class TestAutoProjection:
         # The request's scoring/season/week must reach the engine. Defaulting
         # them here produced full-PPR points off the rank-bucket baseline, so
         # start/sit and get_weekly_briefing disagreed about the same player.
-        assert engine.calls == [{"scoring": "half_ppr", "season": 2026, "week": 6}]
+        assert engine.calls == [{"scoring": "half_ppr", "num_teams": 12, "season": 2026, "week": 6}]
 
     @pytest.mark.asyncio
     async def test_auto_project_disabled_leaves_zero(self):

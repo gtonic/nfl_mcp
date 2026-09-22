@@ -97,3 +97,36 @@ def resolve_injury(
         "report_status": report_status,
         "injury_type": (report or {}).get("injury_type"),
     }
+
+
+# How old a stored report may be before a tool that was handed no status stops
+# trusting it. Reports are cleared when a crawl no longer lists them, so a row
+# is current as of the last crawl; this only guards against a prefetch that
+# has not run for days.
+LOOKUP_MAX_AGE_HOURS = 72
+
+
+def lookup_injury(db, player_name: str | None, team: str | None) -> dict | None:
+    """Current injury for a player known only by name and team, or None.
+
+    For tools whose callers pass players as plain dicts: without this they
+    project anyone they were not explicitly told about at full health, while
+    the briefing — reading the same database — benches him.
+    """
+    team = normalize_team(team)
+    if not db or not player_name or not team:
+        return None
+    report_index: dict[tuple[str, str], dict] = {}
+    if hasattr(db, "find_player_injury"):
+        report = db.find_player_injury(player_name, team, max_age_hours=LOOKUP_MAX_AGE_HOURS)
+        if isinstance(report, dict):
+            report_index = build_injury_index([report])
+    athlete = {"full_name": player_name}
+    if hasattr(db, "search_athletes_by_name"):
+        wanted = norm_name(player_name)
+        for row in db.search_athletes_by_name(player_name, limit=10) or []:
+            if (isinstance(row, dict) and norm_name(row.get("full_name")) == wanted
+                    and normalize_team(row.get("team_id")) == team):
+                athlete = row
+                break
+    return resolve_injury(athlete, report_index, team)
