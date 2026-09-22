@@ -52,7 +52,7 @@ class TestScoringReachesTheProjection:
                 scoring="half_ppr", season=2026, week=6,
             )
 
-        assert engine.calls == [{"scoring": "half_ppr", "season": 2026, "week": 6}]
+        assert engine.calls == [{"scoring": "half_ppr", "num_teams": 12, "season": 2026, "week": 6}]
         assert out["scoring"] == "half_ppr"
 
     @pytest.mark.asyncio
@@ -67,7 +67,7 @@ class TestScoringReachesTheProjection:
             )
 
         assert len(engine.calls) == 2
-        assert all(c == {"scoring": "0.5", "season": 2026, "week": 9} for c in engine.calls)
+        assert all(c == {"scoring": "0.5", "num_teams": 12, "season": 2026, "week": 9} for c in engine.calls)
 
     @pytest.mark.asyncio
     async def test_compare_and_full_lineup_forward_it_too(self):
@@ -88,7 +88,7 @@ class TestScoringReachesTheProjection:
 
         assert calls_after_compare == 2
         assert len(engine.calls) > calls_after_compare
-        assert all(c == {"scoring": "half_ppr", "season": 2026, "week": 6}
+        assert all(c == {"scoring": "half_ppr", "num_teams": 12, "season": 2026, "week": 6}
                    for c in engine.calls)
 
     @pytest.mark.asyncio
@@ -109,7 +109,7 @@ class TestScoringReachesTheProjection:
             await lo.get_start_sit_recommendation(
                 player_name="Some WR", position="WR", team="MIA", opponent="NE")
 
-        assert engine.calls == [{"scoring": "ppr", "season": 2026, "week": 4}]
+        assert engine.calls == [{"scoring": "ppr", "num_teams": 12, "season": 2026, "week": 4}]
 
 
 class TestGoodGameThresholds:

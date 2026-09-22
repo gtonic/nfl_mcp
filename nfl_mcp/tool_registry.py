@@ -1680,7 +1680,8 @@ async def get_start_sit_recommendation(
     injury_status: str | None = None,
     practice_status: str | None = None,
     projected_points: float | None = None,
-    scoring: str = "ppr",
+    scoring: str | None = None,
+    league_id: str | None = None,
     season: int | None = None,
     week: int | None = None,
 ) -> dict:
@@ -1700,7 +1701,9 @@ async def get_start_sit_recommendation(
         injury_status (str, optional): Injury status (healthy, questionable, doubtful, out)
         practice_status (str, optional): Practice status (full, limited, dnp)
         projected_points (float, optional): Projected fantasy points
-        scoring (str, default 'ppr'): League scoring - 'ppr', 'half_ppr',
+        league_id (str, optional): Sleeper league id. Supplies the league's real
+            scoring and size when `scoring` is not passed — prefer it.
+        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
             'standard', or a raw per-reception value like '0.5'. Pass the real
             setting: it changes the points AND what counts as a good week.
         season (int, optional), week (int, optional): pass both (week > 1) to
@@ -1735,6 +1738,10 @@ async def get_start_sit_recommendation(
         team = validate_string_input(team, 'team', max_length=5, required=True)
         opponent = validate_string_input(opponent, 'opponent', max_length=5, required=True)
 
+        if league_id:
+
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
+
         return await lineup_optimizer_tools.get_start_sit_recommendation(
             player_name=player_name,
             position=position.upper(),
@@ -1747,6 +1754,7 @@ async def get_start_sit_recommendation(
             practice_status=practice_status,
             projected_points=projected_points,
             scoring=scoring,
+            league_id=league_id,
             season=season,
             week=week,
         )
@@ -1764,7 +1772,8 @@ async def get_roster_recommendations(
     players: list[dict],
     week: int | None = None,
     include_reasoning: bool = True,
-    scoring: str = "ppr",
+    scoring: str | None = None,
+    league_id: str | None = None,
     season: int | None = None,
 ) -> dict:
     """Get start/sit recommendations for multiple players.
@@ -1784,7 +1793,9 @@ async def get_roster_recommendations(
         week (int, optional): NFL week - with `season` and week > 1 this selects
             the opportunity baseline for the projections, not just a response label
         include_reasoning (bool, default True): Whether to include detailed reasoning
-        scoring (str, default 'ppr'): League scoring - 'ppr', 'half_ppr',
+        league_id (str, optional): Sleeper league id. Supplies the league's real
+            scoring and size when `scoring` is not passed — prefer it.
+        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
             'standard', or a raw per-reception value like '0.5'
         season (int, optional): Season year, needed with `week`
 
@@ -1822,11 +1833,16 @@ async def get_roster_recommendations(
     if week is not None:
         week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
 
+    if league_id:
+
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
+
     return await lineup_optimizer_tools.get_roster_recommendations(
         players=players,
         week=week,
         include_reasoning=include_reasoning,
         scoring=scoring,
+        league_id=league_id,
         season=season,
     )
 
@@ -1835,7 +1851,8 @@ async def get_roster_recommendations(
 async def compare_players_for_slot(
     players: list[dict],
     slot: str = "FLEX",
-    scoring: str = "ppr",
+    scoring: str | None = None,
+    league_id: str | None = None,
     season: int | None = None,
     week: int | None = None,
 ) -> dict:
@@ -1849,7 +1866,9 @@ async def compare_players_for_slot(
             Each should have: name, position, team, opponent
             Optional: usage, injury, projection dicts
         slot (str, default "FLEX"): The roster slot being filled (e.g., "WR2", "FLEX", "RB1")
-        scoring (str, default 'ppr'): League scoring - 'ppr', 'half_ppr',
+        league_id (str, optional): Sleeper league id. Supplies the league's real
+            scoring and size when `scoring` is not passed — prefer it.
+        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
             'standard', or a raw per-reception value like '0.5'. This is the
             comparison most sensitive to it: half PPR is what makes a runner
             competitive with a volume receiver for a flex spot.
@@ -1888,10 +1907,15 @@ async def compare_players_for_slot(
 
     slot = validate_string_input(slot, 'slot', max_length=10, required=False) or "FLEX"
 
+    if league_id:
+
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
+
     return await lineup_optimizer_tools.compare_players_for_slot(
         players=players,
         slot=slot,
         scoring=scoring,
+        league_id=league_id,
         season=season,
         week=week,
     )
@@ -1901,7 +1925,8 @@ async def compare_players_for_slot(
 async def analyze_full_lineup(
     lineup: dict,
     week: int | None = None,
-    scoring: str = "ppr",
+    scoring: str | None = None,
+    league_id: str | None = None,
     season: int | None = None,
 ) -> dict:
     """Analyze a complete fantasy lineup with optimal lineup suggestions.
@@ -1921,7 +1946,9 @@ async def analyze_full_lineup(
             }
         week (int, optional): NFL week - with `season` and week > 1 this selects
             the opportunity baseline for the projections, not just a label
-        scoring (str, default 'ppr'): League scoring - 'ppr', 'half_ppr',
+        league_id (str, optional): Sleeper league id. Supplies the league's real
+            scoring and size when `scoring` is not passed — prefer it.
+        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
             'standard', or a raw per-reception value like '0.5'
         season (int, optional): Season year, needed with `week`
 
@@ -1966,10 +1993,15 @@ async def analyze_full_lineup(
     if week is not None:
         week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
 
+    if league_id:
+
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
+
     return await lineup_optimizer_tools.analyze_full_lineup(
         lineup=lineup,
         week=week,
         scoring=scoring,
+        league_id=league_id,
         season=season,
     )
 

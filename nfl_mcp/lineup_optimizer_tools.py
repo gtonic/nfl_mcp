@@ -112,6 +112,9 @@ class PlayerAnalysis:
     # Health factors
     injury_status: str = "healthy"
     practice_status: str = "full"
+    # Where the status came from: "caller" when passed in, otherwise the
+    # injury tables ("report", "sleeper" or "both"), None when nothing is known.
+    injury_source: str | None = None
 
     # Projection
     projected_points: float = 0.0
@@ -144,6 +147,7 @@ class PlayerAnalysis:
             "usage_trend": self.usage_trend,
             "injury_status": self.injury_status,
             "practice_status": self.practice_status,
+            "injury_source": self.injury_source,
             "projected_points": self.projected_points,
             "floor": self.floor,
             "ceiling": self.ceiling,
@@ -202,6 +206,10 @@ PRACTICE_STATUS_SCORES = {
     "limited participation": 70,
     "dnp": 30,
     "did not participate": 30,
+    # The short codes roster enrichment emits; without them an "FP" scored as
+    # an unknown 70 rather than a full practice.
+    "fp": 100,
+    "lp": 70,
     "rest": 85,  # Veteran rest day is usually fine
 }
 
@@ -211,6 +219,35 @@ USAGE_TREND_SCORES = {
     "stable": 60,
     "downward": 35,
 }
+
+
+async def _league_scoring(
+    league_id: str | None, scoring: str | None
+) -> tuple[str, int, str]:
+    """(scoring, num_teams, scoring_source) for a start/sit call.
+
+    The briefing reads scoring and league size from the league; these tools
+    defaulted to full PPR and 12 teams, so the same player in the same week got
+    different points depending on which tool was asked. An explicit `scoring`
+    still wins; `league_id` supplies it otherwise; with neither, full PPR is
+    assumed and labelled as such rather than passed off as the league's.
+    """
+    num_teams = 12
+    if league_id:
+        try:
+            from . import sleeper_tools
+            from .briefing_tools import _scoring_ppr
+            league = ((await sleeper_tools.get_league(league_id)) or {}).get("league") or {}
+        except Exception as e:  # a league lookup must not sink the recommendation
+            logger.debug(f"league lookup for scoring failed: {e}")
+            league = {}
+        if league:
+            num_teams = int(league.get("total_rosters") or 12)
+            if not scoring:
+                return str(_scoring_ppr(league)), num_teams, "league"
+    if scoring:
+        return scoring, num_teams, "caller"
+    return "ppr", num_teams, "default"
 
 
 async def _resolve_season_week(
@@ -447,6 +484,7 @@ class LineupOptimizer:
         scoring: str = "ppr",
         season: int | None = None,
         week: int | None = None,
+        num_teams: int = 12,
     ) -> PlayerAnalysis:
         """
         Analyze a single player for start/sit recommendation.
@@ -463,6 +501,7 @@ class LineupOptimizer:
             scoring: League scoring for the auto-projection ('ppr', 'half_ppr',
                 'standard', or a raw per-reception value like '0.5')
             season, week: pass both to use the opportunity baseline (week > 1)
+            num_teams: League size, for the market-value baseline
 
         Returns:
             PlayerAnalysis with decision and confidence
@@ -496,10 +535,23 @@ class LineupOptimizer:
             analysis.red_zone_opportunities = usage_data.get("red_zone_opportunities", 0)
             analysis.usage_trend = usage_data.get("usage_trend", "stable")
 
-        # Apply injury data
+        # A caller that says nothing about health is not saying "healthy". Look
+        # the player up in the same injury tables the briefing reads, or start/
+        # sit starts a player the briefing benches (Brock Bowers, Out, came back
+        # as a starter here and 0 points there).
+        if not (injury_data or {}).get("status"):
+            from .injury_match import lookup_injury
+            found = lookup_injury(self.db, player_name, team)
+            if found:
+                injury_data = {**(injury_data or {}), "status": found["status"]}
+                analysis.injury_source = found["source"]
+
+        # Apply injury data. `or`, not a .get default: an explicit null status
+        # used to reach `.lower()` and crash the whole tool.
         if injury_data:
-            analysis.injury_status = injury_data.get("status", "healthy")
-            analysis.practice_status = injury_data.get("practice_status", "full")
+            analysis.injury_source = analysis.injury_source or "caller"
+            analysis.injury_status = injury_data.get("status") or "healthy"
+            analysis.practice_status = injury_data.get("practice_status") or "full"
 
         # Apply projection data — or auto-project when the caller didn't supply
         # points, so start/sit works without manual point entry.
@@ -521,7 +573,7 @@ class LineupOptimizer:
                     "position": position.upper(), "team": team.upper(),
                     "opponent": opponent.upper(),
                     "usage": usage_data or {}, "injury": injury_data or {},
-                }], scoring=scoring, season=season, week=week)
+                }], scoring=scoring, num_teams=num_teams, season=season, week=week)
                 if pr.get("projections"):
                     pp = pr["projections"][0]
                     analysis.projected_points = pp["projected_points"]
@@ -560,6 +612,7 @@ class LineupOptimizer:
         week: int | None = None,
         season: int | None = None,
         scoring: str = "ppr",
+        num_teams: int = 12,
     ) -> dict[str, list[PlayerAnalysis]]:
         """
         Analyze a full roster and return sorted recommendations by position.
@@ -588,6 +641,7 @@ class LineupOptimizer:
                 injury_data=player.get("injury"),
                 projection_data=player.get("projection"),
                 scoring=scoring,
+                num_teams=num_teams,
                 season=season,
                 week=week,
             )
@@ -645,7 +699,8 @@ async def get_start_sit_recommendation(
     injury_status: str | None = None,
     practice_status: str | None = None,
     projected_points: float | None = None,
-    scoring: str = "ppr",
+    scoring: str | None = None,
+    league_id: str | None = None,
     season: int | None = None,
     week: int | None = None,
 ) -> dict:
@@ -695,6 +750,7 @@ async def get_start_sit_recommendation(
     """
     optimizer = get_lineup_optimizer()
     season, week, week_inferred = await _resolve_season_week(season, week)
+    scoring, num_teams, scoring_source = await _league_scoring(league_id, scoring)
 
     # Build optional data dicts
     usage_data = {}
@@ -724,6 +780,7 @@ async def get_start_sit_recommendation(
         injury_data=injury_data if injury_data else None,
         projection_data=projection_data if projection_data else None,
         scoring=scoring,
+        num_teams=num_teams,
         season=season,
         week=week,
     )
@@ -763,6 +820,7 @@ async def get_start_sit_recommendation(
         "season": season,
         "week": week,
         "week_inferred": week_inferred,
+        "scoring_source": scoring_source,
         "factors": {
             "matchup": f"#{analysis.matchup_rank} ({analysis.matchup_tier})",
             "usage": f"Snaps: {analysis.snap_percentage}%, Targets: {analysis.target_share}%",
@@ -781,7 +839,8 @@ async def get_roster_recommendations(
     players: list[dict],
     week: int | None = None,
     include_reasoning: bool = True,
-    scoring: str = "ppr",
+    scoring: str | None = None,
+    league_id: str | None = None,
     season: int | None = None,
 ) -> dict:
     """
@@ -833,8 +892,9 @@ async def get_roster_recommendations(
 
     # Analyze roster
     season, week, week_inferred = await _resolve_season_week(season, week)
+    scoring, num_teams, scoring_source = await _league_scoring(league_id, scoring)
     analyses_by_position = await optimizer.analyze_roster(
-        players, week=week, season=season, scoring=scoring
+        players, week=week, season=season, scoring=scoring, num_teams=num_teams
     )
 
     # Flatten and convert to dicts
@@ -885,6 +945,7 @@ async def get_roster_recommendations(
         "week": week,
         "season": season,
         "week_inferred": week_inferred,
+        "scoring_source": scoring_source,
         "scoring": scoring,
         "message": f"Analyzed {len(all_recommendations)} players"
     })
@@ -897,7 +958,8 @@ async def get_roster_recommendations(
 async def compare_players_for_slot(
     players: list[dict],
     slot: str = "FLEX",
-    scoring: str = "ppr",
+    scoring: str | None = None,
+    league_id: str | None = None,
     season: int | None = None,
     week: int | None = None,
 ) -> dict:
@@ -947,6 +1009,7 @@ async def compare_players_for_slot(
 
     optimizer = get_lineup_optimizer()
     season, week, week_inferred = await _resolve_season_week(season, week)
+    scoring, num_teams, scoring_source = await _league_scoring(league_id, scoring)
 
     # Analyze all players
     analyses = []
@@ -961,6 +1024,7 @@ async def compare_players_for_slot(
             injury_data=player.get("injury"),
             projection_data=player.get("projection"),
             scoring=scoring,
+            num_teams=num_teams,
             season=season,
             week=week,
         )
@@ -1035,9 +1099,11 @@ async def compare_players_for_slot(
         },
         "comparison": comparison_list,
         "points_gap": points_gap,
+        "scoring": scoring,
         "season": season,
         "week": week,
         "week_inferred": week_inferred,
+        "scoring_source": scoring_source,
         "confidence_gap": round(confidence_gap, 1),
         "verdict": verdict,
         "total_compared": len(analyses),
@@ -1053,7 +1119,8 @@ async def compare_players_for_slot(
 async def analyze_full_lineup(
     lineup: dict[str, list[dict]],
     week: int | None = None,
-    scoring: str = "ppr",
+    scoring: str | None = None,
+    league_id: str | None = None,
     season: int | None = None,
 ) -> dict:
     """
@@ -1110,6 +1177,7 @@ async def analyze_full_lineup(
 
     optimizer = get_lineup_optimizer()
     season, week, week_inferred = await _resolve_season_week(season, week)
+    scoring, num_teams, scoring_source = await _league_scoring(league_id, scoring)
 
     starter_positions = ["QB", "RB", "WR", "TE", "FLEX", "K", "DST"]
     bench_key = "BENCH"
@@ -1156,6 +1224,7 @@ async def analyze_full_lineup(
                 injury_data=player.get("injury"),
                 projection_data=player.get("projection"),
                 scoring=scoring,
+                num_teams=num_teams,
                 season=season,
                 week=week,
             )
@@ -1204,6 +1273,7 @@ async def analyze_full_lineup(
                 injury_data=player.get("injury"),
                 projection_data=player.get("projection"),
                 scoring=scoring,
+                num_teams=num_teams,
                 season=season,
                 week=week,
             )
@@ -1271,6 +1341,7 @@ async def analyze_full_lineup(
         "week": week,
         "season": season,
         "week_inferred": week_inferred,
+        "scoring_source": scoring_source,
         "scoring": scoring,
         "message": (f"Lineup Grade: {grade} | {efficiency:.0f}% of available points started "
                     f"| {len(suggested_changes)} change(s) suggested")
