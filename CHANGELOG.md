@@ -7,7 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-09-22
+
+0.8.2 fixed the numbers. This release fixes what the code did with them.
+
+Eleven PRs, and the headline is the worst of them: **start/sit ranked players
+by how much was known about them rather than by expected points.** The sort key
+was a data-quality score in which the projection carried 15% of the weight,
+quantised into four buckets — so an 8-point receiver in a good matchup was
+recommended over a 17-point receiver in a bad one, and a star facing a top
+defense could never be a must-start. The tool that decides a lineup was
+optimising for data coverage.
+
+Two themes run through the rest. **Statuses and codes that meant "will not
+play" were read as healthy** — the weekly briefing consulted only Sleeper's
+player list and never the multi-source report sitting in the same database, and
+neither knew Sleeper's short codes, so 110 players including suspensions
+projected at full points. **And several numbers were confident about samples
+they did not have** — two games of defense data arriving as a tier, a missing
+`season` argument silently halving a projection.
+
+Most of these were found by reading the code during live use rather than by a
+failing test, which is why nearly every fix ships with a regression test that
+reproduces the wrong answer first.
+
 ### Added
+
+- **Every roster tool now reports how old its data is.** `get_weekly_briefing`,
+  `get_waiver_targets` and `find_trade_targets` return `data_freshness` (age in
+  hours per feed: injuries, athletes, practice status) plus
+  `stale_data_warnings` in plain language.
+
+  This is the one place the codebase was not honest about a guess. Vegas lines
+  carry `is_fallback`, defense rankings carry `stale`, the scheme table carries
+  `as_of` — but a start/sit recommendation built on a day-old injury report
+  looked exactly like one built on a fresh one. Found the hard way: gameday
+  advice was given against a **32-hour-old** injury feed, noticed only by
+  querying `MAX(updated_at)` by hand.
+
+  The thresholds are deliberately tight for injuries (6h) and loose for the
+  athlete cache (36h), because designations flip in the last hours before
+  kickoff while roster membership does not. A feed with no rows reports
+  `age_hours: None` rather than 0 — "never fetched" and "just fetched" must not
+  look alike.
+
 - **A backup now inherits volume when the starter ahead of him is out.** The
   projection priced a player off his market rank, so an unavailable teammate
   moved him not at all — `get_handcuff_map` covered this for RBs only, and only
@@ -33,23 +76,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Accuracy is untouched where there is no depth data: the backtest still reports
   MAE 5.823 for the opportunity baseline.
 
-### Fixed
-- **A weak FLEX slot matched any bench player, including ineligible ones.**
-  `analyze_full_lineup` treated `weak["position"] == "FLEX"` as "anything
-  qualifies", so a quarterback, a kicker or a defense could be suggested for a
-  flex spot — none of which can legally fill one. `slot_accepts` now mirrors the
-  eligibility rules `win_probability` has always enforced, and an unknown slot
-  falls back to an exact position match rather than to "anything goes".
+- **`get_waiver_targets` reports the league's waiver configuration** as
+  `waiver_rules`: priority vs FAAB, daily vs weekly processing, the waiver
+  weekday, clear days, and what the configuration does *not* settle.
 
-- **Players without a position were silently treated as receivers.** Both the
-  starter loop (`player.get("position", position)` with a `"WR"` fallback for
-  ineligible flex entries) and the bench loop (`player.get("position", "WR")`)
-  guessed. A kicker in a flex slot was analysed against WR baselines. A bench
-  entry with no position is now skipped with a warning, and a starter whose
-  position cannot legally fill its slot is analysed as given and logged rather
-  than quietly reassigned.
+  It deliberately does **not** return an "instant add vs claim" verdict. That
+  was inferred twice in live use and was wrong both times — first by reasoning
+  "never dropped, therefore not on waivers, therefore instant" (false under
+  weekly waivers, where the whole free-agent pool is locked during the game
+  week), then by reading `daily_waivers=1` as instant (also false; the league's
+  own app showed the claim processing on the waiver day anyway). Which days
+  daily waivers run is encoded in `daily_waivers_days` as a bitmask, and the
+  observed processing time matches none of the exposed fields.
+
+  So the output names the bitmask it cannot decode and points at the app, which
+  shows the real answer per player. `how_to_confirm` also states that pending
+  claims are not exposed by the API at all — their absence from a transaction
+  list does not mean none exist, which is the inference that produced a
+  confident "you have no claims pending" while two were.
 
 ### Changed
+
 - **The README start/sit example now shows what the code decides on.** It read
   *"18.7 projected … ✅ high snap share, smash matchup. Start Nacua with
   confidence"*, which suggested points drove the call while the code ranked on
@@ -57,70 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the margin instead of the vibes.
 
 ### Fixed
-- **Defense-vs-position rankings were two games of noise presented as a tier.**
-  `_fetch_nflverse_rankings` averaged fantasy points allowed over whatever
-  weeks existed, ranked 1-32 and assigned a tier — with no shrinkage and no
-  blend with the prior season. Early in 2026 that put **Houston at #3 "elite"
-  against RBs (12.4/game) and #31 "smash" against WRs (43.0/game) at the same
-  time**, off two games. Those tiers feed the RB projection multiplier at full
-  weight.
 
-  Two changes, because one alone would not have worked. The reported
-  `points_allowed_avg` is now shrunk toward the league mean with six games of
-  prior weight, so the figure stops being a two-game artifact (Houston vs RB:
-  12.4 observed → 19.0 reported, with `points_allowed_observed` keeping the raw
-  number). But tiers are derived from the **rank**, and shrinkage preserves the
-  ordering almost exactly — so it would have left every tier untouched. Below
-  four games the tier is therefore withheld entirely: everything reports
-  `neutral` with `is_provisional: true` and `games_sampled`.
-
-  Neutral is the harmless value — `matchup_multiplier` returns exactly 1.0 for
-  it across every position, so an unusable sample now has no effect rather than
-  a wrong one. That is also consistent with what the engine's own backtest
-  already concluded: matchup is worth nothing for WRs and little elsewhere.
-
-### Fixed
-- **Omitting `season`/`week` silently halved the projections.** They are
-  optional, and omitting them is the common case — an agent rarely knows the
-  current NFL week — but it dropped the projection to the positional-rank
-  baseline: six static values per position, so every WR13-24 got the same 12.0.
-  Measured on one player for one week: **16.8 points instead of 31.1**. All
-  differentiation then came from the matchup tier, which the engine's own
-  backtest rates at zero for WRs.
-
-  All four lineup tools now fill them in from `get_current_season_and_week()`
-  (which already existed) when either is missing, and report `season`, `week`
-  and `week_inferred` so the values used are visible rather than inferred from
-  the numbers. A caller-supplied value always wins; a failing state lookup
-  degrades to the old behaviour instead of raising.
-
-  The projection's `base_source` is surfaced too: `rank_bucket` means a static
-  per-position placeholder rather than a read on that player, which is worth
-  seeing on a number presented as a projection.
-
-### Fixed
-- **Sleeper's short injury codes were unrecognised, so suspended players
-  projected at full points.** `_injury_mult` and `INJURY_STATUS_SCORES` knew
-  `out`/`ir`/`pup`/`suspended`; the player feed actually sends `Sus`, `NA`,
-  `DNR` and `COV`. Audited against the live cache: **110 players** carried one
-  of those four, every one with multiplier 1.0 and health score 100 — a
-  suspended receiver was a startable recommendation, never auto-benched.
-
-  Their meaning was confirmed from the data rather than assumed: `Sus` (10
-  players) has `injury_body_part` literally "Suspension"; `NA` (96) is almost
-  entirely unrostered players with `active: false`; `DNR` (2) includes an ACL
-  case; `COV` (2) is the COVID list. All four mean the player will not take the
-  field, so all four now map to unavailable across the projection multiplier,
-  the health score and the severity table.
-
-  The deeper fix is the default: an unrecognised *non-empty* status is now
-  treated as questionable (0.9) and logged, rather than as healthy. Sleeper only
-  populates `injury_status` when something is wrong, so "a designation exists
-  that we do not know" is evidence against the player. Defaulting to 1.0 is what
-  hid these four for as long as it did; the next new code will degrade safely
-  and show up in the logs.
-
-### Fixed
 - **Start/sit ranked players by how much we knew about them, not by expected
   points.** `compare_players_for_slot`, `get_roster_recommendations` and
   `analyze_full_lineup` sorted on `confidence` — a *data-quality* score built
@@ -159,69 +143,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   well-documented mediocrities. Weak spots are likewise identified by a poor
   projection for the position rather than by thin data coverage.
 
-### Fixed
-- **`get_transactions` now says that pending waiver claims are invisible to it.**
-  Sleeper exposes a claim only once it has been *processed*; a claim sitting in a
-  manager's queue appears in no API response. The docstring did not mention it,
-  and the natural reading of an empty list — "nobody has claims in" — produced a
-  confident "you have no claims pending" while two were waiting in the league
-  app. There is no public endpoint for pending claims, so this is documentation
-  rather than a code fix, with a test asserting the warning stays put.
-
-### Fixed
-- **`InjuryAggregator` used outside `async with` failed silently.** Without a
-  context manager `self._http_client` is None, so every team fetch raised
-  `'NoneType' object has no attribute 'get'` — which the per-team handler logged
-  at *debug* level as "ESPN page 1 failed for BUF". That reads like a broken
-  upstream payload, and it cost a real debugging session against an ESPN feed
-  that turned out to be perfectly intact. All 32 teams then returned nothing and
-  the caller got an empty, successful-looking result that was indistinguishable
-  from "no injuries in the league".
-
-  Both public entry points now check first and raise a message naming the two
-  ways to fix it, plus why the old behaviour was dangerous. Passing
-  `http_client=` explicitly remains supported.
-
-### Added
-- **`get_waiver_targets` reports the league's waiver configuration** as
-  `waiver_rules`: priority vs FAAB, daily vs weekly processing, the waiver
-  weekday, clear days, and what the configuration does *not* settle.
-
-  It deliberately does **not** return an "instant add vs claim" verdict. That
-  was inferred twice in live use and was wrong both times — first by reasoning
-  "never dropped, therefore not on waivers, therefore instant" (false under
-  weekly waivers, where the whole free-agent pool is locked during the game
-  week), then by reading `daily_waivers=1` as instant (also false; the league's
-  own app showed the claim processing on the waiver day anyway). Which days
-  daily waivers run is encoded in `daily_waivers_days` as a bitmask, and the
-  observed processing time matches none of the exposed fields.
-
-  So the output names the bitmask it cannot decode and points at the app, which
-  shows the real answer per player. `how_to_confirm` also states that pending
-  claims are not exposed by the API at all — their absence from a transaction
-  list does not mean none exist, which is the inference that produced a
-  confident "you have no claims pending" while two were.
-
-### Added
-- **Every roster tool now reports how old its data is.** `get_weekly_briefing`,
-  `get_waiver_targets` and `find_trade_targets` return `data_freshness` (age in
-  hours per feed: injuries, athletes, practice status) plus
-  `stale_data_warnings` in plain language.
-
-  This is the one place the codebase was not honest about a guess. Vegas lines
-  carry `is_fallback`, defense rankings carry `stale`, the scheme table carries
-  `as_of` — but a start/sit recommendation built on a day-old injury report
-  looked exactly like one built on a fresh one. Found the hard way: gameday
-  advice was given against a **32-hour-old** injury feed, noticed only by
-  querying `MAX(updated_at)` by hand.
-
-  The thresholds are deliberately tight for injuries (6h) and loose for the
-  athlete cache (36h), because designations flip in the last hours before
-  kickoff while roster membership does not. A feed with no rows reports
-  `age_hours: None` rather than 0 — "never fetched" and "just fetched" must not
-  look alike.
-
-### Fixed
 - **The weekly briefing read only one of the two injury feeds.**
   `_injury_status` took Sleeper's player list; the multi-source ESPN/CBS reports
   sitting in `player_injuries` — with severity and confidence — were never
@@ -242,6 +163,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   milder one is exactly the thing worth seeing. `worst_status` treats an
   unrecognised designation as MODERATE rather than best-casing it, so a feed
   change cannot quietly downgrade the whole roster.
+
+- **Sleeper's short injury codes were unrecognised, so suspended players
+  projected at full points.** `_injury_mult` and `INJURY_STATUS_SCORES` knew
+  `out`/`ir`/`pup`/`suspended`; the player feed actually sends `Sus`, `NA`,
+  `DNR` and `COV`. Audited against the live cache: **110 players** carried one
+  of those four, every one with multiplier 1.0 and health score 100 — a
+  suspended receiver was a startable recommendation, never auto-benched.
+
+  Their meaning was confirmed from the data rather than assumed: `Sus` (10
+  players) has `injury_body_part` literally "Suspension"; `NA` (96) is almost
+  entirely unrostered players with `active: false`; `DNR` (2) includes an ACL
+  case; `COV` (2) is the COVID list. All four mean the player will not take the
+  field, so all four now map to unavailable across the projection multiplier,
+  the health score and the severity table.
+
+  The deeper fix is the default: an unrecognised *non-empty* status is now
+  treated as questionable (0.9) and logged, rather than as healthy. Sleeper only
+  populates `injury_status` when something is wrong, so "a designation exists
+  that we do not know" is evidence against the player. Defaulting to 1.0 is what
+  hid these four for as long as it did; the next new code will degrade safely
+  and show up in the logs.
+
+- **Omitting `season`/`week` silently halved the projections.** They are
+  optional, and omitting them is the common case — an agent rarely knows the
+  current NFL week — but it dropped the projection to the positional-rank
+  baseline: six static values per position, so every WR13-24 got the same 12.0.
+  Measured on one player for one week: **16.8 points instead of 31.1**. All
+  differentiation then came from the matchup tier, which the engine's own
+  backtest rates at zero for WRs.
+
+  All four lineup tools now fill them in from `get_current_season_and_week()`
+  (which already existed) when either is missing, and report `season`, `week`
+  and `week_inferred` so the values used are visible rather than inferred from
+  the numbers. A caller-supplied value always wins; a failing state lookup
+  degrades to the old behaviour instead of raising.
+
+  The projection's `base_source` is surfaced too: `rank_bucket` means a static
+  per-position placeholder rather than a read on that player, which is worth
+  seeing on a number presented as a projection.
+
+- **Defense-vs-position rankings were two games of noise presented as a tier.**
+  `_fetch_nflverse_rankings` averaged fantasy points allowed over whatever
+  weeks existed, ranked 1-32 and assigned a tier — with no shrinkage and no
+  blend with the prior season. Early in 2026 that put **Houston at #3 "elite"
+  against RBs (12.4/game) and #31 "smash" against WRs (43.0/game) at the same
+  time**, off two games. Those tiers feed the RB projection multiplier at full
+  weight.
+
+  Two changes, because one alone would not have worked. The reported
+  `points_allowed_avg` is now shrunk toward the league mean with six games of
+  prior weight, so the figure stops being a two-game artifact (Houston vs RB:
+  12.4 observed → 19.0 reported, with `points_allowed_observed` keeping the raw
+  number). But tiers are derived from the **rank**, and shrinkage preserves the
+  ordering almost exactly — so it would have left every tier untouched. Below
+  four games the tier is therefore withheld entirely: everything reports
+  `neutral` with `is_provisional: true` and `games_sampled`.
+
+  Neutral is the harmless value — `matchup_multiplier` returns exactly 1.0 for
+  it across every position, so an unusable sample now has no effect rather than
+  a wrong one. That is also consistent with what the engine's own backtest
+  already concluded: matchup is worth nothing for WRs and little elsewhere.
+
+- **A weak FLEX slot matched any bench player, including ineligible ones.**
+  `analyze_full_lineup` treated `weak["position"] == "FLEX"` as "anything
+  qualifies", so a quarterback, a kicker or a defense could be suggested for a
+  flex spot — none of which can legally fill one. `slot_accepts` now mirrors the
+  eligibility rules `win_probability` has always enforced, and an unknown slot
+  falls back to an exact position match rather than to "anything goes".
+
+- **Players without a position were silently treated as receivers.** Both the
+  starter loop (`player.get("position", position)` with a `"WR"` fallback for
+  ineligible flex entries) and the bench loop (`player.get("position", "WR")`)
+  guessed. A kicker in a flex slot was analysed against WR baselines. A bench
+  entry with no position is now skipped with a warning, and a starter whose
+  position cannot legally fill its slot is analysed as given and logged rather
+  than quietly reassigned.
+
+- **`InjuryAggregator` used outside `async with` failed silently.** Without a
+  context manager `self._http_client` is None, so every team fetch raised
+  `'NoneType' object has no attribute 'get'` — which the per-team handler logged
+  at *debug* level as "ESPN page 1 failed for BUF". That reads like a broken
+  upstream payload, and it cost a real debugging session against an ESPN feed
+  that turned out to be perfectly intact. All 32 teams then returned nothing and
+  the caller got an empty, successful-looking result that was indistinguishable
+  from "no injuries in the league".
+
+  Both public entry points now check first and raise a message naming the two
+  ways to fix it, plus why the old behaviour was dangerous. Passing
+  `http_client=` explicitly remains supported.
+
+- **`get_transactions` now says that pending waiver claims are invisible to it.**
+  Sleeper exposes a claim only once it has been *processed*; a claim sitting in a
+  manager's queue appears in no API response. The docstring did not mention it,
+  and the natural reading of an empty list — "nobody has claims in" — produced a
+  confident "you have no claims pending" while two were waiting in the league
+  app. There is no public endpoint for pending claims, so this is documentation
+  rather than a code fix, with a test asserting the warning stays put.
 
 ## [0.8.2] - 2026-09-19
 
