@@ -14,6 +14,8 @@ from .config import (
     create_http_client,
     get_http_headers,
 )
+from .injury_match import sleeper_injury_status
+from .injury_service import worst_status
 
 logger = logging.getLogger(__name__)
 
@@ -701,6 +703,12 @@ def _calculate_usage_trend(weekly_data: list[dict], metric: str) -> str | None:
     else:
         return "flat"
 
+# Sleeper/ESPN designations that mean the player is not practising at all.
+# None of them contains "OUT", so a substring test alone read an IR or
+# suspended player as a full participant.
+_NOT_PRACTICING = frozenset({"IR", "SUS", "SUSPENSION", "NA", "DNR", "COV", "INACTIVE", "NFI"})
+
+
 def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: int | None) -> dict:
     """Add snap_pct/opponent fields to a base enrichment object (mutates and returns)."""
     if not athlete:
@@ -752,9 +760,14 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
                 enriched_additions["opponent_source"] = "cached"
                 logger.debug(f"[Enrichment] {player_name} ({position}): opponent={opponent} (cached)")
 
-    # Injury status - all positions
-    if player_id and hasattr(nfl_db, 'get_player_injury_from_cache'):
-        injury = nfl_db.get_player_injury_from_cache(player_id, max_age_hours=None)  # Adaptive TTL
+    # Injury status - all positions. Matched by name and team: the report
+    # table's ids are ESPN's and `player_id` here is Sleeper's (see
+    # `injury_match`).
+    injury = None
+    if hasattr(nfl_db, 'find_player_injury'):
+        injury = nfl_db.find_player_injury(
+            athlete.get("full_name"), athlete.get("team_id"), max_age_hours=None  # Adaptive TTL
+        )
         if injury:
             age_hours = (datetime.now(UTC) - datetime.fromisoformat(injury["updated_at"])).total_seconds() / 3600
             enriched_additions["injury_status"] = injury["injury_status"]
@@ -770,12 +783,29 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
             enriched_additions["injury_game_status"] = injury.get("game_status")
             logger.debug(f"[Enrichment] {player_name}: injury_status={injury['injury_status']} severity={injury.get('severity')} confidence={injury.get('confidence')} (age={round(age_hours, 1)}h)")
 
+    # Sleeper's own designation, worst case wins. The report can be missing
+    # (cache expired, name spelled differently) or lag Sleeper; either way a
+    # player Sleeper lists as Out must not come back without an injury.
+    report_status = enriched_additions.get("injury_status")
+    sleeper_status = sleeper_injury_status(athlete)
+    status = worst_status(
+        None if report_status == "Active" else report_status, sleeper_status
+    )
+    if status and status != report_status:
+        enriched_additions["injury_status"] = status
+        enriched_additions["injury_sources"] = sorted(
+            set(enriched_additions.get("injury_sources") or []) | {"Sleeper"}
+        )
+
     # Practice status (DNP/LP/FP) - all positions
     # Always try to provide a practice_status value
     practice_status_set = False
 
-    if player_id and hasattr(nfl_db, 'get_latest_practice_status'):
-        practice = nfl_db.get_latest_practice_status(player_id, max_age_hours=72)
+    # Practice rows are keyed like the injury report they came from (ESPN ids),
+    # so only a matched report can find them.
+    report_id = (injury or {}).get("player_id")
+    if report_id and hasattr(nfl_db, 'get_latest_practice_status'):
+        practice = nfl_db.get_latest_practice_status(report_id, max_age_hours=72)
         if practice:
             age_hours = (datetime.now(UTC) - datetime.fromisoformat(practice["updated_at"])).total_seconds() / 3600
             enriched_additions["practice_status"] = practice["status"]
@@ -791,7 +821,9 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
         injury_status = enriched_additions.get("injury_status", "").upper()
         if injury_status:
             # Derive practice status from injury status
-            if 'OUT' in injury_status or 'RESERVE' in injury_status or 'PUP' in injury_status:
+            if injury_status in _NOT_PRACTICING or any(
+                token in injury_status for token in ('OUT', 'RESERVE', 'PUP')
+            ):
                 derived_status = 'DNP'  # Did Not Participate
             elif 'DOUBTFUL' in injury_status or 'LIMITED' in injury_status:
                 derived_status = 'LP'   # Limited Participation
@@ -799,8 +831,10 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
                 derived_status = 'LP'   # Usually limited
             elif 'PROBABLE' in injury_status or 'FULL' in injury_status:
                 derived_status = 'FP'   # Full Participation
+            elif injury_status == 'ACTIVE':
+                derived_status = 'FP'   # The report's way of saying "no injury"
             else:
-                derived_status = 'FP'   # Default to full if injury status is unclear
+                derived_status = None   # A designation we cannot read is not a full practice
 
             enriched_additions["practice_status"] = derived_status
             enriched_additions["practice_status_source"] = "derived_from_injury"

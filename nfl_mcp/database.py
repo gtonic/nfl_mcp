@@ -1274,7 +1274,7 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     # Injury reports helpers
     # ------------------------------------------------------------------
-    def upsert_injuries(self, injuries: list[dict]) -> int:
+    def upsert_injuries(self, injuries: list[dict], prune_missing: bool = False) -> int:
         """Insert or update player injury reports.
 
         Args:
@@ -1291,6 +1291,11 @@ class NFLDatabase:
                 - confidence: 0-100 confidence score (optional)
                 - sources: List of source names (optional)
                 - date_reported: Date of injury report (optional)
+            prune_missing: The batch is a complete crawl. A player on a team
+                present in the batch but absent from it has left the report —
+                he is marked ``Active`` (with a history row) instead of keeping
+                his last designation forever. Teams missing from the batch are
+                left alone, so a team whose fetch failed keeps its reports.
 
         Returns:
             Number of rows inserted/updated
@@ -1378,6 +1383,9 @@ class NFLDatabase:
                     )
                     processed += 1
 
+                if prune_missing:
+                    history_rows.extend(self._clear_missing_injuries(conn, injuries, prior, now))
+
                 if history_rows:
                     conn.executemany(
                         """
@@ -1395,6 +1403,40 @@ class NFLDatabase:
         except Exception as e:
             logger.error(f"upsert_injuries failed: {e}")
             return 0
+
+    @staticmethod
+    def _clear_missing_injuries(
+        conn: sqlite3.Connection, injuries: list[dict], prior: dict, now: str
+    ) -> list[tuple]:
+        """Mark reports that a complete crawl no longer lists as ``Active``.
+
+        Without this a recovered player keeps his last designation indefinitely:
+        ESPN drops him from the feed rather than reporting him healthy, and the
+        briefing's worst-status-wins merge then benches him on a stale "Out".
+        Returns the history rows for the transitions.
+        """
+        seen = {(inj.get("player_id"), inj.get("team_id", "")) for inj in injuries}
+        crawled_teams = {team for _, team in seen if team}
+        history = []
+        for (player_id, team_id), (status, _) in prior.items():
+            if team_id not in crawled_teams or (player_id, team_id) in seen:
+                continue
+            if status == "Active":
+                continue
+            conn.execute(
+                """
+                UPDATE player_injuries
+                SET injury_status='Active', injury_type=NULL, game_status=NULL,
+                    severity=1, injury_description='No longer on the injury report',
+                    updated_at=?
+                WHERE player_id=? AND team_id=?
+                """,
+                (now, player_id, team_id),
+            )
+            history.append((player_id, team_id, "Active", None, now))
+        if history:
+            logger.info(f"upsert_injuries: {len(history)} report(s) cleared as no longer listed")
+        return history
 
     def get_all_current_injuries(self) -> list[dict]:
         """Every player's latest injury report, league-wide.
@@ -1527,6 +1569,29 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"get_player_injury_from_cache failed: {e}")
             return None
+
+    def find_player_injury(
+        self,
+        player_name: str | None,
+        team_id: str | None,
+        max_age_hours: int | None = None,
+    ) -> dict | None:
+        """Cached injury report for a player identified by name and team.
+
+        The report table is keyed by ESPN athlete ids, which share nothing with
+        the Sleeper ids a roster carries — see ``injury_match``. Looking a
+        Sleeper id up in ``get_player_injury_from_cache`` finds nothing, or a
+        different player whose ESPN id happens to be the same number.
+        """
+        # Deferred: both modules pull in the wider tool stack.
+        from .injury_match import build_injury_index, find_report
+        from .teams import normalize_team
+
+        team = normalize_team(team_id)
+        if not player_name or not team:
+            return None
+        rows = self.get_team_injuries_from_cache(team, max_age_hours)
+        return find_report({"full_name": player_name}, build_injury_index(rows), team)
 
     def add_injury_history(self, player_id: str, team_id: str, status: str, injury_type: str | None = None) -> bool:
         """Add entry to injury history for trend analysis.

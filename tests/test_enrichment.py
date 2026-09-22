@@ -441,7 +441,7 @@ class TestMatchupEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = {"snap_pct": 80}
         mock_db.get_opponent.return_value = "KC"
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 
@@ -479,7 +479,7 @@ class TestMatchupEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = None
         mock_db.get_opponent.return_value = "XYZ"  # Invalid team
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 
@@ -513,7 +513,7 @@ class TestMatchupEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = None
         mock_db.get_opponent.return_value = "KC"
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 
@@ -538,7 +538,7 @@ class TestMatchupEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = None
         mock_db.get_opponent.return_value = None  # No opponent
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 
@@ -561,7 +561,7 @@ class TestMatchupEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = None
         mock_db.get_opponent.return_value = "KC"
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 
@@ -592,7 +592,7 @@ class TestVegasEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = None
         mock_db.get_opponent.return_value = "BUF"
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 
@@ -646,7 +646,7 @@ class TestVegasEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = None
         mock_db.get_opponent.return_value = "NE"
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 
@@ -698,7 +698,7 @@ class TestVegasEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = None
         mock_db.get_opponent.return_value = "TEN"
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 
@@ -739,7 +739,7 @@ class TestVegasEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = None
         mock_db.get_opponent.return_value = "DAL"
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 
@@ -765,7 +765,7 @@ class TestVegasEnrichment:
         mock_db = MagicMock()
         mock_db.get_player_snap_pct.return_value = None
         mock_db.get_opponent.return_value = "PHI"
-        mock_db.get_player_injury_from_cache.return_value = None
+        mock_db.find_player_injury.return_value = None
         mock_db.get_latest_practice_status.return_value = None
         mock_db.get_usage_last_n_weeks.return_value = None
 

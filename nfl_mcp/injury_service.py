@@ -139,7 +139,14 @@ def worst_status(*statuses: str | None) -> str | None:
     known = [s for s in statuses if s]
     if not known:
         return None
-    return max(known, key=status_severity)
+    return max(known, key=lambda s: (status_severity(s), _TIEBREAK.get(s, 0)))
+
+
+# Doubtful and Out share a rung on the 1-5 scale, and `max` then kept whichever
+# source happened to be passed first: roster enrichment showed Jayden Daniels at
+# ESPN's "Doubtful" while Sleeper already had him "Out". Within a rung, a
+# designation that rules the player out outranks one that merely doubts him.
+_TIEBREAK = {"Doubtful": 0, "Out": 1}
 
 
 def extract_athlete_id(athlete_url: str | None) -> str | None:
