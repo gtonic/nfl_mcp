@@ -22,6 +22,7 @@ import logging
 from .briefing_tools import _staleness_warnings
 from .database import NFLDatabase
 from .errors import create_success_response
+from .injury_match import build_injury_index, injury_for_row, misses_this_week
 from .roster_needs import lineup_slots, replacement_levels, slot_counts, starting_lineup_total
 from .teams import normalize_team
 
@@ -37,7 +38,9 @@ CANDIDATES_PER_ROSTER = 12
 TRADEABLE_POSITIONS = ("QB", "RB", "WR", "TE")
 
 
-def _projection_input(row: dict, opponents: dict[str, str]) -> dict | None:
+def _projection_input(
+    row: dict, opponents: dict[str, str], injury_index: dict | None = None
+) -> dict | None:
     team = normalize_team(row.get("team_id"))
     position = (row.get("position") or "").upper()
     if not team or position not in TRADEABLE_POSITIONS:
@@ -48,8 +51,14 @@ def _projection_input(row: dict, opponents: dict[str, str]) -> dict | None:
     opponent = opponents.get(team)
     if not opponent:
         return None  # bye week, or the schedule cache is cold
-    return {"name": name, "position": position, "team": team,
-            "opponent": opponent, "player_id": row.get("id")}
+    player = {"name": name, "position": position, "team": team,
+              "opponent": opponent, "player_id": row.get("id")}
+    # Injury-aware, so both lineup totals are the ones that will actually take
+    # the field — a partner "gaining" an Out receiver gains nothing this week.
+    injury = injury_for_row(row, injury_index or {})
+    if injury:
+        player["injury"] = {"status": injury["status"]}
+    return player
 
 
 def swap_gain(
@@ -62,8 +71,16 @@ def swap_gain(
 
 
 def _top_candidates(players: list[dict], limit: int = CANDIDATES_PER_ROSTER) -> list[dict]:
+    """The players worth building a swap around, best first.
+
+    Anyone who misses this week is left out on both sides. The search scores a
+    trade by this week's lineup, so an Out star would be offered away for
+    nothing, and receiving one would look like a loss — both artefacts of the
+    one-week horizon, not of his value.
+    """
+    healthy = [p for p in players if not misses_this_week(p.get("injury_status"))]
     return sorted(
-        players, key=lambda p: float(p.get("projected_points") or 0.0), reverse=True
+        healthy, key=lambda p: float(p.get("projected_points") or 0.0), reverse=True
     )[:limit]
 
 
@@ -142,13 +159,15 @@ async def find_trade_targets(
 
     all_ids = [pid for ids in ids_by_roster.values() for pid in ids]
     athlete_rows = db.get_athletes_by_ids(all_ids)
+    injury_index = build_injury_index(db.get_all_current_injuries())
 
     inputs_by_roster: dict[int, list[dict]] = {}
     flat_inputs: list[dict] = []
     for rid, ids in ids_by_roster.items():
         entries = [
             p for pid in ids
-            if (row := athlete_rows.get(pid)) and (p := _projection_input(row, opponents))
+            if (row := athlete_rows.get(pid))
+            and (p := _projection_input(row, opponents, injury_index))
         ]
         inputs_by_roster[rid] = entries
         flat_inputs.extend(entries)
@@ -170,6 +189,7 @@ async def find_trade_targets(
                 continue
             out.append({
                 "player_id": entry["player_id"],
+                "injury_status": (entry.get("injury") or {}).get("status"),
                 "name": entry["name"],
                 "position": entry["position"],
                 "team": entry["team"],
@@ -266,6 +286,12 @@ async def find_trade_targets(
         "your_replacement_levels": {k: round(v, 1) for k, v in levels.items()},
         "proposals": top,
         "candidates_considered": len(proposals),
+        # Kept out of every proposal, yours and theirs; see `_top_candidates`.
+        "skipped_injured": sorted(
+            f"{p['name']} ({p['injury_status']})"
+            for scored in scored_by_roster.values() for p in scored
+            if misses_this_week(p.get("injury_status"))
+        ),
         "method": (
             "one-for-one swaps scored by recomputing both teams' best legal "
             "starting lineup before and after; only trades where BOTH sides gain "
@@ -275,6 +301,8 @@ async def find_trade_targets(
             "Gains are for this week's lineup, not rest-of-season value — check "
             "the deal with analyze_trade before sending it.",
             "One-for-one only; a package deal is a different search.",
+            "Players who miss this week (Out, Doubtful, IR, …) are not traded "
+            "either way — see skipped_injured; value them with analyze_trade.",
         ],
         "message": (
             f"{len(top)} trade(s) that improve both rosters in week {week}."

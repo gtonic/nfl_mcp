@@ -20,6 +20,7 @@ import logging
 from .briefing_tools import _staleness_warnings
 from .database import NFLDatabase
 from .errors import create_success_response
+from .injury_match import build_injury_index, injury_for_row, misses_this_week
 from .roster_needs import replacement_levels, slot_counts
 from .teams import normalize_team
 from .waiver_rules import waiver_rules
@@ -47,7 +48,9 @@ def _is_claimable(row: dict) -> bool:
     return bool(normalize_team(row.get("team_id")))
 
 
-def _to_projection_input(row: dict, opponents: dict[str, str]) -> dict | None:
+def _to_projection_input(
+    row: dict, opponents: dict[str, str], injury_index: dict | None = None
+) -> dict | None:
     team = normalize_team(row.get("team_id"))
     position = (row.get("position") or "").upper()
     if not team:
@@ -60,10 +63,17 @@ def _to_projection_input(row: dict, opponents: dict[str, str]) -> dict | None:
     opponent = opponents.get(team)
     if not opponent:
         return None  # on bye, or the schedule cache has not reached this week
-    return {
+    player = {
         "name": name, "position": position, "team": team,
         "opponent": opponent, "player_id": row.get("id"),
     }
+    # Same sources as the briefing, worst case wins. Without it every player
+    # projected at full health: an Out free agent could rank as an upgrade and
+    # an Out starter of yours set the bar a claim had to clear.
+    injury = injury_for_row(row, injury_index or {})
+    if injury:
+        player["injury"] = {"status": injury["status"]}
+    return player
 
 
 async def get_waiver_targets(
@@ -154,8 +164,9 @@ async def get_waiver_targets(
         row for row in db.get_athletes_by_positions(wanted, exclude_ids=taken)
         if _is_claimable(row)
     ]
+    injury_index = build_injury_index(db.get_all_current_injuries())
     pool_inputs = [
-        p for row in pool_rows if (p := _to_projection_input(row, opponents))
+        p for row in pool_rows if (p := _to_projection_input(row, opponents, injury_index))
     ]
 
     # My own roster, for the bar a claim has to clear. Reserve/taxi are excluded
@@ -166,7 +177,8 @@ async def get_waiver_targets(
         [str(p) for p in (mine.get("players") or []) if str(p) not in unavailable]
     )
     my_inputs = [
-        p for row in my_rows.values() if (p := _to_projection_input(row, opponents))
+        p for row in my_rows.values()
+        if (p := _to_projection_input(row, opponents, injury_index))
     ]
 
     my_proj = await project_players(
@@ -178,9 +190,11 @@ async def get_waiver_targets(
 
     def _named(result, inputs):
         by_name = {(p["name"], p["team"]): p["player_id"] for p in inputs}
+        status_of = {(p["name"], p["team"]): (p.get("injury") or {}).get("status") for p in inputs}
         return [
             {
                 "player_id": by_name.get((p["player"], p["team"])),
+                "injury_status": status_of.get((p["player"], p["team"])),
                 "name": p["player"], "position": p["position"], "team": p["team"],
                 "opponent": p["opponent"],
                 "projected_points": p["projected_points"],
@@ -241,8 +255,14 @@ async def get_waiver_targets(
     top = [t for t in targets if t["verdict"] in ("upgrade", "speculative")][:limit]
 
     # Who you would drop: your own weakest projections, worst first. Stashed
-    # players are left out — dropping an IR spot is a different decision.
-    drops = sorted(mine_scored, key=lambda p: p["projected_points"])[:5]
+    # players are left out — dropping an IR spot is a different decision — and
+    # so is anyone who projects low only because he misses this week: a zero
+    # for an Out starter says nothing about the rest of the season.
+    injured_held = [p for p in mine_scored if misses_this_week(p.get("injury_status"))]
+    drops = sorted(
+        (p for p in mine_scored if not misses_this_week(p.get("injury_status"))),
+        key=lambda p: p["projected_points"],
+    )[:5]
 
     empty_slots = sorted(
         position for position, count in slots.items()
@@ -275,6 +295,12 @@ async def get_waiver_targets(
         "replacement_levels": {k: round(v, 1) for k, v in levels.items()},
         "targets": top,
         "drop_candidates": drops,
+        # Out/doubtful players on your active roster, kept off the drop list.
+        # Whether to hold, move to IR or cut them is not a one-week call.
+        "injured_not_dropped": [
+            {"name": p["name"], "position": p["position"], "injury_status": p["injury_status"]}
+            for p in injured_held
+        ],
         "thin_positions": empty_slots,
         "method": (
             "free agents (nobody in the league rosters them) projected for the "

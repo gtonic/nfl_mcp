@@ -130,3 +130,19 @@ def lookup_injury(db, player_name: str | None, team: str | None) -> dict | None:
                 athlete = row
                 break
     return resolve_injury(athlete, report_index, team)
+
+
+def injury_for_row(row: dict, injury_index: dict[tuple[str, str], dict]) -> dict | None:
+    """`resolve_injury` for an athlete row, using the row's own team."""
+    return resolve_injury(row, injury_index, normalize_team(row.get("team_id")) or "")
+
+
+def misses_this_week(status: str | None) -> bool:
+    """Whether a status all but rules the player out of this week's game.
+
+    Doubtful counts: it projects at 0.35 and rarely plays. A one-week projection
+    of such a player says nothing about his value beyond this week, so tools
+    that act on that projection for longer — a drop, a trade — must not.
+    """
+    from .projections import _injury_mult  # deferred: projections is heavy
+    return bool(status) and _injury_mult(status) <= 0.35
