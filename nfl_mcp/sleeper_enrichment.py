@@ -956,7 +956,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
             vegas = get_vegas_analyzer()
 
             # Get game lines for the team (synchronous - uses cached lines)
-            game = vegas.get_game_lines(team)
+            game = vegas.get_game_lines(team, opponent=enriched_additions.get("opponent"))
 
             # Real lines carry no `is_fallback` key at all — only the neutral
             # placeholder sets it — so defaulting the lookup to True filed every

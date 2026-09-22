@@ -89,7 +89,7 @@ class TestVegasTeamKey:
         vegas._normalize_team.side_effect = lambda t: t
         with patch("nfl_mcp.vegas_tools.get_vegas_analyzer", return_value=vegas):
             out = _enrich_usage_and_opponent(_quiet(MagicMock()), _athlete(), 2026, 3)
-        vegas.get_game_lines.assert_called_once_with("DAL")
+        vegas.get_game_lines.assert_called_once_with("DAL", opponent="KC")
         assert out["implied_team_total"] == 26.0
         assert out["vegas_source"] == "lines"
 

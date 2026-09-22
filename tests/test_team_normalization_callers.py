@@ -24,7 +24,7 @@ class TestProjectionHomeAwayDetection:
         # LAR gave 27.5 for the same player.
         engine = projections.get_projection_engine()
         lines = self._lines()
-        monkeypatch.setattr(engine.vegas, "get_game_lines", lambda t, ln=None: lines["LAR"])
+        monkeypatch.setattr(engine.vegas, "get_game_lines", lambda t, ln=None, **_: lines["LAR"])
 
         result = engine._project_one(
             {"name": "Puka Nacua", "position": "WR", "team": spelling, "opponent": "NYG"},
