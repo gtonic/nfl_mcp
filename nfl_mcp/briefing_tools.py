@@ -19,9 +19,11 @@ from .errors import create_success_response
 from .game_clock import game_progress, settle
 from .injury_match import (
     build_injury_index,
+    misses_this_week,
     report_ids_for,
     resolve_injury,
 )
+from .ir_audit import audit_roster
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -411,6 +413,27 @@ async def get_weekly_briefing(
         for pid in (mine.get("players") or [])
         if pid not in projected_ids and pid not in unavailable
     ]
+    # Players the projection zeroed or nearly zeroed for injury. Before this
+    # they vanished: priced (so not `not_projected`), both sources agreeing (so
+    # no `injury_source_conflicts`), not starting (so not in `bench`) — Brock
+    # Bowers, Out with news saying he would play, was simply absent.
+    lineup_ids = {s.get("player_id") for s in recommended if s.get("player_id")}
+    lineup_names = {s["player"] for s in recommended}
+    unavailable_now = [
+        {
+            "player": p["name"], "position": p["position"],
+            "status": p["injury_detail"]["status"],
+            "source": p["injury_detail"]["source"],
+            "sleeper_status": p["injury_detail"]["sleeper_status"],
+            "report_status": p["injury_detail"]["report_status"],
+            "injury_type": p["injury_detail"].get("injury_type"),
+            "in_recommended_lineup": p["player_id"] in lineup_ids or p["name"] in lineup_names,
+        }
+        for p in my_inputs
+        if p.get("injury_detail") and misses_this_week(p["injury_detail"]["status"])
+    ]
+    ir = audit_roster(mine, league.get("settings") or {}, athletes, injury_index)
+
     # Stashed players are listed separately: they are on the roster on purpose,
     # not a gap to fill.
     reserved = [
@@ -475,5 +498,7 @@ async def get_weekly_briefing(
         ],
         # Byes, and anything the projection layer could not price.
         "not_projected": unprojectable,
+        "unavailable": unavailable_now,
+        "ir_moves": [m for m in ir["moves"] if m["action"] != "not_eligible"],
         "reserve": reserved,
     })

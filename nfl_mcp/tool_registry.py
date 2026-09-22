@@ -19,6 +19,7 @@ from . import (
     draft_tools,
     faab_tools,
     handcuff_tools,
+    ir_audit,
     lineup_optimizer_tools,
     matchup_tools,
     nfl_tools,
@@ -126,6 +127,7 @@ def get_all_tools() -> list[Callable]:
         check_re_entry_status,
         get_waiver_wire_dashboard,
         get_waiver_targets,
+        audit_ir_slots,
         recommend_faab_bid,
         get_handcuff_map,
 
@@ -2647,8 +2649,16 @@ async def get_weekly_briefing(
     Returns: {
         league {name, scoring, slots}, week, record, win_probability,
         projected_points, opponent_projected_points, recommended_lineup,
-        changes [{slot, start, projected_points}], bench, injury_changes,
-        not_projected, success
+        changes [{slot, start, projected_points}],
+        bench: names of CURRENT starters the recommendation moves to the bench
+               (not your bench players),
+        injury_changes: real status moves on your roster in the last 7 days,
+        unavailable [{player, position, status, source, sleeper_status,
+                      report_status, injury_type, in_recommended_lineup}]:
+               players projected at or near zero for injury this week,
+        ir_moves [{action, player, reason}]: activate / move_to_ir / ir_full,
+               see audit_ir_slots,
+        not_projected, reserve, success
     }
 
     Example: get_weekly_briefing(league_id="123", roster_id=7)
@@ -2704,6 +2714,41 @@ async def find_trade_targets(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
         week=week, season=season, positions=positions, limit=limit,
     )
+
+
+@timing_decorator("audit_ir_slots", tool_type="waiver")
+async def audit_ir_slots(
+    league_id: str,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+) -> dict:
+    """IR audit: who to move into the IR slot, who must come out, who is stuck.
+
+    Reads the league's own IR rules (reserve_slots, reserve_allow_out/doubtful/
+    sus/na/dnr/cov) against Sleeper's injury status, which is what Sleeper
+    enforces. Use for "can I put X on IR", "why can't I add anyone", or as part
+    of a weekly roster check (get_weekly_briefing includes the same moves).
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+
+    Returns: {
+        reserve_slots, reserve_used, reserve_free, eligible_statuses,
+        moves [{action, player, position, sleeper_status, report_status, reason}],
+        message, success
+    }
+    action is one of:
+        activate      - in IR but no longer eligible; Sleeper blocks adds/claims until moved
+        move_to_ir    - eligible, on the active roster, and a slot is free
+        ir_full       - eligible, but every IR slot is taken
+        not_eligible  - will not play this week, but the league's rules keep him out of IR
+
+    Example: audit_ir_slots(league_id="123", roster_id=7)
+    """
+    league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+    return await ir_audit.audit_ir_slots(league_id=league_id, roster_id=roster_id, user_id=user_id)
 
 
 @timing_decorator("get_waiver_targets", tool_type="waiver")
