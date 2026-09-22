@@ -322,7 +322,7 @@ class ProjectionEngine:
         env_is_fallback = True
         if team:
             try:
-                game = self.vegas.get_game_lines(team, lines)
+                game = self.vegas.get_game_lines(team, lines, opponent=opponent)
                 # Compare canonical to canonical. `get_game_lines` normalizes
                 # its lookup but returns the canonical spelling, so a caller
                 # passing Sleeper's `WAS`/`JAC`/`LA` would fail this test on a

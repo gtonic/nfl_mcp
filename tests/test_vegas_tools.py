@@ -376,3 +376,34 @@ class TestConstants:
         for _full, _abbrev in TEAM_ABBREVIATIONS.items():
             # Most are 3 chars, but some may differ
             pass  # Skip this test as it may have edge cases
+
+
+class TestGameLinesPinnedToTheMatchup:
+    """The per-team index means "next posted game"; the book posts two weeks.
+
+    Projecting a later week, or a team whose game already kicked off, priced
+    the wrong game. With an opponent the lookup is exact or it is a fallback.
+    """
+
+    def _analyzer(self):
+        from nfl_mcp.vegas_tools import VegasLinesAnalyzer
+        analyzer = VegasLinesAnalyzer()
+        week3 = {"home_team": "CHI", "away_team": "PHI", "total": 41.9}
+        week4 = {"home_team": "DAL", "away_team": "CHI", "total": 47.5}
+        analyzer._lines_cache = {"PHI@CHI": week3, "CHI@DAL": week4, "CHI": week3,
+                                 "PHI": week3, "DAL": week4}
+        return analyzer
+
+    def test_without_an_opponent_it_is_the_next_game(self):
+        assert self._analyzer().get_game_lines("CHI")["total"] == 41.9
+
+    def test_the_opponent_selects_the_week(self):
+        assert self._analyzer().get_game_lines("CHI", opponent="DAL")["total"] == 47.5
+        assert self._analyzer().get_game_lines("CHI", opponent="PHI")["total"] == 41.9
+
+    def test_an_unposted_matchup_is_a_fallback_not_another_game(self):
+        game = self._analyzer().get_game_lines("CHI", opponent="GB")
+        assert game["is_fallback"] is True
+
+    def test_the_team_can_be_the_away_side(self):
+        assert self._analyzer().get_game_lines("CHI", opponent="DAL")["home_team"] == "DAL"

@@ -59,7 +59,7 @@ class TestEngineWiring:
             "home_implied_total": 29.1, "away_implied_total": 16.0,
             "is_fallback": False,
         }}
-        monkeypatch.setattr(engine.vegas, "get_game_lines", lambda team, ln=None: lines["SF"])
+        monkeypatch.setattr(engine.vegas, "get_game_lines", lambda team, ln=None, **_: lines["SF"])
 
         result = engine._project_one(
             {"name": "SF", "position": "DST", "team": "SF", "opponent": "MIA"},
@@ -83,7 +83,7 @@ class TestEngineWiring:
             "home_implied_total": 26.4, "away_implied_total": 21.9,
             "is_fallback": False,
         }}
-        monkeypatch.setattr(engine.vegas, "get_game_lines", lambda team, ln=None: lines["CHI"])
+        monkeypatch.setattr(engine.vegas, "get_game_lines", lambda team, ln=None, **_: lines["CHI"])
 
         result = engine._project_one(
             {"name": "Cairo Santos", "position": "K", "team": "CHI", "opponent": "MIN"},
@@ -102,7 +102,7 @@ class TestEngineWiring:
             "home_implied_total": 24.0, "away_implied_total": 21.0,
             "is_fallback": True,
         }}
-        monkeypatch.setattr(engine.vegas, "get_game_lines", lambda team, ln=None: lines["SF"])
+        monkeypatch.setattr(engine.vegas, "get_game_lines", lambda team, ln=None, **_: lines["SF"])
 
         result = engine._project_one(
             {"name": "SF", "position": "DST", "team": "SF", "opponent": "MIA"},

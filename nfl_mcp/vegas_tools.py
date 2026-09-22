@@ -400,26 +400,50 @@ class VegasLinesAnalyzer:
         # Return empty - will use defaults when looking up specific teams
         return {}
 
-    def get_game_lines(self, team: str, lines: dict | None = None) -> dict:
+    def get_game_lines(
+        self, team: str, lines: dict | None = None, opponent: str | None = None
+    ) -> dict:
         """
         Get Vegas lines for a specific team's game.
 
         Args:
             team: Team abbreviation
             lines: Pre-fetched lines (optional)
+            opponent: The opponent of the game you mean. Pins the lookup to that
+                matchup; without it you get the team's *next* posted game.
 
         Returns:
             Dict with line data for the team's game
         """
         team = self._normalize_team(team)
+        sources = [src for src in (lines, self._lines_cache) if src]
 
-        if lines and team in lines:
-            return lines[team]
+        if opponent:
+            # The per-team index means "next game", and the book posts two weeks
+            # at once. Projecting week 4 — or a team whose week-3 game already
+            # kicked off — silently priced the wrong game (a CHI-vs-DAL request
+            # came back with CHI's real week-3 total). With an opponent the
+            # matchup key is exact, and a missing one is a fallback, not a guess.
+            opp = self._normalize_team(opponent)
+            for src in sources:
+                for key in (f"{opp}@{team}", f"{team}@{opp}"):
+                    if key in src:
+                        return src[key]
+                # The team's own entry is fine when it *is* that matchup.
+                game = src.get(team)
+                if game and {game.get("home_team"), game.get("away_team")} == {team, opp}:
+                    return game
+            return self._fallback_game(team)
 
-        if self._lines_cache and team in self._lines_cache:
-            return self._lines_cache[team]
+        for src in sources:
+            if team in src:
+                return src[team]
 
-        # Return neutral defaults
+        return self._fallback_game(team)
+
+    @staticmethod
+    def _fallback_game(team: str) -> dict:
+        """Neutral placeholder when no line is posted for the game asked about."""
         return {
             "home_team": team,
             "away_team": "OPP",
@@ -718,7 +742,7 @@ async def analyze_roster_vegas(
             continue
 
         team_norm = analyzer._normalize_team(team)
-        game = analyzer.get_game_lines(team_norm, lines)
+        game = analyzer.get_game_lines(team_norm, lines, opponent=player.get("opponent"))
 
         is_home = game.get("home_team") == team_norm
         env = game.get("game_environment", {})
