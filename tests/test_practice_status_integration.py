@@ -22,7 +22,7 @@ def test_practice_status_integration_scenario():
 
     # Scenario 1: Christian McCaffrey - healthy player (no injury, no practice report)
     mock_db.get_latest_practice_status = Mock(return_value=None)
-    mock_db.get_player_injury_from_cache = Mock(return_value=None)
+    mock_db.find_player_injury = Mock(return_value=None)
     mock_db.get_usage_last_n_weeks = Mock(return_value=None)
 
     mccaffrey = {
@@ -40,7 +40,7 @@ def test_practice_status_integration_scenario():
     print(f"✓ {mccaffrey['full_name']}: practice_status={result1['practice_status']} (source: {result1['practice_status_source']})")
 
     # Scenario 2: Injured player - Questionable
-    mock_db.get_player_injury_from_cache = Mock(return_value={
+    mock_db.find_player_injury = Mock(return_value={
         "injury_status": "Questionable",
         "injury_type": "Ankle",
         "updated_at": datetime.now(UTC).isoformat()
@@ -68,7 +68,12 @@ def test_practice_status_integration_scenario():
         "updated_at": datetime.now(UTC).isoformat(),
         "source": "espn_injuries"
     })
-    mock_db.get_player_injury_from_cache = Mock(return_value=None)
+    # Practice rows carry the injury report's (ESPN) id, not the Sleeper id.
+    mock_db.find_player_injury = Mock(return_value={
+        "player_id": "4241985",
+        "injury_status": "Questionable",
+        "updated_at": datetime.now(UTC).isoformat(),
+    })
 
     ferguson = {
         "id": "8112",
@@ -87,7 +92,7 @@ def test_practice_status_integration_scenario():
 
     # Scenario 4: Player Out with injury
     mock_db.get_latest_practice_status = Mock(return_value=None)
-    mock_db.get_player_injury_from_cache = Mock(return_value={
+    mock_db.find_player_injury = Mock(return_value={
         "injury_status": "Out",
         "injury_type": "Knee",
         "updated_at": datetime.now(UTC).isoformat()

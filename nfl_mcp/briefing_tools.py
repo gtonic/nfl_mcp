@@ -12,14 +12,16 @@ delta from the recorded ``injury_history`` timeline.
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from .database import NFLDatabase
 from .errors import create_success_response
 from .game_clock import game_progress, settle
-from .injury_service import worst_status
-from .opportunity_tools import norm_name
+from .injury_match import (
+    build_injury_index,
+    report_ids_for,
+    resolve_injury,
+)
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -63,71 +65,19 @@ def _slots_from_positions(roster_positions: list[str] | None) -> dict[str, int]:
     return slots
 
 
-def _injury_status(row: dict | None) -> str | None:
-    """Sleeper's injury status for an athlete row, or None.
+def _status_moves(changes: list[dict]) -> list[dict]:
+    """Keep the history rows that are news: a status that actually moved.
 
-    Read from the stored raw payload: the top-level `status` column carries
-    roster status ("Active"/"Inactive"), which is a different question.
+    The timeline also records a new injury type under an unchanged status
+    ("Active -> Active") and a first sighting of every healthy player when the
+    feed is first crawled. Both are true but neither is a move, and together
+    they buried Daniels' downgrade under forty lines of noise.
     """
-    if not row:
-        return None
-    raw = row.get("raw")
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except (ValueError, TypeError):
-            return None
-    return (raw or {}).get("injury_status") if isinstance(raw, dict) else None
-
-
-def build_injury_index(injuries: list[dict]) -> dict[tuple[str, str], dict]:
-    """Index the multi-source injury reports by (normalized name, team).
-
-    `player_injuries` carries ESPN athlete ids while `athletes` carries Sleeper
-    ids — the two id spaces are unrelated (12 of 2638 rows collide by accident),
-    so the join has to go through the name, using the same normalization the
-    nflverse lookup uses.
-    """
-    index: dict[tuple[str, str], dict] = {}
-    for row in injuries:
-        name = norm_name(row.get("player_name"))
-        team = normalize_team(row.get("team_id")) or ""
-        if name:
-            index[(name, team)] = row
-    return index
-
-
-def resolve_injury(
-    athlete_row: dict | None, injury_index: dict[tuple[str, str], dict], team: str
-) -> dict | None:
-    """Combine Sleeper's status with the ESPN/CBS report, worst case wins.
-
-    Returns ``{status, source, sleeper_status, report_status}`` or None when
-    neither source says anything. Disagreement is the normal state around
-    kickoff, not an anomaly: on 2026-09-20 ESPN had Brock Bowers at doubtful
-    while Sleeper still said questionable, and taking the milder reading put a
-    0.9 multiplier on a player who did not play.
-    """
-    sleeper_status = _injury_status(athlete_row)
-    name = norm_name((athlete_row or {}).get("full_name"))
-    report = injury_index.get((name, team)) if name else None
-    report_status = (report or {}).get("injury_status")
-    # "Active" is the report's way of saying "no injury", so it must not beat a
-    # real designation from the other source.
-    if report_status == "Active":
-        report_status = None
-
-    status = worst_status(sleeper_status, report_status)
-    if not status:
-        return None
-    return {
-        "status": status,
-        "source": ("both" if sleeper_status and report_status
-                   else "report" if report_status else "sleeper"),
-        "sleeper_status": sleeper_status,
-        "report_status": report_status,
-        "injury_type": (report or {}).get("injury_type"),
-    }
+    return [
+        c for c in changes
+        if c.get("injury_status") != c.get("previous_status")
+        and not (c.get("previous_status") is None and c.get("injury_status") == "Active")
+    ]
 
 
 # Beyond this the injury picture can have moved without us knowing. Kept tight
@@ -437,13 +387,20 @@ async def get_weekly_briefing(
     # 7) Injury moves on my roster since a week ago
     from datetime import UTC, datetime, timedelta
     since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-    my_player_ids = [str(p) for p in (mine.get("players") or [])]
+    # The timeline is keyed by ESPN report ids, the roster by Sleeper ids, so
+    # the roster is translated through the name/team index first. Passing the
+    # Sleeper ids straight through matched nothing — the briefing reported no
+    # moves on a roster where two players had just been downgraded.
+    my_report_ids = report_ids_for(
+        [athletes[pid] for pid in (mine.get("players") or []) if pid in athletes],
+        injury_index,
+    )
     # Filtered in SQL, not afterwards: a league-wide page of 500 can be filled
     # entirely by other teams' players (or by a feed backfill) and leave the
     # briefing claiming nothing moved on a roster where something did.
-    injury_changes = (
-        db.get_injury_status_changes(since=since, limit=100, player_ids=my_player_ids)
-        if my_player_ids else []
+    injury_changes = _status_moves(
+        db.get_injury_status_changes(since=since, limit=100, player_ids=my_report_ids)
+        if my_report_ids else []
     )
 
     projected_ids = {p["player_id"] for p in my_inputs}

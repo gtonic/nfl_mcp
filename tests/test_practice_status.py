@@ -21,7 +21,12 @@ class TestPracticeStatusEnrichment:
             "updated_at": datetime.now(UTC).isoformat(),
             "source": "espn_injuries"
         })
-        mock_db.get_player_injury_from_cache = Mock(return_value=None)
+        # Practice rows carry the injury report's (ESPN) id, not the Sleeper id.
+        mock_db.find_player_injury = Mock(return_value={
+            "player_id": "4001234",
+            "injury_status": "Questionable",
+            "updated_at": datetime.now(UTC).isoformat(),
+        })
         mock_db.get_usage_last_n_weeks = Mock(return_value=None)  # No usage data
 
         # Setup athlete data
@@ -34,7 +39,8 @@ class TestPracticeStatusEnrichment:
         # Call enrichment
         result = _enrich_usage_and_opponent(mock_db, athlete, 2025, 6)
 
-        # Verify practice status is set from database
+        # Verify practice status is set from database, looked up by report id
+        mock_db.get_latest_practice_status.assert_called_once_with("4001234", max_age_hours=72)
         assert result["practice_status"] == "LP"
         assert result["practice_status_date"] == "2025-01-15"
         assert "practice_status_age_hours" in result
@@ -44,7 +50,7 @@ class TestPracticeStatusEnrichment:
         # Setup mock database
         mock_db = Mock()
         mock_db.get_latest_practice_status = Mock(return_value=None)  # No explicit practice status
-        mock_db.get_player_injury_from_cache = Mock(return_value={
+        mock_db.find_player_injury = Mock(return_value={
             "injury_status": "Out",
             "injury_type": "Knee",
             "updated_at": datetime.now(UTC).isoformat()
@@ -71,7 +77,7 @@ class TestPracticeStatusEnrichment:
         # Setup mock database
         mock_db = Mock()
         mock_db.get_latest_practice_status = Mock(return_value=None)
-        mock_db.get_player_injury_from_cache = Mock(return_value={
+        mock_db.find_player_injury = Mock(return_value={
             "injury_status": "Questionable",
             "injury_type": "Ankle",
             "updated_at": datetime.now(UTC).isoformat()
@@ -98,7 +104,7 @@ class TestPracticeStatusEnrichment:
         # Setup mock database
         mock_db = Mock()
         mock_db.get_latest_practice_status = Mock(return_value=None)  # No practice status
-        mock_db.get_player_injury_from_cache = Mock(return_value=None)  # No injury
+        mock_db.find_player_injury = Mock(return_value=None)  # No injury
         mock_db.get_usage_last_n_weeks = Mock(return_value=None)  # No usage data
 
         # Setup athlete data
@@ -121,7 +127,7 @@ class TestPracticeStatusEnrichment:
         # Setup mock database
         mock_db = Mock()
         mock_db.get_latest_practice_status = Mock(return_value=None)
-        mock_db.get_player_injury_from_cache = Mock(return_value={
+        mock_db.find_player_injury = Mock(return_value={
             "injury_status": "Doubtful",
             "injury_type": "Hamstring",
             "updated_at": datetime.now(UTC).isoformat()
@@ -148,7 +154,7 @@ class TestPracticeStatusEnrichment:
         # Setup mock database
         mock_db = Mock()
         mock_db.get_latest_practice_status = Mock(return_value=None)
-        mock_db.get_player_injury_from_cache = Mock(return_value={
+        mock_db.find_player_injury = Mock(return_value={
             "injury_status": "Injured Reserve",
             "injury_type": "ACL",
             "updated_at": datetime.now(UTC).isoformat()
