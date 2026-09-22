@@ -401,10 +401,20 @@ async def analyze_trade(
         # Generate warnings
         warnings = []
 
-        # Check for injured players
+        # Check for injured players. The designation itself, not only a DNP:
+        # an Out or IR player sits at full market value in the fairness score,
+        # so the one thing the user must hear is that he is not playing.
         for player in team1_gives_enriched + team2_gives_enriched:
-            if player.get("practice_status") == "DNP":
-                warnings.append(f"{player.get('full_name', 'Unknown')} has DNP status (injury concern)")
+            status = player.get("injury_status")
+            name = player.get("full_name", "Unknown")
+            if status and status != "Active":
+                warnings.append(
+                    f"{name} is listed {status}"
+                    + (f" ({player['injury_type']})" if player.get("injury_type") else "")
+                    + " — market value assumes he returns; check the timeline"
+                )
+            elif player.get("practice_status") == "DNP":
+                warnings.append(f"{name} has DNP status (injury concern)")
 
         # Check for lopsided trades
         if fairness_score < 60:
