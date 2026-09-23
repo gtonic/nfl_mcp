@@ -1,7 +1,7 @@
 """Build Anthropic tool definitions from the live MCP tool registry.
 
 An assistant routes on tool **name + description + input schema**. We derive those
-straight from `tool_registry.get_all_tools()` (introspecting each function's
+straight from `tool_registry.get_all_tools(profile)` (introspecting each function's
 signature and docstring), so the eval sees exactly the tools production exposes.
 Pure/offline — no network, no API key.
 """
@@ -65,12 +65,16 @@ def build_tool(func: Callable) -> dict[str, Any]:
     }
 
 
-def anthropic_tools_from_registry() -> list[dict[str, Any]]:
-    """All registered MCP tools as Anthropic tool definitions."""
+def anthropic_tools_from_registry(profile: str = "full") -> list[dict[str, Any]]:
+    """Registered MCP tools of a profile as Anthropic tool definitions.
+
+    Defaults to the `full` profile so the draft scenarios have their tools;
+    pass "season" to route against what the in-season default exposes.
+    """
     from nfl_mcp import tool_registry
-    return [build_tool(fn) for fn in tool_registry.get_all_tools()]
+    return [build_tool(fn) for fn in tool_registry.get_all_tools(profile)]
 
 
-def registry_tool_names() -> set:
+def registry_tool_names(profile: str = "full") -> set:
     from nfl_mcp import tool_registry
-    return {fn.__name__ for fn in tool_registry.get_all_tools()}
+    return {fn.__name__ for fn in tool_registry.get_all_tools(profile)}

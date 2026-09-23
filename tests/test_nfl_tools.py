@@ -564,7 +564,7 @@ class TestAuditHighFixes:
     @pytest.mark.asyncio
     async def test_league_leaders_wrapper_maps_and_reshapes(self):
         from nfl_mcp import tool_registry
-        fn = {f.__name__: f for f in tool_registry.get_all_tools()}["get_league_leaders"]
+        fn = {f.__name__: f for f in tool_registry.get_all_tools("full")}["get_league_leaders"]
 
         captured = {}
 

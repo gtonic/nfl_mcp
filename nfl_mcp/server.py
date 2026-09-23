@@ -553,8 +553,12 @@ def create_app() -> FastMCP:
     mcp = FastMCP(name="NFL MCP Server", lifespan=_create_prefetch_lifespan(nfl_db))
 
     # --- Register all tools from the tool registry ---
-    for tool_func in tool_registry.get_all_tools():
+    profile = tool_registry.tool_profile()
+    tools = tool_registry.get_all_tools(profile)
+    for tool_func in tools:
         mcp.tool(tool_func)
+    logger.info(f"Tool profile {profile!r}: {len(tools)} tools registered "
+                f"(set NFL_MCP_TOOL_PROFILE=season|full|offseason)")
 
     # --- Fix #3: Mount extracted health endpoint (separate module) ---
     @mcp.custom_route("/health", methods=["GET"])

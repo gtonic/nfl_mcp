@@ -74,8 +74,68 @@ def get_db() -> NFLDatabase | None:
     """Return the current request's database instance (or None)."""
     return _db_token.get()
 
-def get_all_tools() -> list[Callable]:
-    """Get list of all tool functions to register with FastMCP server."""
+# ---------------------------------------------------------------------------
+# Tool profiles (NFL_MCP_TOOL_PROFILE). Too many overlapping tools hurt an
+# assistant's tool routing, so the in-season default hides what a weekly
+# check-in never needs. `full` registers everything.
+# ---------------------------------------------------------------------------
+TOOL_PROFILES = ("season", "full", "offseason")
+DEFAULT_TOOL_PROFILE = "season"
+
+DRAFT_TOOLS = frozenset({
+    "get_league_drafts", "get_draft", "get_draft_picks", "get_draft_traded_picks",
+    "get_traded_picks", "get_draft_board", "recommend_draft_pick", "simulate_draft",
+})
+COACHING_TOOLS = frozenset({
+    "get_coaching_staff", "get_all_coaching_staffs", "get_coaching_tree",
+    "get_scheme_classification",
+})
+# Cache refreshes the prefetch loop already runs.
+ADMIN_TOOLS = frozenset({"fetch_athletes", "fetch_all_players", "fetch_teams"})
+# Rarely the right answer to a fantasy question.
+NICHE_TOOLS = frozenset({"get_league_leaders", "get_cbs_expert_picks"})
+# Only meaningful while games are being played.
+IN_SEASON_TOOLS = frozenset({
+    "get_weekly_briefing", "get_weekly_retro", "get_league_changes", "get_bye_week_plan",
+    "get_playoff_odds", "get_playoff_bracket", "get_matchups", "get_waiver_targets",
+    "recommend_faab_bid", "get_waiver_log", "audit_ir_slots", "get_start_sit_recommendation",
+    "compare_players_for_slot", "analyze_lineup", "get_win_probability_lineup",
+    "get_gameday_inactives", "get_streaming_options", "get_weather_forecast",
+    "analyze_opponent", "analyze_roster_matchups", "get_stack_opportunities",
+    "get_vegas_lines", "find_trade_targets", "get_opportunity_projections",
+    "get_usage_trends",
+})
+
+_PROFILE_HIDDEN = {
+    "season": DRAFT_TOOLS | COACHING_TOOLS | ADMIN_TOOLS | NICHE_TOOLS,
+    "offseason": IN_SEASON_TOOLS | ADMIN_TOOLS | {"get_cbs_expert_picks"},
+    "full": frozenset(),
+}
+
+
+def tool_profile(profile: str | None = None) -> str:
+    """The active profile: `profile`, else NFL_MCP_TOOL_PROFILE, else season."""
+    import os
+
+    raw = (profile or os.getenv("NFL_MCP_TOOL_PROFILE") or DEFAULT_TOOL_PROFILE).strip().lower()
+    if raw not in TOOL_PROFILES:
+        logger.warning(f"Unknown NFL_MCP_TOOL_PROFILE={raw!r}; using {DEFAULT_TOOL_PROFILE!r} "
+                       f"(valid: {', '.join(TOOL_PROFILES)})")
+        return DEFAULT_TOOL_PROFILE
+    return raw
+
+
+def get_all_tools(profile: str | None = None) -> list[Callable]:
+    """Tool functions to register with FastMCP for a profile (see TOOL_PROFILES).
+
+    `profile` defaults to NFL_MCP_TOOL_PROFILE, else "season".
+    """
+    hidden = _PROFILE_HIDDEN[tool_profile(profile)]
+    return [t for t in _registered_tools() if t.__name__ not in hidden]
+
+
+def _registered_tools() -> list[Callable]:
+    """Every tool, in registration order (the `full` profile)."""
     tools = [
         # NFL News and Info
         get_nfl_news,
