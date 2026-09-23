@@ -48,6 +48,18 @@ def _ros_offline(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _opponent_league_offline(monkeypatch):
+    """Opponent analysis reads the league's roster positions; keep it offline
+    (None = assess every position). Tests of the slot filter patch it."""
+    from nfl_mcp import opponent_analysis_tools
+
+    async def _none(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(opponent_analysis_tools, "_league_roster_positions", _none)
+
+
+@pytest.fixture(autouse=True)
 def _no_unit_offense_read(monkeypatch):
     """Keep the projection engine's K/DEF offense fallback off the network.
 

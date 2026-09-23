@@ -21,7 +21,8 @@ fantasy-playoff window (``playoff_points``, from the league's
   full scoring via ``scoring.py``, rank bucket before there is usage), so ROS
   and the weekly numbers can never disagree about scale.
 - Regression: two or three games of opportunity are a small sample. The
-  opportunity base is blended with the rank-bucket prior for the position,
+  opportunity base is blended with the rank-bucket prior for the position
+  (rescaled by ``PRIOR_SCALE`` to what players at that rank score per game),
   weighted by games played (``PRIOR_GAMES`` games-equivalent of prior).
 - Matchup: the same position-aware multiplier the weekly projection uses, per
   week, on the defense-vs-position rankings from ``matchup_tools``.
@@ -50,8 +51,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_PLAYOFF_WEEK_START = 15
 LAST_NFL_WEEK = 18
 # Games-equivalent weight of the position prior. With two games of opportunity
-# the prior still carries 60%; with a full six-game window it carries a third.
-PRIOR_GAMES = 3
+# the prior carries half; with a full six-game window it carries a quarter.
+# From evals/backtest/ros_backtest.py (2023-24, as of weeks 3-8, predicting the
+# per-game rate over the rest of the season): 3 with the raw rank buckets left
+# lineup-level starters 1.0-1.3 points/game low at week 3; 2 with the scaled
+# prior below is within ±0.3 at weeks 3-4 and has the lowest MAE there.
+PRIOR_GAMES = 2
+# The rank buckets (`projections.base_ppg`) read low as a per-game-played rate
+# for receivers: measured over the rest of the season, a bucket-7.5/9.5/14.5 WR
+# scored 10.0/12.0/17.1 and a bucket-6.5/8.5 TE 8.8/10.1 (backtest above). The
+# weekly engine only falls back to them before a player has usage; as the
+# regression target they pulled every starter down, so the prior is rescaled
+# here to the level the players at that rank actually play at.
+PRIOR_SCALE = {"QB": 1.0, "RB": 1.08, "WR": 1.18, "TE": 1.25}
 # The NFL minimum for a player placed on injured reserve (and PUP/NFI).
 IR_MIN_WEEKS = 4
 SEASON_ENDING_WEEKS = 99
@@ -243,6 +255,13 @@ async def schedules_for(db, season: int, weeks: list[int]) -> dict[int, dict[str
 # Engine
 # --------------------------------------------------------------------------
 
+def regressed_rate(opportunity: float, prior: float, games: int,
+                   prior_games: float = PRIOR_GAMES) -> float:
+    """The opportunity base blended with the rank prior, weighted by games."""
+    weight = prior_games / (games + prior_games) if games + prior_games > 0 else 0.0
+    return (1 - weight) * float(opportunity) + weight * float(prior)
+
+
 def _per_game(proj: dict, position: str, model) -> tuple[float, str, float | None]:
     """``(per_game, source, prior_weight)``: the rate later weeks are priced at."""
     from .projections import base_ppg, defense_base, kicker_base
@@ -262,9 +281,10 @@ def _per_game(proj: dict, position: str, model) -> tuple[float, str, float | Non
     usage = float(bd.get("usage_mult") or 1.0)
     if source == "opportunity":
         games = int(bd.get("usage_games") or 0)
-        prior = base_ppg(position, bd.get("position_rank"), scoring=model)
+        prior = base_ppg(position, bd.get("position_rank"), scoring=model) * PRIOR_SCALE.get(
+            position, 1.0)
         weight = PRIOR_GAMES / (games + PRIOR_GAMES)
-        rate = (1 - weight) * float(base) + weight * prior
+        rate = regressed_rate(float(base), prior, games)
         return round(rate * usage, 2), "opportunity_regressed", round(weight, 2)
     return round(float(base) * usage, 2), source, None
 
@@ -653,7 +673,7 @@ async def get_ros_projections(
         "elapsed_seconds": round(elapsed, 2),
         "method": (
             "this week = the weekly projection; each later week = per-game "
-            f"baseline (opportunity regressed toward the position prior, {PRIOR_GAMES} "
+            f"baseline (opportunity regressed toward the rank prior, {PRIOR_GAMES} "
             "games-equivalent) × that week's matchup multiplier; 0 on byes and "
             "inside the expected injury absence"
         ),

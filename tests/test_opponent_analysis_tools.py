@@ -227,6 +227,55 @@ class TestKickerAndDefense:
         assert res["weakness_level"] == "critical"
 
 
+VLBG_POSITIONS = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "DEF",
+                  "BN", "BN", "BN", "IR"]
+
+
+class TestLeagueSlots:
+    """Only positions the league can start are assessed (VLBG has no K slot)."""
+
+    def test_league_positions(self):
+        from nfl_mcp.opponent_analysis_tools import league_positions
+        assert league_positions(VLBG_POSITIONS) == ["QB", "RB", "WR", "TE", "DEF"]
+        assert league_positions([*VLBG_POSITIONS, "K"]) == ["QB", "RB", "WR", "TE", "K", "DEF"]
+        assert league_positions(None) == ["QB", "RB", "WR", "TE", "K", "DEF"]
+
+    def test_no_kicker_slot_no_kicker_weakness(self):
+        roster = {"roster_id": 2, "players_enriched": [
+            {"player_id": "1", "full_name": "QB", "position": "QB"},
+            {"player_id": "2", "full_name": "D", "position": "DEF"},
+        ], "starters_enriched": []}
+        res = OpponentAnalyzer().analyze_opponent_roster(
+            roster, roster_positions=VLBG_POSITIONS)
+        assert "K" not in res["position_assessments"]
+        assert res["positions_assessed"] == ["QB", "RB", "WR", "TE", "DEF"]
+        assert not any(s.get("position") == "K" for s in res["exploitation_strategies"])
+        # Without the league's slots the empty K group is still flagged.
+        full = OpponentAnalyzer().analyze_opponent_roster(roster)
+        assert full["position_assessments"]["K"]["weakness_level"] == "critical"
+
+    @pytest.mark.asyncio
+    async def test_tool_reads_the_league_slots(self, monkeypatch):
+        from nfl_mcp import opponent_analysis_tools as oat
+
+        async def _rosters(league_id):
+            return {"success": True, "rosters": [{"roster_id": 2, "owner_id": "u", "players_enriched": [
+                {"player_id": "1", "full_name": "QB", "position": "QB"}]}]}
+
+        async def _users(league_id):
+            return {"success": True, "users": []}
+
+        async def _positions(league_id):
+            return VLBG_POSITIONS
+
+        monkeypatch.setattr(oat, "get_rosters", _rosters)
+        monkeypatch.setattr(oat, "get_league_users", _users)
+        monkeypatch.setattr(oat, "_league_roster_positions", _positions)
+        res = await analyze_opponent("L", 2)
+        assert res["success"]
+        assert "K" not in res["position_assessments"]
+
+
 class _AthleteDB:
     def get_athletes_by_ids(self, ids):
         rows = {
