@@ -155,7 +155,7 @@ _TEAMS = ["LV", "MIA", "LAC", "BUF", "KC", "DEN", "NE", "NYJ", "PIT", "BAL", "CL
 
 
 class TestByeVersusInjured:
-    SCHEDULE = {t: "XXX" for t in _TEAMS}
+    SCHEDULE = dict.fromkeys(_TEAMS, "XXX")
 
     def test_team_on_the_schedule_is_not_on_bye(self):
         # The weekly file may not list his team (lagging or partial file);

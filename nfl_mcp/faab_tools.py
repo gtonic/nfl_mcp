@@ -35,7 +35,7 @@ from .sleeper_tools import (
 )
 from .teams import normalize_team
 from .trade_analyzer_tools import league_format_from_settings
-from .waiver_rules import latest_drops, priority_strategy, trend_demand
+from .waiver_rules import horizon_worth, latest_drops, priority_strategy, trend_demand
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,36 @@ async def _waiver_timing_inputs(db, league_id: str, target: dict, season, week) 
     }
 
 
+async def _horizon_gains(league: dict, roster: dict, target_id: str, season: int,
+                         week: int, db) -> dict | None:
+    """This week's and the rest-of-season lineup gain of adding the target,
+    through the rule get_waiver_targets uses (`waiver_rules.horizon_worth`).
+    None when either side cannot be projected."""
+    from . import ros
+    from .roster_needs import lineup_slots as whole_slots
+
+    unavailable = {str(p) for key in ("reserve", "taxi") for p in (roster.get(key) or [])}
+    mine_ids = [str(p) for p in (roster.get("players") or [])
+                if p and str(p) != "0" and str(p) not in unavailable]
+    if not mine_ids or not target_id:
+        return None
+    try:
+        by_id, meta = await ros.ros_for_ids([*mine_ids, target_id], league=league,
+                                            season=season, week=week, db=db)
+    except Exception as e:
+        logger.warning(f"ROS unavailable for the FAAB horizons: {e}")
+        return None
+    candidate = by_id.get(target_id)
+    mine = [by_id[i] for i in mine_ids if i in by_id]
+    windows = (meta or {}).get("windows") or {}
+    weeks = sorted(set(windows.get("regular") or []) | set(windows.get("playoff") or []))
+    if not candidate or not mine or not weeks:
+        return None
+    gains = ros.lineup_gains(mine, candidate, whole_slots(league.get("roster_positions")),
+                             week, weeks)
+    return horizon_worth(gains["week_gain"], gains["ros_gain"], gains["ros_weeks"])
+
+
 def _slot_takes(slot: str, position: str) -> bool:
     from .lineup_slots import slot_accepts
     return slot_accepts(slot, position)
@@ -106,7 +136,7 @@ def _priority_advice(tier: str, upgrade_score: float | None) -> str:
 
 def _priority_message(advice: str, name: str, tier: str, value: float, upgrade: float,
                       has_roster: bool, rolling: bool, clear_days,
-                      strategy: dict | None = None) -> str:
+                      strategy: dict | None = None, horizons: dict | None = None) -> str:
     cost = (" Rolling waivers: a successful claim sends you to the back of the order."
             if rolling else "")
     # With timing known, the shared strategy says what to do and when, so this
@@ -115,6 +145,11 @@ def _priority_message(advice: str, name: str, tier: str, value: float, upgrade: 
         cost += f" {strategy['recommendation'].upper()}: {strategy['reason']}"
     free = bool(strategy) and strategy["recommendation"] == "add_now"
     gain = f"+{int(upgrade)} to your best lineup" if has_roster else "no roster context"
+    if horizons:
+        gain = (f"+{horizons['week_gain']} pts this week, +{horizons['ros_gain']} rest of "
+                f"season to your best lineup")
+    view = (" Weighs this week and rest of season, as get_waiver_targets does."
+            if horizons else " Season-long view; get_waiver_targets answers a one-week need.")
     if advice == "high":
         return (f"Non-FAAB league — {'a must-have add' if free else 'worth a high waiver-priority claim'}"
                 f" on {name} [{tier}] (value {int(value)}, {gain}).{cost}")
@@ -127,7 +162,7 @@ def _priority_message(advice: str, name: str, tier: str, value: float, upgrade: 
             if clear_days else "wait until he clears waivers and add him as a free agent")
     return (f"Non-FAAB league — don't burn waiver priority on {name} [{tier}] "
             f"(value {int(value)}, {gain})" + ("." if strategy else f": {wait}.")
-            + f"{cost} Season-long view; get_waiver_targets answers a one-week need.")
+            + f"{cost}{view}")
 
 
 def _tier(pct: float) -> str:
@@ -320,28 +355,39 @@ async def recommend_faab_bid(
         warnings.append("Not a FAAB league (waiver priority) — use your claim priority instead of a $ bid")
 
     has_roster = my_roster is not None
-    priority_advice = None if is_faab else _priority_advice(
-        tier, upgrade_score if has_roster else None)
+    try:
+        wk_int = int(wk) if wk else None
+        season_int = int(season) if season else None
+    except (TypeError, ValueError):
+        wk_int = season_int = None
+
+    # Both horizons, this week and rest of season, in lineup points — the
+    # same computation and rule get_waiver_targets reports per target.
+    horizons = None
+    if has_roster and db is not None and wk_int and season_int:
+        horizons = await _horizon_gains(league, my_roster, target_id, season_int, wk_int, db)
+    if horizons and horizons.get("worth") is None:
+        horizons = None
+
+    priority_advice = None if is_faab else (
+        horizons["worth"] if horizons else
+        _priority_advice(tier, upgrade_score if has_roster else None))
     rolling = not is_faab and settings.get("waiver_type") == 0
 
     # Non-FAAB: when he clears, whether he is contested, and so whether to
-    # claim now, wait for free agency or leave him — the same helper
-    # get_waiver_targets uses, judged rest-of-season here.
+    # claim now, wait for free agency or leave him — the same helper and, with
+    # both horizons known, the same worth get_waiver_targets uses.
     waiver_strategy = None
     lock = None
     if not is_faab:
-        try:
-            wk_int = int(wk) if wk else None
-            season_int = int(season) if season else None
-        except (TypeError, ValueError):
-            wk_int = season_int = None
         timing = await _waiver_timing_inputs(db, league_id, target, season_int, wk_int)
         now = _now()
         lock = game_lock(timing["game"], now)
         waiver_strategy = priority_strategy(
             league, my_roster, worth=priority_advice, demand=trend_demand(trend_rank),
             kickoff=timing["kickoff"], previous_kickoff=timing["previous_kickoff"],
-            dropped_at=timing["dropped_at"], now=now, this_week=False,
+            dropped_at=timing["dropped_at"], now=now,
+            this_week=bool(horizons and horizons["this_week_only"]),
         )
 
     reasoning = [
@@ -365,6 +411,10 @@ async def recommend_faab_bid(
             "tier": tier,
             # Non-FAAB only: how hard to spend a priority claim on him.
             "priority_advice": priority_advice,
+            # Lineup gain this week and rest of season, and the combined
+            # worth (`waiver_rules.horizon_worth`) — None without a roster
+            # or projections, when the market-value tier decides.
+            "horizons": horizons,
             # Non-FAAB only: claim now / wait / add now / don't bother, with
             # your waiver position and when he clears.
             "waiver_strategy": waiver_strategy,
@@ -382,9 +432,11 @@ async def recommend_faab_bid(
             },
         },
         "is_faab_league": is_faab,
-        # Market value is season-long; get_waiver_targets answers for this week.
-        # A player can be a strong claim for one and depth for the other.
+        # The bid is on market value, which is season-long. The claim advice
+        # (non-FAAB) weighs this week and rest of season (`horizons`) by the
+        # rule get_waiver_targets uses, so the two agree on a player.
         "horizon": "rest_of_season",
+        "horizons_reported": ["this_week", "rest_of_season"] if horizons else ["rest_of_season"],
         "scoring_used": model.summary(),
         "total_budget": total_budget if is_faab else None,
         "remaining_budget": remaining_budget,
@@ -395,6 +447,6 @@ async def recommend_faab_bid(
             if is_faab else
             _priority_message(priority_advice, target.get("name"), tier, target_value,
                               upgrade, has_roster, rolling, settings.get("waiver_clear_days"),
-                              waiver_strategy)
+                              waiver_strategy, horizons)
         ),
     })

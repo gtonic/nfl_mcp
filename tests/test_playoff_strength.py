@@ -14,7 +14,7 @@ def _round_robin(n: int) -> list[list[tuple[int, int]]]:
     rounds = []
     for _ in range(n - 1):
         rounds.append([(ids[i], ids[n - 1 - i]) for i in range(n // 2)])
-        ids = [ids[0]] + [ids[-1]] + ids[1:-1]
+        ids = [ids[0], ids[-1], *ids[1:-1]]
     return rounds
 
 
@@ -95,7 +95,7 @@ class TestOddsWithProjection:
     @pytest.mark.asyncio
     async def test_a_0_2_team_with_an_average_roster_is_alive(self):
         # Everyone projects about the same; roster 7 slightly above average.
-        projected = {rid: 115.0 for rid in range(1, 13)}
+        projected = dict.fromkeys(range(1, 13), 115.0)
         projected[7] = 118.0
         with _league(projected):
             res = await pt.get_playoff_odds("L", num_sims=4000, seed=3, my_roster_id=7, db=object())
@@ -131,7 +131,7 @@ class TestProjectedStrength:
             qb = {"player_id": "qb", "position": "QB",
                   "weekly_points": {w: (0.0 if w == 6 else 20.0) for w in weeks}}
             qb2 = {"player_id": "qb2", "position": "QB",
-                   "weekly_points": {w: 12.0 for w in weeks}}
+                   "weekly_points": dict.fromkeys(weeks, 12.0)}
             return ({"qb": qb, "qb2": qb2},
                     {"windows": {"regular": weeks, "playoff": [15, 16, 17]}})
 
