@@ -179,7 +179,7 @@ def get_all_tools() -> list[Callable]:
         get_vegas_lines,
         get_stack_opportunities,
 
-        # Injury Report Tools (Multi-source with confidence scoring)
+        # Injury Report Tools (ESPN reports + practice + timeline)
         get_injury_report,
         get_injury_trends,
         get_gameday_inactives,
@@ -338,53 +338,56 @@ async def get_cbs_player_news(limit: int | None = 50) -> dict:
 @timing_decorator("get_cbs_projections", tool_type="cbs_fantasy")
 async def get_cbs_projections(
     position: str = "QB",
-    week: int | None = None,
     season: int | None = 2026,
-    scoring: str = "ppr"
+    scoring: str = "ppr",
 ) -> dict:
-    """Fetch SEASON-LONG fantasy football projections from CBS Sports for a position.
+    """CBS Sports SEASON-LONG fantasy projections for one position (not weekly).
 
-    CBS only publishes season-long projections: the week is validated and echoed
-    back, but the source returns identical full-season numbers for every week.
-    Results carry period="season" and week_honoured=False. Do NOT use these as
-    week-level projections; use project_player/project_players for that.
+    CBS publishes only full-season totals at this source — there is no week
+    parameter because CBS ignores it (every week returns the same numbers).
+    Use it as a season-long outside opinion; for this week's points use
+    project_players, for rest-of-season in your league's scoring
+    get_ros_projections.
 
     Parameters:
-        position (str, default "QB"): Player position (QB, RB, WR, TE, K, DST).
-        week (int, required): NFL week number (1-18). Validated, not honoured.
+        position (str, default "QB"): QB, RB, WR, TE, K or DST.
         season (int, default 2026): Season year.
-        scoring (str, default "ppr"): Scoring format (ppr, half-ppr, standard).
-    Returns: {projections: [...], total_projections, week, period, week_honoured,
-        position, success, error?}
-    Example: get_cbs_projections(position="RB", week=11, season=2026, scoring="ppr")
+        scoring (str, default "ppr"): ppr, half-ppr or standard.
+    Returns: {projections: [...], total_projections, period: "season",
+        week_honoured: false, position, success, error?}
+    Example: get_cbs_projections(position="RB", scoring="half-ppr")
     """
     try:
-        week_i = int(week) if week is not None else None
         season_i = int(season) if season is not None else 2026
     except Exception:
-        week_i = None
         season_i = 2026
-    return await cbs_fantasy_tools.get_cbs_projections(
-        position=position,
-        week=week_i,
-        season=season_i,
-        scoring=scoring
+    # The source URL carries a week segment CBS ignores; any valid week works.
+    result = await cbs_fantasy_tools.get_cbs_projections(
+        position=position, week=1, season=season_i, scoring=scoring,
     )
+    if isinstance(result, dict):
+        result["week"] = None
+        result["period"] = "season"
+        result["week_honoured"] = False
+    return result
 
 
 @timing_decorator("get_cbs_expert_picks", tool_type="cbs_fantasy")
 async def get_cbs_expert_picks(week: int | None = None) -> dict:
-    """Fetch NFL expert picks against the spread from CBS Sports for a specific week.
+    """CBS Sports experts' NFL picks AGAINST THE SPREAD for a week (betting
+    picks per game, not fantasy advice).
 
     Parameters:
-        week (int, required): NFL week number (1-18).
+        week (int, optional): NFL week 1-18 (default: current week).
     Returns: {picks: [...], total_picks, week, success, error?}
-    Example: get_cbs_expert_picks(week=10)
+    Example: get_cbs_expert_picks(week=3)
     """
     try:
         week_i = int(week) if week is not None else None
     except Exception:
         week_i = None
+    if week_i is None:
+        _, week_i = await _current_season_week()
     return await cbs_fantasy_tools.get_cbs_expert_picks(week=week_i)
 
 
@@ -2282,7 +2285,7 @@ async def get_stack_opportunities(
 
 
 # =============================================================================
-# INJURY REPORT TOOLS (Multi-source aggregation with confidence scoring)
+# INJURY REPORT TOOLS (ESPN reports, practice reports, status timeline)
 # =============================================================================
 
 @timing_decorator("get_injury_report", tool_type="injury")

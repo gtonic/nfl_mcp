@@ -142,7 +142,7 @@ async def test_cbs_tools():
     assert 'news' in result or 'success' in result or 'error' in result
 
     # Test with invalid parameters
-    result = await get_cbs_projections(position="INVALID", week=1)
+    result = await get_cbs_projections(position="INVALID")
     assert isinstance(result, dict)
 
 @pytest.mark.asyncio

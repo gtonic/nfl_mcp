@@ -166,7 +166,7 @@ class TestToolRegistry:
         assert 'news' in result or 'success' in result or 'error' in result
 
         # Test with invalid parameters
-        result = await get_cbs_projections(position="INVALID", week=1)
+        result = await get_cbs_projections(position="INVALID")
         assert isinstance(result, dict)
         assert 'success' in result or 'error' in result
 
@@ -264,7 +264,7 @@ class TestToolRegistry:
         # Test parameter validation for various tools
         test_cases = [
             ("get_nfl_news", {"limit": 1000}),  # Too high limit
-            ("get_cbs_projections", {"position": "QB", "week": 18}),  # Valid
+            ("get_cbs_projections", {"position": "QB"}),  # Valid
             ("get_cbs_expert_picks", {"week": 18}),  # Valid
             ("get_team_schedule", {"team_id": "KC", "season": 2025}),  # Valid
             ("get_league", {"league_id": "1234567890"}),  # Valid
