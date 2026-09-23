@@ -25,6 +25,7 @@ from .errors import create_success_response
 from .game_clock import game_lock, parse_kickoff, week_games
 from .injury_match import build_injury_index, injury_for_row, misses_this_week
 from .lineup_slots import starting_slot_list
+from .player_pool import playing_options
 from .player_values import get_values_service
 from .roster_needs import (
     lineup_bars,
@@ -373,10 +374,14 @@ async def get_waiver_targets(
             "error": (f"League {league_id} starts none of {CLAIMABLE_POSITIONS} — "
                       "nothing to claim for."),
         })
-    pool_rows = [
-        row for row in db.get_athletes_by_positions(wanted, exclude_ids=taken)
-        if _is_claimable(row)
-    ]
+    # Every athlete at these positions, rostered ones included: who a team's
+    # starting kicker is does not depend on whether he is available, and a
+    # backup kicker is no claim just because the starter is owned.
+    position_rows = db.get_athletes_by_positions(wanted)
+    pool_rows = playing_options(
+        [row for row in position_rows if row["id"] not in taken and _is_claimable(row)],
+        reference=position_rows,
+    )
     injury_index = build_injury_index(db.get_all_current_injuries())
     pool_inputs = [
         p for row in pool_rows if (p := _to_projection_input(row, opponents, injury_index))
