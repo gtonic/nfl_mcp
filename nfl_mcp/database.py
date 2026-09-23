@@ -6,7 +6,6 @@ the Sleeper API and teams information from ESPN API, providing caching and looku
 Features connection pooling, health checks, optimized indexing, migration support, and async operations.
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -17,7 +16,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 
 try:
     import aiosqlite
@@ -119,15 +118,40 @@ class DatabaseConnectionPool:
             yield conn
 
         finally:
-            if conn:
+            if conn and self._reset_connection(conn):
                 try:
                     # Return connection to pool
                     self._pool.put_nowait(conn)
-                except asyncio.QueueFull:
+                except Full:
                     # Pool is full, close the connection
                     conn.close()
                     with self._lock:
                         self._total_connections -= 1
+
+    def _reset_connection(self, conn: sqlite3.Connection) -> bool:
+        """Roll back whatever the borrower left open; False if ``conn`` was discarded.
+
+        A writer that raised (or returned without committing) leaves its write
+        transaction open, and with it the database's single write lock. Pooled
+        as-is, every other writer then waits out ``busy_timeout`` and fails with
+        "database is locked" — and the next borrower's ``commit()`` would persist
+        the half-written batch. So nothing goes back into the pool mid-transaction.
+        """
+        try:
+            if conn.in_transaction:
+                logger.warning("Rolling back uncommitted transaction on pooled connection")
+                conn.rollback()
+            return True
+        except Exception as e:
+            # A connection that cannot roll back may still hold the lock: drop it.
+            logger.error(f"Discarding pooled connection after failed rollback: {e}")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with self._lock:
+                self._total_connections -= 1
+            return False
 
     def _should_health_check(self) -> bool:
         """Check if it's time for a health check."""
@@ -867,6 +891,65 @@ class NFLDatabase:
             logger.warning(f"Failed to cleanup old snapshots: {e}")
             return deleted
 
+    def prune_old_data(
+        self,
+        snapshot_days: int = 7,
+        practice_days: int = 30,
+        injury_history_days: int = 90,
+    ) -> dict[str, int]:
+        """Prune the append-only tables, then checkpoint the WAL.
+
+        Retention sits well past what any reader looks at:
+
+        - snapshots: loaders only ever read the newest row per league/week.
+        - ``player_practice_status``: read within a 72h window.
+        - ``injury_history``: read at most 30 days back (``get_injury_trends``,
+          briefing: 7). Each player's newest row older than the cutoff is kept
+          as an anchor, so the ``LAG`` in ``get_injury_status_changes`` still
+          sees the true previous status and a stable player's next change is
+          not reported as a first sighting.
+
+        Season-keyed stats (snaps, usage, schedule, defense) are not touched:
+        they are bounded per season and read by season.
+        """
+        deleted = self.cleanup_old_snapshots(max_age_days=snapshot_days)
+        now = datetime.now(UTC)
+        practice_cutoff = (now - timedelta(days=practice_days)).isoformat()
+        history_cutoff = (now - timedelta(days=injury_history_days)).isoformat()
+        try:
+            with self._pool.get_connection() as conn:
+                deleted["player_practice_status"] = conn.execute(
+                    "DELETE FROM player_practice_status WHERE updated_at < ?",
+                    (practice_cutoff,),
+                ).rowcount
+                deleted["injury_history"] = conn.execute(
+                    """
+                    DELETE FROM injury_history
+                    WHERE recorded_at < ?
+                      AND id NOT IN (
+                        SELECT id FROM (
+                            SELECT id, ROW_NUMBER() OVER (
+                                PARTITION BY player_id, team_id
+                                ORDER BY recorded_at DESC, id DESC
+                            ) AS rn
+                            FROM injury_history
+                            WHERE recorded_at < ?
+                        ) WHERE rn = 1
+                      )
+                    """,
+                    (history_cutoff, history_cutoff),
+                ).rowcount
+                conn.commit()
+                # Fold the WAL back into the main file so it does not stay at its
+                # high-water mark after a large delete.
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        except Exception as e:
+            logger.warning(f"Failed to prune old data: {e}")
+        total = sum(deleted.values())
+        if total:
+            logger.info(f"[Prune] Deleted {total} old rows: {deleted}")
+        return deleted
+
     # ------------------------------------------------------------------
     # Player weekly snap stats helpers
     # ------------------------------------------------------------------
@@ -926,7 +1009,7 @@ class NFLDatabase:
             except Exception as e:
                 logger.error(f"upsert_player_week_stats failed: {e}")
                 conn.rollback()
-                return processed
+                return 0  # rolled back: nothing was written
 
     def get_player_snap_pct(self, player_id: str, season: int, week: int) -> dict | None:
         """Fetch cached snap percentage info for a player/week."""
@@ -990,7 +1073,7 @@ class NFLDatabase:
             except Exception as e:
                 logger.error(f"upsert_schedule_games failed: {e}")
                 conn.rollback()
-                return processed
+                return 0  # rolled back: nothing was written
 
     def get_opponent(self, season: int, week: int, team: str) -> str | None:
         """Return opponent abbreviation for team in given season/week if cached."""
@@ -1132,7 +1215,7 @@ class NFLDatabase:
             except Exception as e:
                 logger.error(f"upsert_practice_status failed: {e}")
                 conn.rollback()
-                return processed
+                return 0  # rolled back: nothing was written
 
     def get_latest_practice_status(self, player_id: str, max_age_hours: int = 72) -> dict | None:
         """Fetch most recent practice status for a player within max_age_hours."""
@@ -1211,7 +1294,7 @@ class NFLDatabase:
             except Exception as e:
                 logger.error(f"upsert_usage_stats failed: {e}")
                 conn.rollback()
-                return processed
+                return 0  # rolled back: nothing was written
 
     def get_usage_last_n_weeks(self, player_id: str, season: int, current_week: int, n: int = 3) -> dict | None:
         """Calculate average usage stats for a player over the last n weeks (excluding current_week)."""

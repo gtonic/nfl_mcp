@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -99,6 +100,11 @@ PREFETCH_ATHLETES_INTERVAL_SECONDS = int(
     os.getenv("NFL_MCP_PREFETCH_ATHLETES_INTERVAL", "86400")  # daily
 )
 
+# DB pruning cadence. Wall-clock rather than a cycle count, which reset on every
+# restart and so never reached its threshold on a server restarted daily.
+DB_PRUNE_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_DB_PRUNE_INTERVAL", "86400"))  # daily
+_last_prune_at: float | None = None
+
 # Global state for prefetch task
 _prefetch_task: asyncio.Task | None = None
 _shutdown_event: asyncio.Event | None = None
@@ -128,6 +134,25 @@ async def _refresh_athletes(nfl_db: NFLDatabase, tag: str = "Prefetch") -> None:
             logger.warning(f"[{tag}] Athletes refresh failed: {res.get('error')}")
     except Exception as e:
         logger.warning(f"[{tag}] Athletes refresh error: {e}")
+
+
+async def _prune_db_if_due(nfl_db: NFLDatabase, tag: str = "Prune") -> bool:
+    """Prune old rows at startup and then every ``DB_PRUNE_INTERVAL_SECONDS``.
+
+    Runs in a worker thread: a large first delete plus the WAL checkpoint must
+    not stall the event loop. Best-effort; returns whether a prune ran.
+    """
+    global _last_prune_at
+    now = time.monotonic()
+    if _last_prune_at is not None and now - _last_prune_at < DB_PRUNE_INTERVAL_SECONDS:
+        return False
+    _last_prune_at = now
+    try:
+        deleted = await asyncio.to_thread(nfl_db.prune_old_data)
+        logger.info(f"[{tag}] DB prune: deleted {sum(deleted.values())} old rows")
+    except Exception as e:
+        logger.warning(f"[{tag}] DB prune failed: {e}")
+    return True
 
 
 def _athletes_refresh_every_n_cycles() -> int:
@@ -434,15 +459,8 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                 f"Usage: {stats['usage_error'] or 'OK'}"
             )
 
-        # Run snapshot cleanup once per day (every 96 cycles at 15min interval)
-        if cycle_count % 96 == 0:
-            try:
-                deleted = nfl_db.cleanup_old_snapshots(max_age_days=7)
-                total_deleted = sum(deleted.values())
-                if total_deleted > 0:
-                    logger.info(f"[Prefetch Cycle #{cycle_count}] Cleanup: Deleted {total_deleted} old snapshots")
-            except Exception as e:
-                logger.warning(f"[Prefetch Cycle #{cycle_count}] Cleanup failed: {e}")
+        # Prune old snapshots/history once the prune interval has elapsed.
+        await _prune_db_if_due(nfl_db, tag=f"Prefetch Cycle #{cycle_count}")
 
         # Periodic athletes cache refresh (default daily) so player
         # names/teams/positions stay current as roster moves happen.
@@ -538,6 +556,9 @@ def _create_prefetch_lifespan(nfl_db: NFLDatabase):
     async def app_lifespan(app):
         """Lifespan context manager for background prefetch task."""
         global _prefetch_task, _shutdown_event
+
+        # Prune on every start, prefetch or not: tool calls write snapshots too.
+        await _prune_db_if_due(nfl_db, tag="Startup")
 
         if PREFETCH_ENABLED:
             # Import late to avoid circular
