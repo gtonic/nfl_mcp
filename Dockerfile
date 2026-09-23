@@ -87,8 +87,12 @@ USER app
 # Expose the port
 EXPOSE 9000
 
-# Health check (Python stdlib -- avoids depending on curl in the image)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+# Health check (Python stdlib -- avoids depending on curl in the image). The
+# server answers right after the imports (startup prefetch runs in the
+# background); the start period covers a cold interpreter + first DB open.
+# /health returns 503 only when the database is down ("degraded", an open
+# upstream circuit breaker, is still 200 -- a restart would not fix it).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9000/health', timeout=5).status == 200 else 1)" || exit 1
 
 # Run the server

@@ -8,37 +8,37 @@ from nfl_mcp.health import _get_prefetch_config, _get_version, health_check
 
 
 class TestGetVersion:
-    """Test _get_version function."""
+    """Version: one source of truth, never "unknown" in a normal checkout."""
 
-    def test_get_version_from_pyproject(self, tmp_path):
-        """Test version extraction from pyproject.toml."""
-        # Create a temporary pyproject.toml
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[project]\nversion = "1.2.3"\n')
+    def test_version_matches_pyproject(self):
+        import tomllib
+        from pathlib import Path
 
-        with patch('nfl_mcp.health.Path') as mock_path:
-            mock_path_instance = MagicMock()
-            mock_path_instance.exists.return_value = True
-            mock_path_instance.__truediv__ = lambda self, other: tmp_path / other
-            mock_path_instance.parents = [tmp_path]
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        with open(pyproject, "rb") as f:
+            expected = tomllib.load(f)["project"]["version"]
+        assert _get_version() == expected
 
-            mock_path.return_value = mock_path_instance
+    def test_package_and_config_agree(self):
+        import nfl_mcp
+        from nfl_mcp import config
+        from nfl_mcp.config_manager import ServerConfig
 
-            with open(pyproject, "rb") as f:
-                import tomllib
-                version = tomllib.load(f).get("project", {}).get("version", "unknown")
+        assert nfl_mcp.__version__ == _get_version()
+        assert ServerConfig().version == _get_version()
+        assert _get_version() == config.SERVER_VERSION
+        assert f"NFL-MCP-Server/{_get_version()} " in config.BASE_USER_AGENT
 
-            assert version == "1.2.3"
+    def test_metadata_fallback_when_no_pyproject(self):
+        from nfl_mcp import _version
 
-    def test_get_version_fallback(self):
-        """Test fallback to default version."""
-        with patch('nfl_mcp.health.Path') as mock_path:
-            mock_path.return_value.exists.return_value = False
-            mock_path.return_value.parents = []
-
-            with patch('nfl_mcp.health.Path.iterdir', return_value=[]):
-                version = _get_version()
-                assert version == "unknown"
+        _version.get_version.cache_clear()
+        try:
+            with patch.object(_version, "_version_from_pyproject", return_value=None), \
+                    patch.object(_version, "_version_from_metadata", return_value="9.9.9"):
+                assert _version.get_version() == "9.9.9"
+        finally:
+            _version.get_version.cache_clear()
 
 
 class TestGetPrefetchConfig:
@@ -77,7 +77,9 @@ class TestHealthCheck:
     @pytest.mark.asyncio
     async def test_health_check_success(self):
         """Test successful health check."""
-        result = await health_check()
+        # Other tests leave breakers open in the process-wide registry.
+        with patch('nfl_mcp.retry_utils.get_all_circuit_breaker_status', return_value={}):
+            result = await health_check()
         # health_check returns a starlette JSONResponse; .body is bytes.
         content = result.body
         assert result.status_code == 200
@@ -120,3 +122,67 @@ class TestHealthCheck:
             # Should include database health info
             assert b'database' in content
             assert b'healthy' in content
+
+
+class TestHealthStatus:
+    """Overall status reflects the DB and the circuit breakers."""
+
+    @staticmethod
+    def _db(healthy=True, **extra):
+        mock_db = MagicMock()
+        mock_db.health_check.return_value = {"healthy": healthy, **extra}
+        return mock_db
+
+    @pytest.mark.asyncio
+    async def test_healthy_db_no_open_breakers(self):
+        import json
+
+        with patch('nfl_mcp.tool_registry.get_db', return_value=self._db()), \
+                patch('nfl_mcp.retry_utils.get_all_circuit_breaker_status', return_value={}):
+            result = await health_check()
+        body = json.loads(result.body)
+        assert result.status_code == 200
+        assert body["status"] == "healthy"
+        assert body["version"] != "unknown"
+
+    @pytest.mark.asyncio
+    async def test_db_down_is_unhealthy_503(self):
+        import json
+
+        db = self._db(healthy=False, error="database is locked")
+        with patch('nfl_mcp.tool_registry.get_db', return_value=db):
+            result = await health_check()
+        assert result.status_code == 503
+        assert json.loads(result.body)["status"] == "unhealthy"
+
+    @pytest.mark.asyncio
+    async def test_db_check_raising_is_unhealthy(self):
+        db = MagicMock()
+        db.health_check.side_effect = RuntimeError("pool exhausted")
+        with patch('nfl_mcp.tool_registry.get_db', return_value=db):
+            result = await health_check()
+        assert result.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_open_breaker_is_degraded_200(self):
+        import json
+
+        breakers = {
+            "espn_schedule": {"state": "open", "failure_count": 5},
+            "sleeper_snaps": {"state": "closed", "failure_count": 0},
+        }
+        with patch('nfl_mcp.tool_registry.get_db', return_value=self._db()), \
+                patch('nfl_mcp.retry_utils.get_all_circuit_breaker_status', return_value=breakers):
+            result = await health_check()
+        body = json.loads(result.body)
+        assert result.status_code == 200
+        assert body["status"] == "degraded"
+        assert body["open_circuit_breakers"] == ["espn_schedule"]
+
+    @pytest.mark.asyncio
+    async def test_db_down_beats_open_breaker(self):
+        breakers = {"espn_schedule": {"state": "open"}}
+        with patch('nfl_mcp.tool_registry.get_db', return_value=self._db(healthy=False)), \
+                patch('nfl_mcp.retry_utils.get_all_circuit_breaker_status', return_value=breakers):
+            result = await health_check()
+        assert result.status_code == 503

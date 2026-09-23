@@ -29,7 +29,12 @@ Docker image installs from it.
 
 The server speaks **MCP over HTTP** at `http://localhost:9000/mcp/` (port 9000,
 entrypoint module `nfl_mcp.server`). A non-MCP health endpoint lives at
-`GET /health` → `{"status":"healthy","service":"NFL MCP Server","version":"0.6.0"}`.
+`GET /health` → `{"status":"healthy","service":"NFL MCP Server","version":"0.8.5",...}`.
+`status` is `healthy` (200), `degraded` (200, an upstream circuit breaker is
+open; `open_circuit_breakers` names it) or `unhealthy` (503, the database check
+failed). Set `NFL_MCP_METRICS=1` to also expose Prometheus counters at
+`GET /metrics`. Startup cache warm-up runs in the background, so both answer
+as soon as the process is up.
 
 ```bash
 # Local
