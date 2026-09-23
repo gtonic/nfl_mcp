@@ -10,6 +10,7 @@ import logging
 from collections import defaultdict
 
 from .errors import ErrorType, create_error_response, create_success_response
+from .lineup_slots import slot_accepts, starting_slots
 from .sleeper_tools import active_enriched, get_league_users, get_matchups, get_rosters
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,21 @@ logger = logging.getLogger(__name__)
 # "snap share" does not apply to either. Depth and snap penalties made every
 # K and DEF group "critical" regardless of who it was.
 _UNIT_POSITIONS = frozenset({"K", "DEF", "DST"})
+_ASSESSED_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
+
+
+def league_positions(roster_positions) -> list[str]:
+    """The assessed positions a league can actually start.
+
+    A position counts when any starting slot takes it (a FLEX makes no new
+    position; a league with no K slot has no kicker to be weak at). Without
+    roster positions every position is assessed.
+    """
+    slots = starting_slots(roster_positions)
+    if not slots:
+        return list(_ASSESSED_POSITIONS)
+    return [pos for pos in _ASSESSED_POSITIONS
+            if any(slot_accepts(slot, pos) for slot in slots)]
 
 
 class OpponentAnalyzer:
@@ -295,6 +311,7 @@ class OpponentAnalyzer:
         self,
         opponent_roster: dict,
         starters: list[dict] | None = None,
+        roster_positions: list[str] | None = None,
     ) -> dict:
         """
         Perform comprehensive analysis of opponent roster.
@@ -305,6 +322,8 @@ class OpponentAnalyzer:
                 roster's own ``starters_enriched`` is the lineup as last saved,
                 which is stale until the manager sets this week's; it is only
                 the fallback.
+            roster_positions: the league's Sleeper ``roster_positions``. Only
+                positions it has a starting slot for are assessed (default: all).
 
         Returns:
             Dict with complete opponent analysis
@@ -341,7 +360,8 @@ class OpponentAnalyzer:
 
         # Assess each position
         position_assessments = {}
-        for position in ["QB", "RB", "WR", "TE", "K", "DEF"]:
+        positions = league_positions(roster_positions)
+        for position in positions:
             position_assessments[position] = self._assess_position_strength(
                 players_by_position[position],
                 position
@@ -361,7 +381,8 @@ class OpponentAnalyzer:
             assessment["strength_score"] * self.position_weights.get(pos, 1.0)
             for pos, assessment in position_assessments.items()
         ]
-        weighted_avg = sum(position_scores) / sum(self.position_weights.values())
+        weighted_avg = sum(position_scores) / sum(
+            self.position_weights.get(pos, 1.0) for pos in position_assessments)
 
         # Invert to get vulnerability (lower strength = higher vulnerability)
         vulnerability_score = 100 - weighted_avg
@@ -377,8 +398,20 @@ class OpponentAnalyzer:
             "starter_weaknesses": starter_weaknesses,
             "exploitation_strategies": strategies,
             "roster_id": opponent_roster.get("roster_id"),
-            "owner_id": opponent_roster.get("owner_id")
+            "owner_id": opponent_roster.get("owner_id"),
+            "positions_assessed": positions,
         }
+
+
+async def _league_roster_positions(league_id: str) -> list[str] | None:
+    """The league's ``roster_positions`` (None when the league cannot be read)."""
+    from .sleeper_tools import get_league
+    try:
+        league = ((await get_league(league_id)) or {}).get("league") or {}
+    except Exception as e:
+        logger.debug(f"league {league_id} unavailable for roster positions: {e}")
+        return None
+    return league.get("roster_positions") or None
 
 
 async def _season_week(db=None) -> dict:
@@ -563,7 +596,9 @@ async def analyze_opponent(
         analyzer = OpponentAnalyzer()
 
         # Perform analysis
-        analysis = analyzer.analyze_opponent_roster(opponent_roster, starters=starters)
+        roster_positions = await _league_roster_positions(league_id)
+        analysis = analyzer.analyze_opponent_roster(
+            opponent_roster, starters=starters, roster_positions=roster_positions)
 
         matchup_context = None
         if matchup is not None:
