@@ -162,7 +162,8 @@ class WaiverAnalyzer:
                             'dropped_by_roster': drop['roster_id'],
                             'added_at': add['timestamp'],
                             'added_by_roster': add['roster_id'],
-                            'days_between': (add['timestamp'] - drop['timestamp']) / 86400 if drop['timestamp'] and add['timestamp'] else None,
+                            # Sleeper's `created` is epoch milliseconds.
+                            'days_between': (add['timestamp'] - drop['timestamp']) / 86_400_000 if drop['timestamp'] and add['timestamp'] else None,
                             'same_roster': drop['roster_id'] == add['roster_id']
                         })
 

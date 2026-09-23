@@ -135,7 +135,9 @@ async def analyze_lineup(
 
     # This week's set lineup: the matchup's starters when Sleeper has them (they
     # follow the week), else the roster's.
-    starters = ctx["starters"]
+    # Raw: zipped against the slot list below, so the "0" of an empty slot
+    # must keep its place or every later starter shifts one slot.
+    starters = ctx.get("starters_raw") or ctx["starters"]
     try:
         matchups = ((await sleeper_tools.get_matchups(league_id, week)) or {}).get("matchups") or []
         mine = next((m for m in matchups if m.get("roster_id") == ctx["roster_id"]), None)
@@ -149,9 +151,12 @@ async def analyze_lineup(
     built: dict[str, list[dict]] = {}
     started: set[str] = set()
     empty_slots = []
-    for slot, pid in zip(slots, starters, strict=False):
-        p = by_id.get(str(pid))
+    for i, slot in enumerate(slots):
+        pid = starters[i] if i < len(starters) else None
+        p = by_id.get(str(pid)) if pid else None
         if not p:
+            # "0", a starter the athlete cache cannot place, or no entry at
+            # all: an open seat the optimizer should fill.
             empty_slots.append(slot)
             continue
         started.add(p["player_id"])
@@ -164,7 +169,8 @@ async def analyze_lineup(
         for p in ctx["players"] if p["player_id"] not in started
     ]
     result = await lineup_optimizer_tools.analyze_full_lineup(
-        lineup=built, week=week, league_id=league_id, season=season)
+        lineup=built, week=week, league_id=league_id, season=season,
+        empty_slots=empty_slots)
     if isinstance(result, dict):
         result["league"] = {"league_id": league_id, "name": league.get("name")}
         result["roster_id"] = ctx["roster_id"]

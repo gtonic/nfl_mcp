@@ -373,6 +373,32 @@ async def analyze_trade(
                 {"recommendation": None, "fairness_score": 0}
             )
 
+        # A side can only give what it has. An id not on the giving roster was
+        # valued anyway (warning dropped from the output) while the ROS block
+        # silently skipped him, so the two halves judged different trades.
+        def _held(roster: dict) -> set[str]:
+            ids = {str(p) for p in (roster.get("players") or []) if p}
+            ids |= {str(p.get("player_id")) for p in (roster.get("players_enriched") or [])
+                    if p.get("player_id")}
+            return ids
+
+        not_held = {
+            side: [str(pid) for pid in gives if str(pid) not in _held(roster)]
+            for side, gives, roster in (("team1_gives", team1_gives, team1_roster),
+                                        ("team2_gives", team2_gives, team2_roster))
+        }
+        not_held = {k: v for k, v in not_held.items() if v}
+        if not_held:
+            detail = "; ".join(
+                f"{side} ({'roster ' + str(team1_roster_id if side == 'team1_gives' else team2_roster_id)}):"
+                f" {', '.join(ids)}" for side, ids in not_held.items())
+            return create_error_response(
+                f"Player(s) not on the giving team's roster — {detail}. "
+                "Check the player ids and which side gives whom.",
+                ErrorType.VALIDATION,
+                {"recommendation": None, "fairness_score": 0, "not_on_roster": not_held},
+            )
+
         # Determine the league's value format (PPR / superflex / size / dynasty)
         # so consensus values match how this league actually plays.
         league_fmt = {"ppr": 0.0, "num_qbs": 1, "num_teams": len(rosters) or 12,

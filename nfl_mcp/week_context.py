@@ -86,7 +86,8 @@ def bye_check(
     - with a complete cached week, a team absent from it is on bye — even when
       the caller named an opponent, because a stale or wrong-week opponent is
       exactly how a bye slips through; the conflict is stated in `reason`;
-    - a team the schedule lists is playing, and a blank opponent is filled in;
+    - a team the schedule lists is playing against the scheduled opponent; a
+      blank opponent is filled in, a conflicting one is overridden (in `reason`);
     - with no usable schedule, a named opponent is taken at its word and a
       blank one is "unknown". A bye is never assumed from missing data.
     """
@@ -98,7 +99,14 @@ def bye_check(
     canon = normalize_team(team)
     if schedule is not None and canon:
         if canon in schedule:
-            return {"status": PLAYING, "opponent": given or schedule[canon],
+            # The schedule wins over a caller's opponent (often last week's or
+            # a guess); a disagreement is stated rather than silently used.
+            scheduled = schedule[canon]
+            if given and (normalize_team(given) or given) != (normalize_team(scheduled) or scheduled):
+                return {"status": PLAYING, "opponent": scheduled, "source": "schedule",
+                        "reason": (f"opponent given as {given}, but the schedule has "
+                                   f"{canon} vs {scheduled} {wk} — using the schedule")}
+            return {"status": PLAYING, "opponent": scheduled or given,
                     "source": "caller" if given else "schedule", "reason": None}
         reason = f"on bye {wk}: the schedule has no {canon} game"
         if given:

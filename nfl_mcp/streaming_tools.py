@@ -23,6 +23,7 @@ from . import matchup_tools
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .player_pool import playing_options
 from .sos_tools import _ease_score, _gather_opponents, _resolve_rankings
+from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +221,9 @@ async def unit_matchup(position: str, team: str, opponent: str, season: int | No
     if not season or not (pos in DEFENSE_UNIT_POSITIONS or pos == "K"):
         return None
     rankings, used, fell_back = await _resolve_offense(season, None)
-    key = (opponent if pos in DEFENSE_UNIT_POSITIONS else team or "").upper()
+    # Rankings are keyed by canonical codes; a caller's "JAC"/"WSH" missed.
+    raw = ((opponent if pos in DEFENSE_UNIT_POSITIONS else team) or "").strip().upper()
+    key = normalize_team(raw) or raw
     off = rankings.get(key) if key else None
     if not off:
         return None

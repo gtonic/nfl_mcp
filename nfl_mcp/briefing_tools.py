@@ -44,8 +44,10 @@ logger = logging.getLogger(__name__)
 # the opponent's implied total, so they belong in the optimized lineup rather
 # than in a separate "not projected" list.
 # Slot names are the canonical ones from `lineup_slots` (SUPERFLEX, DST).
+# IDP slots stay in the list: a locked IDP starter must take his own slot out
+# of the search, not an unrelated one (an empty IDP seat is simply not shown).
 _PROJECTABLE = {"QB", "RB", "WR", "TE", "FLEX", "SUPERFLEX", "K",
-                "WRRB_FLEX", "REC_FLEX", "DST"}
+                "WRRB_FLEX", "REC_FLEX", "DST", "DL", "LB", "DB", "IDP_FLEX"}
 
 
 def _scoring_ppr(league: dict) -> float:
@@ -185,7 +187,8 @@ def find_roster(
     if roster_id is None:
         if not user_id:
             return None, "Pass roster_id or user_id to identify which team to use."
-        mine = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        from .sleeper_tools import roster_of_user
+        mine = roster_of_user(rosters, user_id)
     else:
         mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
     if not mine:
@@ -283,7 +286,9 @@ async def get_weekly_briefing(
     matchups = (matchups_resp or {}).get("matchups") or []
     my_matchup = next((m for m in matchups if m.get("roster_id") == roster_id), None)
     opponent_matchup = None
-    if my_matchup:
+    # A null matchup_id (bye / not scheduled) has no opponent; `None == None`
+    # paired it with any other unscheduled roster.
+    if my_matchup and my_matchup.get("matchup_id") is not None:
         opponent_matchup = next(
             (m for m in matchups
              if m.get("matchup_id") == my_matchup.get("matchup_id")

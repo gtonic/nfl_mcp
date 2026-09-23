@@ -263,6 +263,16 @@ ROS_MEDIUM_GAIN_PER_WEEK = 0.75
 _WORTH_RANK = {"low": 0, "medium": 1, "high": 2}
 
 
+def sits_out_week(entry: dict, week: int) -> dict:
+    """A ROS entry with ``week`` zeroed: a reserve (IR) player belongs in the
+    rest-of-season roster — his ROS models the absence and the return — but
+    cannot hold a slot in this week's lineup."""
+    weekly = dict(entry.get("weekly_points") or {})
+    if week in weekly:
+        weekly[week] = 0.0
+    return {**entry, "weekly_points": weekly}
+
+
 def _gain_level(gain: float | None, high: float, medium: float) -> str | None:
     if gain is None:
         return None

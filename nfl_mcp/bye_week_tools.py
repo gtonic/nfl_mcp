@@ -55,7 +55,11 @@ def _week_row(players: list[dict], slot_list: list[str], week: int, core_ids: se
     total = round(sum(pts(p) for p in lineup if p), 1)
 
     # The same roster as if nobody were on bye: bye players at their usual rate.
+    # A player out injured that week is out either way; counting him at his
+    # rate charged his absence to the bye (a false bye_cost / crunch).
     def full_value(p: dict) -> float:
+        if week in (p.get("injury_weeks") or []):
+            return 0.0
         return pts(p) if week not in (p.get("bye_weeks") or []) else _rate(p)
 
     full_pool = [p for p in players if full_value(p) > 0]

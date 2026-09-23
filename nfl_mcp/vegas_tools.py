@@ -530,7 +530,10 @@ def get_vegas_analyzer() -> VegasLinesAnalyzer:
 def _build_week_index(season: int | None) -> dict[tuple[str, str], int]:
     """`(team, day)` -> NFL week, from the cached schedule. Empty on failure."""
     try:
-        resolved = season or datetime.now(UTC).year
+        # The NFL season, not the calendar year: January/February playoff
+        # lines belong to last year's schedule.
+        from .week_context import infer_from_calendar
+        resolved = season or infer_from_calendar()[0]
         return NFLDatabase().get_kickoff_week_index(resolved)
     except Exception as e:
         logger.debug(f"week index unavailable: {e}")

@@ -23,7 +23,7 @@ async def load_roster_players(
     week: int | None = None,
     include_reserve: bool = False,
 ) -> dict:
-    """``{league, roster, roster_id, season, week, players, starters, error}``.
+    """``{league, roster, roster_id, season, week, players, starters, starters_raw, error}``.
 
     Each player: ``{player_id, name, position, team, opponent, starter, slot}``;
     ``opponent`` is "BYE" when the week's schedule is complete and has no game
@@ -76,8 +76,11 @@ async def load_roster_players(
             "opponent": normalize_team(opponent) or opponent,
             "starter": pid in slot_of, "slot": slot_of.get(pid, "IR" if pid in reserve else "BN"),
         })
+    # `starters_raw` keeps Sleeper's "0" placeholders so it still lines up one
+    # to one with the league's slot list; `starters` is the players only.
     return {**base, "roster": mine, "roster_id": mine["roster_id"], "players": players,
-            "starters": [p for p in starters if p and p != "0"], "error": None}
+            "starters": [p for p in starters if p and p != "0"], "starters_raw": starters,
+            "error": None}
 
 
 __all__ = ["load_roster_players"]
