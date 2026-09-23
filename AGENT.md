@@ -32,7 +32,7 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server provides **81 MCP tools** organized into logical categories — 80
+The server provides **86 MCP tools** organized into logical categories — 85
 always on, plus `get_league_leaders` behind the `league_leaders` feature flag
 (enabled by default). Every tool also ships its own parameter schema over MCP,
 so an agent can introspect the authoritative signature at runtime; this list is
@@ -334,10 +334,15 @@ covers the real outcome ~68% of the time, measured in
 - **`get_opportunity_projections`**: Opportunity-based projections from trailing volume (beats trailing-PPG).
   - Parameters: `season` (required), `week` (required), `players` (optional), `lookback` (optional, default 6), `min_games` (optional, default 2), `top_n` (optional, default 50), `scoring` (optional, default 'ppr')
   - Returns: season, week, lookback, scoring, ppr, count, projections, player_id, name, position
+- **`get_usage_trends`**: Week-by-week usage for a roster or named players — target share, air-yards share, WOPR, RACR, carries share (nflverse), snap share and red-zone opportunities (Sleeper's counted `rec_rz_tgt` + `rush_rz_att`) — with a rising/falling/stable direction per metric and a short flag list.
+  - Parameters: `league_id` + `roster_id` (optional), `player_names` (optional), `weeks` (optional, default 4), `season` (optional), `through_week` (optional)
+  - Returns: season, window, players (weeks, trends, flags), sources, trend_method, notes
+
+`project_player` / `project_players` also carry Sleeper's own weekly projection, priced in the league's scoring, as a second opinion: `sleeper_projection`, `consensus` (plain average) and `disagreement` (> 4 pts, or > 25% and >= 2 pts). Our `projected_points` stays the number decisions are made on.
 
 ### 11. Start/Sit & Lineup Optimization (5 tools)
 
-- **`get_start_sit_recommendation`**: Get a start/sit recommendation for a single player.
+- **`get_start_sit_recommendation`**: Get a start/sit recommendation for a single player (QB/RB/WR/TE, and K/DEF: matched on the opponent's offense for a DEF and his own for a K, projected off Vegas totals or, without live lines, the season's scoring).
   - Parameters: `player_name` (required), `position` (required), `team` (required), `opponent` (required), `player_id` (optional), `target_share` (optional), `snap_percentage` (optional), `injury_status` (optional), `practice_status` (optional), `projected_points` (optional)
   - Returns: recommendation, player, position, team, opponent, decision
 - **`get_roster_recommendations`**: Get start/sit recommendations for multiple players.

@@ -876,6 +876,9 @@ async def project_players(
     # Filed under the scoring that priced them: the league's full settings
     # when `league_id` resolved, the preset otherwise.
     _log_for_retro(db, players, result, season, week, scoring)
+    # Sleeper's projection as a labelled second opinion (see sleeper_projections).
+    from .sleeper_projections import attach
+    await attach(result, players, season, week, scoring)
     return create_success_response({
         **result,
         "season": season,
@@ -930,6 +933,8 @@ async def project_player(
     scoring = await _scoring_for(scoring, league_id)
     result = await engine.project_many(_with_injuries([player], db, season, week), scoring=scoring,
                                        superflex=superflex, season=season, week=week, db=db)
+    from .sleeper_projections import attach
+    await attach(result, [player], season, week, scoring)
     proj = result["projections"][0] if result["projections"] else None
     if proj and proj.get("on_bye"):
         message = f"{player_name}: 0 pts — {proj.get('bye_reason')}"
@@ -942,6 +947,7 @@ async def project_player(
         "projection": proj,
         "values_source": result.get("values_source"),
         "scoring_used": result.get("scoring_used"),
+        "sleeper_second_opinion": result.get("sleeper_second_opinion"),
         "season": season,
         "week": week,
         "week_inferred": week_inferred,

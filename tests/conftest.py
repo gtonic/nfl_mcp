@@ -45,3 +45,20 @@ def _ros_offline(monkeypatch):
 
     monkeypatch.setattr(ros, "_fetch_week_schedule", _no_schedule)
     monkeypatch.setattr(ros, "_defense_rankings", _no_rankings)
+
+
+@pytest.fixture(autouse=True)
+def _no_sleeper_second_opinion(monkeypatch):
+    """Keep the Sleeper-projection second opinion offline in unit tests.
+
+    It is fetched from every projection and start/sit call; without this each
+    of those tests would make a real request. Tests of the second opinion
+    itself patch `sleeper_projections._fetch` (or the index) explicitly.
+    """
+    from nfl_mcp import sleeper_projections
+
+    async def _empty(season, week):
+        return {"by_id": {}, "by_name": {}, "by_def": {}}
+
+    monkeypatch.setattr(sleeper_projections, "_fetch", _empty)
+    sleeper_projections._cache.clear()

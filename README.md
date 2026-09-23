@@ -91,7 +91,7 @@ Draft-day walkthrough → **[docs/DRAFT_DAY.md](docs/DRAFT_DAY.md)**.
 
 ## 🧰 What's inside
 
-85 MCP tools over HTTP, grouped by what they do. Every tool ships its own parameter
+86 MCP tools over HTTP, grouped by what they do. Every tool ships its own parameter
 schema over MCP, so your assistant can introspect them directly; **[AGENT.md](AGENT.md)**
 documents all of them plus integration guidance. Below is the map.
 
@@ -99,10 +99,10 @@ documents all of them plus integration guidance. Below is the map.
 `get_draft_board` (VBD-tiered board) · `recommend_draft_pick` (best pick live) · `simulate_draft` (offline mock) · `get_player_values` / `get_player_value` (market consensus) · `analyze_trade` (fairness on real values + rest-of-season lineup delta per side) · `find_trade_targets` (one-for-one trades both lineups gain from over the rest of the season; reads the trade deadline) · `get_league_drafts` · `get_draft` · `get_draft_picks` · `get_draft_traded_picks`
 
 **📊 Weekly lineup & projections**
-`get_weekly_briefing` (**start here** — roster, opponent, weather, usage and the lineup changes worth making, in one call; mid-week it scores played games for real and only optimizes what you can still change) · `project_player` / `project_players` (transparent weekly points) · `get_ros_projections` (rest-of-season + fantasy-playoff points in your scoring — byes, matchups, injury windows; use for trades, drops, stashes) · `get_opportunity_projections` (trailing-volume baseline) · `get_start_sit_recommendation` · `get_roster_recommendations` · `compare_players_for_slot` · `analyze_full_lineup` · `get_win_probability_lineup` (lineup that maximises P(beating *this* opponent)) · `get_weekly_retro` (after the games: actual vs pre-kickoff projection, points left on the bench, would the best lineup have won, projection calibration) · `get_league_changes` (**daily check** — what moved for your roster since you last looked: injuries, news, transactions, trending backups, projection moves)
+`get_weekly_briefing` (**start here** — roster, opponent, weather, usage and the lineup changes worth making, in one call; mid-week it scores played games for real and only optimizes what you can still change) · `project_player` / `project_players` (transparent weekly points, with Sleeper's projection priced in your league's scoring as a labelled second opinion and a `disagreement` flag) · `get_ros_projections` (rest-of-season + fantasy-playoff points in your scoring — byes, matchups, injury windows; use for trades, drops, stashes) · `get_opportunity_projections` (trailing-volume baseline) · `get_usage_trends` (week-by-week target / air-yards / carries / snap share, WOPR and red-zone opportunities with rising/falling flags) · `get_start_sit_recommendation` (QB/RB/WR/TE and K/DEF) · `get_roster_recommendations` · `compare_players_for_slot` · `analyze_full_lineup` · `get_win_probability_lineup` (lineup that maximises P(beating *this* opponent)) · `get_weekly_retro` (after the games: actual vs pre-kickoff projection, points left on the bench, would the best lineup have won, projection calibration) · `get_league_changes` (**daily check** — what moved for your roster since you last looked: injuries, news, transactions, trending backups, projection moves)
 
 **🗓️ Matchup, schedule & environment**
-`get_defense_rankings` · `get_matchup_difficulty` · `analyze_roster_matchups` · `get_strength_of_schedule` (ROS SOS) · `get_playoff_sos` (weeks 15-17) · `get_streaming_options` (DST/K/QB/TE streaming) · `get_weather_forecast` (wind/weather impact) · `get_strategic_matchup_preview` · `get_vegas_lines` · `get_game_environment` · `analyze_roster_vegas` · `get_stack_opportunities`
+`get_defense_rankings` · `get_matchup_difficulty` · `analyze_roster_matchups` · `get_strength_of_schedule` (ROS SOS) · `get_playoff_sos` (weeks 15-17) · `get_streaming_options` (DST/DEF/K/QB/TE streaming; a bye in the window counts as zero) · `get_weather_forecast` (wind/weather impact) · `get_strategic_matchup_preview` · `get_vegas_lines` · `get_game_environment` · `analyze_roster_vegas` · `get_stack_opportunities`
 
 **🏆 Season strategy & opponents**
 `get_playoff_odds` (Monte-Carlo) · `get_season_bye_week_coordination` · `get_trade_deadline_analysis` · `get_playoff_preparation_plan` · `analyze_opponent`

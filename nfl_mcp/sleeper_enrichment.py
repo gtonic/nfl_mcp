@@ -466,7 +466,12 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         # Calculate RZ touches from multiple sources
                         # Try multiple field names for better API compatibility
                         # Use explicit None checks to preserve 0 values
-                        rz_tgt = player_stats.get("rec_tgt_rz")
+                        # `rec_rz_tgt` / `rush_rz_att` are the names Sleeper's
+                        # weekly stats actually ship; the older spellings below
+                        # never matched, so every RZ count was a TD estimate.
+                        rz_tgt = player_stats.get("rec_rz_tgt")
+                        if rz_tgt is None:
+                            rz_tgt = player_stats.get("rec_tgt_rz")
                         if rz_tgt is None:
                             rz_tgt = player_stats.get("rec_targets_rz")
                         if rz_tgt is None:
@@ -474,7 +479,9 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
                         if rz_tgt is None:
                             rz_tgt = 0
 
-                        rz_rush = player_stats.get("rush_att_rz")
+                        rz_rush = player_stats.get("rush_rz_att")
+                        if rz_rush is None:
+                            rz_rush = player_stats.get("rush_att_rz")
                         if rz_rush is None:
                             rz_rush = player_stats.get("rush_attempts_rz")
                         if rz_rush is None:

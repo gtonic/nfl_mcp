@@ -529,11 +529,38 @@ def season_cache_fresh(season: int, fetched_at: datetime, now: datetime | None =
     return now - fetched_at < CURRENT_SEASON_CACHE_TTL
 
 
+# A league-average NFL team's points per game — the prior offense scoring is
+# shrunk toward.
+LEAGUE_AVG_TEAM_POINTS = 22.0
+
+
+def _row_points(row: dict) -> float:
+    """NFL points one weekly player row put on the board for his team.
+
+    Touchdowns of every kind, two-point conversions, field goals, extra points
+    and defensive safeties. The weekly file has no team score column, so this
+    is the score rebuilt from the players who produced it.
+    """
+    def f(col: str) -> float:
+        try:
+            return float(row.get(col) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    tds = (f("rushing_tds") + f("receiving_tds") + f("special_teams_tds")
+           + f("def_tds") + f("fumble_recovery_tds"))
+    two_pt = f("rushing_2pt_conversions") + f("receiving_2pt_conversions")
+    return 6 * tds + 2 * two_pt + 3 * f("fg_made") + f("pat_made") + 2 * f("def_safeties")
+
+
 async def fetch_offense_rankings(season: int) -> dict[str, dict]:
     """Rank NFL offenses by PPR points scored per game (nflverse weekly stats).
 
-    Returns ``{team: {"rank": int, "points_scored_avg": float}}`` with rank 1 =
-    highest-scoring (strongest) offense. Returns ``{}`` when the season's data
+    Returns ``{team: {"rank": int, "points_scored_avg": float,
+    "real_points_avg": float}}`` with rank 1 = highest-scoring (strongest)
+    offense. ``points_scored_avg`` is the offense's summed PPR fantasy points
+    per game (what the rank is on); ``real_points_avg`` its estimated NFL
+    points per game (see `_row_points`), shrunk toward a league-average 22 by
+    ``SHRINKAGE_GAMES``; ``games`` the games behind it. Returns ``{}`` when the season's data
     isn't available yet (preseason) so callers can fall back to a prior season.
     """
     cached = _offense_rankings_cache.get(season)
@@ -553,18 +580,22 @@ async def fetch_offense_rankings(season: int) -> dict[str, dict]:
         return {}
 
     weekly: dict = {}       # (team, week) -> summed PPR points
+    real: dict = {}         # (team, week) -> estimated NFL points on the board
     weeks_seen: dict = {}   # team -> set of weeks
     try:
         for row in csv.DictReader(StringIO(text)):
             if (row.get("season_type") or "").upper() != "REG":
                 continue
             pos = (row.get("position") or row.get("position_group") or "").upper()
-            if pos not in ("QB", "RB", "WR", "TE"):
-                continue
             team = (row.get("team") or row.get("recent_team") or "").upper()
             team = normalize_team(team) or team
             wk = row.get("week")
             if not team or not wk:
+                continue
+            # Every row (kickers and defenders included) adds to the team's
+            # real score; only skill rows feed the fantasy-points ranking.
+            real[(team, wk)] = real.get((team, wk), 0.0) + _row_points(row)
+            if pos not in ("QB", "RB", "WR", "TE"):
                 continue
             try:
                 pts = float(row.get("fantasy_points_ppr") or 0)
@@ -589,8 +620,25 @@ async def fetch_offense_rankings(season: int) -> dict[str, dict]:
     ]
     # Most points scored per game = strongest offense = rank 1.
     per_team.sort(key=lambda x: x[1], reverse=True)
+    real_totals: dict = {}
+    for (team, _wk), pts in real.items():
+        real_totals[team] = real_totals.get(team, 0.0) + pts
+    def _real(team: str) -> float:
+        # NFL points per game, the scale the K/DEF pricing is built on, shrunk
+        # toward a league-average score like the defense rankings are: two
+        # games of 38 points are not a 38-point offense. `points_scored_avg`
+        # is summed *fantasy* points (~70-120 a game) and cannot stand in.
+        games = len(weeks_seen.get(team, ()))
+        return round((real_totals.get(team, 0.0) + LEAGUE_AVG_TEAM_POINTS * SHRINKAGE_GAMES)
+                     / (games + SHRINKAGE_GAMES), 1)
+
     rankings = {
-        team: {"rank": rank, "points_scored_avg": ppg}
+        team: {
+            "rank": rank,
+            "points_scored_avg": ppg,
+            "real_points_avg": _real(team),
+            "games": len(weeks_seen.get(team, ())),
+        }
         for rank, (team, ppg) in enumerate(per_team, 1)
     }
     _offense_rankings_cache[season] = (datetime.now(UTC), rankings)

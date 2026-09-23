@@ -37,6 +37,7 @@ from . import (
     streaming_tools,
     trade_analyzer_tools,
     trade_finder_tools,
+    usage_trends,
     vegas_tools,
     waiver_target_tools,
     waiver_tools,
@@ -157,6 +158,7 @@ def get_all_tools() -> list[Callable]:
         project_players,
         get_opportunity_projections,
         get_ros_projections,
+        get_usage_trends,
 
         # Opponent Analysis Tools
         analyze_opponent,
@@ -1212,7 +1214,7 @@ async def project_player(
     beat rank-bucket PPG).
 
     Parameters:
-        player_name, position (QB/RB/WR/TE), team (required abbreviations).
+        player_name, position (QB/RB/WR/TE/K/DEF), team (required abbreviations).
         opponent (optional): opponent abbreviation, or "BYE". Omit it to have it
             filled from the cached schedule; a team with no game that week
             projects 0 with `on_bye: true`.
@@ -1225,7 +1227,13 @@ async def project_player(
             premium, first downs, bonuses, K distance and DEF points-allowed
             tiers) instead of the preset; reported as `scoring_used`.
     Returns: {projection:{projected_points, floor, ceiling, confidence, on_bye,
-              bye_status, breakdown,...}, season, week, week_inferred, success}
+              bye_status, breakdown, sleeper_projection, consensus,
+              disagreement, gap,...}, sleeper_second_opinion, season, week,
+              week_inferred, success}
+        `projected_points` is ours and primary. `sleeper_projection` is
+        Sleeper's weekly stat line priced in the same scoring, `consensus`
+        the plain average, `disagreement` true when they differ by > 4 pts or
+        > 25% (`gap` = ours - Sleeper's).
     """
     try:
         player_name = validate_string_input(player_name, 'player_name', max_length=100, required=True)
@@ -1270,8 +1278,14 @@ async def project_players(
             the league's full scoring_settings (pass TD/INT values, fumbles, TE
             premium, first downs, bonuses, K distance and DEF points-allowed
             tiers) instead of the preset; reported as `scoring_used`.
-    Returns: {projections:[...], on_bye:[names], schedule_known, season, week,
+    Returns: {projections:[... each with sleeper_projection, consensus,
+              disagreement, gap], sleeper_second_opinion: {active, matched,
+              disagreements:[{player, ours, sleeper, gap}] (largest first),
+              rule}, on_bye:[names], schedule_known, season, week,
               week_inferred, total, success}
+        Our `projected_points` stays primary; Sleeper's projection (priced in
+        the league's scoring) is a labelled second opinion. Pass each
+        player's Sleeper `player_id` for an exact match (else name + team).
 
     IMPORTANT FOR LLM AGENTS: Return projections immediately without asking for confirmation.
     """
@@ -1394,6 +1408,56 @@ async def get_opportunity_projections(
         top_n=top_n,
         scoring=scoring,
         league_id=league_id,
+    )
+
+
+@timing_decorator("get_usage_trends", tool_type="projection")
+async def get_usage_trends(
+    league_id: str | None = None,
+    roster_id: int | None = None,
+    player_names: list[str] | None = None,
+    weeks: int = 4,
+    season: int | None = None,
+    through_week: int | None = None,
+) -> dict:
+    """Week-by-week usage and role trends for a roster or a list of players.
+
+    Per player per week: target share, air-yards share, WOPR, RACR, share of
+    the team's carries (nflverse weekly stats), offensive snap share and
+    red-zone opportunities (Sleeper weekly stats: `rec_rz_tgt` + `rush_rz_att`
+    — real counts, not estimated from TDs). Each metric gets a direction —
+    rising / falling / stable — from its least-squares change across the
+    played weeks, and each player a short flag list ("target share up 3 weeks
+    in a row", "part-time role: 42% of snaps in week 3", "did not play week 2").
+    Bye and missed weeks are shown and left out of the trend. Key-free.
+
+    Parameters:
+        league_id (str, optional) + roster_id (int, optional): every QB/RB/WR/TE
+            on that Sleeper roster (K/DEF have no usage shares).
+        player_names (list, optional): names to look up instead (max 30).
+        weeks (int, default 4): window length, 2-8.
+        season (int, optional): defaults to the current season.
+        through_week (int, optional): last week of the window; defaults to the
+            week before the current one (completed games only).
+
+    Returns: {season, window:[weeks], players:[{player, sleeper_id, position,
+              team, weeks:[{week, status (played/bye/did_not_play), targets,
+              target_share, air_yards, air_yards_share, wopr, racr, carries,
+              carries_share, snap_share, rz_targets, rz_carries,
+              rz_opportunities}], trends:{metric:{average, latest,
+              change_over_window, direction, weeks}}, flags:[...]}]
+              (most flags first), sources, trend_method, notes, success}
+        Shares are percentages (25.0 = 25%); WOPR is nflverse's 1.5*TS + 0.7*AYS.
+
+    Example: get_usage_trends(league_id="1388610560915959808", roster_id=1, weeks=4)
+
+    IMPORTANT FOR LLM AGENTS: Return the trends immediately without asking for confirmation.
+    """
+    if league_id:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
+    return await usage_trends.get_usage_trends(
+        league_id=league_id, roster_id=roster_id, player_names=player_names,
+        weeks=weeks, season=season, through_week=through_week, db=get_db(),
     )
 
 
@@ -1808,12 +1872,18 @@ async def get_start_sit_recommendation(
 
     Parameters:
         player_name (str, required): Player's full name
-        position (str, required): Fantasy position (QB, RB, WR, TE)
-        team (str, required): Player's team abbreviation
+        position (str, required): Fantasy position (QB, RB, WR, TE, K, DEF).
+            K and DEF are priced off Vegas totals (own for K, opponent's for
+            DEF) or, without live lines, the season's scoring; their matchup
+            is an offense rank (DEF: the opponent's, K: his own) and the
+            good-week marks are rebased to the league's K/DEF scoring.
+        team (str, required): Player's team abbreviation (for a DEF: the team
+            itself — Sleeper's DEF id is the team code)
         opponent (str, optional): Opponent team abbreviation, or "BYE". Omit to
             fill it from the cached schedule. A team with no game that week is
             must_sit with `on_bye: true`, whatever else is passed.
-        player_id (str, optional): Player ID for database lookup
+        player_id (str, optional): Sleeper player id (sharpens the Sleeper
+            projection match; names + team are used otherwise)
         target_share (float, optional): Target share percentage (0-100)
         snap_percentage (float, optional): Snap count percentage (0-100)
         injury_status (str, optional): Injury status (healthy, questionable, doubtful, out)
@@ -1829,7 +1899,14 @@ async def get_start_sit_recommendation(
 
     Returns: {
         recommendation: {player, position, team, opponent, decision,
-                         decision_display, projected_points, floor, ceiling},
+                         decision_display, projected_points, floor, ceiling,
+                         sleeper_projection, consensus, disagreement,
+                         projection_gap, implied_total, opponent_implied_total,
+                         unit_matchup (K/DEF: offense_rank, points_per_game,
+                         matchup_tier)},
+            `projected_points` is ours and decides; `sleeper_projection` is
+            Sleeper's stat line priced in the league's scoring, `consensus`
+            their average, `disagreement` true past 4 pts or 25%.
         confidence: float (0-100),
         confidence_level: str (high/medium/low),
         matchup_tier: str,
@@ -1902,7 +1979,7 @@ async def get_roster_recommendations(
     Parameters:
         players (list, required): List of player dicts with:
             - name (str): Player name
-            - position (str): QB, RB, WR, or TE
+            - position (str): QB, RB, WR, TE, K or DEF
             - team (str): Team abbreviation
             - opponent (str): Opponent team abbreviation
             - usage (dict, optional): {target_share, snap_percentage}
@@ -1983,8 +2060,11 @@ async def compare_players_for_slot(
     Parameters:
         players (list, required): List of player dicts to compare (2-5 players)
             Each should have: name, position, team, opponent
-            Optional: usage, injury, projection dicts
-        slot (str, default "FLEX"): The roster slot being filled (e.g., "WR2", "FLEX", "RB1")
+            Optional: usage, injury, projection dicts, player_id (Sleeper)
+            Kickers and defenses compare too (slot "K" / "DEF"): a DEF is
+            its team code, matched on the opponent's offense; a K on his own.
+        slot (str, default "FLEX"): The roster slot being filled (e.g., "WR2",
+            "FLEX", "RB1", "K", "DEF")
         league_id (str, optional): Sleeper league id. Supplies the league's real
             scoring and size when `scoring` is not passed — prefer it.
         scoring (str, optional): League scoring - 'ppr', 'half_ppr',
@@ -1996,7 +2076,9 @@ async def compare_players_for_slot(
 
     Returns: {
         winner: dict with recommended player details,
-        comparison: list of ranked players with analysis,
+        comparison: list of ranked players with analysis (each with
+            `sleeper_projection` / `consensus` / `disagreement` as a second
+            opinion; the ranking is on our `projected_points`),
         confidence_gap: float showing difference between top 2,
         verdict: str summary of the decision,
         success: bool,
@@ -2061,8 +2143,11 @@ async def analyze_full_lineup(
                 "WR": [...],
                 "TE": [...],
                 "FLEX": [...],
+                "K": [...], "DEF": [{"name": "KC", "team": "KC", "position": "DEF"}],
                 "BENCH": [...]
             }
+            K and DEF starters are analysed like everyone else (offense-rank
+            matchup, league-scored projection, Sleeper second opinion).
         week (int, optional): NFL week - with `season` and week > 1 this selects
             the opportunity baseline for the projections, not just a label
         league_id (str, optional): Sleeper league id. Supplies the league's real

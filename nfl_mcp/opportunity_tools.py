@@ -40,6 +40,10 @@ _STAT_FIELDS = (
 # current files, so no QB was ever charged for an interception.
 _COLUMN_ALIASES = {"interceptions": ("passing_interceptions", "interceptions"),
                    "sacks_suffered": ("sacks_suffered", "sacks")}
+# nflverse's own per-game usage shares (0-1 fractions), kept for the usage
+# trends tool. None when the row leaves them blank — a zero share and an
+# unreported one are different things. Not read by the projection.
+_USAGE_FIELDS = ("target_share", "air_yards_share", "wopr", "racr", "receiving_air_yards")
 # season -> (fetched_at, logs). The current season expires so a long-running
 # server does not keep projecting week 8 from the weeks it saw at startup.
 _logs_cache: dict[int, tuple[datetime, dict[str, dict]]] = {}
@@ -76,7 +80,14 @@ def parse_game_logs(csv_text: str) -> dict[str, dict]:
             "team": normalize_team(team) or team,
             "games": [],
         })
-        game = {"week": int(wk)}
+        # The team he played *for* that week: a traded player's share is of
+        # the team he was on then, not the one he is on now.
+        opp = (row.get("opponent_team") or "").upper()
+        game = {"week": int(wk), "team": normalize_team(team) or team,
+                "opponent": (normalize_team(opp) or opp) or None}
+        for f in _USAGE_FIELDS:
+            v = row.get(f)
+            game[f] = _to_float(v) if v not in (None, "", "NA") else None
         for f in _STAT_FIELDS:
             cols = _COLUMN_ALIASES.get(f, (f,))
             game[f] = _to_float(next((row[c] for c in cols if row.get(c) not in (None, "")), None))

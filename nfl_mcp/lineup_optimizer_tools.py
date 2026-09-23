@@ -32,8 +32,8 @@ from .lineup_slots import (
 )
 from .lineup_slots import SLOT_ELIGIBILITY as SLOT_ELIGIBILITY
 from .player_values import scoring_to_ppr
-from .projections import _RECEPTION_SHARE, availability
-from .scoring import league_scoring, scoring_used
+from .projections import _RECEPTION_SHARE, _VOLATILITY, availability
+from .scoring import league_scoring, resolve_scoring, scoring_used
 from .teams import normalize_team
 from .week_context import BYE, bye_check, resolve_season_week, week_schedule
 
@@ -65,11 +65,30 @@ def _now() -> datetime:
 MEANINGFUL_SWAP_GAIN = 2.0
 
 
-def _good_game_thresholds(position: str, ppr: float = 1.0) -> tuple[float, float]:
-    """(adequate, good) point marks for a position in a league's scoring."""
+def _good_game_thresholds(position: str, ppr: float = 1.0,
+                          unit_scale: float = 1.0) -> tuple[float, float]:
+    """(adequate, good) point marks for a position in a league's scoring.
+
+    `unit_scale` rebases the K/DEF marks the way the projection rebases K/DEF
+    points (see `unit_threshold_scale`); a reception value does not touch them.
+    """
     low, high = _GOOD_GAME_PPR.get((position or "").upper(), _GOOD_GAME_DEFAULT)
     scale = 1.0 - (1.0 - ppr) * _RECEPTION_SHARE.get((position or "").upper(), 0.0)
-    return low * scale, high * scale
+    return low * scale * unit_scale, high * scale * unit_scale
+
+
+UNIT_POSITIONS = frozenset({"K", "DEF", "DST"})
+
+
+def unit_threshold_scale(position: str, scoring) -> float:
+    """This league's typical K/DEF week over Sleeper's default one (1.0 for
+    everyone else): a league that pays 3 points for holding a team to 14-20
+    has a higher bar for a good defensive week than one that pays 1."""
+    pos = (position or "").upper()
+    if pos not in UNIT_POSITIONS:
+        return 1.0
+    model = resolve_scoring(scoring)
+    return model.kicker_scale() if pos == "K" else model.defense_scale(None)
 
 
 class StartSitDecision(Enum):
@@ -141,6 +160,21 @@ class PlayerAnalysis:
     # placeholder, not a read on this player — worth surfacing rather than
     # letting a generic number pass for a projection.
     base_source: str | None = None
+    # Vegas implied totals for his game (None without live lines). For a
+    # defense the opponent's is the one that matters, for a kicker his own.
+    implied_total: float | None = None
+    opponent_implied_total: float | None = None
+    # K/DEF only: the offense rank the matchup is read from (see
+    # `streaming_tools.unit_matchup`) and the multiplier on the good-week marks.
+    unit_matchup: dict | None = None
+    threshold_scale: float = 1.0
+
+    # Sleeper's projection priced in the league's scoring — a second opinion,
+    # never the number decisions are made on (see `sleeper_projections`).
+    sleeper_projection: float | None = None
+    consensus: float | None = None
+    disagreement: bool = False
+    projection_gap: float | None = None
 
     # This week's kickoff (UTC and Europe/Vienna) and whether it has passed:
     # a locked player can no longer be moved into or out of a lineup.
@@ -182,6 +216,13 @@ class PlayerAnalysis:
             "floor": self.floor,
             "ceiling": self.ceiling,
             "base_source": self.base_source,
+            "implied_total": self.implied_total,
+            "opponent_implied_total": self.opponent_implied_total,
+            "unit_matchup": self.unit_matchup,
+            "sleeper_projection": self.sleeper_projection,
+            "consensus": self.consensus,
+            "disagreement": self.disagreement,
+            "projection_gap": self.projection_gap,
             "kickoff": self.kickoff,
             "kickoff_local": self.kickoff_local,
             "kickoff_weekday": self.kickoff_weekday,
@@ -376,10 +417,16 @@ class LineupOptimizer:
         matchup_score = MATCHUP_TIER_SCORES.get(analysis.matchup_tier, 50)
         scores["matchup"] = matchup_score
 
+        # A kicker's or defense's rank is an *offense* rank, and saying "#30
+        # vs DEF" would read as a defense-vs-position number.
+        unit = analysis.unit_matchup
+        where = (f"{'opponent' if unit['offense_side'] == 'opponent' else 'own'} offense "
+                 f"#{unit['offense_rank']}" if unit
+                 else f"#{analysis.matchup_rank} vs {analysis.position}")
         if matchup_score >= 75:
-            reasoning.append(f"✅ Favorable matchup (#{analysis.matchup_rank} vs {analysis.position})")
+            reasoning.append(f"✅ Favorable matchup ({where})")
         elif matchup_score <= 30:
-            reasoning.append(f"⚠️ Tough matchup (#{analysis.matchup_rank} vs {analysis.position})")
+            reasoning.append(f"⚠️ Tough matchup ({where})")
 
         # 2. Usage score
         usage_score = 50  # Base score
@@ -436,7 +483,8 @@ class LineupOptimizer:
             # Scale based on position expectations, rebased to this league's
             # scoring — these are full-PPR "good game" marks, and comparing a
             # half-PPR projection against them demoted every pass catcher.
-            floor_thresh, ceil_thresh = _good_game_thresholds(analysis.position, ppr)
+            floor_thresh, ceil_thresh = _good_game_thresholds(
+                analysis.position, ppr, analysis.threshold_scale)
 
             if analysis.projected_points >= ceil_thresh:
                 projection_score = 90
@@ -485,6 +533,7 @@ class LineupOptimizer:
         confidence: float | None = None,
         injury_status: str | None = None,
         on_bye: bool = False,
+        unit_scale: float = 1.0,
     ) -> str:
         """Start/sit decision from expected points, not from how much we know.
 
@@ -529,7 +578,7 @@ class LineupOptimizer:
         if kind is None and health_score <= 25:
             return StartSitDecision.MUST_SIT.value
 
-        decision = self._decision_from_points(projected_points, position, ppr)
+        decision = self._decision_from_points(projected_points, position, ppr, unit_scale)
         if kind == "doubtful" and decision in _BETTER_THAN_SIT:
             return StartSitDecision.SIT.value
         if kind == "uncertain" and decision == StartSitDecision.MUST_START.value:
@@ -537,8 +586,9 @@ class LineupOptimizer:
         return decision
 
     @staticmethod
-    def _decision_from_points(projected_points: float, position: str, ppr: float) -> str:
-        adequate, good = _good_game_thresholds(position, ppr)
+    def _decision_from_points(projected_points: float, position: str, ppr: float,
+                              unit_scale: float = 1.0) -> str:
+        adequate, good = _good_game_thresholds(position, ppr, unit_scale)
         if projected_points <= 0:
             # No projection at all: say we cannot tell rather than implying a
             # read. FLEX is the honest "your call" bucket.
@@ -552,6 +602,77 @@ class LineupOptimizer:
         if projected_points >= adequate * 0.45:
             return StartSitDecision.SIT.value
         return StartSitDecision.MUST_SIT.value
+
+    @staticmethod
+    def _unit_fallback(analysis: PlayerAnalysis, pp: dict, injury_data: dict | None) -> None:
+        """Price a K/DEF off his offense read when there are no Vegas totals.
+
+        Without live lines the projection engine has no game total to price a
+        kicker or defense on and returns the same constant for all 32 teams,
+        which makes every K/DEF start/sit a coin flip. The season's scoring
+        (the streaming planner's key-free projection) separates them.
+        """
+        unit = analysis.unit_matchup
+        if (analysis.position not in UNIT_POSITIONS or pp.get("vegas_active")
+                or not unit or unit.get("projected_points") is None):
+            return
+        inj = (pp.get("breakdown") or {}).get("injury_mult", 1.0)
+        projected = round(unit["projected_points"] * inj, 1)
+        vol = _VOLATILITY.get(analysis.position, 0.9)
+        analysis.projected_points = projected
+        analysis.floor = round(projected * (1 - vol), 1)
+        analysis.ceiling = round(projected * (1 + vol), 1)
+        analysis.base_source = "offense_rank"
+
+    async def _second_opinion(self, analysis: PlayerAnalysis, player_id: str | None,
+                              scoring, season: int | None, week: int | None) -> None:
+        """Attach Sleeper's projection, the consensus and the disagreement flag."""
+        if analysis.on_bye or not season or not week:
+            return
+        try:
+            from . import sleeper_projections as sp
+            index = await sp.fetch_week_projections(season, week)
+            row = sp.lookup(index, player_id=player_id, name=analysis.player_name,
+                            team=analysis.team, position=analysis.position)
+            theirs = sp.price_stats(row["stats"], resolve_scoring(scoring)) if row else None
+        except Exception as e:  # a second opinion must never sink the first
+            logger.debug(f"Sleeper second opinion failed for {analysis.player_name}: {e}")
+            return
+        from .sleeper_projections import second_opinion
+        # No projection at all (0 without a reason) is not a number to compare;
+        # a zero because he is ruled out is.
+        ruled_out = availability(analysis.injury_status) == "out"
+        ours = analysis.projected_points if (analysis.projected_points or ruled_out) else None
+        op = second_opinion(ours, theirs, ruled_out=ruled_out)
+        analysis.sleeper_projection = op["sleeper_projection"]
+        analysis.consensus = op["consensus"]
+        analysis.disagreement = op["disagreement"]
+        analysis.projection_gap = op["gap"]
+
+    @staticmethod
+    def _unit_reasons(analysis: PlayerAnalysis) -> list[str]:
+        """The matchup and game-environment lines for a kicker or defense."""
+        reasons = []
+        unit = analysis.unit_matchup
+        is_def = analysis.position in ("DEF", "DST")
+        if unit:
+            who = f"Opponent {analysis.opponent}'s" if is_def else f"{analysis.team}'s own"
+            line = (f"{'🛡️' if is_def else '🦵'} {who} offense ranks "
+                    f"#{unit['offense_rank']} of 32 ({unit['points_per_game']} pts/game)")
+            if unit.get("tier_withheld"):
+                line += f" — only {unit['games']} games, tier withheld"
+            if unit.get("is_fallback"):
+                line += f" — {unit['source_season']} data"
+            reasons.append(line)
+        total = analysis.opponent_implied_total if is_def else analysis.implied_total
+        if total is not None:
+            reasons.append(f"🎲 {'Opponent' if is_def else 'Team'} implied total {total}")
+        if analysis.base_source == "offense_rank":
+            reasons.append("ℹ️ No live Vegas totals — projected from the season's scoring")
+        elif total is None and not unit:
+            reasons.append("⚠️ No Vegas totals or offense rankings — generic "
+                           f"{'defense' if is_def else 'kicker'} baseline")
+        return reasons
 
     async def analyze_player(
         self,
@@ -574,7 +695,7 @@ class LineupOptimizer:
         Args:
             player_name: Player's full name
             player_id: Player's ID
-            position: Player position (QB, RB, WR, TE)
+            position: Player position (QB, RB, WR, TE, K, DEF)
             team: Player's team abbreviation
             opponent: Opponent team abbreviation
             usage_data: Optional usage statistics
@@ -642,6 +763,21 @@ class LineupOptimizer:
                 analysis.matchup_tier = matchup.get("matchup_tier", "neutral")
             except Exception as e:
                 logger.debug(f"Matchup lookup failed: {e}")
+        elif position.upper() in UNIT_POSITIONS:
+            # A kicker's or defense's matchup is an offense: the opponent's for
+            # a defense, his own for a kicker. There is no defense-vs-K table.
+            analysis.threshold_scale = unit_threshold_scale(position, scoring)
+            try:
+                from .streaming_tools import unit_matchup
+                unit = await unit_matchup(position, team, opponent, season,
+                                          resolve_scoring(scoring))
+            except Exception as e:
+                logger.debug(f"K/DEF matchup lookup failed: {e}")
+                unit = None
+            if unit:
+                analysis.unit_matchup = unit
+                analysis.matchup_rank = unit["offense_rank"]
+                analysis.matchup_tier = unit["matchup_tier"]
 
         # Apply usage data
         if usage_data:
@@ -710,8 +846,19 @@ class LineupOptimizer:
                     analysis.floor = pp["floor"]
                     analysis.ceiling = pp["ceiling"]
                     analysis.base_source = (pp.get("breakdown") or {}).get("base_source")
+                    analysis.implied_total = pp.get("implied_total") if pp.get("vegas_active") else None
+                    analysis.opponent_implied_total = (
+                        pp.get("opponent_implied_total") if pp.get("vegas_active") else None)
+                    self._unit_fallback(analysis, pp, injury_data)
             except Exception as e:
                 logger.debug(f"Auto-projection failed for {player_name}: {e}")
+
+        await self._second_opinion(analysis, player_id, scoring, season, week)
+        extra_reasons = self._unit_reasons(analysis) if analysis.position in UNIT_POSITIONS else []
+        if analysis.disagreement:
+            extra_reasons.append(
+                f"🔍 Sleeper projects {analysis.sleeper_projection} vs our "
+                f"{analysis.projected_points} — the two disagree, worth a look")
 
         # Calculate confidence and decision
         confidence, confidence_level, reasoning = self.calculate_confidence(
@@ -720,7 +867,7 @@ class LineupOptimizer:
 
         analysis.confidence = round(confidence, 1)
         analysis.confidence_level = confidence_level
-        analysis.reasoning = reasoning
+        analysis.reasoning = reasoning + extra_reasons
         if analysis.locked:
             analysis.reasoning.insert(0, (
                 f"🔒 Game {'over' if analysis.game_status == 'final' else 'under way'} "
@@ -736,6 +883,7 @@ class LineupOptimizer:
             ppr=scoring_to_ppr(scoring),
             confidence=analysis.confidence,
             injury_status=analysis.injury_status,
+            unit_scale=analysis.threshold_scale,
         )
         if availability(analysis.injury_status) == "doubtful":
             analysis.reasoning.append(
@@ -854,7 +1002,7 @@ async def get_start_sit_recommendation(
 
     Args:
         player_name: Player's full name
-        position: Fantasy position (QB, RB, WR, TE)
+        position: Fantasy position (QB, RB, WR, TE, K, DEF — a DEF is its team code)
         team: Player's team abbreviation
         opponent: Opponent team abbreviation
         player_id: Optional player ID for database lookup
@@ -950,6 +1098,15 @@ async def get_start_sit_recommendation(
             "floor": analysis.floor,
             "ceiling": analysis.ceiling,
             "base_source": analysis.base_source,
+            # Second opinion: Sleeper's projection in this league's scoring.
+            # The decision above is made on `projected_points` alone.
+            "sleeper_projection": analysis.sleeper_projection,
+            "consensus": analysis.consensus,
+            "disagreement": analysis.disagreement,
+            "projection_gap": analysis.projection_gap,
+            "implied_total": analysis.implied_total,
+            "opponent_implied_total": analysis.opponent_implied_total,
+            "unit_matchup": analysis.unit_matchup,
             "on_bye": analysis.on_bye,
             "bye_status": analysis.bye_status,
             "kickoff": analysis.kickoff,
@@ -1017,7 +1174,7 @@ async def get_roster_recommendations(
     Args:
         players: List of player dicts with:
             - name (str): Player name
-            - position (str): QB, RB, WR, TE
+            - position (str): QB, RB, WR, TE, K, DEF
             - team (str): Team abbreviation
             - opponent (str): Opponent team abbreviation
             - usage (dict, optional): {target_share, snap_percentage}
@@ -1310,6 +1467,9 @@ async def compare_players_for_slot(
             "decision": analysis.decision,
             "decision_display": f"{decision_emoji.get(analysis.decision, '⚪')} {analysis.decision.upper().replace('_', ' ')}",
             "matchup_tier": analysis.matchup_tier,
+            "sleeper_projection": analysis.sleeper_projection,
+            "consensus": analysis.consensus,
+            "disagreement": analysis.disagreement,
             "on_bye": analysis.on_bye,
             "kickoff": analysis.kickoff,
             "kickoff_local": analysis.kickoff_local,
@@ -1487,7 +1647,8 @@ async def analyze_full_lineup(
             # position, not when we happen to know little about the player —
             # a well-documented 3-point starter is the weak spot, a thinly
             # covered 18-point starter is not.
-            adequate, _ = _good_game_thresholds(analysis.position, scoring_to_ppr(scoring))
+            adequate, _ = _good_game_thresholds(analysis.position, scoring_to_ppr(scoring),
+                                                analysis.threshold_scale)
             if analysis.projected_points < adequate * 0.7:
                 weak_spots.append({
                     "position": position,
