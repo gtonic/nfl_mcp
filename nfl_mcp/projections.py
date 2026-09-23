@@ -46,10 +46,44 @@ VBD_POSITIONS = {"QB", "RB", "WR", "TE"}
 
 # Share of a full-PPR baseline that *is* the per-reception bonus, by position —
 # i.e. receptions per game divided by PPR points per game (a WR averaging 14.5
-# PPR points catches roughly 4.5 balls). Removing `(1 - ppr) × share` rebases the
-# bucket from full PPR to the league's actual reception value.
-_RECEPTION_SHARE = {"WR": 0.31, "TE": 0.36, "RB": 0.23, "QB": 0.0, "K": 0.0,
+# PPR points catches roughly 5 balls). Removing `(1 - ppr) × share` rebases the
+# bucket from full PPR to the league's actual reception value. Measured on
+# 2023-24 nflverse weekly lines by `evals/backtest/bucket_calibration.py`, which
+# also checks the rebased half-PPR buckets against half-PPR actuals.
+_RECEPTION_SHARE = {"WR": 0.35, "TE": 0.41, "RB": 0.21, "QB": 0.0, "K": 0.0,
                     "DST": 0.0, "DEF": 0.0}
+
+# Rank buckets: ``(last positional rank in the tier, full-PPR points per game
+# played)``; the final ``None`` tier covers every deeper and unranked player.
+# Calibrated by `evals/backtest/bucket_calibration.py` (2023-24; a player's
+# previous-season rank by points per game stands in for his market rank; mean
+# over the games he played, at least four). The WR and TE tiers used to read
+# low — WR37-48 priced at 7.5 scored 10.0, TE13-20 at 6.5 scored 8.2 — which is
+# what the ROS-only `PRIOR_SCALE` had compensated for. The top tiers (at most
+# ten players over two seasons) keep their market-informed values: last
+# season's rank is a weaker ranking than the market's and regresses them. QB is
+# unchanged: last season's QB21+ by points per game are mostly backups, the
+# market's QB21-32 are starters, so the proxy does not carry over there.
+_RANK_BUCKETS: dict[str, tuple[tuple[int | None, float], ...]] = {
+    "QB": ((3, 22.0), (8, 20.0), (12, 18.0), (20, 16.0), (None, 14.0)),
+    "RB": ((3, 19.0), (8, 16.0), (15, 14.0), (24, 12.5), (36, 10.0), (60, 7.5), (None, 5.5)),
+    "WR": ((5, 18.0), (12, 17.0), (24, 13.0), (36, 12.0), (48, 10.0), (72, 7.0), (None, 5.5)),
+    "TE": ((3, 14.0), (6, 12.0), (12, 10.5), (20, 8.5), (32, 7.0), (None, 4.5)),
+}
+_FLAT_BASE = {"K": 8.0, "DST": 7.0, "DEF": 7.0}
+
+
+def rank_bucket(position: str, pos_rank: int | None) -> float:
+    """Full-PPR points per game for a positional rank (see `_RANK_BUCKETS`)."""
+    p = (position or "").upper()
+    tiers = _RANK_BUCKETS.get(p)
+    if tiers is None:
+        return _FLAT_BASE.get(p, 8.0)
+    r = pos_rank if (isinstance(pos_rank, int) and pos_rank > 0) else None
+    for last, ppg in tiers:
+        if last is None or (r is not None and r <= last):
+            return ppg
+    return tiers[-1][1]
 
 
 def base_ppg(position: str, pos_rank: int | None, ppr: float = 1.0,
@@ -68,21 +102,7 @@ def base_ppg(position: str, pos_rank: int | None, ppr: float = 1.0,
     `kicker_base` and the scales applied to them in `_project_one`.
     """
     p = (position or "").upper()
-    r = pos_rank if (isinstance(pos_rank, int) and pos_rank > 0) else 999
-    if p == "QB":
-        full = 22.0 if r <= 3 else 20.0 if r <= 8 else 18.0 if r <= 12 else 16.0 if r <= 20 else 14.0
-    elif p == "RB":
-        full = 19.0 if r <= 3 else 16.0 if r <= 8 else 13.0 if r <= 15 else 11.0 if r <= 24 else 8.5 if r <= 36 else 6.0
-    elif p == "WR":
-        full = 17.0 if r <= 5 else 14.5 if r <= 12 else 12.0 if r <= 24 else 9.5 if r <= 36 else 7.5 if r <= 48 else 5.5
-    elif p == "TE":
-        full = 14.0 if r <= 3 else 11.0 if r <= 6 else 8.5 if r <= 12 else 6.5 if r <= 20 else 5.0
-    elif p == "K":
-        full = 8.0
-    elif p in ("DST", "DEF"):
-        full = 7.0
-    else:
-        full = 8.0
+    full = rank_bucket(p, pos_rank)
     if scoring is not None:
         ppr = scoring.rec
     adjust = scoring.bucket_adjust(p) if scoring is not None else 0.0

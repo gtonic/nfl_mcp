@@ -11,8 +11,7 @@ METHOD (leak-free)
         bucket = ``projections.base_ppg`` at the player's rank. The live engine
                  uses the FantasyCalc rank; here the proxy is the player's rank
                  by points per game in the previous season (unranked: no rank).
-        prior  = bucket × ``ros.PRIOR_SCALE[position]``
-        rate   = ros.regressed_rate(opp, prior, games)   (the live blend)
+        rate   = ros.regressed_rate(opp, bucket, games)   (the live blend)
     Ground truth = his mean PPR points per game played in weeks W+1..17 (at
     least three games), which is what ``per_game`` stands for: byes and
     absences are priced separately.
@@ -20,6 +19,9 @@ METHOD (leak-free)
     Reported for everyone and for "starters" (the top 12 QB/TE and 30 RB/WR by
     the opportunity base as of W) — the players a lineup is built from, where a
     too-strong pull toward the prior shows up as a systematic under-projection.
+    And for "ranked" players (with a previous-season rank): the unranked are
+    mostly rookies, whom the proxy prices at the bottom bucket while the market
+    ranks them, so their prior error is an artefact of the proxy.
 
 RUN
     python -m evals.backtest.ros_backtest --seasons 2023 2024 --as-of 3 4 5 6
@@ -32,7 +34,7 @@ from collections import defaultdict
 
 from nfl_mcp.opportunity import project_opportunity
 from nfl_mcp.projections import base_ppg
-from nfl_mcp.ros import PRIOR_GAMES, PRIOR_SCALE, regressed_rate
+from nfl_mcp.ros import PRIOR_GAMES, regressed_rate
 
 from .data import load_season
 from .metrics import bias, mae
@@ -80,8 +82,7 @@ def build_samples(season: int, as_of: int, last_week: int = 17) -> list[dict]:
         samples.append({
             "season": season, "as_of": as_of, "position": position,
             "opp": opp, "games": min(len(prior_games), 6),
-            "bucket": base_ppg(position, ranks.get(pid)),
-            "prior": base_ppg(position, ranks.get(pid)) * PRIOR_SCALE.get(position, 1.0),
+            "prior": base_ppg(position, ranks.get(pid)), "ranked": pid in ranks,
             "actual": sum(later) / len(later),
         })
     # Starters: the top of each position by the as-of opportunity base.
@@ -94,7 +95,8 @@ def build_samples(season: int, as_of: int, last_week: int = 17) -> list[dict]:
 
 
 def _report(samples: list[dict], predict, label: str) -> None:
-    for subset, pick in (("all", lambda s: True), ("starters", lambda s: s.get("starter"))):
+    for subset, pick in (("all", lambda s: True), ("starters", lambda s: s.get("starter")),
+                         ("ranked", lambda s: s["ranked"])):
         cells = []
         for position in (*_POSITIONS, "ALL"):
             rows = [s for s in samples if pick(s) and position in ("ALL", s["position"])]
@@ -118,11 +120,8 @@ def main() -> None:
         print(f"as of week {as_of}: n={len(samples)} (starters {n_start})")
         _report(samples, lambda s: s["opp"], "opportunity only")
         _report(samples, lambda s: s["prior"], "prior only")
-        # Before the recalibration: three games of the raw rank bucket.
-        _report(samples, lambda s: regressed_rate(s["opp"], s["bucket"], s["games"], 3),
-                "old: k=3, raw bucket")
         _report(samples, lambda s: regressed_rate(s["opp"], s["prior"], s["games"]),
-                f"live: k={PRIOR_GAMES}, scaled")
+                f"live: k={PRIOR_GAMES}")
         for k in args.prior_games:
             _report(samples, lambda s, k=k: regressed_rate(s["opp"], s["prior"], s["games"], k),
                     f"regressed k={k}")
