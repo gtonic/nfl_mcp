@@ -12,6 +12,7 @@ delta from the recorded ``injury_history`` timeline.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from .database import NFLDatabase
@@ -250,7 +251,18 @@ async def get_weekly_briefing(
 
     # 2) League settings drive scoring and slots; guessing them is how a
     #    half-PPR league silently gets full-PPR advice.
-    league_resp = await sleeper_tools.get_league(league_id)
+    #    League, rosters, the week's matchups and the weather do not depend on
+    #    each other, so they are fetched together rather than one after another.
+    weather_task = asyncio.create_task(weather_by_team(season, week))
+    try:
+        league_resp, rosters_resp, matchups_resp = await asyncio.gather(
+            sleeper_tools.get_league(league_id),
+            sleeper_tools.get_rosters(league_id),
+            sleeper_tools.get_matchups(league_id, week),
+        )
+    except BaseException:
+        weather_task.cancel()
+        raise
     league = (league_resp or {}).get("league") or {}
     scoring = _scoring_label(league)
     # The projections get the league's exact per-reception value rather than the
@@ -261,14 +273,13 @@ async def get_weekly_briefing(
     num_teams = int(league.get("total_rosters") or 12)
 
     # 3) My roster and this week's opponent
-    rosters_resp = await sleeper_tools.get_rosters(league_id)
     rosters = (rosters_resp or {}).get("rosters") or []
     mine, error = find_roster(rosters, league_id, roster_id, user_id)
     if error:
+        weather_task.cancel()
         return create_success_response({"success": False, "error": error})
     roster_id = mine["roster_id"]
 
-    matchups_resp = await sleeper_tools.get_matchups(league_id, week)
     matchups = (matchups_resp or {}).get("matchups") or []
     my_matchup = next((m for m in matchups if m.get("roster_id") == roster_id), None)
     opponent_matchup = None
@@ -286,8 +297,7 @@ async def get_weekly_briefing(
     opponents = week_opponents(db, season, week)
     # Complete enough to call a missing team a bye (None: cache cold/partial).
     schedule = week_schedule(db, season, week)
-
-    weather = await weather_by_team(season, week)
+    weather = await weather_task
 
     # Kickoffs plus ESPN's game state where cached: a final is final even
     # before the nominal game length has run out.

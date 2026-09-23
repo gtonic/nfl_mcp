@@ -15,6 +15,7 @@ would displace in your lineup.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 
@@ -306,7 +307,9 @@ async def get_waiver_targets(
         week = week or int(nfl_state.get("week") or 1)
         season = season or int(nfl_state.get("season") or 0)
 
-    league_resp = await sleeper_tools.get_league(league_id)
+    league_resp, rosters_resp = await asyncio.gather(
+        sleeper_tools.get_league(league_id), sleeper_tools.get_rosters(league_id)
+    )
     league = (league_resp or {}).get("league") or {}
     scoring_exact = league_scoring(league)  # "0.5" + the full scoring_settings
     num_teams = int(league.get("total_rosters") or 12)
@@ -317,7 +320,6 @@ async def get_waiver_targets(
     # to the back of the order, so every claim has a real cost.
     rolling = not is_faab and (league.get("settings") or {}).get("waiver_type") == 0
 
-    rosters_resp = await sleeper_tools.get_rosters(league_id)
     rosters = (rosters_resp or {}).get("rosters") or []
     if roster_id is None:
         if not user_id:
@@ -432,10 +434,19 @@ async def get_waiver_targets(
 
     # When each free agent was last dropped, for his clear-day window. The
     # transaction log only carries completed moves, which is all a drop needs.
+    # Both weeks and the trending feed are independent reads, fetched together
+    # (an empty week is retried with a back-off inside get_transactions).
+    tx_weeks = sorted({week, max(1, (week or 1) - 1)})
+    *tx_resps, trend = await asyncio.gather(
+        *(sleeper_tools.get_transactions(league_id, week=wk) for wk in tx_weeks),
+        sleeper_tools.get_trending_players(trend_type="add", limit=100),
+        return_exceptions=True,
+    )
     last_dropped: dict = {}
     try:
-        for wk in {week, max(1, (week or 1) - 1)}:
-            txns = await sleeper_tools.get_transactions(league_id, week=wk)
+        for txns in tx_resps:
+            if isinstance(txns, BaseException):
+                raise txns
             for pid, when in latest_drops((txns or {}).get("transactions")).items():
                 if pid not in last_dropped or when > last_dropped[pid]:
                     last_dropped[pid] = when
@@ -469,7 +480,8 @@ async def get_waiver_targets(
     trending: dict[str, int] = {}
     trend_rank: dict[str, int] = {}
     try:
-        trend = await sleeper_tools.get_trending_players(trend_type="add", limit=100)
+        if isinstance(trend, BaseException):
+            raise trend
         for entry in (trend or {}).get("trending_players") or []:
             pid = entry.get("player_id")
             if pid:
