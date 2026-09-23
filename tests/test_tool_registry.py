@@ -39,7 +39,6 @@ from nfl_mcp.tool_registry import (
     get_fantasy_context,
     get_game_environment,
     get_gameday_inactives,
-    get_high_confidence_injuries,
     get_injury_report,
     get_league,
     get_league_drafts,
@@ -55,7 +54,6 @@ from nfl_mcp.tool_registry import (
     get_scheme_classification,
     get_stack_opportunities,
     get_start_sit_recommendation,
-    get_team_injuries,
     get_team_player_stats,
     get_team_schedule,
     get_teams,
@@ -79,7 +77,6 @@ def test_tool_registry_functions_exist():
     assert callable(get_teams)
     assert callable(fetch_teams)
     assert callable(get_depth_chart)
-    assert callable(get_team_injuries)
     assert callable(get_team_player_stats)
     assert callable(get_nfl_standings)
     assert callable(get_team_schedule)
@@ -125,7 +122,6 @@ def test_tool_registry_functions_exist():
     assert callable(analyze_roster_vegas)
     assert callable(get_stack_opportunities)
     assert callable(get_injury_report)
-    assert callable(get_high_confidence_injuries)
     assert callable(get_gameday_inactives)
     assert callable(get_coaching_staff)
     assert callable(get_all_coaching_staffs)
@@ -149,7 +145,7 @@ async def test_team_tools():
     assert isinstance(result, dict)
     assert 'teams' in result or 'success' in result or 'error' in result
 
-    result = await get_team_injuries(team_id="KC")
+    result = await get_injury_report(teams=["KC"], include_practice=False)
     assert isinstance(result, dict)
 
 @pytest.mark.asyncio

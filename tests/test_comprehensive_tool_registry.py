@@ -39,7 +39,6 @@ from nfl_mcp.tool_registry import (
     get_fantasy_context,
     get_game_environment,
     get_gameday_inactives,
-    get_high_confidence_injuries,
     get_injury_report,
     get_league,
     get_league_drafts,
@@ -56,7 +55,6 @@ from nfl_mcp.tool_registry import (
     get_scheme_classification,
     get_stack_opportunities,
     get_start_sit_recommendation,
-    get_team_injuries,
     get_team_player_stats,
     get_team_schedule,
     get_teams,
@@ -101,7 +99,6 @@ class TestToolRegistry:
         assert callable(get_teams)
         assert callable(fetch_teams)
         assert callable(get_depth_chart)
-        assert callable(get_team_injuries)
         assert callable(get_team_player_stats)
         assert callable(get_nfl_standings)
         assert callable(get_team_schedule)
@@ -147,7 +144,6 @@ class TestToolRegistry:
         assert callable(analyze_roster_vegas)
         assert callable(get_stack_opportunities)
         assert callable(get_injury_report)
-        assert callable(get_high_confidence_injuries)
         assert callable(get_gameday_inactives)
         assert callable(get_coaching_staff)
         assert callable(get_all_coaching_staffs)
@@ -172,9 +168,9 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         assert 'teams' in result or 'success' in result or 'error' in result
 
-        result = await get_team_injuries(team_id="KC")
+        result = await get_injury_report(teams=["KC"], include_practice=False)
         assert isinstance(result, dict)
-        assert 'team_id' in result or 'success' in result or 'error' in result
+        assert 'injuries' in result or 'success' in result or 'error' in result
 
     @pytest.mark.asyncio
     async def test_cbs_tools_functionality(self):
@@ -219,7 +215,7 @@ class TestToolRegistry:
         """Test coaching tools."""
         result = await get_coaching_staff(team_id="KC")
         assert isinstance(result, dict)
-        assert 'team_id' in result or 'success' in result or 'error' in result
+        assert 'injuries' in result or 'success' in result or 'error' in result
 
         result = await get_all_coaching_staffs()
         assert isinstance(result, dict)
@@ -231,7 +227,7 @@ class TestToolRegistry:
 
         result = await get_scheme_classification(team_id="KC")
         assert isinstance(result, dict)
-        assert 'team_id' in result or 'success' in result or 'error' in result
+        assert 'injuries' in result or 'success' in result or 'error' in result
 
     @pytest.mark.asyncio
     async def test_error_handling_scenarios(self):
@@ -257,7 +253,7 @@ class TestToolRegistry:
         # Test that all tools return dictionaries with expected keys
         test_cases = [
             ("get_teams", {}),
-            ("get_team_injuries", {"team_id": "KC"}),
+            ("get_injury_report", {"teams": ["KC"], "include_practice": False}),
             ("get_cbs_player_news", {"limit": 5}),
             ("search_athletes", {"name": "Smith", "limit": 5}),
             ("get_vegas_lines", {}),
@@ -267,7 +263,7 @@ class TestToolRegistry:
 
         for tool_name, params in test_cases:
             tool_func = globals()[tool_name]
-            if tool_name in ["get_team_injuries", "get_coaching_staff"]:
+            if tool_name in ["get_injury_report", "get_coaching_staff"]:
                 # These require valid teams, so test with a known good one
                 try:
                     result = await tool_func(**params)

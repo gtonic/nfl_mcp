@@ -310,7 +310,7 @@ async def get_weekly_briefing(
         list(mine.get("players") or []) + list((opponent_matchup or {}).get("starters") or [])
     )
     # Sleeper's player list is not the only injury source, and around kickoff it
-    # is routinely the slower one. `player_injuries` holds the ESPN/CBS reports.
+    # is routinely the slower one. `player_injuries` holds the ESPN reports.
     injury_index = build_injury_index(db.get_all_current_injuries())
     freshness = db.get_data_freshness()
 

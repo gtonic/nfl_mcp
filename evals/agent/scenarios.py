@@ -70,7 +70,7 @@ SCENARIOS = [
     {
         "id": "injuries",
         "prompt": "Give me the high-confidence injuries for KC and SF.",
-        "expect": ["get_high_confidence_injuries", "get_injury_report"],
+        "expect": ["get_injury_report"],
     },
     {
         "id": "waiver_dashboard",

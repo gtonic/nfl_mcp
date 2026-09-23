@@ -82,7 +82,6 @@ def get_all_tools() -> list[Callable]:
         get_teams,
         fetch_teams,
         get_depth_chart,
-        get_team_injuries,
         get_team_player_stats,
         get_nfl_standings,
         get_team_schedule,
@@ -191,7 +190,6 @@ def get_all_tools() -> list[Callable]:
 
         # Injury Report Tools (Multi-source with confidence scoring)
         get_injury_report,
-        get_high_confidence_injuries,
         get_injury_trends,
         get_gameday_inactives,
 
@@ -255,25 +253,6 @@ async def get_depth_chart(team_id: str) -> dict:
     Example: get_depth_chart(team_id="KC")
     """
     return await nfl_tools.get_depth_chart(team_id)
-
-
-@timing_decorator("get_team_injuries", tool_type="nfl")
-async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
-    """Fetch current injury report for a team (ESPN Core API).
-
-    Parameters:
-        team_id (str, required): Team abbreviation or ESPN team id (e.g. 'KC').
-        limit (int, default 50, range 1-100): Max injuries to return.
-    Returns: {team_id, team_name, injuries:[...], count, success, error?}
-    Example: get_team_injuries(team_id="KC", limit=20)
-    """
-    try:
-        if team_id is None or not isinstance(team_id, str):
-            raise ValueError("team_id required")
-        limit_val = int(limit) if limit is not None else 50
-    except Exception:
-        limit_val = 50
-    return await nfl_tools.get_team_injuries(team_id=team_id, limit=limit_val)
 
 
 @timing_decorator("get_team_player_stats", tool_type="nfl")
@@ -2432,22 +2411,37 @@ async def get_stack_opportunities(
 
 @timing_decorator("get_injury_report", tool_type="injury")
 async def get_injury_report(
+    teams: list[str] | None = None,
     player_ids: list[str] | None = None,
-    team_ids: list[str] | None = None,
-    use_cache: bool | None = True,
+    min_confidence: int | None = None,
+    severity: int | None = None,
+    since: str | None = None,
     include_practice: bool | None = True,
+    limit: int | None = None,
+    use_cache: bool | None = True,
+    team_ids: list[str] | None = None,
 ) -> dict:
-    """Get detailed injury reports with confidence scoring.
+    """Current injury report ("who is hurt"): all teams, some teams, or players.
 
-    Fetches injury data from multiple sources (ESPN, CBS) and provides
-    confidence scores based on source agreement. Includes severity scoring
-    and game-day status.
+    Rows come from ESPN's injury API (cached with an adaptive TTL), each with a
+    status, severity (1-5) and this week's real practice line. For "what
+    CHANGED" use get_injury_trends; for gameday inactives get_gameday_inactives.
+
+    `confidence` is a source-agreement score. Only ESPN is wired in today (the
+    CBS injury source is not implemented), so every row is single-source and
+    confidence is uniform; min_confidence is kept for when a second source lands.
 
     Parameters:
-        player_ids: List of player IDs to lookup
-        team_ids: List of team abbreviations (e.g., ['KC', 'PHI'])
-        use_cache: Whether to use cached data with adaptive TTL
-        include_practice: Attach this week's real practice report (default True)
+        teams: Team abbreviations, any spelling (e.g. ["KC", "PHI"]); default all
+        player_ids: ESPN player ids to look up individually (instead of teams)
+        min_confidence: Keep rows with confidence >= this (0-100)
+        severity: Keep rows with severity >= this (1 minor .. 5 IR/season-ending;
+            3+ = likely to miss games)
+        since: ISO date/time; keep rows reported on or after it
+        include_practice: Attach this week's practice report (default True)
+        limit: Max rows (default all)
+        use_cache: Use cached reports (default True)
+        team_ids: Deprecated alias of `teams`
 
     Returns: {
         injuries: [{
@@ -2461,38 +2455,51 @@ async def get_injury_report(
             practice_source ("nfl.com" official report, "espn_news" dated
             news note, or null = no report published — never inferred)
         }],
-        total_injuries, cache_used, practice_week,
+        total_injuries, filters, cache_used, practice_week,
         success, error?
     }
 
-    Example: get_injury_report(team_ids=["KC", "PHI"])
+    Example: get_injury_report(teams=["KC", "PHI"])
+    Example: get_injury_report(severity=3, since="2026-09-20")
     Example: get_injury_report(player_ids=["4428633", "4241479"])
     """
     from .injury_service import InjuryAggregator, get_injury_reports
 
     try:
         use_cache_val = bool(use_cache) if use_cache is not None else True
+        team_list = teams or team_ids
         results = []
 
-        # If player_ids provided, look up individual players
         if player_ids:
             async with InjuryAggregator(db=get_db()) as aggregator:
                 for pid in player_ids[:50]:  # Limit to 50 players
                     injury = await aggregator.get_player_injury(str(pid))
                     if injury:
                         results.append(injury.to_dict())
-
-        # If team_ids provided, get team injuries
-        elif team_ids:
-            # Validate team IDs
-            valid_teams = [normalize_team(t) or t.upper() for t in team_ids[:10] if isinstance(t, str) and len(t) <= 5]
+        elif team_list:
+            valid_teams = [normalize_team(t) or t.upper() for t in team_list[:32]
+                           if isinstance(t, str) and len(t) <= 5]
             if valid_teams:
-                injuries = await get_injury_reports(teams=valid_teams, db=get_db(), use_cache=use_cache_val)
-                results = injuries
+                results = await get_injury_reports(teams=valid_teams, db=get_db(), use_cache=use_cache_val)
         else:
-            # Default: get all team injuries
-            injuries = await get_injury_reports(db=get_db(), use_cache=use_cache_val)
-            results = injuries
+            results = await get_injury_reports(db=get_db(), use_cache=use_cache_val)
+
+        filters = {}
+        if min_confidence is not None:
+            min_conf = max(0, min(100, int(min_confidence)))
+            filters["min_confidence"] = min_conf
+            results = [r for r in results if (r.get("confidence") or 0) >= min_conf]
+        if severity is not None:
+            min_sev = max(1, min(5, int(severity)))
+            filters["severity"] = min_sev
+            results = [r for r in results if (r.get("severity") or 0) >= min_sev]
+        if since:
+            cutoff = str(since).strip()
+            filters["since"] = cutoff
+            # ISO strings compare chronologically; a bare date covers the whole day.
+            results = [r for r in results if str(r.get("date_reported") or "") >= cutoff]
+        if limit is not None:
+            results = results[:max(1, int(limit))]
 
         practice_week = None
         if include_practice is not False and results:
@@ -2501,6 +2508,7 @@ async def get_injury_report(
         return {
             "injuries": results,
             "total_injuries": len(results),
+            "filters": filters,
             "cache_used": use_cache_val,
             "practice_week": practice_week,
             "success": True
@@ -2629,62 +2637,6 @@ async def get_injury_trends(
             "lookback_hours": lookback_hours,
             "success": False,
             "error": f"Failed to get injury trends: {e}",
-        }
-
-
-@timing_decorator("get_high_confidence_injuries", tool_type="injury")
-async def get_high_confidence_injuries(
-    min_confidence: int | None = 70,
-    teams: list[str] | None = None
-) -> dict:
-    """Get injuries with high confidence scores (multi-source verified).
-
-    Filters injury reports to only include those with confidence scores
-    above a threshold. Higher confidence means multiple sources agree
-    on the injury status.
-
-    Parameters:
-        min_confidence: Minimum confidence score (0-100)
-        teams: Team abbreviations to filter
-
-    Returns: {
-        injuries: [...], total_injuries, min_confidence_filter,
-        success, error?
-    }
-
-    Example: get_high_confidence_injuries()
-    Example: get_high_confidence_injuries(min_confidence=80, teams=["KC"])
-    """
-    from .injury_service import get_injury_reports
-
-    try:
-        min_conf = int(min_confidence) if min_confidence else 70
-        min_conf = max(0, min(100, min_conf))
-
-        teams_list = [normalize_team(t) or t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
-        injuries = await get_injury_reports(
-            teams=teams_list if teams_list else None,
-            db=get_db(),
-            use_cache=True
-        )
-
-        # Filter by confidence
-        high_conf = [inj for inj in injuries if inj.get("confidence", 0) >= min_conf]
-
-        return {
-            "injuries": high_conf,
-            "total_injuries": len(high_conf),
-            "min_confidence_filter": min_conf,
-            "success": True
-        }
-
-    except Exception as e:
-        return {
-            "injuries": [],
-            "total_injuries": 0,
-            "min_confidence_filter": min_confidence,
-            "success": False,
-            "error": str(e)
         }
 
 
