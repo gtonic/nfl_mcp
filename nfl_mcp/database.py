@@ -195,7 +195,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
 
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 12
+    CURRENT_SCHEMA_VERSION = 13
 
     def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
@@ -254,6 +254,7 @@ class NFLDatabase:
             10: self._migration_v10_defense_rankings,
             11: self._migration_v11_injuries_v2,
             12: self._migration_v12_player_values,
+            13: self._migration_v13_defense_rankings_flags,
         }
 
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -602,6 +603,30 @@ class NFLDatabase:
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_injury_history_player
                ON injury_history(player_id, recorded_at DESC)"""
+        )
+
+    def _migration_v13_defense_rankings_flags(self, conn: sqlite3.Connection) -> None:
+        """Migration v13: carry the provisional flag, purge persisted placeholders.
+
+        Earlier versions stored the neutral fallback table (every team rank 16)
+        whenever nflverse was unreachable, and enrichment then read it back for
+        a week as if it were real. A real ranking never gives every team the
+        same rank, so those groups are deleted outright.
+        """
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(defense_rankings)")}
+        if "is_provisional" not in cols:
+            conn.execute(
+                "ALTER TABLE defense_rankings ADD COLUMN is_provisional INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            """
+            DELETE FROM defense_rankings
+            WHERE (season, week, position) IN (
+                SELECT season, week, position FROM defense_rankings
+                GROUP BY season, week, position
+                HAVING MIN(rank) = MAX(rank)
+            )
+            """
         )
 
     def _migration_v12_player_values(self, conn: sqlite3.Connection) -> None:
@@ -1784,22 +1809,27 @@ class NFLDatabase:
                         rank = team_rank.get("rank", 16)
                         pts_allowed = team_rank.get("points_allowed_avg", 0)
                         tier = team_rank.get("matchup_tier", "neutral")
+                        provisional = 1 if team_rank.get("is_provisional") else 0
 
-                        if not team:
+                        # The neutral placeholder is not a ranking. Stored, it
+                        # was read back for a week as a confident rank 16.
+                        if not team or team_rank.get("is_fallback"):
                             continue
 
                         conn.execute(
                             """
                             INSERT INTO defense_rankings
-                                (season, week, team, position, rank, points_allowed_avg, matchup_tier, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                (season, week, team, position, rank, points_allowed_avg,
+                                 matchup_tier, is_provisional, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(season, week, team, position) DO UPDATE SET
                                 rank=excluded.rank,
                                 points_allowed_avg=excluded.points_allowed_avg,
                                 matchup_tier=excluded.matchup_tier,
+                                is_provisional=excluded.is_provisional,
                                 updated_at=excluded.updated_at
                             """,
-                            (season, week, team, position, rank, pts_allowed, tier, now)
+                            (season, week, team, position, rank, pts_allowed, tier, provisional, now)
                         )
                         processed += 1
 
@@ -1835,7 +1865,7 @@ class NFLDatabase:
                 if position:
                     cur = conn.execute(
                         """
-                        SELECT team, position, rank, points_allowed_avg, matchup_tier
+                        SELECT team, position, rank, points_allowed_avg, matchup_tier, is_provisional
                         FROM defense_rankings
                         WHERE season=? AND week=? AND position=? AND updated_at >= ?
                         ORDER BY rank ASC
@@ -1845,7 +1875,7 @@ class NFLDatabase:
                 else:
                     cur = conn.execute(
                         """
-                        SELECT team, position, rank, points_allowed_avg, matchup_tier
+                        SELECT team, position, rank, points_allowed_avg, matchup_tier, is_provisional
                         FROM defense_rankings
                         WHERE season=? AND week=? AND updated_at >= ?
                         ORDER BY position, rank ASC
@@ -1861,7 +1891,8 @@ class NFLDatabase:
                         "team": row["team"],
                         "rank": row["rank"],
                         "points_allowed_avg": row["points_allowed_avg"],
-                        "matchup_tier": row["matchup_tier"]
+                        "matchup_tier": row["matchup_tier"],
+                        "is_provisional": bool(row["is_provisional"]),
                     })
 
             return rankings
