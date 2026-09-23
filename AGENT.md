@@ -258,8 +258,21 @@ Trade evaluation and discovery:
     other roster by recomputing **both** teams' best legal starting lineup
     before and after, and returns only trades where both sides gain — a trade
     the other manager loses is a wish, not a deal
+  - `horizon`: `"ros"` (default) scores both lineups over every remaining
+    week (byes and injury absences included, see `get_ros_projections`);
+    `"week"` scores this week only. The league's `trade_deadline` is read:
+    past it no proposals are returned, within a week it is flagged urgent
   - Returns: proposals (you_give, you_get, your_gain, their_gain, mutual_gain,
-    partner), your_replacement_levels, candidates_considered, caveats
+    partner), trade_deadline, your_replacement_levels, candidates_considered
+    (every swap scored), caveats
+
+- **`get_ros_projections`**: rest-of-season and fantasy-playoff points in the
+  league's scoring — use instead of `project_players` for trades, drops and
+  stashes
+  - Parameters: `league_id` (required), `roster_id` / `player_ids` /
+    `player_names`, `season`, `week`, `include_weekly`
+  - Returns: per player ros_points, playoff_points, total_points,
+    weeks_counted, bye_weeks, injury_weeks, injury_window, per_game
   - **Gains are this week's lineup points, not rest-of-season value.** Run the
     chosen deal through `analyze_trade` before sending it
 

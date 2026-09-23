@@ -31,6 +31,7 @@ from . import (
     playoff_tools,
     projections,
     retro_tools,
+    ros,
     sleeper_tools,
     sos_tools,
     streaming_tools,
@@ -155,6 +156,7 @@ def get_all_tools() -> list[Callable]:
         project_player,
         project_players,
         get_opportunity_projections,
+        get_ros_projections,
 
         # Opponent Analysis Tools
         analyze_opponent,
@@ -937,9 +939,17 @@ async def analyze_trade(
         team2_gives (list[str], required): List of player IDs team 2 is giving up.
         include_trending (bool, default True): Include trending player data in analysis.
 
+    Market-value fairness counts unpriced players (K/DEF/deep bench) as zero
+    and discounts extra bodies in an uneven-count deal unless they would start
+    for the receiver, so padding a deal does not buy fairness. Alongside it,
+    `ros_points_delta` is each team's rest-of-season change in its best
+    lineup (every remaining week re-optimised) — prefer it for the call;
+    `verdict` leads with it.
+
     Returns: {
         recommendation: str (fair, needs_adjustment, unfair, etc.),
         fairness_score: float (0-100, higher = more fair),
+        verdict: str, ros_points_delta: {team1, team2}, ros: {...},
         team1_analysis: {...},
         team2_analysis: {...},
         trade_details: {...},
@@ -1270,6 +1280,59 @@ async def project_players(
     return await projections.project_players(
         players=players, scoring=scoring, superflex=superflex, num_teams=num_teams,
         season=season, week=week, db=get_db(), league_id=league_id,
+    )
+
+
+@timing_decorator("get_ros_projections", tool_type="projection")
+async def get_ros_projections(
+    league_id: str,
+    player_names: list[str] | None = None,
+    player_ids: list[str] | None = None,
+    roster_id: int | None = None,
+    season: int | None = None,
+    week: int | None = None,
+    include_weekly: bool = False,
+) -> dict:
+    """Rest-of-season (ROS) and fantasy-playoff points, in YOUR league's scoring.
+
+    Use this — not project_players — for any decision that outlives one week:
+    trades, drops, IR stashes, "who is worth more from here on", playoff-run
+    planning. project_players answers "how many points THIS week" (a player on
+    bye or out one game projects 0 there); this sums every remaining week:
+
+        this week = the weekly projection
+        later     = per-game baseline (trailing opportunity in the league's full
+                    scoring_settings, regressed toward the position prior for
+                    small samples) × that week's defense-vs-position matchup
+        0 on bye weeks (cached schedule, missing weeks fetched) and inside the
+        expected injury absence (report text when it states a timeline, else
+        1 week for Out, 4 for IR/PUP/NFI).
+
+    Parameters:
+        league_id (str, required): Sleeper league id (scoring, playoff window).
+        roster_id (int, optional): project a whole roster (IR/taxi flagged).
+        player_ids (list[str], optional): Sleeper player ids.
+        player_names (list[str], optional): names, resolved in the athlete cache.
+        season, week (optional): default to the current NFL week.
+        include_weekly (bool, default False): add the per-week breakdown.
+
+    Returns: {players: [{player, position, team, ros_points (rest of regular
+              season), playoff_points (league's playoff weeks), total_points,
+              weeks_counted, bye_weeks, injury_weeks, injury_window, per_game,
+              baseline_source, weekly?}], regular_season_weeks, playoff_weeks,
+              unresolved, elapsed_seconds, success}
+
+    Example: get_ros_projections(league_id="123", roster_id=7)
+    Example: get_ros_projections(league_id="123", player_names=["Puka Nacua"], include_weekly=True)
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+    except ValueError as e:
+        return {"players": [], "success": False, "error": f"Invalid input: {e!s}"}
+    return await ros.get_ros_projections(
+        league_id=league_id, player_names=player_names, player_ids=player_ids,
+        roster_id=roster_id, season=season, week=week, include_weekly=include_weekly,
+        db=get_db(),
     )
 
 
@@ -3023,6 +3086,7 @@ async def find_trade_targets(
     season: int | None = None,
     positions: list[str] | None = None,
     limit: int = 10,
+    horizon: str = "ros",
 ) -> dict:
     """START HERE for "who should I trade with" - finds the deal, not just grades one.
 
@@ -3040,16 +3104,22 @@ async def find_trade_targets(
         season: Season (defaults to the current one)
         positions: Only propose receiving these positions, e.g. ["RB"]
         limit: Max proposals, one per partner (default 10)
+        horizon: "ros" (default) — gains are rest-of-season lineup points: both
+            lineups re-optimised for every remaining week (regular season +
+            fantasy playoffs, byes and injury absences included) and summed;
+            "week" — this week's lineup only (the old behaviour).
 
     Returns: {
         proposals [{partner, partner_roster_id, you_give, you_get, your_gain,
                     their_gain, mutual_gain}],
-        your_replacement_levels, candidates_considered, caveats, league, week,
-        season, success
+        trade_deadline {deadline_week, passed, urgent, weeks_left, message},
+        your_replacement_levels, candidates_considered (every swap scored),
+        caveats, league, week, season, success
     }
 
-    Gains are this week's lineup points, not rest-of-season value — run the
-    chosen deal through analyze_trade before sending it.
+    Reads the league's trade_deadline: past it, no proposals are returned;
+    within a week of it, the message says so. Run the chosen deal through
+    analyze_trade before sending it.
 
     Example: find_trade_targets(league_id="123", roster_id=7)
     Example: find_trade_targets(league_id="123", roster_id=7, positions=["RB"])
@@ -3057,6 +3127,7 @@ async def find_trade_targets(
     return await trade_finder_tools.find_trade_targets(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
         week=week, season=season, positions=positions, limit=limit,
+        horizon=horizon,
     )
 
 
