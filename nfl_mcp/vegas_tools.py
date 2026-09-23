@@ -190,6 +190,9 @@ class VegasLinesAnalyzer:
     ODDS_API_BASE = "https://api.the-odds-api.com/v4"
     SPORT_KEY = "americanfootball_nfl"
     CACHE_TTL_HOURS = 2  # Lines can change, refresh more frequently
+    # After an empty answer or a failed call, wait this long before asking the
+    # API again: every call was a credit spent on the same nothing.
+    EMPTY_RETRY_MINUTES = 10
 
     def __init__(self, db: NFLDatabase | None = None, api_key: str | None = None):
         """
@@ -203,6 +206,7 @@ class VegasLinesAnalyzer:
         self.api_key = api_key or os.getenv("ODDS_API_KEY")
         self._lines_cache: dict[str, dict] = {}
         self._cache_time: datetime | None = None
+        self._retry_after: datetime | None = None
 
     def _get_team_abbrev(self, full_name: str) -> str:
         """Convert full team name to abbreviation."""
@@ -262,6 +266,10 @@ class VegasLinesAnalyzer:
             logger.warning("No ODDS_API_KEY configured, using fallback data")
             return self._get_fallback_lines()
 
+        if not include_live and self._retry_after and datetime.now(UTC) < self._retry_after:
+            logger.debug("Odds API answered empty/failed recently; not retrying yet")
+            return self._get_fallback_lines()
+
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 # Fetch spreads and totals in one call (costs 2 API credits)
@@ -277,10 +285,10 @@ class VegasLinesAnalyzer:
 
                 if response.status_code == 401:
                     logger.error("Invalid Odds API key")
-                    return self._get_fallback_lines()
+                    return self._get_fallback_lines(backoff=True)
                 elif response.status_code == 429:
                     logger.warning("Odds API rate limited, using fallback")
-                    return self._get_fallback_lines()
+                    return self._get_fallback_lines(backoff=True)
 
                 response.raise_for_status()
                 games = response.json()
@@ -332,6 +340,8 @@ class VegasLinesAnalyzer:
 
                     # Calculate consensus
                     home_spread = round(sum(spreads_home) / len(spreads_home), 1) if spreads_home else 0
+                    # No totals market posted: 45 is a league-average stand-in,
+                    # and the implied team totals below inherit it.
                     total = round(sum(totals) / len(totals), 1) if totals else 45.0
 
                     # Determine favorite
@@ -358,6 +368,9 @@ class VegasLinesAnalyzer:
                         "away_game_script": get_game_script_projection(-home_spread),
                         "last_updated": datetime.now(UTC).isoformat()
                     }
+                    if not totals:
+                        lines[game_key]["is_fallback"] = True
+                        lines[game_key]["total_is_fallback"] = True
 
                     # Also index by individual teams. `setdefault`, not
                     # assignment: a team appears once per published week, and
@@ -370,8 +383,14 @@ class VegasLinesAnalyzer:
                 # Only the pre-game view is cached; an include_live result is
                 # valid for seconds, not the 2h TTL, so it must not poison it.
                 if not include_live:
-                    self._lines_cache = lines
-                    self._cache_time = datetime.now(UTC)
+                    if lines:
+                        self._lines_cache = lines
+                        self._cache_time = datetime.now(UTC)
+                        self._retry_after = None
+                    else:
+                        self._retry_after = datetime.now(UTC) + timedelta(
+                            minutes=self.EMPTY_RETRY_MINUTES
+                        )
 
                 if skipped_live:
                     logger.info(
@@ -385,17 +404,21 @@ class VegasLinesAnalyzer:
 
         except httpx.HTTPError as e:
             logger.error(f"HTTP error fetching odds: {e}")
-            return self._get_fallback_lines()
+            return self._get_fallback_lines(backoff=not include_live)
         except Exception as e:
             logger.error(f"Error fetching odds: {e}")
-            return self._get_fallback_lines()
+            return self._get_fallback_lines(backoff=not include_live)
 
-    def _get_fallback_lines(self) -> dict[str, dict]:
+    def _get_fallback_lines(self, backoff: bool = False) -> dict[str, dict]:
         """
         Return fallback/placeholder lines when API is unavailable.
         Uses league average total of 45 points.
+
+        ``backoff`` holds further API calls off for ``EMPTY_RETRY_MINUTES``.
         """
         logger.info("Using fallback Vegas lines (neutral)")
+        if backoff:
+            self._retry_after = datetime.now(UTC) + timedelta(minutes=self.EMPTY_RETRY_MINUTES)
 
         # Return empty - will use defaults when looking up specific teams
         return {}
