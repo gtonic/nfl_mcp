@@ -1,6 +1,6 @@
 """Join injury reports to Sleeper players across the two id spaces.
 
-`player_injuries`, `injury_history` and `player_practice_status` carry ESPN
+`player_injuries` and `injury_history` carry ESPN
 athlete ids; `athletes` and every roster carry Sleeper ids. The two are
 unrelated numbers — Jayden Daniels is 4426348 in one and 11566 in the other —
 and 12 of ~2600 report rows collide by accident with a *different* Sleeper

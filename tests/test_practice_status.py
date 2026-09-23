@@ -1,4 +1,10 @@
-"""Tests for practice status enrichment logic."""
+"""Practice status in roster enrichment comes from real reports only.
+
+It used to be derived from the injury designation (Questionable -> LP, Out ->
+DNP) and defaulted to FP for everyone else, so the user was told players had
+practised who never took the field. Now: this week's stored report (NFL.com
+official, else a dated ESPN note) or None.
+"""
 
 from datetime import UTC, datetime
 from unittest.mock import Mock
@@ -8,174 +14,60 @@ import pytest
 from nfl_mcp.sleeper_tools import _enrich_usage_and_opponent
 
 
+def _db(injury=None, practice_rows=None):
+    mock_db = Mock()
+    mock_db.find_player_injury = Mock(return_value=injury)
+    mock_db.get_practice_reports = Mock(return_value=practice_rows or [])
+    mock_db.get_usage_last_n_weeks = Mock(return_value=None)
+    return mock_db
+
+
+def _row(day, status, source="nfl.com", **extra):
+    return {"date": day, "status": status, "source": source,
+            "updated_at": datetime.now(UTC).isoformat(), **extra}
+
+
+ATHLETE = {"id": "12345", "full_name": "Test Player", "position": "WR", "team_id": "KC"}
+
+
 class TestPracticeStatusEnrichment:
-    """Test practice status enrichment for various scenarios."""
+    def test_real_week_pattern_is_exposed(self):
+        rows = [_row("2026-09-23", "DNP"), _row("2026-09-24", "LP"),
+                _row("2026-09-25", "FP", game_status="Questionable")]
+        result = _enrich_usage_and_opponent(_db(practice_rows=rows), ATHLETE, 2026, 3)
 
-    def test_explicit_practice_status_from_database(self):
-        """Test that explicit practice status from database is used when available."""
-        # Setup mock database
-        mock_db = Mock()
-        mock_db.get_latest_practice_status = Mock(return_value={
-            "status": "LP",
-            "date": "2025-01-15",
-            "updated_at": datetime.now(UTC).isoformat(),
-            "source": "espn_injuries"
-        })
-        # Practice rows carry the injury report's (ESPN) id, not the Sleeper id.
-        mock_db.find_player_injury = Mock(return_value={
-            "player_id": "4001234",
-            "injury_status": "Questionable",
-            "updated_at": datetime.now(UTC).isoformat(),
-        })
-        mock_db.get_usage_last_n_weeks = Mock(return_value=None)  # No usage data
-
-        # Setup athlete data
-        athlete = {
-            "id": "12345",
-            "full_name": "Test Player",
-            "position": "WR"
-        }
-
-        # Call enrichment
-        result = _enrich_usage_and_opponent(mock_db, athlete, 2025, 6)
-
-        # Verify practice status is set from database, looked up by report id
-        mock_db.get_latest_practice_status.assert_called_once_with("4001234", max_age_hours=72)
-        assert result["practice_status"] == "LP"
-        assert result["practice_status_date"] == "2025-01-15"
+        assert result["practice_status"] == "FP"
+        assert result["practice_status_date"] == "2026-09-25"
+        assert result["practice_pattern"] == "DNP-LP-FP"
+        assert result["practice_trend"] == "improving"
+        assert [d["day"] for d in result["practice_days"]] == ["Wed", "Thu", "Fri"]
+        assert result["practice_source"] == "nfl.com"
+        assert result["practice_status_source"] == "nfl.com"
+        assert result["practice_report_game_status"] == "Questionable"
         assert "practice_status_age_hours" in result
 
-    def test_practice_status_derived_from_injury_out(self):
-        """Test that practice status is derived from OUT injury status."""
-        # Setup mock database
-        mock_db = Mock()
-        mock_db.get_latest_practice_status = Mock(return_value=None)  # No explicit practice status
-        mock_db.find_player_injury = Mock(return_value={
-            "injury_status": "Out",
-            "injury_type": "Knee",
-            "updated_at": datetime.now(UTC).isoformat()
-        })
-        mock_db.get_usage_last_n_weeks = Mock(return_value=None)  # No usage data
+    def test_lookup_is_by_name_team_and_week(self):
+        db = _db()
+        _enrich_usage_and_opponent(db, ATHLETE, 2026, 3)
+        db.get_practice_reports.assert_called_once_with("Test Player", "KC", season=2026, week=3)
 
-        # Setup athlete data
-        athlete = {
-            "id": "12345",
-            "full_name": "Injured Player",
-            "position": "RB"
-        }
+    @pytest.mark.parametrize("status", ["Out", "Questionable", "Doubtful", "Injured Reserve"])
+    def test_designation_without_report_is_unreported(self, status):
+        injury = {"injury_status": status, "updated_at": datetime.now(UTC).isoformat()}
+        result = _enrich_usage_and_opponent(_db(injury=injury), ATHLETE, 2026, 3)
+        assert result["injury_status"] == status
+        assert result["practice_status"] is None
+        assert result["practice_source"] == "unreported"
 
-        # Call enrichment
-        result = _enrich_usage_and_opponent(mock_db, athlete, 2025, 6)
+    def test_healthy_player_is_not_defaulted_to_full_practice(self):
+        result = _enrich_usage_and_opponent(_db(), ATHLETE, 2026, 3)
+        assert result["practice_status"] is None
+        assert result["practice_status_source"] == "unreported"
+        assert "practice_pattern" not in result
 
-        # Verify practice status is derived as DNP
-        assert result["practice_status"] == "DNP"
-        assert result["practice_status_source"] == "derived_from_injury"
-        assert result["injury_status"] == "Out"
-
-    def test_practice_status_derived_from_injury_questionable(self):
-        """Test that practice status is derived from Questionable injury status."""
-        # Setup mock database
-        mock_db = Mock()
-        mock_db.get_latest_practice_status = Mock(return_value=None)
-        mock_db.find_player_injury = Mock(return_value={
-            "injury_status": "Questionable",
-            "injury_type": "Ankle",
-            "updated_at": datetime.now(UTC).isoformat()
-        })
-        mock_db.get_usage_last_n_weeks = Mock(return_value=None)  # No usage data
-
-        # Setup athlete data
-        athlete = {
-            "id": "12345",
-            "full_name": "Questionable Player",
-            "position": "TE"
-        }
-
-        # Call enrichment
-        result = _enrich_usage_and_opponent(mock_db, athlete, 2025, 6)
-
-        # Verify practice status is derived as LP
-        assert result["practice_status"] == "LP"
-        assert result["practice_status_source"] == "derived_from_injury"
-        assert result["injury_status"] == "Questionable"
-
-    def test_practice_status_default_healthy(self):
-        """Test that practice status defaults to FP for healthy players."""
-        # Setup mock database
-        mock_db = Mock()
-        mock_db.get_latest_practice_status = Mock(return_value=None)  # No practice status
-        mock_db.find_player_injury = Mock(return_value=None)  # No injury
-        mock_db.get_usage_last_n_weeks = Mock(return_value=None)  # No usage data
-
-        # Setup athlete data
-        athlete = {
-            "id": "12345",
-            "full_name": "Healthy Player",
-            "position": "WR"
-        }
-
-        # Call enrichment
-        result = _enrich_usage_and_opponent(mock_db, athlete, 2025, 6)
-
-        # Verify practice status defaults to FP
-        assert result["practice_status"] == "FP"
-        assert result["practice_status_source"] == "default_healthy"
-        assert "injury_status" not in result
-
-    def test_practice_status_derived_from_injury_doubtful(self):
-        """Test that practice status is derived from Doubtful injury status."""
-        # Setup mock database
-        mock_db = Mock()
-        mock_db.get_latest_practice_status = Mock(return_value=None)
-        mock_db.find_player_injury = Mock(return_value={
-            "injury_status": "Doubtful",
-            "injury_type": "Hamstring",
-            "updated_at": datetime.now(UTC).isoformat()
-        })
-        mock_db.get_usage_last_n_weeks = Mock(return_value=None)  # No usage data
-
-        # Setup athlete data
-        athlete = {
-            "id": "12345",
-            "full_name": "Doubtful Player",
-            "position": "RB"
-        }
-
-        # Call enrichment
-        result = _enrich_usage_and_opponent(mock_db, athlete, 2025, 6)
-
-        # Verify practice status is derived as LP
-        assert result["practice_status"] == "LP"
-        assert result["practice_status_source"] == "derived_from_injury"
-        assert result["injury_status"] == "Doubtful"
-
-    def test_practice_status_derived_from_injury_ir(self):
-        """Test that practice status is derived from IR injury status."""
-        # Setup mock database
-        mock_db = Mock()
-        mock_db.get_latest_practice_status = Mock(return_value=None)
-        mock_db.find_player_injury = Mock(return_value={
-            "injury_status": "Injured Reserve",
-            "injury_type": "ACL",
-            "updated_at": datetime.now(UTC).isoformat()
-        })
-        mock_db.get_usage_last_n_weeks = Mock(return_value=None)  # No usage data
-
-        # Setup athlete data
-        athlete = {
-            "id": "12345",
-            "full_name": "IR Player",
-            "position": "WR"
-        }
-
-        # Call enrichment
-        result = _enrich_usage_and_opponent(mock_db, athlete, 2025, 6)
-
-        # Verify practice status is derived as DNP
-        assert result["practice_status"] == "DNP"
-        assert result["practice_status_source"] == "derived_from_injury"
-        assert result["injury_status"] == "Injured Reserve"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    def test_news_note_source_is_labelled(self):
+        rows = [_row("2026-09-22", "LP", source="espn_news", estimated=True)]
+        result = _enrich_usage_and_opponent(_db(practice_rows=rows), ATHLETE, 2026, 3)
+        assert result["practice_source"] == "espn_news"
+        assert result["practice_trend"] == "single_report"
+        assert result["practice_days"][0]["estimated"] is True

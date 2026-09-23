@@ -25,6 +25,7 @@ from .injury_match import (
 )
 from .ir_audit import audit_roster
 from .lineup_slots import starting_slot_list, starting_slots
+from .practice_reports import lookup_practice, practice_fields
 from .scoring import league_scoring
 from .teams import normalize_team
 from .week_context import BYE, bye_check, week_opponents, week_schedule
@@ -117,6 +118,9 @@ def _build_player(
     weather: dict[str, dict],
     usage: dict[str, dict],
     injury_index: dict[tuple[str, str], dict] | None = None,
+    db=None,
+    season: int | None = None,
+    week: int | None = None,
 ) -> dict | None:
     """Projection input for one roster slot, or None if it is not projectable."""
     row = athletes.get(player_id)
@@ -150,6 +154,14 @@ def _build_player(
     if injury:
         player["injury"] = {"status": injury["status"]}
         player["injury_detail"] = injury
+    # This week's reported practice (official report or dated news note), or
+    # nothing. Priced only on top of a designation — see
+    # `projections.practice_adjusted_mult`.
+    practice = lookup_practice(db, name, team, season=season, week=week)
+    if practice:
+        player["practice"] = practice
+        if injury:
+            player["injury"]["practice_status"] = practice["latest"]
     if team in weather:
         player["weather"] = weather[team]
     snap = (usage.get(player_id) or {}).get("snap_share")
@@ -276,7 +288,8 @@ async def get_weekly_briefing(
     unavailable = set(mine.get("reserve") or []) | set(mine.get("taxi") or [])
     my_inputs = [
         p for p in (
-            _build_player(pid, athletes, opponents, weather, usage, injury_index)
+            _build_player(pid, athletes, opponents, weather, usage, injury_index,
+                          db=db, season=season, week=week)
             for pid in (mine.get("players") or [])
             if pid not in unavailable
         ) if p
@@ -284,7 +297,8 @@ async def get_weekly_briefing(
     opp_ids = (opponent_matchup or {}).get("starters") or []
     opp_inputs = [
         p for p in (
-            _build_player(pid, athletes, opponents, weather, usage, injury_index)
+            _build_player(pid, athletes, opponents, weather, usage, injury_index,
+                          db=db, season=season, week=week)
             for pid in opp_ids
         ) if p
     ]
@@ -435,9 +449,23 @@ async def get_weekly_briefing(
             "report_status": p["injury_detail"]["report_status"],
             "injury_type": p["injury_detail"].get("injury_type"),
             "in_recommended_lineup": p["player_id"] in lineup_ids or p["name"] in lineup_names,
+            **practice_fields(p.get("practice")),
         }
         for p in my_inputs
         if p.get("injury_detail") and misses_this_week(p["injury_detail"]["status"])
+    ]
+    # The week's real practice line for every designated player of mine, so a
+    # questionable starter's DNP-DNP reads differently from his LP-FP.
+    practice_watch = [
+        {
+            "player": p["name"], "position": p["position"],
+            "status": (p.get("injury_detail") or {}).get("status"),
+            "in_recommended_lineup": p["player_id"] in lineup_ids or p["name"] in lineup_names,
+            **practice_fields(p.get("practice")),
+            "practice_days": (p.get("practice") or {}).get("days") or [],
+        }
+        for p in my_inputs
+        if p.get("injury_detail") or p.get("practice")
     ]
     ir = audit_roster(mine, league.get("settings") or {}, athletes, injury_index)
 
@@ -510,6 +538,8 @@ async def get_weekly_briefing(
         # position, or a schedule too incomplete to tell a bye from a gap).
         "not_projected": unprojectable,
         "unavailable": unavailable_now,
+        # practice_source None = no report published for him (never inferred).
+        "practice_reports": practice_watch,
         "ir_moves": [m for m in ir["moves"] if m["action"] != "not_eligible"],
         "reserve": reserved,
     })

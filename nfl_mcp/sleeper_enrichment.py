@@ -354,12 +354,17 @@ async def _fetch_injuries():
         return []
 
 
-async def _fetch_practice_reports(season: int, week: int):
-    """Fetch practice status reports (DNP/LP/FP) from ESPN injuries endpoint.
+async def _fetch_practice_reports(season: int, week: int, db=None):
+    """Fetch this week's *real* practice reports (DNP/LP/FP) per report day.
 
-    Returns list of dicts with keys: player_id, date, status, source.
+    Returns dicts for ``upsert_practice_status``: player_name, team, date,
+    status, source ("nfl.com" official report, "espn_news" blurbs), plus the
+    report text and game designation. See ``practice_reports``.
 
-    Note: This uses the injuries endpoint which includes practice participation status.
+    This used to translate injury designations into practice lines
+    (Questionable -> LP, Out -> DNP) and store them as if reported. A player
+    with no report now simply has no row.
+
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
     """
@@ -370,39 +375,8 @@ async def _fetch_practice_reports(season: int, week: int):
     logger.info(f"[Fetch Practice] Starting fetch for season={season}, week={week}")
 
     async def _fetch():
-        # Use injury reports as source for practice status
-        # Practice status is often reflected in injury reports (DNP/Limited/Full)
-        injuries = await _fetch_injuries()
-
-        if not injuries:
-            logger.warning("[Fetch Practice] No injury data available to extract practice status")
-            return []
-
-        # Convert injury status to practice status format
-        practice_reports = []
-        now = datetime.now(UTC).isoformat()
-
-        for inj in injuries:
-            status = inj.get('injury_status', '').upper()
-
-            # Map injury status to practice participation
-            practice_status = None
-            if 'OUT' in status or 'RESERVE' in status or 'PUP' in status:
-                practice_status = 'DNP'  # Did Not Participate
-            elif 'DOUBTFUL' in status or 'LIMITED' in status:
-                practice_status = 'LP'   # Limited Participation
-            elif 'QUESTIONABLE' in status:
-                practice_status = 'LP'   # Usually limited
-            elif 'PROBABLE' in status or 'FULL' in status:
-                practice_status = 'FP'   # Full Participation
-
-            if practice_status:
-                practice_reports.append({
-                    'player_id': inj.get('player_id'),
-                    'date': inj.get('date_reported', now[:10]),  # YYYY-MM-DD
-                    'status': practice_status,
-                    'source': 'espn_injuries'
-                })
+        from .practice_reports import fetch_practice_reports
+        practice_reports = await fetch_practice_reports(season, week, db=db)
 
         # Validate response
         from .response_validation import (
@@ -413,7 +387,7 @@ async def _fetch_practice_reports(season: int, week: int):
             logger.error("[Fetch Practice] Response validation failed, returning empty list")
             return []
 
-        logger.info(f"[Fetch Practice] Extracted {len(practice_reports)} practice status records from {len(injuries)} injuries")
+        logger.info(f"[Fetch Practice] {len(practice_reports)} real practice rows")
         return practice_reports
 
     try:
@@ -733,12 +707,6 @@ def _cached_defense_rankings(analyzer, nfl_db, season: int | None) -> dict | Non
     return None
 
 
-# Sleeper/ESPN designations that mean the player is not practising at all.
-# None of them contains "OUT", so a substring test alone read an IR or
-# suspended player as a full participant.
-_NOT_PRACTICING = frozenset({"IR", "SUS", "SUSPENSION", "NA", "DNR", "COV", "INACTIVE", "NFI"})
-
-
 def _team_game_final(nfl_db, season: int, week: int, team: str | None) -> bool:
     """Whether ``team``'s game in ``week`` is over, from the cached kickoff.
 
@@ -857,53 +825,38 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
             set(enriched_additions.get("injury_sources") or []) | {"Sleeper"}
         )
 
-    # Practice status (DNP/LP/FP) - all positions
-    # Always try to provide a practice_status value
-    practice_status_set = False
-
-    # Practice rows are keyed like the injury report they came from (ESPN ids),
-    # so only a matched report can find them.
-    report_id = (injury or {}).get("player_id")
-    if report_id and hasattr(nfl_db, 'get_latest_practice_status'):
-        practice = nfl_db.get_latest_practice_status(report_id, max_age_hours=72)
-        if practice:
-            age_hours = (datetime.now(UTC) - datetime.fromisoformat(practice["updated_at"])).total_seconds() / 3600
-            enriched_additions["practice_status"] = practice["status"]
-            enriched_additions["practice_status_date"] = practice["date"]
-            enriched_additions["practice_status_age_hours"] = round(age_hours, 1)
-            enriched_additions["practice_status_stale"] = age_hours > 72
-            enriched_additions["practice_status_source"] = "cached"
-            logger.debug(f"[Enrichment] {player_name}: practice_status={practice['status']} (age={round(age_hours, 1)}h)")
-            practice_status_set = True
-
-    # If no cached practice status, derive from injury or default to FP
-    if not practice_status_set:
-        injury_status = enriched_additions.get("injury_status", "").upper()
-        if injury_status:
-            # Derive practice status from injury status
-            if injury_status in _NOT_PRACTICING or any(
-                token in injury_status for token in ('OUT', 'RESERVE', 'PUP')
-            ):
-                derived_status = 'DNP'  # Did Not Participate
-            elif 'DOUBTFUL' in injury_status or 'LIMITED' in injury_status:
-                derived_status = 'LP'   # Limited Participation
-            elif 'QUESTIONABLE' in injury_status:
-                derived_status = 'LP'   # Usually limited
-            elif 'PROBABLE' in injury_status or 'FULL' in injury_status:
-                derived_status = 'FP'   # Full Participation
-            elif injury_status == 'ACTIVE':
-                derived_status = 'FP'   # The report's way of saying "no injury"
-            else:
-                derived_status = None   # A designation we cannot read is not a full practice
-
-            enriched_additions["practice_status"] = derived_status
-            enriched_additions["practice_status_source"] = "derived_from_injury"
-            logger.debug(f"[Enrichment] {player_name}: practice_status={derived_status} (derived from injury_status={injury_status})")
-        else:
-            # No injury, no practice status -> assume healthy and fully practicing
-            enriched_additions["practice_status"] = "FP"
-            enriched_additions["practice_status_source"] = "default_healthy"
-            logger.debug(f"[Enrichment] {player_name}: practice_status=FP (default - no injury)")
+    # Practice status (DNP/LP/FP) - all positions. Only what a report said:
+    # the official NFL.com report or a dated news note, matched by name and
+    # team for this week. No report means None ("unreported") — this used to
+    # be derived from the injury designation, or defaulted to a full practice
+    # for anyone without one.
+    from .practice_reports import lookup_practice
+    practice = lookup_practice(
+        nfl_db, athlete.get("full_name"), athlete.get("team_id") or athlete.get("team"),
+        season=season, week=week,
+    )
+    if practice:
+        enriched_additions["practice_status"] = practice["latest"]
+        enriched_additions["practice_status_date"] = practice["latest_date"]
+        enriched_additions["practice_pattern"] = practice["pattern"]
+        enriched_additions["practice_trend"] = practice["trend"]
+        enriched_additions["practice_days"] = practice["days"]
+        if practice.get("game_status"):
+            enriched_additions["practice_report_game_status"] = practice["game_status"]
+        enriched_additions["practice_status_source"] = practice["source"]
+        enriched_additions["practice_source"] = practice["source"]
+        if practice.get("updated_at"):
+            try:
+                age_hours = (datetime.now(UTC) - datetime.fromisoformat(practice["updated_at"])).total_seconds() / 3600
+                enriched_additions["practice_status_age_hours"] = round(age_hours, 1)
+                enriched_additions["practice_status_stale"] = age_hours > 72
+            except (TypeError, ValueError):
+                pass
+        logger.debug(f"[Enrichment] {player_name}: practice={practice['pattern']} ({practice['source']})")
+    else:
+        enriched_additions["practice_status"] = None
+        enriched_additions["practice_status_source"] = "unreported"
+        enriched_additions["practice_source"] = "unreported"
 
     # Usage stats (targets, routes, RZ touches) - offensive skill positions
     if season and week and position in ("WR", "RB", "TE") and hasattr(nfl_db, 'get_usage_last_n_weeks'):

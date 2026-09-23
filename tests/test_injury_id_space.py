@@ -1,7 +1,7 @@
 """Injury reports and rosters live in different id spaces.
 
-`player_injuries`, `injury_history` and `player_practice_status` are keyed by
-ESPN athlete ids; rosters carry Sleeper ids. Looking one up with the other
+`player_injuries` and `injury_history` are keyed by ESPN athlete ids (practice
+reports by name and team); rosters carry Sleeper ids. Looking one up with the other
 found nothing for the player asked about — the briefing reported no injury
 moves on a roster where Jayden Daniels and Brock Bowers had just been
 downgraded — and, for 12 accidental collisions, a stranger's injury. These
@@ -74,7 +74,8 @@ class TestEnrichment:
         )
         assert out["injury_status"] == "Out"
         assert out["injury_sources"] == ["Sleeper"]
-        assert out["practice_status"] == "DNP"
+        # No report was published: the designation is not a practice line.
+        assert out["practice_status"] is None
 
     def test_worse_of_the_two_sources_wins(self):
         report = {"player_id": "4426348", "injury_status": "Questionable",
@@ -93,22 +94,20 @@ class TestEnrichment:
         )
         assert out["injury_status"] == "Doubtful"
 
-    def test_practice_is_looked_up_by_the_report_id(self):
+    def test_practice_is_looked_up_by_name_and_team_for_the_week(self):
         report = {"player_id": "4426348", "injury_status": "Doubtful",
                   "updated_at": datetime.now(UTC).isoformat()}
         mock = self._db(report)
+        mock.get_practice_reports = Mock(return_value=[])
         _enrich_usage_and_opponent(mock, _athlete("11566", "Jayden Daniels", "WSH"), 2026, 3)
-        mock.get_latest_practice_status.assert_called_once_with("4426348", max_age_hours=72)
-
-    def test_no_report_means_no_practice_lookup_by_sleeper_id(self):
-        mock = self._db()
-        _enrich_usage_and_opponent(mock, _athlete("11566", "Jayden Daniels", "WSH"), 2026, 3)
+        mock.get_practice_reports.assert_called_once_with("Jayden Daniels", "WSH", season=2026, week=3)
         mock.get_latest_practice_status.assert_not_called()
 
-    @pytest.mark.parametrize("status", ["IR", "Sus", "NA", "DNR", "COV"])
-    def test_statuses_without_out_in_the_name_are_not_full_practice(self, status):
+    @pytest.mark.parametrize("status", ["IR", "Sus", "NA", "DNR", "COV", "Out", "Questionable"])
+    def test_a_designation_is_never_turned_into_a_practice_line(self, status):
         out = _enrich_usage_and_opponent(self._db(), _athlete("1", "X Y", "KC", status), 2026, 3)
-        assert out["practice_status"] == "DNP"
+        assert out["practice_status"] is None
+        assert out["practice_source"] == "unreported"
 
     def test_an_unreadable_designation_is_not_full_practice(self):
         report = {"player_id": "1", "injury_status": "Day-To-Day",
@@ -116,10 +115,10 @@ class TestEnrichment:
         out = _enrich_usage_and_opponent(self._db(report), _athlete("2", "X Y", "KC"), 2026, 3)
         assert out["practice_status"] is None
 
-    def test_healthy_player_still_defaults_to_full_practice(self):
+    def test_healthy_player_without_a_report_is_unreported_not_full(self):
         out = _enrich_usage_and_opponent(self._db(), _athlete("1", "X Y", "KC"), 2026, 3)
-        assert out["practice_status"] == "FP"
-        assert out["practice_status_source"] == "default_healthy"
+        assert out["practice_status"] is None
+        assert out["practice_status_source"] == "unreported"
 
 
 class TestInjuryHistoryJoin:

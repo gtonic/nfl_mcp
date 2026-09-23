@@ -219,7 +219,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
 
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 13
+    CURRENT_SCHEMA_VERSION = 14
 
     def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
@@ -279,6 +279,7 @@ class NFLDatabase:
             11: self._migration_v11_injuries_v2,
             12: self._migration_v12_player_values,
             13: self._migration_v13_defense_rankings_flags,
+            14: self._migration_v14_real_practice_reports,
         }
 
         for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
@@ -689,6 +690,53 @@ class NFLDatabase:
                ON player_values(format_key, position, position_rank ASC)"""
         )
 
+    def _migration_v14_real_practice_reports(self, conn: sqlite3.Connection) -> None:
+        """Migration v14: practice rows from real reports, one per player and day.
+
+        Every row in the v8 table was invented from an injury designation
+        (Questionable -> LP, Out -> DNP) and keyed by ESPN athlete id, so it is
+        dropped rather than migrated: keeping those rows would put the made-up
+        lines back into the weekly pattern. Rows are now keyed by (normalized
+        name, team, day) — the join the other injury tables use, because the
+        official report carries names, not ids — with the report text, the game
+        designation and a source rank so a news blurb never overwrites the
+        official report for the same day. ``player_id`` stays as an optional
+        key column for rows written the pre-v14 way.
+        """
+        conn.execute("DROP TABLE IF EXISTS player_practice_status")
+        conn.execute(
+            """
+            CREATE TABLE player_practice_status (
+                name_key TEXT NOT NULL DEFAULT '',
+                team TEXT NOT NULL DEFAULT '',
+                player_id TEXT NOT NULL DEFAULT '',
+                date TEXT NOT NULL,
+                player_name TEXT,
+                position TEXT,
+                status TEXT NOT NULL,
+                description TEXT,
+                injury TEXT,
+                game_status TEXT,
+                game_date TEXT,
+                season INTEGER,
+                week INTEGER,
+                estimated INTEGER NOT NULL DEFAULT 0,
+                source TEXT,
+                source_rank INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(name_key, team, player_id, date)
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_practice_status_date
+               ON player_practice_status(player_id, updated_at DESC)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_practice_status_week
+               ON player_practice_status(season, week, team)"""
+        )
+
     @contextmanager
     def _get_connection(self):
         """Get a database connection with proper cleanup. (Legacy method for compatibility)"""
@@ -927,7 +975,7 @@ class NFLDatabase:
         Retention sits well past what any reader looks at:
 
         - snapshots: loaders only ever read the newest row per league/week.
-        - ``player_practice_status``: read within a 72h window.
+        - ``player_practice_status``: read one practice week (6 days) back.
         - ``injury_history``: read at most 30 days back (``get_injury_trends``,
           briefing: 7). Each player's newest row older than the cutoff is kept
           as an anchor, so the ``LAG`` in ``get_injury_status_changes`` still
@@ -1206,35 +1254,64 @@ class NFLDatabase:
     # Practice status helpers (DNP/LP/FP)
     # ------------------------------------------------------------------
     def upsert_practice_status(self, reports: list[dict]) -> int:
-        """Insert or update player practice status reports.
+        """Insert or update real practice reports, one row per player and day.
 
-        Expected dict keys: player_id, date (ISO YYYY-MM-DD), status (DNP/LP/FP/Full), source (optional).
+        Expected keys: player_name, team, date (report day, YYYY-MM-DD, US
+        Eastern), status (DNP/LP/FP/REST) and source; optional position,
+        description, injury, game_status, game_date, season, week, estimated.
+        A row keyed only by ``player_id`` (the pre-v14 shape) is still accepted.
+        A lower-ranked source never overwrites a higher-ranked one for the
+        same day: a news blurb does not replace the official report.
         """
         if not reports:
             return 0
+        from .opportunity_tools import norm_name
+        from .practice_reports import SOURCE_RANK
+
         now = datetime.now(UTC).isoformat()
         processed = 0
         with self._pool.get_connection() as conn:
             try:
                 for r in reports:
-                    player_id = r.get("player_id")
                     date_str = r.get("date")
                     status = r.get("status")
-                    if not all([player_id, date_str, status]):
+                    name_key = norm_name(r.get("player_name"))
+                    team = normalize_team(r.get("team")) or ""
+                    player_id = str(r.get("player_id") or "")
+                    if not date_str or not status or not ((name_key and team) or player_id):
                         continue
                     source = r.get("source", "unknown")
-                    conn.execute(
+                    cur = conn.execute(
                         """
-                        INSERT INTO player_practice_status(player_id, date, status, source, updated_at)
-                        VALUES(?,?,?,?,?)
-                        ON CONFLICT(player_id, date) DO UPDATE SET
+                        INSERT INTO player_practice_status(
+                            name_key, team, player_id, date, player_name, position,
+                            status, description, injury, game_status, game_date,
+                            season, week, estimated, source, source_rank, updated_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(name_key, team, player_id, date) DO UPDATE SET
                             status=excluded.status,
+                            description=excluded.description,
+                            injury=excluded.injury,
+                            game_status=COALESCE(excluded.game_status, game_status),
+                            game_date=COALESCE(excluded.game_date, game_date),
+                            position=COALESCE(excluded.position, position),
+                            season=COALESCE(excluded.season, season),
+                            week=COALESCE(excluded.week, week),
+                            estimated=excluded.estimated,
                             source=excluded.source,
+                            source_rank=excluded.source_rank,
                             updated_at=excluded.updated_at
+                        WHERE excluded.source_rank >= player_practice_status.source_rank
                         """,
-                        (player_id, date_str, status, source, now),
+                        (
+                            name_key, team, player_id, date_str, r.get("player_name"),
+                            r.get("position"), status, r.get("description"), r.get("injury"),
+                            r.get("game_status"), r.get("game_date"), r.get("season"),
+                            r.get("week"), 1 if r.get("estimated") else 0, source,
+                            SOURCE_RANK.get(source, 0), now,
+                        ),
                     )
-                    processed += 1
+                    processed += cur.rowcount
                 conn.commit()
                 return processed
             except Exception as e:
@@ -1242,10 +1319,89 @@ class NFLDatabase:
                 conn.rollback()
                 return 0  # rolled back: nothing was written
 
-    def get_latest_practice_status(self, player_id: str, max_age_hours: int = 72) -> dict | None:
-        """Fetch most recent practice status for a player within max_age_hours."""
+    def get_practice_reports(
+        self,
+        player_name: str | None,
+        team: str | None,
+        season: int | None = None,
+        week: int | None = None,
+    ) -> list[dict]:
+        """One player's stored report days, oldest first.
+
+        With ``season``/``week``: that week's report. Without: days since this
+        practice week's Tuesday (US Eastern), so last week's Friday never
+        passes for this week's Wednesday.
+        """
+        from .opportunity_tools import norm_name
+
+        name_key = norm_name(player_name)
+        team = normalize_team(team)
+        if not name_key or not team:
+            return []
         try:
-            from datetime import timedelta
+            with self._pool.get_connection() as conn:
+                if season and week:
+                    cur = conn.execute(
+                        """
+                        SELECT * FROM player_practice_status
+                        WHERE name_key=? AND team=? AND season=? AND week=?
+                        ORDER BY date ASC
+                        """,
+                        (name_key, team, int(season), int(week)),
+                    )
+                else:
+                    from .practice_reports import practice_week_start, to_eastern
+                    cutoff = practice_week_start(to_eastern(datetime.now(UTC)).date()).isoformat()
+                    cur = conn.execute(
+                        """
+                        SELECT * FROM player_practice_status
+                        WHERE name_key=? AND team=? AND date >= ?
+                        ORDER BY date ASC
+                        """,
+                        (name_key, team, cutoff),
+                    )
+                return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_practice_reports failed: {e}")
+            return []
+
+    def get_team_practice_days(
+        self, season: int, week: int, before=None, source: str | None = None
+    ) -> dict[str, dict[str, str]]:
+        """``team -> {name_key: status}`` for each team's latest stored day
+        before ``before`` (a date or ISO string) in one week."""
+        before_s = before.isoformat() if hasattr(before, "isoformat") else before
+        try:
+            with self._pool.get_connection() as conn:
+                params: list = [int(season), int(week)]
+                sql = ("SELECT team, name_key, date, status FROM player_practice_status"
+                       " WHERE season=? AND week=?")
+                if before_s:
+                    sql += " AND date < ?"
+                    params.append(before_s)
+                if source:
+                    sql += " AND source=?"
+                    params.append(source)
+                rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        except Exception as e:
+            logger.debug(f"get_team_practice_days failed: {e}")
+            return {}
+        latest: dict[str, str] = {}
+        for r in rows:
+            latest[r["team"]] = max(latest.get(r["team"], ""), r["date"])
+        out: dict[str, dict[str, str]] = {}
+        for r in rows:
+            if r["date"] == latest[r["team"]]:
+                out.setdefault(r["team"], {})[r["name_key"]] = r["status"]
+        return out
+
+    def get_latest_practice_status(self, player_id: str, max_age_hours: int = 72) -> dict | None:
+        """Most recent practice row stored under ``player_id`` (pre-v14 writers).
+
+        Real reports are keyed by name and team; read them with
+        ``get_practice_reports``.
+        """
+        try:
             cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
             with self._pool.get_connection() as conn:
                 cur = conn.execute(

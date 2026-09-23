@@ -108,6 +108,12 @@ class PlayerAnalysis:
     # None when nobody reported one. It used to default to "full", which told
     # the user an Out player had practised fully.
     practice_status: str | None = None
+    # The week's reported practice line ("DNP-LP-FP") and its direction, and
+    # where it came from: "caller", "nfl.com", "espn_news", or None when no
+    # report exists. Never derived from the injury designation.
+    practice_pattern: str | None = None
+    practice_trend: str | None = None
+    practice_source: str | None = None
     # Where the status came from: "caller" when passed in, otherwise the
     # injury tables ("report", "sleeper" or "both"), None when nothing is known.
     injury_source: str | None = None
@@ -148,6 +154,9 @@ class PlayerAnalysis:
             "usage_trend": self.usage_trend,
             "injury_status": self.injury_status,
             "practice_status": self.practice_status,
+            "practice_pattern": self.practice_pattern,
+            "practice_trend": self.practice_trend,
+            "practice_source": self.practice_source,
             "injury_source": self.injury_source,
             "on_bye": self.on_bye,
             "bye_status": self.bye_status,
@@ -389,7 +398,11 @@ class LineupOptimizer:
         elif availability(analysis.injury_status) == "uncertain":
             reasoning.append(f"⚠️ Status {analysis.injury_status!r} — verify before kickoff")
         if practice_score is not None and practice_score < 70:
-            reasoning.append(f"⚠️ Limited practice: {analysis.practice_status}")
+            line = (f" ({analysis.practice_pattern}, {analysis.practice_trend})"
+                    if analysis.practice_pattern and "-" in analysis.practice_pattern else "")
+            reasoning.append(f"⚠️ Limited practice: {analysis.practice_status}{line}")
+        elif analysis.practice_trend == "worsening":
+            reasoning.append(f"⚠️ Practice trending down: {analysis.practice_pattern}")
         if health_score >= 90:
             reasoning.append("✅ Healthy, full practice" if practice_score is not None
                              else "✅ No injury designation")
@@ -621,6 +634,21 @@ class LineupOptimizer:
             analysis.injury_source = analysis.injury_source or "caller"
             analysis.injury_status = injury_data.get("status") or "healthy"
             analysis.practice_status = injury_data.get("practice_status") or None
+            if analysis.practice_status:
+                analysis.practice_source = "caller"
+
+        # Practice the same way: a caller that passes none gets this week's real
+        # report (official NFL.com, else a dated news note), or nothing at all.
+        if not analysis.practice_status:
+            from .practice_reports import lookup_practice
+            practice = lookup_practice(self.db, player_name, team, season=season, week=week)
+            if practice:
+                analysis.practice_status = practice["latest"]
+                analysis.practice_pattern = practice["pattern"]
+                analysis.practice_trend = practice["trend"]
+                analysis.practice_source = practice["source"]
+                # The projection prices the latest report too.
+                injury_data = {**(injury_data or {}), "practice_status": practice["latest"]}
 
         # Apply projection data — or auto-project when the caller didn't supply
         # points, so start/sit works without manual point entry.
@@ -903,8 +931,15 @@ async def get_start_sit_recommendation(
             "usage": f"Snaps: {analysis.snap_percentage}%, Targets: {analysis.target_share}%",
             # Practice is only stated when someone reported it: the default
             # used to print "Practice: full" next to an Out designation.
-            "health": (f"{analysis.injury_status}, Practice: {analysis.practice_status}"
+            "health": (f"{analysis.injury_status}, Practice: "
+                       f"{analysis.practice_pattern or analysis.practice_status}"
                        if analysis.practice_status else analysis.injury_status),
+            "practice": {
+                "status": analysis.practice_status,
+                "pattern": analysis.practice_pattern,
+                "trend": analysis.practice_trend,
+                "source": analysis.practice_source or "unreported",
+            },
             "schedule": "on bye" if analysis.on_bye else analysis.bye_status,
             "projection": f"{analysis.projected_points} pts" if analysis.projected_points > 0 else "N/A",
         },
