@@ -9,9 +9,9 @@ Extracted from server.py as part of Fix #3 (extract health endpoint).
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -19,20 +19,42 @@ if TYPE_CHECKING:
 
 
 def _get_version() -> str:
-    """Return the server version from pyproject.toml, falling back to a default."""
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:
-        import tomli as tomllib
+    """Return the server version (single source of truth: ``nfl_mcp._version``)."""
+    from ._version import get_version
 
-    # Walk up to find pyproject.toml from this module's location
-    here = Path(__file__).resolve()
-    for parent in [here, *here.parents]:
-        candidate = parent / "pyproject.toml"
-        if candidate.exists():
-            with open(candidate, "rb") as f:
-                return tomllib.load(f).get("project", {}).get("version", "unknown")
-    return "unknown"
+    return get_version()
+
+
+# A wedged sqlite (locked file, exhausted pool) must not hang the probe.
+_DB_CHECK_TIMEOUT_SECONDS = 3.0
+
+
+async def _check_database() -> dict[str, Any]:
+    """Run the DB health check off the event loop, bounded by a timeout."""
+    from .tool_registry import get_db
+
+    nfl_db = get_db()
+    if nfl_db is None:
+        return {}
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(nfl_db.health_check),  # type: ignore[attr-defined]
+            timeout=_DB_CHECK_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        return {"healthy": False, "error": f"health check timed out after {_DB_CHECK_TIMEOUT_SECONDS}s"}
+    except Exception as e:
+        return {"healthy": False, "error": str(e)}
+
+
+def _overall_status(db_health: dict[str, Any], circuit_breakers: dict[str, Any]) -> tuple[str, int]:
+    """``unhealthy``/503 only when the DB is down; an open breaker (an upstream
+    API failing) is ``degraded``/200 -- the server still answers from cache."""
+    if db_health and not db_health.get("healthy", False):
+        return "unhealthy", 503
+    if any((cb or {}).get("state") in ("open", "half_open") for cb in circuit_breakers.values()):
+        return "degraded", 200
+    return "healthy", 200
 
 
 def _get_prefetch_config() -> dict[str, Any]:
@@ -51,6 +73,10 @@ def _get_prefetch_config() -> dict[str, Any]:
 async def health_check() -> JSONResponse:
     """Health check endpoint for monitoring server status.
 
+    Status: ``healthy`` (200); ``degraded`` (200) while any upstream circuit
+    breaker is open/half-open; ``unhealthy`` (503) only when the database
+    check fails -- the one condition a restart can fix.
+
     Returns detailed status including:
     - Server status and version
     - Database health and stats
@@ -66,19 +92,13 @@ async def health_check() -> JSONResponse:
     # Get version
     version = _get_version()
 
-    # Get database health (if tool_registry has been initialized)
+    # Get database health (if tool_registry has been initialized): a pool
+    # check plus cheap queries, in a worker thread with a timeout.
     db_health: dict[str, Any] = {}
     try:
-        from .tool_registry import get_db
-
-        nfl_db = get_db()
-        if nfl_db is not None:
-            try:
-                db_health = nfl_db.health_check()  # type: ignore[attr-defined]
-            except Exception as e:
-                db_health = {"healthy": False, "error": str(e)}
-    except Exception:
-        pass
+        db_health = await _check_database()
+    except Exception as e:
+        db_health = {"healthy": False, "error": str(e)}
 
     # Get circuit breaker status
     circuit_breakers: dict[str, Any] = {}
@@ -90,14 +110,22 @@ async def health_check() -> JSONResponse:
     with contextlib.suppress(Exception):
         rate_limiters = get_all_rate_limiter_status()
 
+    status, status_code = _overall_status(db_health, circuit_breakers)
+    open_breakers = sorted(
+        name for name, cb in circuit_breakers.items()
+        if (cb or {}).get("state") in ("open", "half_open")
+    )
+
     return JSONResponse(
         {
-            "status": "healthy",
+            "status": status,
             "service": "NFL MCP Server",
             "version": version,
             "database": db_health,
             "circuit_breakers": circuit_breakers,
             "rate_limiters": rate_limiters,
+            "open_circuit_breakers": open_breakers,
             "prefetch": _get_prefetch_config(),
-        }
+        },
+        status_code=status_code,
     )

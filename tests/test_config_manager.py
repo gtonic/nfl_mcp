@@ -10,6 +10,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from nfl_mcp._version import get_version
 from nfl_mcp.config_manager import (
     ConfigManager,
     ConfigurationModel,
@@ -42,9 +43,10 @@ class TestConfigurationModels:
     def test_server_config_defaults(self):
         """Test default server configuration."""
         config = ServerConfig()
-        assert config.version == "0.1.0"
+        # Defaults to the package version, never a stale hardcoded string.
+        assert config.version == get_version()
         assert config.base_user_agent == (
-            "NFL-MCP-Server/0.1.0 (+https://github.com/gtonic/nfl_mcp)"
+            f"NFL-MCP-Server/{get_version()} (+https://github.com/gtonic/nfl_mcp)"
         )
 
     def test_server_config_custom_version(self):
@@ -135,7 +137,7 @@ class TestConfigManager:
         config = manager.config
 
         assert config.timeout.total == 30.0
-        assert config.server.version == "0.1.0"
+        assert config.server.version == get_version()
         assert config.limits.nfl_news_max == 50
 
     def test_config_manager_environment_variables(self):
@@ -275,11 +277,11 @@ class TestConfigManager:
 
         # Test user agent methods
         base_agent = manager.get_user_agent()
-        assert base_agent == "NFL-MCP-Server/0.1.0 (+https://github.com/gtonic/nfl_mcp)"
+        assert base_agent == f"NFL-MCP-Server/{get_version()} (+https://github.com/gtonic/nfl_mcp)"
 
         service_agent = manager.get_user_agent("nfl_news")
         assert service_agent == (
-            "NFL-MCP-Server/0.1.0 (+https://github.com/gtonic/nfl_mcp) (NFL News Fetcher)"
+            f"NFL-MCP-Server/{get_version()} (+https://github.com/gtonic/nfl_mcp) (NFL News Fetcher)"
         )
 
         # Test dictionary methods for backward compatibility
@@ -393,13 +395,11 @@ class TestBackwardCompatibility:
         assert hasattr(config, 'USER_AGENTS')
         assert hasattr(config, 'ALLOWED_URL_SCHEMES')
         assert hasattr(config, 'LIMITS')
-        assert hasattr(config, 'RATE_LIMITS')
 
         # Test that they have correct types
         assert isinstance(config.SERVER_VERSION, str)
         assert isinstance(config.USER_AGENTS, dict)
         assert isinstance(config.LIMITS, dict)
-        assert isinstance(config.RATE_LIMITS, dict)
         assert isinstance(config.ALLOWED_URL_SCHEMES, list)
 
     def test_config_functions_work(self):

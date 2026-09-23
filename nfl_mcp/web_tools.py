@@ -4,17 +4,131 @@ Web crawling MCP tools for the NFL MCP Server.
 This module contains MCP tools for crawling and extracting content from web pages.
 """
 
+import ipaddress
+import os
 import re
 from urllib.parse import urljoin
 
+import httpcore
+import httpx
 from bs4 import BeautifulSoup
 
-from .config import create_http_client, get_http_headers, is_safe_public_url
+from .config import allow_private_urls, create_http_client, get_http_headers, resolve_safe_url
+from .errors import create_success_response, handle_http_errors, handle_validation_error
 
 # Maximum number of redirect hops crawl_url will follow (each re-validated).
 MAX_CRAWL_REDIRECTS = 5
 _REDIRECT_STATUS = {301, 302, 303, 307, 308}
-from .errors import create_success_response, handle_http_errors, handle_validation_error
+
+# Hard cap on the body bytes read from a crawled URL (the text limit applies
+# after parsing; without this a huge or endless body is buffered whole).
+DEFAULT_CRAWL_MAX_BYTES = 2 * 1024 * 1024
+
+# Only textual documents are parsed. A missing Content-Type is treated as HTML.
+_ALLOWED_CONTENT_TYPES = {
+    "text/html",
+    "application/xhtml+xml",
+    "text/plain",
+    "application/json",
+    "text/xml",
+    "application/xml",
+}
+_MARKUP_CONTENT_TYPES = {"text/html", "application/xhtml+xml", "text/xml", "application/xml"}
+
+
+def _crawl_max_bytes() -> int:
+    try:
+        value = int(os.getenv("NFL_MCP_CRAWL_MAX_BYTES", str(DEFAULT_CRAWL_MAX_BYTES)))
+    except ValueError:
+        return DEFAULT_CRAWL_MAX_BYTES
+    return value if value > 0 else DEFAULT_CRAWL_MAX_BYTES
+
+
+def _media_type(content_type: str | None) -> str:
+    return (content_type or "").split(";", 1)[0].strip().lower()
+
+
+def _content_type_allowed(media_type: str) -> bool:
+    return not media_type or media_type in _ALLOWED_CONTENT_TYPES or media_type.endswith("+xml")
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
+class _PinnedDNSBackend(httpcore.AsyncNetworkBackend):
+    """Connects only to addresses crawl_url has already validated.
+
+    ``pins`` maps a hostname to the IPs that passed the SSRF check; the TCP
+    connection goes to one of those IPs while TLS SNI/certificate checks and
+    the Host header still use the hostname (httpcore takes both from the
+    request URL, not from the address we connect to). A host that was never
+    validated is refused outright, so a DNS answer that changes between
+    "resolve to validate" and "resolve to connect" (rebinding) cannot reach
+    the private network.
+    """
+
+    def __init__(self, inner: httpcore.AsyncNetworkBackend):
+        self._inner = inner
+        self.pins: dict[str, list[str]] = {}
+
+    def pin(self, host: str, addresses: list[str]) -> None:
+        self.pins[host.lower()] = list(addresses)
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        addresses = self.pins.get(host.lower())
+        if addresses is None:
+            if not (_is_ip_literal(host) or allow_private_urls()):
+                raise httpcore.ConnectError(f"Refusing to connect to unvalidated host {host}")
+            addresses = [host]
+        last_error: Exception | None = None
+        for address in addresses:
+            try:
+                return await self._inner.connect_tcp(
+                    address, port, timeout=timeout,
+                    local_address=local_address, socket_options=socket_options,
+                )
+            except (httpcore.ConnectError, httpcore.ConnectTimeout, OSError) as e:
+                last_error = e
+        raise last_error or httpcore.ConnectError(f"No address to connect to for {host}")
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        raise httpcore.ConnectError("Unix sockets are not allowed for crawling")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def _pinned_transport() -> tuple[httpx.AsyncHTTPTransport, _PinnedDNSBackend]:
+    # trust_env=False: an HTTP(S)_PROXY from the environment would move the
+    # connect (and the DNS lookup) to the proxy, bypassing the pin.
+    transport = httpx.AsyncHTTPTransport(trust_env=False)
+    backend = _PinnedDNSBackend(transport._pool._network_backend)
+    transport._pool._network_backend = backend
+    return transport, backend
+
+
+def _pin_key(url: str) -> str:
+    """The host as httpcore will see it (IDNA-encoded, lowercase)."""
+    return httpx.URL(url).raw_host.decode("ascii").lower()
+
+
+async def _read_capped(response, max_bytes: int) -> tuple[bytes, bool]:
+    """Read at most ``max_bytes`` of the body; returns (body, truncated)."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in response.aiter_bytes():
+        remaining = max_bytes - size
+        if len(chunk) >= remaining:
+            chunks.append(chunk[:remaining])
+            return b"".join(chunks), True
+        chunks.append(chunk)
+        size += len(chunk)
+    return b"".join(chunks), False
 
 
 @handle_http_errors(
@@ -38,48 +152,81 @@ async def crawl_url(url: str, max_length: int | None = 10000) -> dict:
         - title: Page title (if available)
         - content: Cleaned text content
         - content_length: Length of extracted content
+        - truncated_bytes: True when the body exceeded the byte cap
         - success: Whether the crawl was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
     """
     _error_data = {"url": url, "title": None, "content": "", "content_length": 0}
 
-    # SSRF protection: validate scheme + resolved IP before contacting the host.
-    ok, reason = is_safe_public_url(url)
+    # SSRF protection: validate scheme + resolved IP before contacting the host
+    # (resolved on the event loop's resolver, not a blocking getaddrinfo).
+    ok, reason, _host, addresses = await resolve_safe_url(url)
     if not ok:
         return handle_validation_error(reason, _error_data)
 
     headers = get_http_headers("web_crawler")
+    max_bytes = _crawl_max_bytes()
+    transport, backend = _pinned_transport()
+    if addresses:
+        backend.pin(_pin_key(url), addresses)
 
-    # Follow redirects manually so every hop is re-validated — otherwise a
-    # public URL could 3xx-redirect into the private network / cloud metadata.
-    async with create_http_client(follow_redirects=False) as client:
+    # Follow redirects manually so every hop is re-validated (and pinned) —
+    # otherwise a public URL could 3xx-redirect into the private network.
+    async with create_http_client(follow_redirects=False, transport=transport) as client:
         current_url = url
-        for _ in range(MAX_CRAWL_REDIRECTS + 1):
-            response = await client.get(current_url, headers=headers)
+        response = None
+        try:
+            for _ in range(MAX_CRAWL_REDIRECTS + 1):
+                request = client.build_request("GET", current_url, headers=headers)
+                response = await client.send(request, stream=True)
 
-            if response.status_code in _REDIRECT_STATUS:
-                location = response.headers.get("location")
-                if not location:
-                    break  # malformed redirect; fall through to normal handling
-                next_url = urljoin(current_url, location)
-                ok, reason = is_safe_public_url(next_url)
-                if not ok:
-                    return handle_validation_error(f"Blocked redirect: {reason}", _error_data)
-                current_url = next_url
-                continue
+                if response.status_code in _REDIRECT_STATUS:
+                    location = response.headers.get("location")
+                    if not location:
+                        break  # malformed redirect; fall through to normal handling
+                    next_url = urljoin(current_url, location)
+                    ok, reason, _host, addresses = await resolve_safe_url(next_url)
+                    if not ok:
+                        return handle_validation_error(f"Blocked redirect: {reason}", _error_data)
+                    if addresses:
+                        backend.pin(_pin_key(next_url), addresses)
+                    await response.aclose()
+                    response = None
+                    current_url = next_url
+                    continue
 
-            # Non-redirect response: process it.
-            break
-        else:
-            return handle_validation_error(
-                f"Too many redirects (>{MAX_CRAWL_REDIRECTS})", _error_data
-            )
+                # Non-redirect response: process it.
+                break
+            else:
+                return handle_validation_error(
+                    f"Too many redirects (>{MAX_CRAWL_REDIRECTS})", _error_data
+                )
 
-        response.raise_for_status()
+            response.raise_for_status()
 
+            media_type = _media_type(response.headers.get("content-type"))
+            if not _content_type_allowed(media_type):
+                return handle_validation_error(
+                    f"Unsupported content type: {media_type} (only HTML, text, JSON and XML are crawled)",
+                    _error_data,
+                )
+
+            body, truncated_bytes = await _read_capped(response, max_bytes)
+        finally:
+            if response is not None:
+                await response.aclose()
+
+    encoding = getattr(response, "charset_encoding", None) or "utf-8"
+    try:
+        raw_text = body.decode(encoding, errors="replace")
+    except LookupError:
+        raw_text = body.decode("utf-8", errors="replace")
+
+    title = None
+    if not media_type or media_type in _MARKUP_CONTENT_TYPES or media_type.endswith("+xml"):
         # Parse HTML content
-        soup = BeautifulSoup(response.text, 'lxml')
+        soup = BeautifulSoup(raw_text, 'lxml')
 
         # Extract title
         title_tag = soup.find('title')
@@ -91,22 +238,25 @@ async def crawl_url(url: str, max_length: int | None = 10000) -> dict:
 
         # Get text content
         text = soup.get_text()
+    else:
+        text = raw_text
 
-        # Clean up the text
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = ' '.join(chunk for chunk in chunks if chunk)
+    # Clean up the text
+    lines = (line.strip() for line in text.splitlines())
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    text = ' '.join(chunk for chunk in chunks if chunk)
 
-        # Remove excessive whitespace and normalize
-        text = re.sub(r'\s+', ' ', text).strip()
+    # Remove excessive whitespace and normalize
+    text = re.sub(r'\s+', ' ', text).strip()
 
-        # Apply length limit if specified
-        if max_length and len(text) > max_length:
-            text = text[:max_length] + "..."
+    # Apply length limit if specified
+    if max_length and len(text) > max_length:
+        text = text[:max_length] + "..."
 
-        return create_success_response({
-            "url": url,
-            "title": title,
-            "content": text,
-            "content_length": len(text)
-        })
+    return create_success_response({
+        "url": url,
+        "title": title,
+        "content": text,
+        "content_length": len(text),
+        "truncated_bytes": truncated_bytes,
+    })

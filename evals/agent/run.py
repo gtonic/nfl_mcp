@@ -6,9 +6,11 @@ a user prompt, and check that it chooses an acceptable tool with sensible args.
 This is single-turn routing — we inspect what the model *wants* to call; we don't
 execute the tools. That's the highest-signal, lowest-cost slice of Layer C.
 
-Requires ANTHROPIC_API_KEY. Without it the run is skipped (exit 0) so it degrades
-gracefully; with it, the process exits non-zero if the pass rate drops below the
-threshold (regression signal).
+Requires ANTHROPIC_API_KEY. Without it the run prints SKIPPED and exits with
+EXIT_SKIPPED (non-zero), so a CI run without the secret is never green -- a
+skipped eval proves nothing. Pass --allow-skip to exit 0 instead (local use).
+With the key, the process exits 1 if the pass rate drops below the threshold
+(regression signal).
 
 Run: python -m evals.agent.run   [--model claude-sonnet-5] [--threshold 0.8]
 """
@@ -31,6 +33,9 @@ SYSTEM = (
 )
 
 DEFAULT_MODEL = os.getenv("AGENT_EVAL_MODEL", "claude-sonnet-5")
+
+# Distinct from 1 (below threshold) so CI logs tell "not run" from "regressed".
+EXIT_SKIPPED = 3
 
 
 def _tool_calls(resp) -> list[Any]:
@@ -80,16 +85,21 @@ def run(model: str = DEFAULT_MODEL) -> list[dict[str, Any]]:
     return results
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Agent tool-routing eval (Layer C)")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--threshold", type=float, default=0.8, help="min pass rate")
-    args = ap.parse_args()
+    ap.add_argument(
+        "--allow-skip", action="store_true",
+        help="exit 0 (not EXIT_SKIPPED) when ANTHROPIC_API_KEY is missing",
+    )
+    args = ap.parse_args(argv)
 
     if not os.getenv("ANTHROPIC_API_KEY"):
         print("SKIPPED: ANTHROPIC_API_KEY not set — agent eval needs it to call the model.")
         print("Set the key (or the ANTHROPIC_API_KEY repo secret) to run this eval.")
-        return 0
+        print("No scenarios were run; this is NOT a pass.")
+        return 0 if args.allow_skip else EXIT_SKIPPED
 
     print("=" * 78)
     print(f"AGENT TOOL-ROUTING EVAL — model={args.model}, {len(SCENARIOS)} scenarios")

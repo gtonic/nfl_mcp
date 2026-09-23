@@ -1,8 +1,9 @@
 name: Agent Evals
 
 # Layer C — LLM tool-routing evals. On-demand only (it calls the model and costs
-# tokens). Needs an ANTHROPIC_API_KEY repo secret; without it the run skips
-# gracefully. The offline guards (scenario/schema/registry) run in the normal
+# tokens). Needs an ANTHROPIC_API_KEY repo secret; without it the run prints
+# SKIPPED and FAILS (exit 3), so a run that tested nothing is never green. The
+# offline guards (scenario/schema/registry) run in the normal
 # test suite, so tool-description regressions are still caught on every PR.
 on:
   workflow_dispatch:

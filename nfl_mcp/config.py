@@ -11,21 +11,21 @@ while maintaining backward compatibility with existing code.
 import asyncio
 import html
 import ipaddress
+import logging
 import os
 import re
 import socket
 import time
 import urllib.parse
-from collections import defaultdict, deque
 from typing import Any
 
 import httpx
 
 # Import the new configuration manager
 from .config_manager import PROJECT_URL, get_config_manager
+from .input_warnings import add_input_warning
 
-# Rate limiting storage (in production, use Redis or similar)
-_rate_limit_storage = defaultdict(lambda: deque())
+logger = logging.getLogger(__name__)
 
 
 class OutboundRateLimiter:
@@ -116,37 +116,78 @@ class OutboundRateLimiter:
 # Global rate limiters for external APIs
 _rate_limiters: dict[str, OutboundRateLimiter] = {}
 
+# Per-API sustained limits (requests/minute). Sleeper documents "stay under
+# 1000 calls a minute" per IP; 600 leaves headroom for other clients on the
+# same address. The others publish no number, so they are conservative.
+_DEFAULT_API_RATE_LIMITS: dict[str, int] = {
+    "sleeper": 600,
+    "espn": 120,
+    "odds_api": 30,
+    "nflverse": 60,
+    "fantasycalc": 60,
+    "cbs": 30,
+    "nfl_com": 60,
+    "open_meteo": 120,
+}
+
+# Outbound host -> limiter name. Every client built by create_http_client
+# acquires a token for its request's host before sending (redirect hops too,
+# e.g. github.com -> release-assets for nflverse downloads).
+_HOST_RATE_LIMITERS: tuple[tuple[str, str], ...] = (
+    ("sleeper.app", "sleeper"),
+    ("sleeper.com", "sleeper"),
+    ("espn.com", "espn"),
+    ("the-odds-api.com", "odds_api"),
+    ("github.com", "nflverse"),
+    ("githubusercontent.com", "nflverse"),
+    ("fantasycalc.com", "fantasycalc"),
+    ("cbssports.com", "cbs"),
+    ("nfl.com", "nfl_com"),
+    ("open-meteo.com", "open_meteo"),
+)
+
+
+def rate_limiter_name_for_host(host: str | None) -> str | None:
+    """Limiter name for an outbound host (suffix match), or None if unlimited."""
+    if not host:
+        return None
+    host = host.lower().rstrip(".")
+    for suffix, name in _HOST_RATE_LIMITERS:
+        if host == suffix or host.endswith("." + suffix):
+            return name
+    return None
+
+
 def get_rate_limiter(api_name: str) -> OutboundRateLimiter:
     """
     Get or create a rate limiter for an API.
 
-    Default limits:
-    - sleeper: 100 calls/minute (generous, no published limit)
-    - espn: 60 calls/minute (conservative)
-    - default: 60 calls/minute
+    Defaults come from ``_DEFAULT_API_RATE_LIMITS``; an API without an entry
+    uses the configured ``rate_limits.default_requests_per_minute`` (60).
 
-    Can be overridden via environment variables:
+    Can be overridden via environment variables, e.g.:
     - NFL_MCP_SLEEPER_RATE_LIMIT
     - NFL_MCP_ESPN_RATE_LIMIT
+    - NFL_MCP_ODDS_API_RATE_LIMIT
     """
     if api_name not in _rate_limiters:
         # Check for env var override
         env_key = f"NFL_MCP_{api_name.upper()}_RATE_LIMIT"
         env_value = os.getenv(env_key)
 
+        limit = None
         if env_value:
             try:
                 limit = int(env_value)
             except ValueError:
+                limit = None
+        if limit is None or limit <= 0:
+            limit = _DEFAULT_API_RATE_LIMITS.get(api_name)
+        if limit is None:
+            try:
+                limit = get_config_manager().config.rate_limits.default_requests_per_minute
+            except Exception:
                 limit = 60
-        else:
-            # Default limits per API
-            default_limits = {
-                "sleeper": 100,
-                "espn": 60,
-                "cbs": 30,
-            }
-            limit = default_limits.get(api_name, 60)
 
         _rate_limiters[api_name] = OutboundRateLimiter(
             calls_per_minute=limit,
@@ -161,62 +202,18 @@ def get_all_rate_limiter_status() -> dict[str, dict[str, Any]]:
     return {name: limiter.get_status() for name, limiter in _rate_limiters.items()}
 
 
-def check_rate_limit(identifier: str, limit: int, window_seconds: int = 60) -> bool:
-    """
-    Check if a request is within rate limits.
-
-    Args:
-        identifier: Unique identifier (IP, user_id, etc.)
-        limit: Maximum requests allowed in window
-        window_seconds: Time window in seconds
-
-    Returns:
-        True if request is allowed, False if rate limited
-    """
-    now = time.time()
-    requests = _rate_limit_storage[identifier]
-
-    # Remove old requests outside the window
-    while requests and requests[0] <= now - window_seconds:
-        requests.popleft()
-
-    # Check if we're at the limit
-    if len(requests) >= limit:
-        return False
-
-    # Add current request
-    requests.append(now)
-    return True
-
-
-def get_rate_limit_status(identifier: str, limit: int, window_seconds: int = 60) -> dict:
-    """
-    Get current rate limit status for an identifier.
-
-    Args:
-        identifier: Unique identifier
-        limit: Maximum requests allowed
-        window_seconds: Time window in seconds
-
-    Returns:
-        Dictionary with rate limit status information
-    """
-    now = time.time()
-    requests = _rate_limit_storage[identifier]
-
-    # Remove old requests
-    while requests and requests[0] <= now - window_seconds:
-        requests.popleft()
-
-    remaining = max(0, limit - len(requests))
-    reset_time = int(now + window_seconds) if requests else int(now)
-
-    return {
-        "limit": limit,
-        "remaining": remaining,
-        "reset": reset_time,
-        "retry_after": max(0, int(requests[0] + window_seconds - now)) if len(requests) >= limit else 0
-    }
+async def _outbound_rate_limit_hook(request: httpx.Request) -> None:
+    """httpx request hook: wait for the host's limiter before sending."""
+    name = rate_limiter_name_for_host(request.url.host)
+    if name is None:
+        return
+    try:
+        waited = await get_rate_limiter(name).acquire()
+    except Exception as e:  # a limiter fault must never block the request
+        logger.debug(f"[RateLimit] {name} limiter error ignored: {e}")
+        return
+    if waited > 0:
+        logger.debug(f"[RateLimit] {name}: waited {waited:.2f}s for {request.url.host}")
 
 
 # HTTP Client Configuration - now loaded from ConfigManager with env var support
@@ -253,11 +250,12 @@ LONG_TIMEOUT = _get_long_timeout_config()
 
 # User Agent Configuration - now loaded from ConfigManager
 def _get_server_version():
-    """Get server version from ConfigManager."""
+    """Get server version from ConfigManager (which defaults to the package version)."""
     try:
         return get_config_manager().config.server.version
     except Exception:
-        return "0.1.0"
+        from ._version import get_version
+        return get_version()
 
 def _get_base_user_agent():
     """Get base user agent from ConfigManager."""
@@ -333,6 +331,7 @@ def get_http_headers(service_name: str) -> dict[str, str]:
 def create_http_client(
     timeout: httpx.Timeout = None,
     follow_redirects: bool = True,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> httpx.AsyncClient:
     """
     Create a configured HTTP client with standard settings.
@@ -343,13 +342,22 @@ def create_http_client(
             Callers that fetch *user-supplied* URLs should pass ``False`` and
             follow redirects manually so each hop can be re-validated against
             :func:`is_safe_public_url` (SSRF protection).
+        transport: Optional custom transport (crawl_url pins DNS with one).
+
+    Outbound requests to known APIs (Sleeper, ESPN, Odds API, nflverse, ...)
+    are paced by the per-host limiters via a request hook.
 
     Returns:
         Configured httpx.AsyncClient
     """
+    kwargs: dict[str, Any] = {}
+    if transport is not None:
+        kwargs["transport"] = transport
     return httpx.AsyncClient(
         timeout=timeout or DEFAULT_TIMEOUT,
-        follow_redirects=follow_redirects
+        follow_redirects=follow_redirects,
+        event_hooks={"request": [_outbound_rate_limit_hook]},
+        **kwargs,
     )
 
 
@@ -424,6 +432,63 @@ def resolve_host_addresses(hostname: str) -> list:
     return list({info[4][0] for info in infos})
 
 
+async def resolve_host_addresses_async(hostname: str) -> list:
+    """Non-blocking :func:`resolve_host_addresses` (the loop's resolver, not
+    a blocking ``getaddrinfo`` on the event loop thread)."""
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    return list(dict.fromkeys(info[4][0] for info in infos))
+
+
+def _check_candidates(hostname: str, candidates: list):
+    """Every resolved address must be public; returns ``(ok, reason)``."""
+    if not candidates:
+        return False, f"Could not resolve host: {hostname}"
+    for ip_str in candidates:
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False, f"Invalid resolved address: {ip_str}"
+        if _ip_is_disallowed(ip):
+            return False, f"Blocked non-public address: {ip_str} (host {hostname})"
+    return True, None
+
+
+async def resolve_safe_url(url):
+    """Async SSRF gate that also returns the validated addresses.
+
+    Like :func:`is_safe_public_url`, but resolves without blocking the event
+    loop and returns ``(ok, reason, hostname, addresses)`` so the caller can
+    pin the connection to exactly the addresses that were checked -- closing
+    the DNS-rebinding window between "resolve to validate" and "resolve to
+    connect". ``addresses`` is empty for IP literals and when private URLs are
+    allowed (nothing to pin).
+    """
+    if not is_valid_url(url):
+        return False, "URL must start with http:// or https://", None, []
+    try:
+        hostname = urllib.parse.urlparse(url).hostname
+    except Exception:
+        return False, "Malformed URL", None, []
+    if not hostname:
+        return False, "URL has no host", None, []
+    if allow_private_urls():
+        return True, None, hostname, []
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        ok, reason = _check_candidates(hostname, [hostname])
+        return ok, reason, hostname, []
+    try:
+        candidates = await resolve_host_addresses_async(hostname)
+    except OSError:  # socket.gaierror is an OSError
+        return False, f"Could not resolve host: {hostname}", hostname, []
+    ok, reason = _check_candidates(hostname, candidates)
+    return ok, reason, hostname, (candidates if ok else [])
+
+
 def is_safe_public_url(url):
     """
     SSRF-hardened URL check used before fetching *user-supplied* URLs.
@@ -466,15 +531,7 @@ def is_safe_public_url(url):
         if not candidates:
             return False, f"Could not resolve host: {hostname}"
 
-    for ip_str in candidates:
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False, f"Invalid resolved address: {ip_str}"
-        if _ip_is_disallowed(ip):
-            return False, f"Blocked non-public address: {ip_str} (host {hostname})"
-
-    return True, None
+    return _check_candidates(hostname, candidates)
 
 
 # Parameter Validation Limits - now loaded from ConfigManager
@@ -501,6 +558,33 @@ def _get_limits():
         }
 
 LIMITS = _get_limits()
+
+
+def _update_timeout(target: httpx.Timeout, source: httpx.Timeout) -> None:
+    for attr in ("connect", "read", "write", "pool"):
+        setattr(target, attr, getattr(source, attr))
+
+
+def refresh_from_config_manager() -> None:
+    """Re-derive the module-level config values from the current ConfigManager.
+
+    The constants above are built at import, before ``main()`` installs the
+    manager for ``NFL_MCP_CONFIG_FILE`` (and before any hot reload). Other
+    modules hold ``from .config import LIMITS, DEFAULT_TIMEOUT`` references,
+    so everything is updated IN PLACE -- the same dict/list/Timeout objects --
+    rather than rebound. Called by ``config_manager.set_config_manager`` and
+    after every (hot) reload.
+    """
+    global SERVER_VERSION, BASE_USER_AGENT
+    _update_timeout(DEFAULT_TIMEOUT, _get_timeout_config())
+    _update_timeout(LONG_TIMEOUT, _get_long_timeout_config())
+    SERVER_VERSION = _get_server_version()
+    BASE_USER_AGENT = _get_base_user_agent()
+    USER_AGENTS.clear()
+    USER_AGENTS.update(_get_user_agents())
+    ALLOWED_URL_SCHEMES[:] = _get_allowed_url_schemes()
+    LIMITS.clear()
+    LIMITS.update(_get_limits())
 
 # Feature flags (environment-variable driven for simplicity). Use ConfigManager later if desired.
 def is_feature_enabled(flag_name: str, default: bool = False) -> bool:
@@ -551,22 +635,6 @@ SAFE_PATTERNS = {
     'league_id': re.compile(r'^[0-9]+$'),  # Sleeper league IDs are numeric
     'trend_type': re.compile(r'^(add|drop)$'),  # Only valid trend types
 }
-
-# Rate limiting constants - now loaded from ConfigManager
-def _get_rate_limits():
-    """Get rate limits from ConfigManager."""
-    try:
-        return get_config_manager().get_rate_limits_dict()
-    except Exception:
-        # Fallback to hardcoded values
-        return {
-            'default_requests_per_minute': 60,
-            'heavy_requests_per_minute': 10,
-            'burst_limit': 5,
-        }
-
-RATE_LIMITS = _get_rate_limits()
-
 
 def validate_string_input(value: str, input_type: str = 'general', max_length: int | None = None, required: bool = True) -> str:
     """
@@ -638,11 +706,17 @@ def validate_numeric_input(value: Any, min_val: int | None = None, max_val: int 
     """
     Enhanced numeric validation with type checking and comprehensive validation.
 
+    ``default`` only stands in for a MISSING value (None) or one that cannot be
+    parsed. An out-of-range value is never replaced by the default: without a
+    default it raises; with one it is clamped to the violated bound and the
+    correction is reported to the caller (``input_warnings`` on the tool
+    response), so ``limit=500`` becomes the maximum, visibly -- not 25.
+
     Args:
         value: The value to validate
         min_val: Minimum allowed value
         max_val: Maximum allowed value
-        default: Default value if None or invalid
+        default: Value used when ``value`` is None or unparseable
         required: Whether the input is required
 
     Returns:
@@ -668,18 +742,21 @@ def validate_numeric_input(value: Any, min_val: int | None = None, max_val: int 
         int_value = int(value)
     except (ValueError, TypeError):
         if default is not None:
+            add_input_warning(f"Could not parse {value!r} as an integer; used default {default}")
             return default
         raise ValueError(f"Cannot convert '{value}' to integer") from None
 
     # Range validation
     if min_val is not None and int_value < min_val:
         if default is not None:
-            return max(default, min_val)
+            add_input_warning(f"Value {int_value} is below minimum {min_val}; clamped to {min_val}")
+            return min_val
         raise ValueError(f"Value {int_value} is below minimum {min_val}")
 
     if max_val is not None and int_value > max_val:
         if default is not None:
-            return min(default, max_val)
+            add_input_warning(f"Value {int_value} exceeds maximum {max_val}; clamped to {max_val}")
+            return max_val
         raise ValueError(f"Value {int_value} exceeds maximum {max_val}")
 
     return int_value
@@ -689,22 +766,28 @@ def validate_limit(value: int, min_val: int, max_val: int, default: int | None =
     """
     Validate and correct a limit parameter.
 
+    None -> ``default`` (or ``min_val``). Out of range -> clamped to the
+    violated bound, never reset to the default; the correction is reported via
+    ``input_warnings`` on the tool response.
+
     Args:
         value: The value to validate
         min_val: Minimum allowed value
         max_val: Maximum allowed value
-        default: Default value if None or invalid
+        default: Default value if None or unparseable
 
     Returns:
         Validated and corrected value
     """
+    fallback = default if default is not None else min_val
     if value is None:
-        return default if default is not None else min_val
+        return fallback
 
     try:
-        return validate_numeric_input(value, min_val, max_val, default, required=True)
+        return validate_numeric_input(value, min_val, max_val, fallback, required=True)
     except ValueError:
-        return default if default is not None else min_val
+        add_input_warning(f"Invalid limit {value!r}; used {fallback}")
+        return fallback
 
 
 def sanitize_content(content: str, max_length: int | None = None) -> str:

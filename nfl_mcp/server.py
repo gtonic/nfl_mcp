@@ -20,6 +20,7 @@ A FastMCP server that provides:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -71,11 +72,9 @@ def _load_dotenv(path: Path | None = None) -> int:
     return loaded
 
 
-# Must run before any module-level ``os.getenv`` below so a .env-provided
-# LOG_LEVEL / prefetch setting takes effect on the very first import.
-_DOTENV_LOADED = _load_dotenv()
-
-# Configure logging with INFO level by default
+# Configure logging with INFO level by default. .env is NOT loaded here:
+# importing the package (tests, tooling) must not pick up a developer's local
+# secrets. ``main()`` loads it and then re-derives the settings below.
 LOG_LEVEL = os.getenv("NFL_MCP_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -85,25 +84,45 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-if _DOTENV_LOADED:
-    logger.info(f"Loaded {_DOTENV_LOADED} variable(s) from .env")
 
-# Load prefetch config once from environment (prefetch is separate from general config)
-PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
-PREFETCH_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900"))
-PREFETCH_SNAPS_TTL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_SNAPS_TTL", "900"))
-PREFETCH_SCHEDULE_WEEKS = int(os.getenv("NFL_MCP_PREFETCH_SCHEDULE_WEEKS", "4"))
-# Athletes cache refresh (player names/teams/positions). Enabled by default when
-# prefetch runs; refreshed once at startup and then every ATHLETES_INTERVAL.
-PREFETCH_ATHLETES = os.getenv("NFL_MCP_PREFETCH_ATHLETES", "1") == "1"
-PREFETCH_ATHLETES_INTERVAL_SECONDS = int(
-    os.getenv("NFL_MCP_PREFETCH_ATHLETES_INTERVAL", "86400")  # daily
-)
+def _load_runtime_settings() -> None:
+    """(Re-)read the env-driven prefetch/prune settings into module globals.
 
-# DB pruning cadence. Wall-clock rather than a cycle count, which reset on every
-# restart and so never reached its threshold on a server restarted daily.
-DB_PRUNE_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_DB_PRUNE_INTERVAL", "86400"))  # daily
+    Runs at import (defaults for tests and embedders) and again in ``main()``
+    once ``.env`` is loaded, so .env-provided values take effect.
+    """
+    global PREFETCH_ENABLED, PREFETCH_INTERVAL_SECONDS, PREFETCH_SNAPS_TTL_SECONDS
+    global PREFETCH_SCHEDULE_WEEKS, PREFETCH_ATHLETES, PREFETCH_ATHLETES_INTERVAL_SECONDS
+    global DB_PRUNE_INTERVAL_SECONDS
+
+    # Prefetch config from environment (prefetch is separate from general config)
+    PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
+    PREFETCH_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900"))
+    PREFETCH_SNAPS_TTL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_SNAPS_TTL", "900"))
+    PREFETCH_SCHEDULE_WEEKS = int(os.getenv("NFL_MCP_PREFETCH_SCHEDULE_WEEKS", "4"))
+    # Athletes cache refresh (player names/teams/positions). Enabled by default when
+    # prefetch runs; refreshed once at startup and then every ATHLETES_INTERVAL.
+    PREFETCH_ATHLETES = os.getenv("NFL_MCP_PREFETCH_ATHLETES", "1") == "1"
+    PREFETCH_ATHLETES_INTERVAL_SECONDS = int(
+        os.getenv("NFL_MCP_PREFETCH_ATHLETES_INTERVAL", "86400")  # daily
+    )
+    # DB pruning cadence. Wall-clock rather than a cycle count, which reset on every
+    # restart and so never reached its threshold on a server restarted daily.
+    DB_PRUNE_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_DB_PRUNE_INTERVAL", "86400"))  # daily
+
+
+PREFETCH_ENABLED: bool
+PREFETCH_INTERVAL_SECONDS: int
+PREFETCH_SNAPS_TTL_SECONDS: int
+PREFETCH_SCHEDULE_WEEKS: int
+PREFETCH_ATHLETES: bool
+PREFETCH_ATHLETES_INTERVAL_SECONDS: int
+DB_PRUNE_INTERVAL_SECONDS: int
+_load_runtime_settings()
 _last_prune_at: float | None = None
+
+# How long shutdown waits for an in-flight startup warm-up before cancelling it.
+_STARTUP_TASK_SHUTDOWN_GRACE_SECONDS = 10.0
 
 # Global state for prefetch task
 _prefetch_task: asyncio.Task | None = None
@@ -542,13 +561,102 @@ def create_app() -> FastMCP:
     async def _health_endpoint(request):  # type: ignore[assignment]
         return await _health_check()
 
+    # Prometheus text exposition of the per-tool counters, opt-in because the
+    # endpoint is unauthenticated (NFL_MCP_METRICS=1).
+    if os.getenv("NFL_MCP_METRICS", "0").strip().lower() in ("1", "true", "yes", "on"):
+        @mcp.custom_route("/metrics", methods=["GET"])
+        async def _metrics_endpoint(request):  # type: ignore[assignment]
+            from starlette.responses import PlainTextResponse
+
+            from .metrics import get_metrics_collector
+
+            return PlainTextResponse(
+                get_metrics_collector().get_prometheus_metrics(),
+                media_type="text/plain; version=0.0.4",
+            )
+
     return mcp
+
+
+async def _startup_warmup(nfl_db: NFLDatabase, shutdown_event: asyncio.Event) -> None:
+    """Startup work that must not delay serving: prune, cache warm-up, loop.
+
+    Runs as a background task so ``/health`` and ``/mcp`` answer immediately
+    (the Docker HEALTHCHECK would otherwise race a 32-team schedule fetch).
+    """
+    # Prune on every start, prefetch or not: tool calls write snapshots too.
+    try:
+        await _prune_db_if_due(nfl_db, tag="Startup")
+    except Exception as e:
+        logger.warning(f"[Startup] Prune failed: {e}")
+
+    if not PREFETCH_ENABLED:
+        return
+
+    # Import late to avoid circular
+    from .sleeper_tools import (
+        _fetch_all_team_schedules,
+        advanced_enrich_enabled,
+        get_nfl_state,
+    )
+
+    if not advanced_enrich_enabled():
+        logger.info("Prefetch disabled: NFL_MCP_ADVANCED_ENRICH not enabled")
+        return
+
+    # Run initial startup prefetch (schedules for all 32 teams)
+    logger.info("[Startup Prefetch] Running initial cache warm-up...")
+    try:
+        # Get current season
+        state = await get_nfl_state()
+        season = 2026  # Default
+        if state.get("success") and state.get("nfl_state"):
+            season_raw = state["nfl_state"].get(
+                "season"
+            ) or state["nfl_state"].get("league_season")
+            try:
+                season = int(season_raw) if season_raw is not None else 2026
+            except (ValueError, TypeError):
+                season = 2026
+
+        logger.info(
+            f"[Startup Prefetch] Fetching schedules for all 32 teams (season={season})..."
+        )
+        schedules = await _fetch_all_team_schedules(season)
+
+        if schedules:
+            inserted = nfl_db.upsert_schedule_games(schedules)
+            logger.info(
+                f"[Startup Prefetch] Inserted {inserted} schedule records "
+                f"for {season} season"
+            )
+        else:
+            logger.warning(
+                f"[Startup Prefetch] No schedule data fetched for season {season}"
+            )
+
+    except Exception as e:
+        logger.error(
+            f"[Startup Prefetch] Failed to fetch team schedules: {e}", exc_info=True
+        )
+
+    # Initial athletes cache refresh (names/teams/positions) so enrichment
+    # is current as early as possible.
+    await _refresh_athletes(nfl_db, tag="Startup Prefetch")
+
+    if shutdown_event.is_set():
+        return
+
+    # Hand over to the periodic prefetch loop (same task).
+    logger.info("Background prefetch loop starting")
+    await _prefetch_loop(nfl_db, shutdown_event)
 
 
 def _create_prefetch_lifespan(nfl_db: NFLDatabase):
     """Factory function to create lifespan with access to nfl_db instance.
 
-    Handles background prefetch loop startup and graceful shutdown.
+    Starts the startup warm-up + prefetch loop in the background (the server
+    serves immediately) and shuts it down gracefully.
     """
 
     @asynccontextmanager
@@ -556,75 +664,27 @@ def _create_prefetch_lifespan(nfl_db: NFLDatabase):
         """Lifespan context manager for background prefetch task."""
         global _prefetch_task, _shutdown_event
 
-        # Prune on every start, prefetch or not: tool calls write snapshots too.
-        await _prune_db_if_due(nfl_db, tag="Startup")
+        _shutdown_event = asyncio.Event()
+        _prefetch_task = asyncio.create_task(_startup_warmup(nfl_db, _shutdown_event))
+        logger.info("Background startup/prefetch task started")
 
-        if PREFETCH_ENABLED:
-            # Import late to avoid circular
-            from .sleeper_tools import (
-                _fetch_all_team_schedules,
-                advanced_enrich_enabled,
-                get_nfl_state,
-            )
-
-            if advanced_enrich_enabled():
-                # Run initial startup prefetch (schedules for all 32 teams)
-                logger.info("[Startup Prefetch] Running initial cache warm-up...")
-                try:
-                    # Get current season
-                    state = await get_nfl_state()
-                    season = 2026  # Default
-                    if state.get("success") and state.get("nfl_state"):
-                        season_raw = state["nfl_state"].get(
-                            "season"
-                        ) or state["nfl_state"].get("league_season")
-                        try:
-                            season = int(season_raw) if season_raw is not None else 2026
-                        except (ValueError, TypeError):
-                            season = 2026
-
-                    logger.info(
-                        f"[Startup Prefetch] Fetching schedules for all 32 teams (season={season})..."
-                    )
-                    schedules = await _fetch_all_team_schedules(season)
-
-                    if schedules:
-                        inserted = nfl_db.upsert_schedule_games(schedules)
-                        logger.info(
-                            f"[Startup Prefetch] Inserted {inserted} schedule records "
-                            f"for {season} season"
-                        )
-                    else:
-                        logger.warning(
-                            f"[Startup Prefetch] No schedule data fetched for season {season}"
-                        )
-
-                except Exception as e:
-                    logger.error(
-                        f"[Startup Prefetch] Failed to fetch team schedules: {e}", exc_info=True
-                    )
-
-                # Initial athletes cache refresh (names/teams/positions) so
-                # enrichment is current from the first request.
-                await _refresh_athletes(nfl_db, tag="Startup Prefetch")
-
-                # Start background prefetch loop
-                _shutdown_event = asyncio.Event()
-                _prefetch_task = asyncio.create_task(
-                    _prefetch_loop(nfl_db, _shutdown_event)
-                )
-                logger.info("Background prefetch task started")
-            else:
-                logger.info("Prefetch disabled: NFL_MCP_ADVANCED_ENRICH not enabled")
-
-        yield  # Server running
-
-        # Shutdown
-        if _prefetch_task and _shutdown_event:
-            logger.info("Stopping prefetch task...")
-            _shutdown_event.set()
-            await _prefetch_task
-            logger.info("Prefetch task stopped")
+        try:
+            yield  # Server running
+        finally:
+            # Shutdown: the loop exits on the event; a warm-up still in
+            # flight gets a short grace period, then is cancelled.
+            task, event = _prefetch_task, _shutdown_event
+            if task and event:
+                logger.info("Stopping prefetch task...")
+                event.set()
+                done, _ = await asyncio.wait({task}, timeout=_STARTUP_TASK_SHUTDOWN_GRACE_SECONDS)
+                if not done:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+                elif not task.cancelled() and task.exception() is not None:
+                    logger.warning(f"Prefetch task ended with error: {task.exception()}")
+                logger.info("Prefetch task stopped")
 
     return app_lifespan
 
@@ -642,22 +702,37 @@ def _port_in_use(host: str, port: int) -> bool:
 
 def main():
     """Main entry point for the server."""
-    # --- Fix #1: Explicitly initialize ConfigManager before anything else ---
-    try:
-        # Determine config file path from environment or defaults
-        config_path = os.getenv("NFL_MCP_CONFIG_FILE")
-        if config_path:
-            from .config_manager import set_config_manager
+    # Secrets such as ODDS_API_KEY live in a gitignored .env; load it here
+    # (never on import), then re-derive everything read from the environment.
+    loaded = _load_dotenv()
+    if loaded:
+        logger.info(f"Loaded {loaded} variable(s) from .env")
+    logging.getLogger().setLevel(
+        getattr(logging, os.getenv("NFL_MCP_LOG_LEVEL", "INFO").upper(), logging.INFO)
+    )
+    _load_runtime_settings()
 
-            cm = get_config_manager()
+    # --- Fix #1: Explicitly initialize ConfigManager before anything else ---
+    # Installing (or reloading) the manager re-derives nfl_mcp.config's
+    # module-level values (limits, timeouts, User-Agent) before the tools are
+    # registered and serve their first request.
+    try:
+        from .config_manager import ConfigManager, set_config_manager
+
+        cm = get_config_manager()
+        config_path = os.getenv("NFL_MCP_CONFIG_FILE")
+        wanted = Path(config_path).resolve() if config_path else None
+        if wanted is not None and cm.config_file_path != wanted:
             set_config_manager(
-                type(cm)
-                (
-                    config_path,
+                ConfigManager(
+                    wanted,
                     enable_hot_reload=os.getenv("NFL_MCP_CONFIG_HOT_RELOAD", "0") == "1",
                 )
             )
-            logger.info(f"ConfigManager initialized with file: {config_path}")
+            logger.info(f"ConfigManager initialized with file: {wanted}")
+        else:
+            # Same file (or none): reload so .env-provided overrides apply.
+            cm.reload_configuration()
     except Exception:
         logger.warning("Failed to initialize ConfigManager; using defaults", exc_info=True)
 

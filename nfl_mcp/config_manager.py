@@ -11,6 +11,7 @@ This module provides flexible configuration management with support for:
 import json
 import logging
 import os
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,8 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+
+from ._version import get_version
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +51,8 @@ class LongTimeoutConfig:
 @dataclass
 class ServerConfig:
     """Server configuration."""
-    version: str = "0.1.0"
+    # The package version (pyproject.toml); override via NFL_MCP_SERVER_VERSION.
+    version: str = field(default_factory=get_version)
     base_user_agent: str = field(init=False)
 
     def __post_init__(self):
@@ -108,9 +112,30 @@ class ConfigFileHandler(FileSystemEventHandler):
         self.config_manager = config_manager
         super().__init__()
 
+    def _is_config_file(self, path) -> bool:
+        # Both sides resolved: watchdog reports absolute paths, while the
+        # manager may have been given a relative one (NFL_MCP_CONFIG_FILE=config.yml).
+        target = self.config_manager.config_file_path
+        if not path or target is None:
+            return False
+        try:
+            return Path(os.fsdecode(path)).resolve() == target.resolve()
+        except (OSError, ValueError):
+            return False
+
     def on_modified(self, event):
-        if not event.is_directory and event.src_path == str(self.config_manager.config_file_path):
+        if not event.is_directory and self._is_config_file(event.src_path):
             logger.info("Configuration file %s modified, reloading...", event.src_path)
+            self.config_manager.reload_configuration()
+
+    def on_created(self, event):
+        # Editors that save atomically (write temp + rename) produce a
+        # created/moved event for the file instead of a modification.
+        self.on_modified(event)
+
+    def on_moved(self, event):
+        if not event.is_directory and self._is_config_file(getattr(event, "dest_path", None)):
+            logger.info("Configuration file %s replaced, reloading...", event.dest_path)
             self.config_manager.reload_configuration()
 
 
@@ -128,7 +153,7 @@ class ConfigManager:
             config_file: Path to configuration file (YAML or JSON)
             enable_hot_reload: Whether to enable hot-reloading of configuration files
         """
-        self.config_file_path = Path(config_file) if config_file else None
+        self.config_file_path = Path(config_file).resolve() if config_file else None
         self.enable_hot_reload = enable_hot_reload
         self._config_lock = threading.RLock()
         self._observer = None
@@ -248,6 +273,8 @@ class ConfigManager:
         """Reload configuration from file and environment variables."""
         try:
             self.load_configuration()
+            if _config_manager is self:
+                _propagate_to_config_module()
             logger.info("Configuration reloaded successfully")
         except Exception as e:
             logger.error("Failed to reload configuration: %s", e)
@@ -335,10 +362,33 @@ class ConfigManager:
 _config_manager: ConfigManager | None = None
 
 
+def _propagate_to_config_module() -> None:
+    """Re-derive ``nfl_mcp.config``'s module-level values from this manager.
+
+    Only if that module is already imported (it imports us, not vice versa).
+    """
+    config_module = sys.modules.get(f"{__package__}.config")
+    if config_module is not None:
+        try:
+            config_module.refresh_from_config_manager()
+        except Exception:
+            logger.warning("Failed to refresh config values from ConfigManager", exc_info=True)
+
+
 def get_config_manager() -> ConfigManager:
     """Get the global configuration manager instance."""
     global _config_manager
     if _config_manager is None:
+        # An explicit NFL_MCP_CONFIG_FILE wins over the well-known locations, so
+        # the values derived at import already reflect it.
+        explicit = os.getenv("NFL_MCP_CONFIG_FILE")
+        if explicit and Path(explicit).exists():
+            _config_manager = ConfigManager(
+                explicit,
+                enable_hot_reload=os.getenv("NFL_MCP_CONFIG_HOT_RELOAD", "0") == "1",
+            )
+            return _config_manager
+
         # Look for config file in common locations
         config_paths = [
             Path("config.yml"),
@@ -363,6 +413,7 @@ def get_config_manager() -> ConfigManager:
 def set_config_manager(config_manager: ConfigManager):
     """Set the global configuration manager instance."""
     global _config_manager
-    if _config_manager:
+    if _config_manager and _config_manager is not config_manager:
         _config_manager.stop()
     _config_manager = config_manager
+    _propagate_to_config_module()
