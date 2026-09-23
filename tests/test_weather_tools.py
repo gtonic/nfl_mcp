@@ -70,6 +70,21 @@ class TestGameDate:
         assert _game_date("bad") is None
 
 
+def _series(wind, precip, temp, date="2026-12-20"):
+    """A day's hourly series with the same reading every hour."""
+    return {"hours": [(f"{date}T{h:02d}:00", wind, precip, temp) for h in range(24)]}
+
+
+def _hourly(wind, precip, temp, date="2026-12-20"):
+    """An Open-Meteo ``hourly`` payload with the same reading every hour."""
+    return {"hourly": {
+        "time": [f"{date}T{h:02d}:00" for h in range(24)],
+        "wind_speed_10m": [wind] * 24,
+        "precipitation": [precip] * 24,
+        "temperature_2m": [temp] * 24,
+    }}
+
+
 def _meteo_client(payload=None, status=200):
     resp = Mock()
     resp.status_code = status
@@ -83,16 +98,16 @@ def _meteo_client(payload=None, status=200):
 
 class TestFetchOpenMeteo:
     @pytest.mark.asyncio
-    async def test_parses_daily_values(self):
-        payload = {"daily": {
-            "time": ["2026-12-20"],
-            "wind_speed_10m_max": [22.4],
-            "precipitation_sum": [0.41],
-            "temperature_2m_max": [28.6],
-        }}
-        with patch("nfl_mcp.weather_tools.create_http_client", return_value=_meteo_client(payload)):
+    async def test_parses_hourly_values(self):
+        payload = _hourly(22.4, 0.41, 28.6)
+        client = _meteo_client(payload)
+        with patch("nfl_mcp.weather_tools.create_http_client", return_value=client):
             wx = await _fetch_open_meteo(42.0, -78.0, "2026-12-20")
-        assert wx == {"wind_mph": 22.4, "precip_in": 0.41, "temp_f": 29.0}
+        assert len(wx["hours"]) == 24
+        assert wx["hours"][13] == ("2026-12-20T13:00", 22.4, 0.41, 28.6)
+        params = client.get.await_args.kwargs["params"]
+        assert "hourly" in params and "daily" not in params
+        assert params["timezone"] == "auto"
 
     @pytest.mark.asyncio
     async def test_non_200_returns_none(self):
@@ -112,7 +127,7 @@ class TestGetWeatherForecast:
 
     @pytest.mark.asyncio
     async def test_sorts_worst_first_and_domes_neutral(self):
-        windy = {"wind_mph": 26.0, "precip_in": 0.1, "temp_f": 30.0}
+        windy = _series(26.0, 0.0, 30.0)
         with patch("nfl_mcp.sleeper_tools._fetch_week_schedule",
                    new=AsyncMock(return_value=self._schedule())), \
              patch("nfl_mcp.weather_tools._fetch_open_meteo",
@@ -137,7 +152,7 @@ class TestGetWeatherForecast:
         with patch("nfl_mcp.sleeper_tools._fetch_week_schedule",
                    new=AsyncMock(return_value=self._schedule())), \
              patch("nfl_mcp.weather_tools._fetch_open_meteo",
-                   new=AsyncMock(return_value={"wind_mph": 10.0, "precip_in": 0.0, "temp_f": 50.0})):
+                   new=AsyncMock(return_value=_series(10.0, 0.0, 50.0))):
             result = await get_weather_forecast(season=2026, week=16, teams=["GB"])
         assert result["count"] == 1
         assert result["games"][0]["home"] == "DET"  # GB is the away team
@@ -170,9 +185,6 @@ class TestForecastUnavailable:
         assert "no forecast" in res["message"]
 
 
-def _daily(wind, precip, temp, date="2026-12-20"):
-    return {"daily": {"time": [date], "wind_speed_10m_max": [wind],
-                      "precipitation_sum": [precip], "temperature_2m_max": [temp]}}
 
 
 class TestBatchedForecasts:
@@ -180,14 +192,12 @@ class TestBatchedForecasts:
 
     @pytest.mark.asyncio
     async def test_batch_parses_one_result_per_location_in_order(self):
-        payload = [_daily(22.4, 0.41, 28.6), _daily(5.0, 0.0, 70.2)]
+        payload = [_hourly(22.4, 0.41, 28.6), _hourly(5.0, 0.0, 70.2)]
         client = _meteo_client(payload)
         with patch("nfl_mcp.weather_tools.create_http_client", return_value=client):
             out = await _fetch_open_meteo_batch([(42.0, -78.0), (25.9, -80.2)], "2026-12-20")
-        assert out == {
-            (42.0, -78.0): {"wind_mph": 22.4, "precip_in": 0.41, "temp_f": 29.0},
-            (25.9, -80.2): {"wind_mph": 5.0, "precip_in": 0.0, "temp_f": 70.0},
-        }
+        assert out[(42.0, -78.0)]["hours"][0] == ("2026-12-20T00:00", 22.4, 0.41, 28.6)
+        assert out[(25.9, -80.2)]["hours"][0] == ("2026-12-20T00:00", 5.0, 0.0, 70.2)
         params = client.get.await_args.kwargs["params"]
         assert params["latitude"] == "42.0,25.9"
         assert params["start_date"] == params["end_date"] == "2026-12-20"
@@ -208,7 +218,7 @@ class TestBatchedForecasts:
         ]
 
         async def batch(points, date):
-            return {pt: {"wind_mph": 10.0, "precip_in": 0.0, "temp_f": 40.0} for pt in points}
+            return {pt: _series(10.0, 0.0, 40.0, date) for pt in points}
 
         batch_mock = AsyncMock(side_effect=batch)
         single = AsyncMock(return_value=None)
@@ -231,7 +241,7 @@ class TestBatchedForecasts:
     @pytest.mark.asyncio
     async def test_batch_miss_falls_back_to_single_requests(self):
         rows = [{"team": "BUF", "opponent": "MIA", "is_home": 1, "kickoff": "2026-12-20T18:00Z"}]
-        windy = {"wind_mph": 26.0, "precip_in": 0.1, "temp_f": 30.0}
+        windy = _series(26.0, 0.0, 30.0)
         with patch("nfl_mcp.sleeper_tools._fetch_week_schedule",
                    new=AsyncMock(return_value=rows)), \
              patch("nfl_mcp.weather_tools._fetch_open_meteo_batch",
@@ -241,5 +251,113 @@ class TestBatchedForecasts:
             res = await get_weather_forecast(season=2026, week=16)
         assert single.await_count == 1
         assert res["games"][0]["wind_mph"] == 26.0
+        assert res["games"][0]["precip_in"] == 0.0
         # Only successes are cached; a failed forecast is asked for again.
         assert weather_tools._forecast_cache
+
+
+class TestLocalDateAndKickoffWindow:
+    """The forecast is for the venue's local date and the hours around kickoff."""
+
+    def test_sunday_night_game_uses_the_local_date(self):
+        # DEN-LAR, Sunday night: 00:20Z is Monday in UTC, Sunday 18:20 in Denver.
+        assert _game_date("2026-09-28T00:20Z", "America/Denver") == "2026-09-27"
+        assert _game_date("2026-09-28T00:20Z") == "2026-09-28"  # no tz: UTC
+
+    def test_window_is_kickoff_plus_minus_two_hours(self):
+        hours = [(f"2026-09-27T{h:02d}:00", 5.0, 0.0, 70.0) for h in range(24)]
+        # A 3 a.m. gale and a morning shower are not game weather.
+        hours[3] = ("2026-09-27T03:00", 40.0, 1.0, 50.0)
+        hours[18] = ("2026-09-27T18:00", 9.0, 0.0, 64.0)
+        hours[19] = ("2026-09-27T19:00", 18.0, 0.2, 61.0)
+        hours[20] = ("2026-09-27T20:00", 12.0, 0.1, 58.0)
+        wx = weather_tools.kickoff_window(
+            {"hours": hours}, weather_tools._local_kickoff("2026-09-28T00:20Z", "America/Denver")
+        )
+        # 16:20-20:20 -> hours 17..20; temperature at the hour nearest kickoff.
+        assert wx == {"wind_mph": 18.0, "precip_in": 0.3, "temp_f": 64.0}
+
+    def test_window_outside_the_series_is_none(self):
+        hours = [("2026-09-27T12:00", 5.0, 0.0, 70.0)]
+        assert weather_tools.kickoff_window(
+            {"hours": hours}, weather_tools._local_kickoff("2026-09-28T00:20Z", "America/Denver")
+        ) is None
+
+    @pytest.mark.asyncio
+    async def test_snf_forecast_requests_the_local_date(self):
+        rows = [{"team": "DEN", "opponent": "LAR", "is_home": 1, "kickoff": "2026-09-28T00:20Z"}]
+        single = AsyncMock(return_value=_series(22.0, 0.0, 60.0, "2026-09-27"))
+        with patch("nfl_mcp.sleeper_tools._fetch_week_schedule", new=AsyncMock(return_value=rows)), \
+             patch("nfl_mcp.weather_tools._fetch_open_meteo", new=single):
+            res = await get_weather_forecast(season=2026, week=4)
+        assert single.await_args.args[2] == "2026-09-27"
+        game = res["games"][0]
+        assert game["kickoff_local"] == "2026-09-27T18:20"
+        assert game["wind_mph"] == 22.0 and game["impact"]["severity"] == "high"
+
+
+def _event(venue: dict, neutral: bool) -> dict:
+    return {"competitions": [{"neutralSite": neutral, "venue": venue}]}
+
+
+class TestNeutralSiteVenues:
+    def test_home_game_uses_home_stadium(self):
+        v = weather_tools.resolve_venue(
+            {"team": "KC", "raw": _event({"id": "3622", "fullName": "GEHA Field"}, False)}
+        )
+        assert v["name"] == "Arrowhead Stadium" and v["source"] == "home_stadium"
+        assert v["venue_uncertain"] is False
+
+    def test_team_codes_are_normalized(self):
+        assert weather_tools.resolve_venue({"team": "WAS"})["name"] == "Northwest Stadium"
+
+    def test_international_game_uses_the_venue(self):
+        v = weather_tools.resolve_venue({"team": "LAR", "raw": _event(
+            {"id": "9119", "fullName": "Melbourne Cricket Ground", "indoor": False}, True)})
+        assert v["name"] == "Melbourne Cricket Ground"
+        assert v["tz"] == "Australia/Melbourne" and v["lat"] < 0
+        assert v["dome"] is False and v["source"] == "neutral_site"
+
+    def test_venue_matched_by_name_from_stored_json(self):
+        import json
+        raw = json.dumps(_event({"fullName": "Tottenham Hotspur Stadium"}, True))
+        v = weather_tools.resolve_venue({"team": "JAX", "raw": raw})
+        assert v["tz"] == "Europe/London"
+
+    def test_unknown_neutral_site_is_uncertain(self):
+        v = weather_tools.resolve_venue({"team": "MIA", "raw": _event(
+            {"id": "999", "fullName": "Somewhere Arena",
+             "address": {"city": "Oslo", "country": "Norway"}}, True)})
+        assert v["venue_uncertain"] is True and v["lat"] is None
+
+    @pytest.mark.asyncio
+    async def test_forecast_at_the_neutral_site_on_its_local_date(self):
+        # SF @ LAR in Melbourne: 00:35Z Friday is 10:35 Friday local time.
+        rows = [{"team": "LAR", "opponent": "SF", "is_home": 1, "kickoff": "2026-09-11T00:35Z",
+                 "raw": _event({"id": "9119", "fullName": "Melbourne Cricket Ground",
+                                "indoor": False}, True)}]
+        single = AsyncMock(return_value=_series(16.0, 0.0, 55.0, "2026-09-11"))
+        with patch("nfl_mcp.sleeper_tools._fetch_week_schedule", new=AsyncMock(return_value=rows)), \
+             patch("nfl_mcp.weather_tools._fetch_open_meteo", new=single):
+            res = await get_weather_forecast(season=2026, week=1)
+        lat, _lon, date = single.await_args.args
+        assert lat == weather_tools.VENUES["9119"]["lat"] and date == "2026-09-11"
+        game = res["games"][0]
+        assert game["stadium"] == "Melbourne Cricket Ground"
+        assert game["dome"] is False  # SoFi's roof is not in Melbourne
+        assert game["kickoff_local"] == "2026-09-11T10:35"
+        assert game["wind_mph"] == 16.0
+
+    @pytest.mark.asyncio
+    async def test_unknown_neutral_site_is_not_forecast_at_home(self):
+        rows = [{"team": "MIA", "opponent": "BUF", "is_home": 1, "kickoff": "2026-10-04T13:30Z",
+                 "raw": _event({"id": "999", "fullName": "Somewhere Arena"}, True)}]
+        single = AsyncMock(return_value=_series(30.0, 0.0, 50.0, "2026-10-04"))
+        with patch("nfl_mcp.sleeper_tools._fetch_week_schedule", new=AsyncMock(return_value=rows)), \
+             patch("nfl_mcp.weather_tools._fetch_open_meteo", new=single):
+            res = await get_weather_forecast(season=2026, week=4)
+        assert single.await_count == 0
+        game = res["games"][0]
+        assert game["venue_uncertain"] is True
+        assert game["wind_mph"] is None and game["impact"]["severity"] == "unknown"
+        assert res["forecast_unavailable"] == 1
