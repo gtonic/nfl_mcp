@@ -57,7 +57,10 @@ class TestProjectOpportunity:
             for w in range(1, 5)
         ]
         proj = project_opportunity(games, "QB")
-        assert proj == pytest.approx(18.77, abs=0.2)
+        # Sleeper's default charges -1 per interception (it was hard-coded -2):
+        # pass pts/gm = 11.2 + 8 - 1 = 18.2; ppa = (72.8 + 60*0.45)/(140+60)
+        # = 0.499 -> 17.47, plus rushing ~2.0.
+        assert proj == pytest.approx(19.47, abs=0.2)
 
     def test_unknown_position_and_empty(self):
         assert project_opportunity([_wr_game(1, 5, 4, 50)], "K") is None

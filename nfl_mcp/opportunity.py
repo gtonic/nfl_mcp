@@ -14,19 +14,22 @@ of hot/cold weeks doesn't dominate).
 where exp_* are recency-weighted trailing volumes and pp* are the player's own
 points-per-opportunity shrunk toward a position prior.
 
-Scoring: everything is expressed per point-per-reception (``ppr``), so the same
-model serves full PPR (1.0), half PPR (0.5) and standard (0.0). Reception value
-is the only lever that changes the *shape* of the ranking — it is what makes a
-volume receiver worth more than a runner — so getting it from the league instead
-of assuming full PPR matters more than any multiplier in the stack.
+Scoring: points are priced with a :class:`~nfl_mcp.scoring.ScoringModel` — the
+league's full Sleeper settings (pass TD value, INT, fumbles, first downs, TE
+premium, yardage bonuses …) when one is passed as ``scoring``, else Sleeper's
+defaults at the given ``ppr``. Reception value is still the lever that most
+changes the *shape* of the ranking, but a 6-point passing TD or a TE premium
+moves it too, and both are priced on the player's own stat lines, not guessed.
 
 This module is pure and unit-testable; whether it becomes the live baseline is
 decided by the backtest (see ``evals/backtest``), not asserted.
 """
 from __future__ import annotations
 
-# Scoring weights that do not vary by league format (match nflverse
-# `fantasy_points_ppr` apart from the per-reception value, which is a parameter).
+from .scoring import ScoringModel
+
+# Legacy constants (nflverse `fantasy_points_ppr` weights), kept for importers.
+# The projection itself prices every stat through a ScoringModel.
 PASS_YD, PASS_TD, INT = 0.04, 4.0, -2.0
 RUSH_YD, RUSH_TD = 0.1, 6.0
 REC, REC_YD, REC_TD = 1.0, 0.1, 6.0
@@ -52,26 +55,34 @@ DEFAULT_LOOKBACK = 6
 OPPORTUNITY_POSITIONS = ("QB", "RB", "WR", "TE")
 
 
-def rec_points(g: dict, ppr: float = FULL_PPR) -> float:
-    return (g.get("receptions", 0.0) * ppr
-            + g.get("receiving_yards", 0.0) * REC_YD
-            + g.get("receiving_tds", 0.0) * REC_TD)
+def _model(ppr: float, scoring: ScoringModel | None) -> ScoringModel:
+    return scoring if scoring is not None else ScoringModel.preset(ppr)
 
 
-def _prior_ppt(position: str, ppr: float) -> float:
-    """Per-target prior rebased from full PPR to this league's reception value."""
+def rec_points(g: dict, ppr: float = FULL_PPR, scoring: ScoringModel | None = None,
+               position: str | None = None) -> float:
+    return _model(ppr, scoring).rec_points(g, position)
+
+
+def _prior_ppt(position: str, ppr: float, scoring: ScoringModel | None = None) -> float:
+    """Per-target prior rebased from full PPR to this league's scoring.
+
+    The reception value moves it by `(1 - ppr) × catch_rate`; everything else
+    in the league's settings (TE premium, first downs, yardage bonuses …) by
+    what those settings add to a typical target at the position.
+    """
     priors = _PRIORS[position]
-    return priors["ppt"] - (FULL_PPR - ppr) * _CATCH_RATE.get(position, 0.0)
+    base = priors["ppt"] - (FULL_PPR - ppr) * _CATCH_RATE.get(position, 0.0)
+    return base + (scoring.prior_delta(position, "rec") if scoring is not None else 0.0)
 
 
-def rush_points(g: dict) -> float:
-    return g.get("rushing_yards", 0.0) * RUSH_YD + g.get("rushing_tds", 0.0) * RUSH_TD
+def rush_points(g: dict, scoring: ScoringModel | None = None,
+                position: str | None = None) -> float:
+    return _model(FULL_PPR, scoring).rush_points(g, position)
 
 
-def pass_points(g: dict) -> float:
-    return (g.get("passing_yards", 0.0) * PASS_YD
-            + g.get("passing_tds", 0.0) * PASS_TD
-            + g.get("interceptions", 0.0) * INT)
+def pass_points(g: dict, scoring: ScoringModel | None = None) -> float:
+    return _model(FULL_PPR, scoring).pass_points(g)
 
 
 def _weighted_mean(values: list[float], weights: list[float]) -> float:
@@ -90,6 +101,7 @@ def project_opportunity(
     lookback: int = DEFAULT_LOOKBACK,
     ppr: float = FULL_PPR,
     extra_volume: dict[str, float] | None = None,
+    scoring: ScoringModel | None = None,
 ) -> float | None:
     """Expected fantasy points for the next game from trailing opportunity.
 
@@ -105,11 +117,17 @@ def project_opportunity(
             expected volume and converted at *this* player's own shrunk
             efficiency, which is the point: a backup inheriting ten targets is
             worth what he does with a target, not what the starter did.
+        scoring: the league's full scoring model. When given it wins over
+            `ppr` (its own reception value is used); omitted, Sleeper's
+            defaults at `ppr`.
 
     Returns expected points, or None if the position/data can't be projected.
     """
     extra = extra_volume or {}
     pos = position.upper()
+    if scoring is not None:
+        ppr = scoring.rec
+    model = _model(ppr, scoring)
     priors = _PRIORS.get(pos)
     if priors is None or not prior_games:
         return None
@@ -122,20 +140,22 @@ def project_opportunity(
     exp_carries = _weighted_mean([g.get("carries", 0.0) for g in games], weights) \
         + extra.get("carries", 0.0)
     tot_carries = sum(g.get("carries", 0.0) for g in games)
-    tot_rush_pts = sum(rush_points(g) for g in games)
-    ppc = _shrunk_rate(tot_rush_pts, tot_carries, priors["ppc"], _K_CARRIES)
+    tot_rush_pts = sum(model.rush_points(g, pos) for g in games)
+    ppc = _shrunk_rate(tot_rush_pts, tot_carries,
+                       priors["ppc"] + model.prior_delta(pos, "rush"), _K_CARRIES)
 
     if pos == "QB":
         exp_attempts = _weighted_mean([g.get("attempts", 0.0) for g in games], weights) \
             + extra.get("attempts", 0.0)
         tot_attempts = sum(g.get("attempts", 0.0) for g in games)
-        tot_pass_pts = sum(pass_points(g) for g in games)
-        ppa = _shrunk_rate(tot_pass_pts, tot_attempts, priors["ppa"], _K_ATTEMPTS)
+        tot_pass_pts = sum(model.pass_points(g) for g in games)
+        ppa = _shrunk_rate(tot_pass_pts, tot_attempts,
+                           priors["ppa"] + model.prior_delta(pos, "pass"), _K_ATTEMPTS)
         return max(0.0, exp_attempts * ppa + exp_carries * ppc)
 
     exp_targets = _weighted_mean([g.get("targets", 0.0) for g in games], weights) \
         + extra.get("targets", 0.0)
     tot_targets = sum(g.get("targets", 0.0) for g in games)
-    tot_rec_pts = sum(rec_points(g, ppr) for g in games)
-    ppt = _shrunk_rate(tot_rec_pts, tot_targets, _prior_ppt(pos, ppr), _K_TARGETS)
+    tot_rec_pts = sum(model.rec_points(g, pos) for g in games)
+    ppt = _shrunk_rate(tot_rec_pts, tot_targets, _prior_ppt(pos, ppr, model), _K_TARGETS)
     return max(0.0, exp_targets * ppt + exp_carries * ppc)

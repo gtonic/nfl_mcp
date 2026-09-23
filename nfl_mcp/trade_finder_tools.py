@@ -97,6 +97,7 @@ async def find_trade_targets(
     from . import sleeper_tools
     from .briefing_tools import _scoring_label, _scoring_ppr
     from .projections import project_players
+    from .scoring import league_scoring
 
     db = NFLDatabase()
 
@@ -108,7 +109,7 @@ async def find_trade_targets(
 
     league_resp = await sleeper_tools.get_league(league_id)
     league = (league_resp or {}).get("league") or {}
-    scoring_exact = str(_scoring_ppr(league))
+    scoring_exact = league_scoring(league)  # "0.5" + the full scoring_settings
     num_teams = int(league.get("total_rosters") or 12)
     roster_positions = league.get("roster_positions")
     fractional_slots = slot_counts(roster_positions)
@@ -276,6 +277,7 @@ async def find_trade_targets(
         "league": {
             "league_id": league_id, "name": league.get("name"),
             "scoring": _scoring_label(league), "ppr": _scoring_ppr(league),
+            "scoring_used": scoring_exact.model.summary(),
             "num_teams": num_teams,
         },
         "season": season,

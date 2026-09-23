@@ -25,6 +25,7 @@ from .injury_match import (
 )
 from .ir_audit import audit_roster
 from .lineup_slots import starting_slot_list, starting_slots
+from .scoring import league_scoring
 from .teams import normalize_team
 from .week_context import BYE, bye_check, week_opponents, week_schedule
 
@@ -194,8 +195,9 @@ async def get_weekly_briefing(
     league = (league_resp or {}).get("league") or {}
     scoring = _scoring_label(league)
     # The projections get the league's exact per-reception value rather than the
-    # three-way label, so a 0.6-PPR league is not quietly projected as 0.5.
-    scoring_exact = str(_scoring_ppr(league))
+    # three-way label, so a 0.6-PPR league is not quietly projected as 0.5 —
+    # and, carried along with it, the league's full scoring_settings.
+    scoring_exact = league_scoring(league)
     slots = _slots_from_positions(league.get("roster_positions"))
     num_teams = int(league.get("total_rosters") or 12)
 
@@ -473,6 +475,7 @@ async def get_weekly_briefing(
         "league": {
             "league_id": league_id, "name": league.get("name"),
             "scoring": scoring, "ppr": _scoring_ppr(league),
+            "scoring_used": scoring_exact.model.summary(),
             "slots": slots, "num_teams": num_teams,
         },
         "week": week,

@@ -31,6 +31,7 @@ from .lineup_slots import (
 from .lineup_slots import SLOT_ELIGIBILITY as SLOT_ELIGIBILITY
 from .player_values import scoring_to_ppr
 from .projections import _RECEPTION_SHARE, availability
+from .scoring import league_scoring, scoring_used
 from .week_context import BYE, bye_check, resolve_season_week, week_schedule
 
 logger = logging.getLogger(__name__)
@@ -256,6 +257,11 @@ async def _league_scoring(
     different points depending on which tool was asked. An explicit `scoring`
     still wins; `league_id` supplies it otherwise; with neither, full PPR is
     assumed and labelled as such rather than passed off as the league's.
+
+    The league's scoring comes back as a `scoring.LeagueScoring`: the same
+    exact-reception string as before, carrying the full scoring_settings to
+    the projections. An explicit `scoring` at the league's own reception value
+    keeps those settings too.
     """
     num_teams = 12
     if league_id:
@@ -268,8 +274,11 @@ async def _league_scoring(
             league = {}
         if league:
             num_teams = int(league.get("total_rosters") or 12)
+            carrier = league_scoring(league)
             if not scoring:
-                return str(_scoring_ppr(league)), num_teams, "league"
+                return carrier, num_teams, "league"
+            if scoring_to_ppr(scoring) == _scoring_ppr(league):
+                return carrier, num_teams, "caller"
     if scoring:
         return scoring, num_teams, "caller"
     return "ppr", num_teams, "default"
@@ -888,6 +897,7 @@ async def get_start_sit_recommendation(
         "week": week,
         "week_inferred": week_inferred,
         "scoring_source": scoring_source,
+        "scoring_used": scoring_used(scoring),
         "factors": {
             "matchup": f"#{analysis.matchup_rank} ({analysis.matchup_tier})",
             "usage": f"Snaps: {analysis.snap_percentage}%, Targets: {analysis.target_share}%",
@@ -1023,6 +1033,7 @@ async def get_roster_recommendations(
         "season": season,
         "week_inferred": week_inferred,
         "scoring_source": scoring_source,
+        "scoring_used": scoring_used(scoring),
         "scoring": scoring,
         "message": f"Analyzed {len(all_recommendations)} players"
     })
@@ -1214,6 +1225,7 @@ async def compare_players_for_slot(
         "week": week,
         "week_inferred": week_inferred,
         "scoring_source": scoring_source,
+        "scoring_used": scoring_used(scoring),
         "confidence_gap": round(confidence_gap, 1),
         "verdict": verdict,
         "total_compared": len(analyses),
@@ -1495,6 +1507,7 @@ async def analyze_full_lineup(
         "season": season,
         "week_inferred": week_inferred,
         "scoring_source": scoring_source,
+        "scoring_used": scoring_used(scoring),
         "scoring": scoring,
         "message": (f"Lineup Grade: {grade} | {efficiency:.0f}% of available points started "
                     f"| {len(suggested_changes)} change(s) suggested")

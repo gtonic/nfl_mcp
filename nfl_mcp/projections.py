@@ -17,7 +17,11 @@ Every factor is reported in a `breakdown` so the number is explainable, and a
 `scoring` sets the points scale, not just which market values are consulted:
 both baselines are rebased to the league's per-reception value, so a half-PPR
 league gets half-PPR points and the receiver-vs-runner ordering that follows
-from them.
+from them. Given the league's full settings (a ``scoring_settings`` dict, a
+``scoring.LeagueScoring`` or ``league_id`` on the tools) every other stat is
+priced too: the opportunity base on the player's own stat lines, the rank
+buckets on a typical line for the position, K and DEF through the league's
+distance and points-allowed tiers. Reported as `scoring_used`.
 """
 
 from __future__ import annotations
@@ -27,7 +31,8 @@ import logging
 from . import opportunity_tools
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .matchup_tools import get_defense_analyzer
-from .player_values import get_values_service, scoring_to_ppr
+from .player_values import get_values_service
+from .scoring import ScoringModel, league_scoring, resolve_scoring
 from .teams import normalize_team
 from .vegas_tools import get_vegas_analyzer
 from .weather_tools import weather_multiplier
@@ -46,13 +51,20 @@ _RECEPTION_SHARE = {"WR": 0.31, "TE": 0.36, "RB": 0.23, "QB": 0.0, "K": 0.0,
                     "DST": 0.0, "DEF": 0.0}
 
 
-def base_ppg(position: str, pos_rank: int | None, ppr: float = 1.0) -> float:
+def base_ppg(position: str, pos_rank: int | None, ppr: float = 1.0,
+             scoring: ScoringModel | None = None) -> float:
     """Baseline points/game from a player's positional rank.
 
     Buckets are full-PPR and then rebased to `ppr` (1.0 full, 0.5 half, 0.0
     standard). This is the fallback baseline — it is used before a player has
     enough games for the opportunity projection — so the rebasing is a
     position-average estimate rather than a per-player reception count.
+
+    With a full `scoring` model the rest of the league's settings are added the
+    same way: what they are worth on a typical week at the position, as a share
+    of the bucket (a 0.5 TE premium adds ~20% to a TE; a 6-point passing TD
+    ~16% to a QB). K and DST are not rebased here — see `defense_base` /
+    `kicker_base` and the scales applied to them in `_project_one`.
     """
     p = (position or "").upper()
     r = pos_rank if (isinstance(pos_rank, int) and pos_rank > 0) else 999
@@ -70,7 +82,10 @@ def base_ppg(position: str, pos_rank: int | None, ppr: float = 1.0) -> float:
         full = 7.0
     else:
         full = 8.0
-    return round(full * (1.0 - (1.0 - ppr) * _RECEPTION_SHARE.get(p, 0.0)), 2)
+    if scoring is not None:
+        ppr = scoring.rec
+    adjust = scoring.bucket_adjust(p) if scoring is not None else 0.0
+    return round(full * (1.0 - (1.0 - ppr) * _RECEPTION_SHARE.get(p, 0.0) + adjust), 2)
 
 
 # Tier -> baseline point-swing from an average matchup (before position scaling).
@@ -393,6 +408,7 @@ class ProjectionEngine:
         self, player: dict, values_index: dict, rankings: dict, lines: dict,
         opp_index: dict | None = None, week: int | None = None, ppr: float = 1.0,
         depth: dict | None = None, status_of=None, schedule: dict | None = None,
+        scoring_model: ScoringModel | None = None,
     ) -> dict:
         name = player.get("name") or player.get("player_name")
         position = (player.get("position") or "").upper()
@@ -400,6 +416,9 @@ class ProjectionEngine:
         player_id = player.get("player_id")
         usage = player.get("usage") or {}
         injury = player.get("injury") or {}
+        # The league's full scoring; without one, Sleeper's defaults at `ppr`.
+        model = scoring_model if scoring_model is not None else ScoringModel.preset(ppr)
+        ppr = model.rec
 
         # 0) Does he have a game at all? A bye used to fall through every
         #    factor to neutral and project the full baseline.
@@ -413,7 +432,7 @@ class ProjectionEngine:
         #    otherwise fall back to the positional-rank baseline.
         market = self.values.lookup(values_index, player_id=player_id, name=name, position=position)
         pos_rank = (market or {}).get("position_rank")
-        base = base_ppg(position, pos_rank, ppr)
+        base = base_ppg(position, pos_rank, ppr, model)
         base_source = "rank_bucket"
         # A higher-valued teammate at the same position who cannot play frees up
         # volume. Only counts when he has *recent* volume to free: a starter who
@@ -429,7 +448,7 @@ class ProjectionEngine:
         if opp_index and week and name:
             opp_base = opportunity_tools.opportunity_base_for(
                 opp_index, name, position, week, ppr=ppr,
-                extra_volume=vacated or None,
+                extra_volume=vacated or None, scoring=model,
             )
             if opp_base is not None:
                 base = round(opp_base, 1)
@@ -476,13 +495,17 @@ class ProjectionEngine:
         # generic path scaled it by its own, which is backwards.
         if position in DEFENSE_POSITIONS:
             usable = None if env_is_fallback else opponent_implied_total
-            base = defense_base(usable)
+            # The tiers are Sleeper's defaults; the league's own points-allowed
+            # tiers, TD and takeaway values rescale them.
+            base = round(defense_base(usable) * model.defense_scale(usable), 2)
             base_source = "opponent_total"
             matchup_mult = 1.0
             env_mult = 1.0
         elif position == "K":
             usable = None if env_is_fallback else implied_total
-            base = kicker_base(usable)
+            # Distance tiers, misses and PATs at the league's values. A league
+            # that does not score kickers projects them at zero.
+            base = round(kicker_base(usable) * model.kicker_scale(), 2)
             base_source = "team_total"
             matchup_mult = 1.0
             env_mult = 1.0
@@ -615,7 +638,10 @@ class ProjectionEngine:
         num_teams: int = 12, season: int | None = None, week: int | None = None,
         db=None,
     ) -> dict:
-        ppr = scoring_to_ppr(scoring)
+        # `scoring` may be a label, a number, a Sleeper scoring_settings dict or
+        # a LeagueScoring carrying the league's full settings.
+        model = resolve_scoring(scoring)
+        ppr = model.rec
         # The cached schedule decides byes. None when the week is not cached,
         # in which case nobody is assumed to be on bye.
         schedule = week_schedule(db if db is not None else getattr(self, "db", None),
@@ -650,7 +676,7 @@ class ProjectionEngine:
 
         projections = [
             self._project_one(p, values_index, rankings, lines, opp_index, week, ppr,
-                              depth, status_of, schedule)
+                              depth, status_of, schedule, scoring_model=model)
             for p in players
         ]
         return {
@@ -662,8 +688,9 @@ class ProjectionEngine:
             "on_bye": [p["player"] for p in projections if p.get("on_bye")],
             # Stated rather than assumed: the same roster is worth visibly
             # different points in full vs half PPR, and the FLEX order changes.
-            "scoring": scoring,
+            "scoring": scoring if isinstance(scoring, str) else model.label,
             "ppr": ppr,
+            "scoring_used": model.summary(),
         }
 
 
@@ -709,6 +736,25 @@ def _with_injuries(players: list[dict], db) -> list[dict]:
     return out
 
 
+async def _scoring_for(scoring, league_id: str | None):
+    """The league's full scoring when `league_id` is given and loads, unless the
+    caller asked for a different reception value; otherwise `scoring`."""
+    if not league_id:
+        return scoring
+    try:
+        from . import sleeper_tools
+        league = ((await sleeper_tools.get_league(league_id)) or {}).get("league") or {}
+    except Exception as e:  # a league lookup must not sink the projection
+        logger.debug(f"league lookup for scoring failed: {e}")
+        return scoring
+    if not league:
+        return scoring
+    carrier = league_scoring(league)
+    if scoring not in (None, "", "ppr") and resolve_scoring(scoring).rec != carrier.model.rec:
+        return scoring  # an explicit, different format wins
+    return carrier
+
+
 @handle_http_errors(default_data={"projections": []}, operation_name="projecting players")
 async def project_players(
     players: list[dict],
@@ -718,6 +764,7 @@ async def project_players(
     season: int | None = None,
     week: int | None = None,
     db=None,
+    league_id: str | None = None,
 ) -> dict:
     """Project weekly fantasy points for multiple players (transparent, no scraping).
 
@@ -728,6 +775,9 @@ async def project_players(
             cached schedule. A player without an injury status is looked up in
             the injury tables, as start/sit does.
         scoring/superflex/num_teams: league format for the value baseline.
+        league_id: Sleeper league id. When given, its full scoring_settings
+            price every stat (pass TD, INT, fumbles, TE premium, bonuses, K
+            distance and DEF points-allowed tiers) instead of the preset.
         season, week: the week being projected. Inferred from the NFL state
             when omitted (reported as `week_inferred`). With week > 1 the
             opportunity-based baseline is used (trailing nflverse volume,
@@ -741,6 +791,7 @@ async def project_players(
         return create_error_response("No players provided", ErrorType.VALIDATION, {"projections": []})
     season, week, week_inferred = await resolve_season_week(season, week)
     engine = get_projection_engine(db)
+    scoring = await _scoring_for(scoring, league_id)
     result = await engine.project_many(
         _with_injuries(players, db), scoring=scoring, superflex=superflex,
         num_teams=num_teams, season=season, week=week, db=db,
@@ -771,6 +822,7 @@ async def project_player(
     wind_mph: float | None = None,
     is_dome: bool = False,
     db=None,
+    league_id: str | None = None,
 ) -> dict:
     """Project weekly fantasy points for a single player.
 
@@ -781,7 +833,8 @@ async def project_player(
     opponent is filled from the schedule. Without `injury_status` the player's
     status is looked up in the injury tables. Optionally pass wind_mph /
     is_dome (e.g. from get_weather_forecast) to apply the weather factor —
-    small but real in windy games; neutral otherwise.
+    small but real in windy games; neutral otherwise. With `league_id` the
+    league's full scoring_settings are used (reported as `scoring_used`).
 
     Returns: {projection: {projected_points, floor, ceiling, confidence, on_bye, breakdown, ...}}
     """
@@ -794,6 +847,7 @@ async def project_player(
         player["weather"] = {"wind_mph": wind_mph, "is_dome": is_dome}
     season, week, week_inferred = await resolve_season_week(season, week)
     engine = get_projection_engine(db)
+    scoring = await _scoring_for(scoring, league_id)
     result = await engine.project_many(_with_injuries([player], db), scoring=scoring,
                                        superflex=superflex, season=season, week=week, db=db)
     proj = result["projections"][0] if result["projections"] else None
@@ -807,6 +861,7 @@ async def project_player(
     return create_success_response({
         "projection": proj,
         "values_source": result.get("values_source"),
+        "scoring_used": result.get("scoring_used"),
         "season": season,
         "week": week,
         "week_inferred": week_inferred,
