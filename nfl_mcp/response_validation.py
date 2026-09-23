@@ -160,7 +160,9 @@ def validate_practice_report_response(reports: list[dict[str, Any]]) -> Validati
     """
     Validate practice report response.
 
-    Expected format: List of practice status records with player_id, status, date.
+    Expected format: List of practice status records with a status and either
+    player_name + team (real reports, keyed by name since schema v14) or a
+    legacy player_id.
 
     Args:
         reports: List of practice status records
@@ -178,8 +180,7 @@ def validate_practice_report_response(reports: list[dict[str, Any]]) -> Validati
         result.add_warning("No practice reports available")
         return result
 
-    required_fields = ['player_id', 'status']
-    valid_statuses = {'DNP', 'LP', 'FP', 'OUT', 'QUESTIONABLE', 'DOUBTFUL'}
+    valid_statuses = {'DNP', 'LP', 'FP', 'REST', 'OUT', 'QUESTIONABLE', 'DOUBTFUL'}
 
     reports_missing_fields = 0
     reports_invalid_status = 0
@@ -189,13 +190,15 @@ def validate_practice_report_response(reports: list[dict[str, Any]]) -> Validati
             result.add_error(f"Report {idx} must be a dictionary")
             continue
 
-        missing = [field for field in required_fields if field not in report]
+        missing = [] if report.get('status') else ['status']
+        if not ((report.get('player_name') and report.get('team')) or report.get('player_id')):
+            missing.append('player_name+team or player_id')
         if missing:
             reports_missing_fields += 1
             if reports_missing_fields <= 3:
                 result.add_error(f"Report {idx} missing fields: {', '.join(missing)}")
 
-        status = report.get('status', '').upper()
+        status = (report.get('status') or '').upper()
         if status and status not in valid_statuses:
             reports_invalid_status += 1
             if reports_invalid_status <= 3:

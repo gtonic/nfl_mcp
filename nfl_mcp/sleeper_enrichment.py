@@ -324,7 +324,7 @@ async def _fetch_all_team_schedules(season: int):
     return all_games
 
 
-async def _fetch_injuries():
+async def _fetch_injuries(with_complete_teams: bool = False):
     """Fetch injury reports for all NFL teams.
 
     Returns list of dicts with keys: player_id, player_name, team_id, position,
@@ -341,22 +341,27 @@ async def _fetch_injuries():
 
     ``db`` is deliberately not passed: the callers own persistence, so letting
     the service cache as well would write every record twice.
+
+    ``with_complete_teams``: return ``(injuries, complete_teams)`` instead,
+    the teams the crawl covered completely — the only ones a prune may touch.
     """
+    empty = ([], set()) if with_complete_teams else []
     if not advanced_enrich_enabled():
         logger.debug("[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
-        return []
+        return empty
 
     logger.info("[Fetch Injuries] Starting fetch for all teams")
 
-    from .injury_service import get_injury_reports
+    from .injury_service import crawl_injury_reports
 
     try:
-        injuries = await get_injury_reports(teams=None, db=None, use_cache=False)
-        logger.info(f"[Fetch Injuries] Successfully fetched {len(injuries)} injury records")
-        return injuries
+        injuries, complete = await crawl_injury_reports()
+        logger.info(f"[Fetch Injuries] Successfully fetched {len(injuries)} injury records "
+                    f"({len(complete)} teams complete)")
+        return (injuries, complete) if with_complete_teams else injuries
     except Exception as e:
         logger.error(f"[Fetch Injuries] Failed: {e}", exc_info=True)
-        return []
+        return empty
 
 
 async def _fetch_practice_reports(season: int, week: int, db=None):
