@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-23
+
+0.8.5 fixed how start/sit ranked players. This release fixes what they were
+ranked *on*: the league's real scoring, real practice reports, real byes and
+kickoff locks, a rest-of-season horizon, and injury data that no longer
+silently disagrees with itself.
+
+31 PRs (#207–#237). The headline: **injury, practice and roster data were
+joined, validated and cached wrongly in ways that looked like healthy answers.**
+ESPN and Sleeper ids were compared with each other, so injured starters came
+back with no status and "fully practising"; practice reports were fetched and
+then rejected by validation on every prefetch cycle; a partially fetched injury
+feed marked Out players Active; and a failed Sleeper call quietly answered
+waiver questions from a days-old roster snapshot. Each of those now either
+gives the right answer or says it can't.
+
+**Breaking:** the MCP tool surface was consolidated (86 → 72 tools, 55 in the
+default profile). See *Changed* for the rename table.
+
+### Added
+
+- **Full league scoring** (#219) — every Sleeper `scoring_settings` key (INT, sacks, fumbles, first downs, 2-pt, reception premiums, yardage bonuses, K distance tiers, DEF points-allowed tiers) prices projections, market values and trade/FAAB gains. Each tool reports `scoring_used`.
+- **Rest-of-season projections** (#223) — `get_ros_projections` and a ROS engine (`ros.py`) used by trades (default horizon), waiver drops, IR audit and FAAB: every remaining week in league scoring, byes and injury absences at 0, fantasy-playoff weeks reported separately. Trade deadline awareness in `find_trade_targets`.
+- **Real practice reports and gameday inactives** (#222) — official NFL.com weekly report (with dated ESPN notes as fallback) replaces practice status guessed from the injury designation; published inactives in `get_gameday_inactives`.
+- **Kickoff locks and waiver-priority strategy** (#220) — lineup tools report `kickoff` / `kickoff_local` (Europe/Vienna) / `locked` and never move a started player; `waiver_rules` + `priority_strategy` (claim_now / add_now / wait / dont_bother) for rolling-priority leagues.
+- **Weekly retro and league changes** (#221) — `get_weekly_retro` (actual vs pre-kickoff projection, points left on the bench, hindsight lineup) and `get_league_changes` (what moved since your last check). Schema v15: `projection_log`, `league_checks`.
+- **Usage trends, Sleeper second opinion, K/DEF start/sit** (#224) — `get_usage_trends` (target/air-yards/snap share, WOPR, RACR, red-zone); Sleeper's projection as a labelled `consensus`/`disagreement`; K/DEF in start/sit, compare and full lineup.
+- **Continuous matchup factor** (#226) in league scoring from week 2, instead of 1.0 until every defense had four games.
+- **`audit_ir_slots`** and a briefing `unavailable` list (#212); **`get_bye_week_plan`** (#232).
+- **Tool profiles** (#232) — `NFL_MCP_TOOL_PROFILE` = `season` (default, 55) | `offseason` (43) | `full` (72).
+- **Co-owner support** (#235) — every `user_id` roster lookup also matches `co_owners`.
+- **Median-game leagues** in playoff odds; `failed_weeks` reported instead of silently simulating fewer games (#235).
+
 ### Changed — MCP tool surface consolidated (86 → 72 tools; 55 in the default profile)
 
 Overlapping tools made tool routing worse. Each remaining tool answers one
@@ -29,6 +62,54 @@ one. Underlying Python functions are unchanged.
 - `NFL_MCP_TOOL_PROFILE` = `season` (default, 55) | `offseason` (43) | `full` (72); logged at startup, reported in `/health`.
 - Start/sit, compare and matchup/Vegas roster views look up team, position, opponent and snap share server-side; `target_share`, `snap_percentage`, `practice_status` and `projected_points` are no longer caller inputs.
 - `get_cbs_projections` drops the week parameter CBS ignores; `get_cbs_expert_picks` is described as ATS picks (`full` only). The CBS injury source is labelled not implemented.
+- `get_injury_report` drops healthy rows (Active / Probable / FP) by default; `include_healthy=true` restores them (#233).
+- `bye_check` prefers the schedule's opponent over a caller-supplied one and states the conflict (#235).
+- Availability questions (`get_waiver_targets`, `recommend_faab_bid`, handcuff free agents) **refuse** to answer when rosters failed to load or the snapshot is older than 1h; other roster tools carry `stale` / `snapshot_age_seconds` (#235). `get_rosters` no longer serves snapshots older than 24h.
+- An implicitly discovered `config.yml` no longer hot-reloads unless `NFL_MCP_CONFIG_HOT_RELOAD=1` (#236).
+- `crawl_url` clamps `max_length` to 100–50000 (#236).
+- Retries and circuit breakers count only transport errors and 5xx/429; half-open admits a single probe (#236).
+- `/health` no longer exposes the database file path (#236).
+- Dependencies: `requirements.lock` regenerated (fastmcp 4.0.5, pydantic 2.13.5); Docker and CI install with `--no-deps` + `pip check`; unused `aiosqlite` and `fastapi` dropped (#236).
+- README refreshed (#237).
+
+### Fixed
+
+**Injuries & practice**
+- Injury reports joined to players by name + team instead of comparing ESPN ids with Sleeper ids (#207).
+- Practice reports were rejected by prefetch validation on every cycle (required a `player_id` rows no longer have) (#233).
+- A partially fetched injury feed no longer marks missing players Active; a team whose last injured player recovered is now cleared (#233).
+- A failed athlete-name fetch no longer caches or stores "Unknown" over the real name (#233).
+- Nickname-tolerant matching ("Zach"/"Zachary", "Rob"/"Robert … Jr."), refusing ambiguous teammates (#233).
+- Practice notes: two-day notes tied to the right day, forward-looking wording no longer discards past-tense reports, illness is not a rest day, short-week teams keep their report (#233).
+- Unknown statuses rank below Questionable; Reserve/Inactive recognised; severity labels for Suspension/PUP/NFI (#233).
+
+**Projections & ROS**
+- Byes project as 0 and every status is read the same way (#218).
+- An Out starter's volume goes to at most the next three teammates, capped at the 50% share in total — it was handed to *every* lower-ranked teammate (~16 phantom targets for a WR1 out) (#234).
+- That inherited volume counts in ROS only for the starter's expected absence, not all season (#234).
+- ROS absences count team games (byes don't use them up); IR minimum counts from the recorded IR date; "out for the season opener" isn't season-ending; partial schedules no longer create byes; K/DEF ROS priced per opponent (#234).
+- TE/WR bias fixed at the source (opportunity priors, rank buckets) (#230, #231).
+- Traded players carry their latest team; past-season usage windows; CBS half-PPR; stale cached NFL state expires after 12h (#234).
+
+**Lineups**
+- One slot-eligibility table and an exact optimal lineup for every tool (SUPER_FLEX, WRRB_FLEX, REC_FLEX, IDP) (#216).
+- Start/sit answers in the league's scoring and injury state (#209); Vegas prices the game asked about (#213).
+- Empty starter slots are filled and graded (an empty FLEX used to grade A); a caller-supplied projection for an Out player is 0; unresolved names in `compare_players_for_slot` return `unresolved` instead of crashing; a locked player without an eligible slot no longer removes the QB slot (#235).
+
+**Waivers, trades & league**
+- Waiver/trade projections include injuries; zeros are never a drop or trade verdict (#210); additions scored on the real lineup, FLEX included (#211); only bench players worth less are drop candidates (#217).
+- Bye and IR players stay in the ROS roster, so a bye week no longer inflates every claim (#235).
+- Waiver re-entry days (ms timestamps), null `matchup_id` pairing, `last_check` advancing after failed fetches, trades giving players the side doesn't own, FAAB weeks-left from the league's playoff start (#235).
+- Playoff strength, usage byes, opponent analysis, handcuffs, waiver log, K/DEF, draft and horizon fixes (#229).
+
+**Infrastructure**
+- Pooled connections roll back on return; data pruning runs on a clock (#214).
+- Fallbacks are never cached or persisted as fresh data (#215).
+- Enrichment blocks that silently returned placeholders are wired up (#208).
+- Health, breakers, per-host rate limits, config overrides, `crawl_url` size cap (#227); data-source fixes for weather venue/time, team codes, stats, K pool, IR PUP (#228).
+- Briefing 40–60s → under 4s (batched weather, concurrent reads) (#225).
+- Bulk SQLite writes run off the event loop; one shared DB instance instead of a new pool per call; pool slot leak and config hot-reload race fixed (#236).
+- Tests use a temporary DB and cannot reach the network (non-`live`); the suite runs in ~35s (#236).
 
 ## [0.8.5] - 2026-09-22
 
