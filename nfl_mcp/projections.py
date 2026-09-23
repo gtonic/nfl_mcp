@@ -372,6 +372,44 @@ def _starters_ahead(
     return out
 
 
+# How an out starter's inherited volume is split among the available
+# teammates below him at the position, next man up first. Normalized, so the
+# group inherits `VACATED_VOLUME_SHARE` of it between them: every lower-ranked
+# teammate used to take the full share, and a WR1 absence handed WR2-WR5 four
+# targets each — sixteen targets that did not exist.
+_HEIR_WEIGHTS = (1.0, 0.5, 0.25)
+
+
+def _inherited_shares(
+    depth: dict[tuple[str, str], list[dict]], team: str, position: str,
+    pos_rank: int | None, out_players: list[str], status_of,
+    share: float = opportunity_tools.VACATED_VOLUME_SHARE,
+) -> dict[str, float]:
+    """``{out starter: fraction of his volume this player inherits}``.
+
+    The player (at `pos_rank`) is placed among the available teammates ranked
+    below each out starter; his slice is his `_HEIR_WEIGHTS` weight over the
+    group's total, so the slices of all heirs add up to `share`. Nothing past
+    the last weighted heir, or when he is not in the depth list.
+    """
+    entries = depth.get((team, position), [])
+    shares: dict[str, float] = {}
+    for starter in out_players:
+        top = next((e for e in entries if e.get("name") == starter), None)
+        if top is None:
+            continue
+        top_rank = top.get("position_rank") or 999
+        heirs = [e for e in entries
+                 if (e.get("position_rank") or 999) > top_rank and e.get("name")
+                 and _injury_mult(status_of(e["name"], team)) != 0.0][:len(_HEIR_WEIGHTS)]
+        slot = next((i for i, e in enumerate(heirs) if e.get("position_rank") == pos_rank), None)
+        if slot is None:
+            continue
+        weights = _HEIR_WEIGHTS[:len(heirs)]
+        shares[starter] = share * weights[slot] / sum(weights)
+    return shares
+
+
 def projection_confidence(
     *,
     has_market: bool,
@@ -484,6 +522,9 @@ class ProjectionEngine:
         name = player.get("name") or player.get("player_name")
         position = (player.get("position") or "").upper()
         team = (player.get("team") or "").upper()
+        # The depth map and the injury index are keyed by the canonical code:
+        # Sleeper's WAS/JAC/LA missed both and never priced a vacated role.
+        depth_team = normalize_team(team) or team
         player_id = player.get("player_id")
         usage = player.get("usage") or {}
         injury = player.get("injury") or {}
@@ -512,10 +553,17 @@ class ProjectionEngine:
         # is what keeps this from inventing points out of an absence.
         starters_out: list[str] = []
         vacated: dict[str, float] = {}
+        inherited_from: dict[str, str | None] = {}
+        own_base = None
         if depth and status_of and team and opp_index and week:
-            starters_out = _starters_ahead(depth, team, position, pos_rank, status_of)
+            starters_out = _starters_ahead(depth, depth_team, position, pos_rank, status_of)
             if starters_out:
-                vacated = opportunity_tools.vacated_volume(opp_index, starters_out, week)
+                shares = _inherited_shares(depth, depth_team, position, pos_rank,
+                                           starters_out, status_of)
+                vacated = opportunity_tools.vacated_volume(
+                    opp_index, list(shares), week, share=shares)
+                if vacated:
+                    inherited_from = {n: status_of(n, depth_team) for n in shares}
         if opp_index and week and name:
             opp_base = opportunity_tools.opportunity_base_for(
                 opp_index, name, position, week, ppr=ppr,
@@ -524,6 +572,12 @@ class ProjectionEngine:
             if opp_base is not None:
                 base = round(opp_base, 1)
                 base_source = "opportunity"
+                if vacated:
+                    # His own volume without the absent starter's, so ROS can
+                    # price the inherited part only while the starter is out.
+                    own = opportunity_tools.opportunity_base_for(
+                        opp_index, name, position, week, ppr=ppr, scoring=model)
+                    own_base = round(own, 1) if own is not None else None
 
         # 2) Matchup vs opponent defense
         matchup_tier = "unknown"
@@ -669,6 +723,10 @@ class ProjectionEngine:
                 # they have no recent volume to vacate.
                 "starters_out_ahead": starters_out,
                 "vacated_volume": vacated,
+                # Only when volume was inherited: the opportunity base without
+                # it, and the status of whoever it came from (ROS uses both).
+                **({"own_base_ppg": own_base, "inherited_from": inherited_from}
+                   if own_base is not None else {}),
             },
             "value_source": (
                 "opportunity" if base_source == "opportunity"

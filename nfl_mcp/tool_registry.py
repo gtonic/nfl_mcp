@@ -398,7 +398,7 @@ async def get_cbs_player_news(limit: int | None = 50) -> dict:
 @timing_decorator("get_cbs_projections", tool_type="cbs_fantasy")
 async def get_cbs_projections(
     position: str = "QB",
-    season: int | None = 2026,
+    season: int | None = None,
     scoring: str = "ppr",
 ) -> dict:
     """CBS Sports SEASON-LONG fantasy projections for one position (not weekly).
@@ -411,16 +411,16 @@ async def get_cbs_projections(
 
     Parameters:
         position (str, default "QB"): QB, RB, WR, TE, K or DST.
-        season (int, default 2026): Season year.
+        season (int, default: the current NFL season): Season year.
         scoring (str, default "ppr"): ppr, half-ppr or standard.
     Returns: {projections: [...], total_projections, period: "season",
         week_honoured: false, position, success, error?}
     Example: get_cbs_projections(position="RB", scoring="half-ppr")
     """
     try:
-        season_i = int(season) if season is not None else 2026
+        season_i = int(season) if season is not None else None
     except Exception:
-        season_i = 2026
+        season_i = None
     # The source URL carries a week segment CBS ignores; any valid week works.
     result = await cbs_fantasy_tools.get_cbs_projections(
         position=position, week=1, season=season_i, scoring=scoring,

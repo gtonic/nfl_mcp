@@ -12,6 +12,8 @@ from bs4 import BeautifulSoup
 
 from .config import create_http_client, get_http_headers, validate_limit
 from .errors import create_success_response, handle_http_errors, handle_validation_error
+from .player_values import scoring_to_ppr
+from .week_context import infer_from_calendar
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +148,7 @@ async def get_cbs_player_news(limit: int | None = 50) -> dict:
 async def get_cbs_projections(
     position: str = "QB",
     week: int | None = None,
-    season: int | None = 2026,
+    season: int | None = None,
     scoring: str = "ppr"
 ) -> dict:
     """
@@ -158,7 +160,7 @@ async def get_cbs_projections(
     Args:
         position: Player position (QB, RB, WR, TE, K, DST) (default: QB)
         week: NFL week number (1-18, required)
-        season: Season year (default: 2026)
+        season: Season year (default: the current NFL season)
         scoring: Scoring format - ppr, half-ppr, standard (default: ppr)
 
     Note:
@@ -203,15 +205,15 @@ async def get_cbs_projections(
         )
 
     # Validate season
-    season = season or 2026
-    if season < 2020 or season > 2030:
-        season = 2026
+    current_season = infer_from_calendar()[0]
+    season = season or current_season
+    if season < 2020 or season > current_season + 1:
+        season = current_season
 
-    # Validate scoring format
-    valid_scoring = ['ppr', 'half-ppr', 'standard']
-    scoring = scoring.lower()
-    if scoring not in valid_scoring:
-        scoring = 'ppr'
+    # Scoring format: every spelling the rest of the server accepts
+    # ("half_ppr", "0.5", "non-ppr") maps onto CBS's three URL segments; only
+    # an unrecognised label falls back to ppr.
+    scoring = {0.5: 'half-ppr', 0.0: 'standard'}.get(scoring_to_ppr(scoring), 'ppr')
 
     headers = get_http_headers("cbs_fantasy")
 
