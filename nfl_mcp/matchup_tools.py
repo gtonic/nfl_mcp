@@ -65,6 +65,13 @@ SHRINKAGE_GAMES = 6.0
 # preserved almost exactly. Withholding the tier is the only thing that stops a
 # two-game sample from arriving as a confident "smash".
 MIN_GAMES_FOR_TIERS = 4
+# The continuous matchup factor (`matchup_ratio`) is shrunk toward a prior worth
+# this many games, and the prior carries this share of the defense's previous-
+# season edge. Chosen by evals/backtest (2023 and 2024 each, out of sample):
+# the only setting that lowered MAE and raised Spearman in both seasons, in
+# weeks 2-4 and 5+ alike.
+MATCHUP_PRIOR_GAMES = 8.0
+PRIOR_SEASON_WEIGHT = 0.5
 
 
 def _get_matchup_tier(rank: int) -> str:
@@ -94,6 +101,144 @@ def _init_matchup_db():
     except Exception as e:
         logger.debug(f"Database init failed for matchup tools: {e}")
         return None
+
+
+def _num(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def compute_defense_rankings(weekly: dict, season: int) -> dict[str, list[dict]] | None:
+    """Defense-vs-position rankings from ``{(opponent, position, week): [ppr, rec]}``.
+
+    Pure, so the backtest runs exactly what production runs. Besides the rank
+    and tier, each entry carries the raw per-game averages (PPR points and
+    receptions allowed, and the league's) that `matchup_ratio` needs to price
+    the matchup in any league's reception value.
+    """
+    if not weekly:
+        return None
+    totals: dict = {}           # (opponent, position) -> [PPR points, receptions]
+    weeks_seen: dict = {}       # (opponent, position) -> set of weeks
+    for (opp, pos, wk), (pts, rec) in weekly.items():
+        cell = totals.setdefault((opp, pos), [0.0, 0.0])
+        cell[0] += pts
+        cell[1] += rec
+        weeks_seen.setdefault((opp, pos), set()).add(wk)
+
+    rankings: dict[str, list[dict]] = {}
+    for pos in ("QB", "RB", "WR", "TE"):
+        raw = []
+        for (opp, p), (total, rec) in totals.items():
+            if p != pos:
+                continue
+            games = max(1, len(weeks_seen.get((opp, pos), {1})))
+            raw.append((opp, total / games, rec / games, games))
+        if not raw:
+            continue
+
+        # Shrink each defense toward the league average. Two games of
+        # fantasy points allowed is noise: early in 2026 this put Houston
+        # at #3 elite against RBs (12.4/game) and #31 smash against WRs
+        # (43.0/game) simultaneously. Same pattern the opportunity model
+        # and the playoff variance already use.
+        league_mean = sum(v for _, v, _, _ in raw) / len(raw)
+        league_rec = sum(r for _, _, r, _ in raw) / len(raw)
+        min_games = min(g for _, _, _, g in raw)
+        per_team = []
+        for team, observed, rec, games in raw:
+            shrunk = (games * observed + SHRINKAGE_GAMES * league_mean) / (
+                games + SHRINKAGE_GAMES
+            )
+            per_team.append((team, round(shrunk, 1), observed, rec, games))
+
+        # Fewest points allowed = toughest defense = rank 1 (elite).
+        per_team.sort(key=lambda x: x[1])
+        # Tiers come from the rank, so shrinking the points alone would
+        # leave every tier untouched — the ordering barely moves. Below a
+        # usable sample the tier itself has to be withheld, or a two-game
+        # artifact keeps arriving as "smash" with full confidence.
+        provisional = min_games < MIN_GAMES_FOR_TIERS
+        ranked = []
+        for rank, (team, shrunk, observed, rec, games) in enumerate(per_team, 1):
+            tier = "neutral" if provisional else _get_matchup_tier(rank)
+            ranked.append({
+                "team": team,
+                "rank": rank,
+                "points_allowed_avg": shrunk,
+                "points_allowed_observed": round(observed, 1),
+                "games_sampled": games,
+                "matchup_tier": tier,
+                "tier_indicator": _get_tier_color(tier),
+                "is_provisional": provisional,
+                "source": "nflverse",
+                "season": season,
+                # Unrounded inputs for `matchup_ratio`.
+                "ppr_allowed_avg": observed,
+                "rec_allowed_avg": rec,
+                "league_ppr_avg": league_mean,
+                "league_rec_avg": league_rec,
+            })
+        rankings[pos] = ranked
+    return rankings or None
+
+
+def attach_prior_season(rankings: dict, prior: dict | None) -> dict:
+    """Give each entry its defense's full prior-season averages, as the prior
+    `matchup_ratio` shrinks toward. Defenses change between seasons, so only
+    part of last year's edge is carried over (`PRIOR_SEASON_WEIGHT`)."""
+    if not rankings or not prior:
+        return rankings
+    for pos, rows in rankings.items():
+        by_team = {r.get("team"): r for r in prior.get(pos) or []}
+        for row in rows:
+            old = by_team.get(row.get("team"))
+            if not old or "ppr_allowed_avg" not in old:
+                continue
+            row["prior_ppr_allowed_avg"] = old["ppr_allowed_avg"]
+            row["prior_rec_allowed_avg"] = old["rec_allowed_avg"]
+            row["prior_league_ppr_avg"] = old["league_ppr_avg"]
+            row["prior_league_rec_avg"] = old["league_rec_avg"]
+    return rankings
+
+
+def _allowed_ratio(pts: float, rec: float, league_pts: float, league_rec: float,
+                   ppr: float) -> float | None:
+    """Points allowed relative to the league average, in `ppr` scoring."""
+    mean = league_pts - (1.0 - ppr) * league_rec
+    if mean <= 0:
+        return None
+    return (pts - (1.0 - ppr) * rec) / mean
+
+
+def matchup_ratio(entry: dict | None, ppr: float = 1.0) -> float | None:
+    """How many points this defense allows to the position, relative to average.
+
+    1.10 = gives up 10% more than an average defense. Priced at the league's
+    reception value (a defense that bleeds catches matters less in half PPR),
+    and shrunk toward a prior worth `MATCHUP_PRIOR_GAMES` games: part of the
+    defense's prior-season ratio when one is attached, else average. That is
+    what lets the matchup count from week 2 instead of waiting for the
+    `MIN_GAMES_FOR_TIERS` the discrete tiers need. None when the entry has no
+    raw averages (a fallback or a legacy cached row).
+    """
+    if not entry or entry.get("is_fallback") or "ppr_allowed_avg" not in entry:
+        return None
+    games = float(entry.get("games_sampled") or 0)
+    observed = _allowed_ratio(entry["ppr_allowed_avg"], entry.get("rec_allowed_avg", 0.0),
+                              entry.get("league_ppr_avg", 0.0),
+                              entry.get("league_rec_avg", 0.0), ppr)
+    if observed is None:
+        return None
+    prior = 1.0
+    if "prior_ppr_allowed_avg" in entry:
+        last = _allowed_ratio(entry["prior_ppr_allowed_avg"], entry["prior_rec_allowed_avg"],
+                              entry["prior_league_ppr_avg"], entry["prior_league_rec_avg"], ppr)
+        if last is not None:
+            prior = 1.0 + PRIOR_SEASON_WEIGHT * (last - 1.0)
+    return (games * observed + MATCHUP_PRIOR_GAMES * prior) / (games + MATCHUP_PRIOR_GAMES)
 
 
 class DefenseRankingsAnalyzer:
@@ -156,6 +301,8 @@ class DefenseRankingsAnalyzer:
         try:
             async with create_http_client(timeout=LONG_TIMEOUT) as client:
                 nfl = await self._fetch_nflverse_rankings(client, season)
+                if nfl:
+                    nfl = attach_prior_season(nfl, await self._prior_season(client, season - 1))
             if nfl:
                 rankings = nfl
             else:
@@ -197,6 +344,24 @@ class DefenseRankingsAnalyzer:
 
         return rankings
 
+    async def _prior_season(self, client, season: int) -> dict | None:
+        """Last season's final rankings: the prior of the matchup factor.
+
+        A finished season does not change, so it is fetched once per process;
+        a failure is not cached and costs only the prior (neutral instead).
+        """
+        key = f"prior_season_{season}"
+        if key not in self._rankings_cache:
+            try:
+                prior = await self._fetch_nflverse_rankings(client, season)
+            except Exception as e:
+                logger.debug(f"prior-season rankings for {season} failed: {e}")
+                prior = None
+            if not prior:
+                return None
+            self._rankings_cache[key] = {"data": prior}
+        return self._rankings_cache[key]["data"]
+
     async def _fetch_nflverse_rankings(
         self, client: httpx.AsyncClient, season: int
     ) -> dict[str, list[dict]] | None:
@@ -217,8 +382,7 @@ class DefenseRankingsAnalyzer:
             logger.debug(f"nflverse fetch failed for {season}: {e}")
             return None
 
-        weekly: dict = {}           # (opponent, position, week) -> summed PPR points
-        weeks_seen: dict = {}       # (opponent, position) -> set of weeks
+        weekly: dict = {}           # (opponent, position, week) -> [PPR points, receptions]
         try:
             for row in csv.DictReader(StringIO(text)):
                 if (row.get("season_type") or "").upper() != "REG":
@@ -231,72 +395,14 @@ class DefenseRankingsAnalyzer:
                 wk = row.get("week")
                 if not opp or not wk:
                     continue
-                try:
-                    pts = float(row.get("fantasy_points_ppr") or 0)
-                except (TypeError, ValueError):
-                    pts = 0.0
-                weekly[(opp, pos, wk)] = weekly.get((opp, pos, wk), 0.0) + pts
-                weeks_seen.setdefault((opp, pos), set()).add(wk)
+                cell = weekly.setdefault((opp, pos, wk), [0.0, 0.0])
+                cell[0] += _num(row.get("fantasy_points_ppr"))
+                cell[1] += _num(row.get("receptions"))
         except Exception as e:
             logger.debug(f"nflverse parse failed: {e}")
             return None
 
-        if not weekly:
-            return None
-
-        totals: dict = {}           # (opponent, position) -> total PPR points
-        for (opp, pos, _wk), pts in weekly.items():
-            totals[(opp, pos)] = totals.get((opp, pos), 0.0) + pts
-
-        rankings: dict[str, list[dict]] = {}
-        for pos in ("QB", "RB", "WR", "TE"):
-            raw = []
-            for (opp, p), total in totals.items():
-                if p != pos:
-                    continue
-                games = max(1, len(weeks_seen.get((opp, pos), {1})))
-                raw.append((opp, total / games, games))
-            if not raw:
-                continue
-
-            # Shrink each defense toward the league average. Two games of
-            # fantasy points allowed is noise: early in 2026 this put Houston
-            # at #3 elite against RBs (12.4/game) and #31 smash against WRs
-            # (43.0/game) simultaneously. Same pattern the opportunity model
-            # and the playoff variance already use.
-            league_mean = sum(v for _, v, _ in raw) / len(raw)
-            min_games = min(g for _, _, g in raw)
-            per_team = []
-            for team, observed, games in raw:
-                shrunk = (games * observed + SHRINKAGE_GAMES * league_mean) / (
-                    games + SHRINKAGE_GAMES
-                )
-                per_team.append((team, round(shrunk, 1), round(observed, 1), games))
-
-            # Fewest points allowed = toughest defense = rank 1 (elite).
-            per_team.sort(key=lambda x: x[1])
-            # Tiers come from the rank, so shrinking the points alone would
-            # leave every tier untouched — the ordering barely moves. Below a
-            # usable sample the tier itself has to be withheld, or a two-game
-            # artifact keeps arriving as "smash" with full confidence.
-            provisional = min_games < MIN_GAMES_FOR_TIERS
-            ranked = []
-            for rank, (team, shrunk, observed, games) in enumerate(per_team, 1):
-                tier = "neutral" if provisional else _get_matchup_tier(rank)
-                ranked.append({
-                    "team": team,
-                    "rank": rank,
-                    "points_allowed_avg": shrunk,
-                    "points_allowed_observed": observed,
-                    "games_sampled": games,
-                    "matchup_tier": tier,
-                    "tier_indicator": _get_tier_color(tier),
-                    "is_provisional": provisional,
-                    "source": "nflverse",
-                    "season": season,
-                })
-            rankings[pos] = ranked
-        return rankings or None
+        return compute_defense_rankings(weekly, season)
 
     def _normalize_team_name(self, name: str) -> str:
         """Convert team name/city to standard abbreviation."""

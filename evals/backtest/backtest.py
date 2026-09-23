@@ -39,11 +39,22 @@ import argparse
 import logging
 from collections import defaultdict
 
-from nfl_mcp.matchup_tools import _get_matchup_tier
+from nfl_mcp.matchup_tools import (
+    _get_matchup_tier,
+    attach_prior_season,
+    compute_defense_rankings,
+    matchup_ratio,
+)
 from nfl_mcp.opportunity import project_opportunity
 
 # Import the LIVE constants/functions so the backtest evaluates production behaviour.
-from nfl_mcp.projections import _MATCHUP_TIER_DEV, _usage_mult, matchup_multiplier
+from nfl_mcp.projections import (
+    _MATCHUP_TIER_DEV,
+    _ranking_entry,
+    _usage_mult,
+    matchup_factor,
+    matchup_multiplier,
+)
 from nfl_mcp.weather_tools import weather_multiplier
 
 from .data import load_games, load_season
@@ -78,6 +89,19 @@ def _defense_ranks(records: list[dict], upto_week: int) -> dict[str, dict[str, i
     return ranks
 
 
+def _weekly_allowed(records: list[dict], upto_week: int = 99) -> dict:
+    """``{(opponent, position, week): [ppr, receptions]}`` from weeks < upto_week,
+    the input production's `compute_defense_rankings` takes."""
+    out: dict = {}
+    for r in records:
+        if r["week"] >= upto_week:
+            continue
+        cell = out.setdefault((r["opponent"], r["position"], r["week"]), [0.0, 0.0])
+        cell[0] += r["ppr"]
+        cell[1] += r.get("receptions", 0.0)
+    return out
+
+
 def _tier_for(rank: int | None) -> str:
     return _get_matchup_tier(rank) if rank else "unknown"
 
@@ -103,14 +127,24 @@ def _touch_trend(prior: list[dict]) -> str:
 def build_samples(
     records: list[dict], start_week: int, min_prior: int, min_trailing: float,
     positions: list[str] | None = None, games: dict | None = None,
+    prior_records: dict[int, list[dict]] | None = None,
 ) -> list[dict]:
     """Build leak-free prediction samples with base / matchup / usage / full / weather."""
     games = games or {}
+    # Last season's final rankings per season: the matchup factor's prior.
+    prior_final = {
+        season: compute_defense_rankings(_weekly_allowed(rs), season)
+        for season, rs in (prior_records or {}).items()
+    }
     games_by_player: dict[str, dict[int, dict]] = defaultdict(dict)
     for r in records:
         games_by_player[r["player_id"]][r["week"]] = r
 
     dcache: dict[int, dict[str, dict[str, int]]] = {}
+    rcache: dict[tuple[int, int], dict] = {}
+    by_season: dict[int, list[dict]] = defaultdict(list)
+    for r in records:
+        by_season[r["season"]].append(r)
     samples: list[dict] = []
 
     for r in records:
@@ -139,6 +173,18 @@ def build_samples(
         if opp is None:
             opp = trailing
 
+        # Production's continuous matchup factor on top of it: rankings from
+        # weeks < wk, shrunk toward part of last season's final ratio.
+        key = (r["season"], wk)
+        if key not in rcache:
+            rcache[key] = attach_prior_season(
+                compute_defense_rankings(
+                    _weekly_allowed(by_season[r["season"]], wk), r["season"]) or {},
+                prior_final.get(r["season"] - 1),
+            )
+        ratio = matchup_ratio(_ranking_entry(rcache[key], r["position"], r["opponent"]))
+        opp_matchup = opp * (matchup_factor(r["position"], ratio) if ratio is not None else 1.0)
+
         # Weather: this week's recorded wind/roof for the player's game.
         g = games.get((r["season"], wk, r["team"])) or {}
         wind = g.get("wind")
@@ -150,6 +196,7 @@ def build_samples(
             "actual": r["ppr"],
             "base": trailing,
             "opportunity": opp,
+            "opportunity_matchup": opp_matchup,
             "matchup": trailing * m_mult,
             "usage": trailing * u_mult,
             "full": trailing * m_mult * u_mult,
@@ -173,16 +220,22 @@ def run_backtest(
     """Run the backtest and return structured results."""
     records: list[dict] = []
     games: dict = {}
+    prior_records: dict[int, list[dict]] = {}
     for s in seasons:
         records.extend(load_season(s))
+        try:
+            prior_records[s - 1] = load_season(s - 1)
+        except Exception as e:
+            logger.warning("No prior season %s for the matchup prior: %s", s - 1, e)
         try:
             games.update(load_games(s))
         except Exception as e:
             logger.warning("Could not load games/weather for %s: %s", s, e)
 
-    samples = build_samples(records, start_week, min_prior, min_trailing, positions, games)
+    samples = build_samples(records, start_week, min_prior, min_trailing, positions, games,
+                            prior_records)
 
-    models = ["base", "opportunity", "matchup", "usage", "full", "weather"]
+    models = ["base", "opportunity", "opportunity_matchup", "matchup", "usage", "full", "weather"]
     results = {m: evaluate(*_series(samples, m)) for m in models}
 
     # Weather only bites in windy, outdoor games — measure it where it applies:
@@ -206,6 +259,7 @@ def run_backtest(
             "n": len(sub),
             "base": evaluate(*_series(sub, "base")),
             "opportunity": evaluate(*_series(sub, "opportunity")),
+            "opportunity_matchup": evaluate(*_series(sub, "opportunity_matchup")),
             "full": evaluate(*_series(sub, "full")),
         }
 
@@ -267,8 +321,9 @@ def print_report(res: dict) -> None:
           f"trailing≥{res['min_trailing']} pts, n={res['n_samples']} player-weeks")
     print("=" * 78)
     print("\nModels (base = trailing PPG; opportunity = volume×shrunk-efficiency):")
-    for name in ("base", "opportunity", "matchup", "usage", "full", "weather"):
-        print(_fmt_row(name, res["models"][name]))
+    for name in ("base", "opportunity", "opportunity_matchup", "matchup", "usage", "full",
+                 "weather"):
+        print(_fmt_row(name[:9] if name != "opportunity_matchup" else "opp+mtch", res["models"][name]))
 
     b, f = res["models"]["base"]["mae"], res["models"]["full"]["mae"]
     delta = (b - f) / b * 100 if b else 0
@@ -281,6 +336,11 @@ def print_report(res: dict) -> None:
     ov = ("opportunity HELPS" if o["mae"] < b else "opportunity does NOT help — revisit")
     print(f"  => opportunity vs base: MAE {b} -> {o['mae']} ({od:+.1f}%), "
           f"Spearman {bs} -> {os_}  [{ov}]")
+
+    om = res["models"]["opportunity_matchup"]
+    omv = "matchup factor HELPS" if om["mae"] < o["mae"] else "matchup factor does NOT help — revisit"
+    print(f"  => opportunity + matchup factor: MAE {o['mae']} -> {om['mae']}, "
+          f"Spearman {os_} -> {om['spearman']}  [{omv}]")
 
     print("\nPer position (base -> opportunity, MAE & Spearman):")
     for pos, d in res["per_position"].items():
