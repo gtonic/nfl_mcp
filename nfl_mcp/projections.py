@@ -753,6 +753,7 @@ class ProjectionEngine:
                               depth, status_of, schedule, scoring_model=model)
             for p in players
         ]
+        await _apply_unit_fallback(projections, season, model)
         return {
             "projections": projections,
             "values_source": values_index.get("source"),
@@ -766,6 +767,55 @@ class ProjectionEngine:
             "ppr": ppr,
             "scoring_used": model.summary(),
         }
+
+
+async def _unit_matchup(position: str, team: str, opponent: str, season: int, model):
+    """The K/DEF offense read start/sit uses (a seam for tests)."""
+    from .streaming_tools import unit_matchup
+    return await unit_matchup(position, team, opponent, season, model)
+
+
+_UNIT_FIELDS = ("offense_rank", "offense_side", "points_per_game", "games",
+                "matchup_tier", "tier_withheld", "source_season", "is_fallback")
+
+
+async def _apply_unit_fallback(projections: list[dict], season: int | None, model) -> None:
+    """Price K/DEF off the season's scoring when there are no Vegas totals.
+
+    Without a game total `defense_base` / `kicker_base` return one constant for
+    all 32 teams, so every kicker and defense projected the same. Start/sit
+    already fell back to the offense read (the opponent's scoring for a
+    defense, his own team's for a kicker); this is the same fallback in the
+    engine, so project_player(s), waivers and ROS see it too. In place; a
+    failed lookup leaves the constant.
+    """
+    if not season:
+        return
+    for proj in projections:
+        position = (proj.get("position") or "").upper()
+        if position not in DEFENSE_POSITIONS and position != "K":
+            continue
+        if proj.get("vegas_active") or proj.get("on_bye") or not proj.get("opponent"):
+            continue
+        try:
+            unit = await _unit_matchup(position, proj.get("team") or "", proj["opponent"],
+                                       season, model)
+        except Exception as e:
+            logger.debug(f"K/DEF offense read failed for {proj.get('player')}: {e}")
+            continue
+        if not unit or unit.get("projected_points") is None:
+            continue
+        bd = proj.setdefault("breakdown", {})
+        mult = float(bd.get("injury_mult", 1.0)) * float(bd.get("weather_mult", 1.0))
+        projected = round(float(unit["projected_points"]) * mult, 1)
+        vol = _VOLATILITY.get(position, 0.35)
+        proj["projected_points"] = projected
+        proj["floor"] = 0.0 if mult == 0 else round(projected * (1 - vol), 1)
+        proj["ceiling"] = 0.0 if mult == 0 else round(projected * (1 + vol), 1)
+        proj["matchup_tier"] = unit.get("matchup_tier", proj.get("matchup_tier"))
+        proj["unit_matchup"] = {k: unit.get(k) for k in _UNIT_FIELDS}
+        bd["base_ppg"] = float(unit["projected_points"])
+        bd["base_source"] = "offense_rank"
 
 
 _engine: ProjectionEngine | None = None
