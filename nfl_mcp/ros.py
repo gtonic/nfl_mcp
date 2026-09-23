@@ -22,8 +22,7 @@ fantasy-playoff window (``playoff_points``, from the league's
   and the weekly numbers can never disagree about scale.
 - Regression: two or three games of opportunity are a small sample. The
   opportunity base is blended with the rank-bucket prior for the position
-  (rescaled by ``PRIOR_SCALE`` to what players at that rank score per game),
-  weighted by games played (``PRIOR_GAMES`` games-equivalent of prior).
+  (what players at that rank score per game played), weighted by games played (``PRIOR_GAMES`` games-equivalent of prior).
 - Matchup: the same position-aware multiplier the weekly projection uses, per
   week, on the defense-vs-position rankings from ``matchup_tools``.
 - Byes: from the cached schedule (``schedule_games``); weeks that are not
@@ -54,16 +53,14 @@ LAST_NFL_WEEK = 18
 # the prior carries half; with a full six-game window it carries a quarter.
 # From evals/backtest/ros_backtest.py (2023-24, as of weeks 3-8, predicting the
 # per-game rate over the rest of the season): 3 with the raw rank buckets left
-# lineup-level starters 1.0-1.3 points/game low at week 3; 2 with the scaled
-# prior below is within ±0.3 at weeks 3-4 and has the lowest MAE there.
+# lineup-level starters 1.0-1.3 points/game low at week 3; 2 with the
+# recalibrated buckets is within ±0.3 overall at weeks 3-6 and has the lowest
+# MAE there.
 PRIOR_GAMES = 2
-# The rank buckets (`projections.base_ppg`) read low as a per-game-played rate
-# for receivers: measured over the rest of the season, a bucket-7.5/9.5/14.5 WR
-# scored 10.0/12.0/17.1 and a bucket-6.5/8.5 TE 8.8/10.1 (backtest above). The
-# weekly engine only falls back to them before a player has usage; as the
-# regression target they pulled every starter down, so the prior is rescaled
-# here to the level the players at that rank actually play at.
-PRIOR_SCALE = {"QB": 1.0, "RB": 1.08, "WR": 1.18, "TE": 1.25}
+# The prior is the weekly engine's own rank bucket (`projections.base_ppg`),
+# calibrated as points per game played, so ROS and the weekly numbers share one
+# scale. (Until the buckets were recalibrated a ROS-only `PRIOR_SCALE` of up to
+# 1.25 made up for WR/TE buckets that read low.)
 # The NFL minimum for a player placed on injured reserve (and PUP/NFI).
 IR_MIN_WEEKS = 4
 SEASON_ENDING_WEEKS = 99
@@ -281,8 +278,7 @@ def _per_game(proj: dict, position: str, model) -> tuple[float, str, float | Non
     usage = float(bd.get("usage_mult") or 1.0)
     if source == "opportunity":
         games = int(bd.get("usage_games") or 0)
-        prior = base_ppg(position, bd.get("position_rank"), scoring=model) * PRIOR_SCALE.get(
-            position, 1.0)
+        prior = base_ppg(position, bd.get("position_rank"), scoring=model)
         weight = PRIOR_GAMES / (games + PRIOR_GAMES)
         rate = regressed_rate(float(base), prior, games)
         return round(rate * usage, 2), "opportunity_regressed", round(weight, 2)

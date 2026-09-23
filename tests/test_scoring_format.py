@@ -79,7 +79,7 @@ class TestRankBucketScoring:
         assert base_ppg("DST", None, 0.0) == base_ppg("DST", None, 1.0)
 
     def test_full_ppr_is_the_default_and_unchanged(self):
-        assert base_ppg("WR", 8) == 14.5
+        assert base_ppg("WR", 8) == 17.0
         assert base_ppg("RB", 3) == 19.0
 
 

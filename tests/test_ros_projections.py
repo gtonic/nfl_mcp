@@ -175,7 +175,7 @@ class TestRosProjections:
             breakdown={"base_ppg": 30.0, "base_source": "opportunity", "usage_games": 2,
                        "position_rank": 40, "usage_mult": 1.0})
         p = out["players"][0]
-        prior = projections.base_ppg("WR", 40, 1.0) * ros.PRIOR_SCALE["WR"]
+        prior = projections.base_ppg("WR", 40, 1.0)
         assert p["prior_weight"] == pytest.approx(0.5)
         assert p["per_game"] == pytest.approx(0.5 * 30.0 + 0.5 * prior, abs=0.01)
         # This week keeps the weekly projection; later weeks use the rate.
@@ -186,8 +186,8 @@ class TestRosProjections:
     async def test_a_player_at_his_rank_level_is_not_pulled_down(self, monkeypatch):
         # A WR12 whose two-game opportunity base is what a WR12 actually scores
         # per game: later weeks keep that rate instead of sliding toward the
-        # (low) raw rank bucket — the systematic under-projection of starters.
-        level = projections.base_ppg("WR", 12, 1.0) * ros.PRIOR_SCALE["WR"]
+        # rank bucket — the systematic under-projection of starters.
+        level = projections.base_ppg("WR", 12, 1.0)
         out = await self._run(
             monkeypatch, [_player("Steady")], points={"Steady": level},
             breakdown={"base_ppg": level, "base_source": "opportunity", "usage_games": 2,
@@ -202,9 +202,14 @@ class TestRosProjections:
         assert ros.regressed_rate(20.0, 10.0, 0) == pytest.approx(10.0)
         assert ros.regressed_rate(20.0, 10.0, 2, prior_games=0) == pytest.approx(20.0)
 
-    def test_prior_scale_only_lifts_the_bucket(self):
-        assert set(ros.PRIOR_SCALE) == {"QB", "RB", "WR", "TE"}
-        assert all(1.0 <= v <= 1.3 for v in ros.PRIOR_SCALE.values())
+    def test_prior_is_the_weekly_bucket_unscaled(self):
+        # ROS and the weekly engine share one scale: no ROS-only rescaling.
+        assert not hasattr(ros, "PRIOR_SCALE")
+        proj = {"breakdown": {"base_ppg": 20.0, "base_source": "opportunity",
+                              "usage_games": 2, "position_rank": 30}}
+        from nfl_mcp.scoring import ScoringModel
+        rate, _, _ = ros._per_game(proj, "TE", ScoringModel.preset(1.0))
+        assert rate == pytest.approx(0.5 * 20.0 + 0.5 * projections.base_ppg("TE", 30, 1.0))
 
     @pytest.mark.asyncio
     async def test_matchup_moves_later_weeks(self, monkeypatch):

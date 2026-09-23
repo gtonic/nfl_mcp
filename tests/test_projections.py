@@ -49,7 +49,7 @@ def _engine(values=None, defense=None, vegas=None):
 class TestPureHelpers:
     def test_base_ppg_tiers(self):
         assert pj.base_ppg("RB", 1) > pj.base_ppg("RB", 20) > pj.base_ppg("RB", 40)
-        assert pj.base_ppg("WR", 1) == 17.0
+        assert pj.base_ppg("WR", 1) == 18.0
         assert pj.base_ppg("QB", 2) == 22.0
         # unknown rank -> lowest tier
         assert pj.base_ppg("TE", None) == pj.base_ppg("TE", 999)
