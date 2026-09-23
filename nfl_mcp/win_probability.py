@@ -20,10 +20,18 @@ from __future__ import annotations
 import math
 
 from .errors import create_success_response, handle_http_errors, handle_validation_error
+from .lineup_slots import (
+    SLOT_ELIGIBILITY,
+    assign_to_slots,
+    normalize_slot,
+    optimal_lineup,
+    slot_accepts,
+)
+from .lineup_slots import expand_slots as expand_slots
 from .projections import _VOLATILITY
 
-FLEX_ELIGIBLE = {"RB", "WR", "TE"}
-SUPERFLEX_ELIGIBLE = {"QB", "RB", "WR", "TE"}
+FLEX_ELIGIBLE = set(SLOT_ELIGIBILITY["FLEX"])
+SUPERFLEX_ELIGIBLE = set(SLOT_ELIGIBILITY["SUPERFLEX"])
 DEFAULT_SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1}
 _MAX_SWAP_ITERS = 50
 # Positive correlation between a QB and a same-team pass catcher (shared game
@@ -63,21 +71,8 @@ def player_sd(p: dict) -> float:
 
 
 def _eligible(slot: str, position: str) -> bool:
-    slot, pos = slot.upper(), (position or "").upper()
-    if slot == "FLEX":
-        return pos in FLEX_ELIGIBLE
-    if slot == "SUPERFLEX":
-        return pos in SUPERFLEX_ELIGIBLE
-    if slot in ("DST", "DEF"):
-        return pos in ("DST", "DEF")
-    return pos == slot
-
-
-def expand_slots(slots: dict[str, int]) -> list[str]:
-    out: list[str] = []
-    for slot, n in slots.items():
-        out.extend([slot.upper()] * int(n))
-    return out
+    """Kept for callers; the rules live in `lineup_slots`."""
+    return slot_accepts(slot, position)
 
 
 def _is_stack_pair(a: dict, b: dict) -> bool:
@@ -102,22 +97,18 @@ def _team_stats(players: list[dict], stack_rho: float = STACK_CORRELATION) -> tu
     return mean, max(0.0, var)
 
 
-def greedy_mean_lineup(candidates: list[dict], slot_list: list[str]) -> list[dict | None]:
-    """Fill each slot with the highest-mean eligible unused player (FLEX last)."""
-    # Fill specific positions before FLEX/SUPERFLEX so flex takes leftovers.
-    order = sorted(range(len(slot_list)), key=lambda i: slot_list[i] in ("FLEX", "SUPERFLEX"))
-    pool = sorted(candidates, key=player_mean, reverse=True)
-    used: set = set()
-    assignment: list[dict | None] = [None] * len(slot_list)
-    for i in order:
-        for p in pool:
-            if id(p) in used:
-                continue
-            if _eligible(slot_list[i], p.get("position")):
-                assignment[i] = p
-                used.add(id(p))
-                break
-    return assignment
+def mean_optimal_lineup(candidates: list[dict], slot_list: list[str]) -> list[dict | None]:
+    """The E[points]-optimal legal lineup, one entry per slot (``None`` if empty).
+
+    An exact assignment rather than a greedy fill: filling a SUPERFLEX before a
+    FLEX used to hand the superflex the best leftover RB and leave the FLEX
+    empty with a QB on the bench.
+    """
+    return optimal_lineup(candidates, slot_list, value=player_mean)
+
+
+# Old name, kept so external callers keep working.
+greedy_mean_lineup = mean_optimal_lineup
 
 
 def _p_win_of(
@@ -171,14 +162,16 @@ def optimize_win_probability(
     if locked_players:
         remaining = list(slot_list)
         for p in locked_players:
-            slot = (p.get("slot") or "").upper()
+            slot = normalize_slot(p.get("slot"))
             if slot in remaining:
                 remaining.remove(slot)
             elif remaining:
-                # Slot missing or renamed: drop any slot the player is
-                # eligible for rather than optimizing a seat that is taken.
-                fallback = next(
-                    (s for s in remaining if _eligible(s, p.get("position"))), remaining[0]
+                # Slot missing or renamed: drop the narrowest slot the player
+                # is eligible for (his own position before any flex) rather
+                # than optimizing a seat that is taken.
+                eligible = [s for s in remaining if slot_accepts(s, p.get("position"))]
+                fallback = min(
+                    eligible, key=lambda s: len(SLOT_ELIGIBILITY.get(s, ())), default=remaining[0]
                 )
                 remaining.remove(fallback)
         slot_list = remaining
@@ -191,28 +184,35 @@ def optimize_win_probability(
     residual_mean = opp_mean - locked_mean
     residual_var = opp_var + locked_var
 
-    mean_lineup = greedy_mean_lineup(candidates, slot_list)
+    mean_lineup = mean_optimal_lineup(candidates, slot_list)
     mean_p_win = _p_win_of(mean_lineup, residual_mean, residual_var, stack_correlation)
 
-    # Local search: greedily apply the bench swap that most improves P(win).
+    # Local search over *who* starts: bring a bench player in for any starter
+    # (or into an empty slot) whenever some legal arrangement of the new set
+    # exists — which may move other starters between slots — and keep the
+    # change that most improves P(win). P(win) depends only on the set.
     current = list(mean_lineup)
     current_p = mean_p_win
     for _ in range(_MAX_SWAP_ITERS):
         in_lineup = {id(p) for p in current if p is not None}
-        best_gain, best_swap = 1e-9, None
-        for i, slot in enumerate(slot_list):
-            for b in candidates:
-                if id(b) in in_lineup or not _eligible(slot, b.get("position")):
-                    continue
-                trial = list(current)
-                trial[i] = b
+        bench = [b for b in candidates if id(b) not in in_lineup]
+        best_gain, best_trial = 1e-9, None
+        for i in range(len(current)):
+            for b in bench:
+                if slot_accepts(slot_list[i], b.get("position")):
+                    trial = list(current)
+                    trial[i] = b
+                else:
+                    starters = [p for j, p in enumerate(current) if p is not None and j != i]
+                    trial = assign_to_slots([*starters, b], slot_list)
+                    if trial is None:
+                        continue
                 gain = _p_win_of(trial, residual_mean, residual_var, stack_correlation) - current_p
                 if gain > best_gain:
-                    best_gain, best_swap = gain, (i, b)
-        if not best_swap:
+                    best_gain, best_trial = gain, trial
+        if best_trial is None:
             break
-        i, b = best_swap
-        current[i] = b
+        current = best_trial
         current_p = _p_win_of(current, residual_mean, residual_var, stack_correlation)
 
     def _fmt(lineup):
@@ -286,7 +286,8 @@ async def get_win_probability_lineup(
             Feed the output of `project_players` here.
         opponent_players: the opponent's projected starters (same shape).
         slots: roster slots, e.g. {"QB":1,"RB":2,"WR":2,"TE":1,"FLEX":1,"K":1,"DST":1}
-            (the default). FLEX = RB/WR/TE; SUPERFLEX adds QB.
+            (the default). FLEX = RB/WR/TE, WRRB_FLEX = RB/WR, REC_FLEX = WR/TE,
+            SUPERFLEX (or SUPER_FLEX) adds QB; DEF and DST are the same slot.
         stack_correlation: QB↔same-team pass-catcher correlation (default 0.35;
             0 disables the stacking effect).
         locked_players: players already committed — mid-week, anyone whose game

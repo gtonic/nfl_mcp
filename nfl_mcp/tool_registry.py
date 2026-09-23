@@ -1802,8 +1802,9 @@ async def get_roster_recommendations(
         season (int, optional): Season year, needed with `week`
 
     Returns: {
-        recommendations: list of player analyses sorted by confidence,
-        by_position: dict of recommendations grouped by position,
+        recommendations: list of player analyses sorted by projected points
+            (confidence breaks ties),
+        by_position: dict of recommendations grouped by position, same order,
         must_starts: list of must-start players,
         sits: list of players to sit,
         summary: list of summary lines,
@@ -2027,7 +2028,8 @@ async def get_win_probability_lineup(
             and ideally floor/ceiling or sd, plus name and position.
         opponent_players (list, required): the opponent's projected starters.
         slots (dict, optional): roster slots (default QB1/RB2/WR2/TE1/FLEX1/K1/DST1;
-            FLEX = RB/WR/TE, SUPERFLEX adds QB).
+            FLEX = RB/WR/TE, WRRB_FLEX = RB/WR, REC_FLEX = WR/TE, SUPERFLEX (or
+            SUPER_FLEX) adds QB).
 
     Returns: {
         recommended_lineup, win_probability, projected_points,
