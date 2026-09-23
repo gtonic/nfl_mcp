@@ -1,11 +1,15 @@
 """Tests for new fantasy intelligence APIs."""
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from nfl_mcp.nfl_tools import get_nfl_standings, get_team_injuries, get_team_player_stats
+
+# Reports older than ~6 months are last season's and filtered out as resolved.
+RECENT = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%MZ")
 
 
 class TestTeamInjuries:
@@ -27,7 +31,7 @@ class TestTeamInjuries:
                     },
                     "status": {"name": "Questionable"},
                     "description": "Ankle injury",
-                    "date": "2025-01-13",
+                    "date": RECENT,
                     "type": {"name": "Ankle"}
                 }
             ]
@@ -90,31 +94,24 @@ class TestTeamPlayerStats:
 
     @pytest.mark.asyncio
     async def test_get_team_player_stats_success(self):
-        """Test successful player stats fetch."""
-        mock_response_data = {
-            "items": [
-                {
-                    "id": "3139477",
-                    "displayName": "Patrick Mahomes",
-                    "jersey": "15",
-                    "position": {"abbreviation": "QB"},
-                    "age": 29,
-                    "experience": {"years": 7},
-                    "active": True,
-                    "team": {"displayName": "Kansas City Chiefs"}
-                },
-                {
-                    "id": "4035687",
-                    "displayName": "Travis Kelce",
-                    "jersey": "87",
-                    "position": {"abbreviation": "TE"},
-                    "age": 35,
-                    "experience": {"years": 12},
-                    "active": True,
-                    "team": {"displayName": "Kansas City Chiefs"}
-                }
-            ]
-        }
+        """Season totals per player from Sleeper, for the team asked about."""
+        mock_response_data = [
+            {"player_id": "4046", "team": "KC",
+             "player": {"first_name": "Patrick", "last_name": "Mahomes", "position": "QB"},
+             "stats": {"gp": 2.0, "pass_yd": 566.0, "pass_td": 5.0, "pass_att": 74.0,
+                       "rush_yd": 40.0, "pts_ppr": 51.64, "pts_half_ppr": 51.64,
+                       "pts_std": 51.64}},
+            {"player_id": "1466", "team": "KC",
+             "player": {"first_name": "Travis", "last_name": "Kelce", "position": "TE"},
+             "stats": {"gp": 2.0, "rec": 14.0, "rec_tgt": 18.0, "rec_yd": 172.0,
+                       "pts_ppr": 35.2}},
+            {"player_id": "999", "team": "KC",
+             "player": {"first_name": "Practice", "last_name": "Squad", "position": "WR"},
+             "stats": {"gms_active": 0.0}},
+            {"player_id": "6", "team": "BUF",
+             "player": {"first_name": "Josh", "last_name": "Allen", "position": "QB"},
+             "stats": {"gp": 2.0, "pts_ppr": 60.0}},
+        ]
 
         mock_response = MagicMock()
         mock_response.json.return_value = mock_response_data
@@ -126,23 +123,55 @@ class TestTeamPlayerStats:
         with patch('nfl_mcp.nfl_tools.create_http_client') as mock_create_client:
             mock_create_client.return_value.__aenter__.return_value = mock_client
 
-            result = await get_team_player_stats("KC", 2025, 2, 50)
+            result = await get_team_player_stats("kc", 2025, 2, 50)
 
             assert result["success"] is True
             assert result["team_id"] == "KC"
+            assert result["team_name"] == "Kansas City Chiefs"
             assert result["season"] == 2025
             assert result["season_type"] == 2
-            assert result["count"] == 2
+            # Only KC players who have played; sorted by PPR points.
+            assert [p["player_name"] for p in result["player_stats"]] == [
+                "Patrick Mahomes", "Travis Kelce"]
+            qb, te = result["player_stats"]
+            assert qb["passing"]["yards"] == 566.0 and qb["passing"]["touchdowns"] == 5.0
+            assert qb["games_played"] == 2.0
+            assert qb["fantasy_points"]["ppr"] == 51.64
+            assert te["receiving"] == {"targets": 18.0, "receptions": 14.0, "yards": 172.0}
+            assert "passing" not in te
+            url = mock_client.get.await_args.args[0]
+            params = mock_client.get.await_args.kwargs["params"]
+            assert url.endswith("/stats/nfl/2025")
+            assert ("season_type", "regular") in params
 
-            # Check QB is fantasy relevant
-            qb_player = next(p for p in result["player_stats"] if p["position"] == "QB")
-            assert qb_player["fantasy_relevant"] is True
-            assert qb_player["player_name"] == "Patrick Mahomes"
+    @pytest.mark.asyncio
+    async def test_team_player_stats_season_type_and_aliases(self):
+        """season_type picks the season part; Sleeper's WAS matches any spelling."""
+        rows = [{"player_id": "1", "team": "WAS",
+                 "player": {"first_name": "Jayden", "last_name": "Daniels", "position": "QB"},
+                 "stats": {"gp": 1.0, "pts_ppr": 20.0}}]
+        mock_response = MagicMock()
+        mock_response.json.return_value = rows
+        mock_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
 
-            # Check TE is fantasy relevant
-            te_player = next(p for p in result["player_stats"] if p["position"] == "TE")
-            assert te_player["fantasy_relevant"] is True
-            assert te_player["player_name"] == "Travis Kelce"
+        with patch('nfl_mcp.nfl_tools.create_http_client') as mock_create_client:
+            mock_create_client.return_value.__aenter__.return_value = mock_client
+            result = await get_team_player_stats("WSH", 2025, 3, 10)
+            # Cached: a second team from the same season costs no request.
+            again = await get_team_player_stats("Washington Commanders", 2025, 3, 10)
+
+        assert result["team_id"] == "WSH" and result["count"] == 1
+        assert again["count"] == 1
+        assert mock_client.get.await_count == 1
+        assert ("season_type", "post") in mock_client.get.await_args.kwargs["params"]
+
+    @pytest.mark.asyncio
+    async def test_team_player_stats_rejects_off_season_type(self):
+        result = await get_team_player_stats("KC", 2025, 4, 10)
+        assert result["success"] is False
+        assert "season_type" in result["error"]
 
     @pytest.mark.asyncio
     async def test_get_team_player_stats_invalid_team(self):

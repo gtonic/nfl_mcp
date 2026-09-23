@@ -467,3 +467,42 @@ class TestKickoffsAndPriority:
         # Free agent after Wednesday's run: add him, no priority needed.
         assert sunday["waiver_strategy"]["recommendation"] == "add_now"
         assert out["waiver_priority"]["rolling"] is True
+
+
+class TestOnlyPlayingOptions:
+    """GB's two kickers both came back at 9.5; only the starter kicks."""
+
+    @pytest.mark.asyncio
+    async def test_backup_kicker_and_ghost_rows_are_not_offered(self, db, monkeypatch):
+        import time
+        recent, long_ago = time.time() * 1000, (time.time() - 4 * 365 * 86400) * 1000
+        db.upsert_schedule_games([
+            {"season": 2026, "week": 3, "team": t, "opponent": o, "is_home": h}
+            for t, o, h in (("GB", "PIT", 1), ("PIT", "GB", 0))
+        ])
+        db.upsert_athletes({
+            "13545": {"full_name": "Trey Smack", "position": "K", "team": "GB",
+                      "status": "Active", "depth_chart_order": 1, "news_updated": recent},
+            "12548": {"full_name": "Lenny Krieg", "position": "K", "team": "GB",
+                      "status": "Active", "depth_chart_order": None, "news_updated": recent},
+            "ben": {"full_name": "Ben Roethlisberger", "position": "QB", "team": "PIT",
+                    "status": "Active", "depth_chart_order": None, "news_updated": long_ago},
+        })
+        _stub_sleeper(
+            monkeypatch,
+            {"Trey Smack": 9.5, "Lenny Krieg": 9.5, "Ben Roethlisberger": 30.0},
+            roster_positions=["QB", "RB", "RB", "WR", "WR", "K", "BN", "BN"],
+        )
+        # With live lines kickers are ranked (otherwise "no_signal").
+        from nfl_mcp import projections
+        stub = projections.project_players
+
+        async def _with_vegas(players, **kwargs):
+            return {**(await stub(players, **kwargs)), "vegas_active": True}
+
+        monkeypatch.setattr(projections, "project_players", _with_vegas)
+        out = await get_waiver_targets(LEAGUE, roster_id=7)
+        names = [t["name"] for t in out["targets"]]
+        assert "Trey Smack" in names
+        assert "Lenny Krieg" not in names
+        assert "Ben Roethlisberger" not in names

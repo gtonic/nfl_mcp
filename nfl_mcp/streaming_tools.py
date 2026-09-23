@@ -21,6 +21,7 @@ import logging
 
 from . import matchup_tools
 from .errors import create_success_response, handle_http_errors, handle_validation_error
+from .player_pool import playing_options
 from .sos_tools import _ease_score, _gather_opponents, _resolve_rankings
 
 logger = logging.getLogger(__name__)
@@ -274,7 +275,10 @@ def _unit_availability(position: str, team: str, rostered: set, db) -> dict:
         status = "rostered" if team in rostered else "free_agent"
         return {"unit_player_id": team, "status": status, "has_free_agent": status == "free_agent"}
     players = []
-    for a in (db.get_athletes_by_team(team) or []) if db else []:
+    # The team's playing options only: a free practice-squad kicker behind a
+    # rostered starter is not a streamer (see player_pool).
+    team_rows = (db.get_athletes_by_team(team) or []) if db else []
+    for a in playing_options(team_rows):
         if (a.get("position") or "").upper() == pos:
             pid = str(a.get("id"))
             players.append({

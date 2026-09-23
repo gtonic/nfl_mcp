@@ -808,19 +808,27 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
             athlete.get("full_name"), athlete.get("team_id"), max_age_hours=None  # Adaptive TTL
         )
         if injury:
-            age_hours = (datetime.now(UTC) - datetime.fromisoformat(injury["updated_at"])).total_seconds() / 3600
-            enriched_additions["injury_status"] = injury["injury_status"]
+            # A report row with a null status or timestamp must not raise: the
+            # caller's broad except would drop every other field for him too.
+            try:
+                age_hours = (
+                    datetime.now(UTC) - datetime.fromisoformat(injury.get("updated_at"))
+                ).total_seconds() / 3600
+            except (TypeError, ValueError):
+                age_hours = None
+            enriched_additions["injury_status"] = injury.get("injury_status") or None
             enriched_additions["injury_type"] = injury.get("injury_type")
             enriched_additions["injury_description"] = injury.get("injury_description")
             enriched_additions["injury_date"] = injury.get("date_reported")
-            enriched_additions["injury_age_hours"] = round(age_hours, 1)
-            enriched_additions["injury_stale"] = age_hours > 12
+            enriched_additions["injury_age_hours"] = None if age_hours is None else round(age_hours, 1)
+            # Unknown age is not fresh.
+            enriched_additions["injury_stale"] = age_hours is None or age_hours > 12
             # New fields from injury service
             enriched_additions["injury_severity"] = injury.get("severity")
             enriched_additions["injury_confidence"] = injury.get("confidence", 50)
-            enriched_additions["injury_sources"] = injury.get("sources", ["ESPN"])
+            enriched_additions["injury_sources"] = injury.get("sources") or ["ESPN"]
             enriched_additions["injury_game_status"] = injury.get("game_status")
-            logger.debug(f"[Enrichment] {player_name}: injury_status={injury['injury_status']} severity={injury.get('severity')} confidence={injury.get('confidence')} (age={round(age_hours, 1)}h)")
+            logger.debug(f"[Enrichment] {player_name}: injury_status={injury.get('injury_status')} severity={injury.get('severity')} confidence={injury.get('confidence')} (age={enriched_additions['injury_age_hours']}h)")
 
     # Sleeper's own designation, worst case wins. The report can be missing
     # (cache expired, name spelled differently) or lag Sleeper; either way a
@@ -974,6 +982,10 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
                 enriched_additions["implied_team_total"] = implied_total
                 enriched_additions["spread"] = spread
                 enriched_additions["vegas_source"] = "lines"
+                if game.get("total_is_fallback"):
+                    # Spread posted, total not: the spread is real, the
+                    # total and implied total are unknown (None), not 45.
+                    enriched_additions["vegas_total_is_fallback"] = True
 
                 # Game environment
                 env = game.get("game_environment", {})

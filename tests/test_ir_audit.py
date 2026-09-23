@@ -29,11 +29,28 @@ def _moves(audit):
 
 
 class TestEligibility:
-    def test_ir_is_always_allowed(self):
-        assert eligible_statuses(ROPEWAY) == ["IR"]
+    def test_ir_and_pup_are_always_allowed(self):
+        assert eligible_statuses(ROPEWAY) == ["IR", "PUP"]
 
     def test_the_league_settings_add_statuses(self):
-        assert eligible_statuses(VLBG) == ["IR", "Sus", "NA", "DNR", "COV"]
+        assert eligible_statuses(VLBG) == ["IR", "PUP", "Sus", "NA", "DNR", "COV"]
+
+    def test_out_and_doubtful_follow_the_settings(self):
+        loose = {**ROPEWAY, "reserve_allow_out": 1, "reserve_allow_doubtful": 1}
+        assert is_ir_eligible("Out", loose) and is_ir_eligible("Doubtful", loose)
+        assert not is_ir_eligible("Out", ROPEWAY)
+
+    def test_pup_player_in_ir_is_not_told_to_activate(self):
+        """VLBG week 3: Charbonnet (PUP) sits in IR; Sleeper accepts it and
+        the league allows neither Out nor Doubtful."""
+        athletes = {"charb": _athlete("Zach Charbonnet", "PUP", "SEA", "RB")}
+        audit = audit_roster({"players": ["charb"], "reserve": ["charb"]}, VLBG, athletes, {})
+        assert _moves(audit) == []
+
+    def test_pup_on_the_bench_can_move_to_ir(self):
+        athletes = {"charb": _athlete("Zach Charbonnet", "PUP", "SEA", "RB")}
+        audit = audit_roster({"players": ["charb"], "reserve": []}, ROPEWAY, athletes, {})
+        assert _moves(audit) == [("move_to_ir", "Zach Charbonnet")]
 
     @pytest.mark.parametrize("status", ["Out", "Doubtful", "Questionable", None])
     def test_out_and_milder_are_not_eligible_when_the_league_says_so(self, status):

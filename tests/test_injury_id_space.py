@@ -208,3 +208,37 @@ class TestStatusMoves:
             {"player_name": "Burrow", "previous_status": "Questionable", "injury_status": "Active"},
         ]
         assert [r["player_name"] for r in _status_moves(rows)] == ["Daniels", "Mason", "Burrow"]
+
+
+class TestNullReportFields:
+    """A report row with null status / timestamp must not drop the player's
+    other enrichment: the callers wrap enrichment in one broad except."""
+
+    def _db(self, report):
+        mock = Mock()
+        mock.find_player_injury = Mock(return_value=report)
+        mock.get_latest_practice_status = Mock(return_value=None)
+        mock.get_usage_last_n_weeks = Mock(return_value=None)
+        mock.get_opponent = Mock(return_value="DAL")
+        return mock
+
+    @pytest.mark.parametrize("report", [
+        {"player_id": "1", "injury_status": None, "updated_at": None, "sources": None},
+        {"player_id": "1", "injury_status": None, "updated_at": "not a date"},
+        {"player_id": "1", "injury_status": "Questionable"},
+    ])
+    def test_enrichment_survives(self, report):
+        out = _enrich_usage_and_opponent(
+            self._db(report), _athlete("2", "X Y", "PHI", None, "WR"), 2026, 3
+        )
+        assert out["opponent"] == "DAL"
+        assert out["injury_age_hours"] is None
+        assert out["injury_stale"] is True
+        assert out["injury_status"] == report["injury_status"]
+
+    def test_null_report_status_still_takes_sleeper_designation(self):
+        out = _enrich_usage_and_opponent(
+            self._db({"player_id": "1", "injury_status": None, "updated_at": None}),
+            _athlete("2", "X Y", "PHI", "Out", "WR"), 2026, 3,
+        )
+        assert out["injury_status"] == "Out"

@@ -7,12 +7,14 @@ This module contains MCP tools for fetching NFL news, teams data, and depth char
 import asyncio
 import logging
 import re
+import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
 
-from .config import LIMITS, create_http_client, get_http_headers, validate_limit
+from .config import LIMITS, LONG_TIMEOUT, create_http_client, get_http_headers, validate_limit
 from .errors import (
     ErrorType,
     create_error_response,
@@ -20,8 +22,75 @@ from .errors import (
     handle_http_errors,
     handle_validation_error,
 )
+from .teams import CODE_TO_FULL_NAME, normalize_team
 
 logger = logging.getLogger(__name__)
+
+
+def _espn_team(team_id: str) -> str:
+    """The code ESPN's team endpoints accept for any spelling of a team.
+
+    ESPN answers ``WAS``, ``LA`` and ``JAC`` — Sleeper's and nflverse's
+    spellings — with HTTP 400, and callers pass whatever their source said.
+    An unrecognised value (an ESPN numeric id) is passed through as-is.
+    """
+    return normalize_team(team_id) or team_id.strip().upper()
+
+
+# ESPN's team injury list is each player's *latest* report ever filed, so most
+# of it is players who are healthy again ("Active") and a tail of reports from
+# earlier seasons. Neither is an injury.
+_HEALTHY_STATUSES = frozenset({"active", "healthy"})
+# A report this old is from a previous season unless it names a return date
+# still ahead (a season-ending IR placement filed in the summer).
+_STALE_REPORT_DAYS = 180
+RESOLVED = object()  # marker for a report dropped as resolved
+
+# Games a team must have played before a standings label says anything about
+# its motivation: a 1-3 start is noise, not a rebuild.
+_STANDINGS_MIN_GAMES = 6
+
+
+def _parse_when(value: Any) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def _is_current_injury(status: str | None, date: Any, return_date: Any = None,
+                       now: datetime | None = None) -> bool:
+    """Whether a report describes an injury that is still open."""
+    if (status or "").strip().lower() in _HEALTHY_STATUSES:
+        return False
+    now = now or datetime.now(UTC)
+    reported = _parse_when(date)
+    if reported is None or now - reported <= timedelta(days=_STALE_REPORT_DAYS):
+        return True
+    back = _parse_when(return_date)
+    return back is not None and back > now
+
+
+def _current_injuries(injuries: list[dict]) -> list[dict]:
+    return [
+        inj for inj in injuries
+        if _is_current_injury(inj.get("status"), inj.get("date"), inj.get("return_date"))
+    ]
+
+
+def _bye_week(schedule: list[dict]) -> int | None:
+    """The regular-season week (1-18) with no game, from a team's schedule.
+
+    ESPN encodes a bye as a *missing* week rather than a game row, so it must
+    be inferred from the gap (only when we have a near-complete schedule).
+    """
+    played_weeks = {g.get('week') for g in schedule if isinstance(g.get('week'), int)}
+    if len(played_weeks) < 16:
+        return None
+    return next((w for w in range(1, 19) if w not in played_weeks), None)
 
 
 @handle_http_errors(
@@ -249,7 +318,7 @@ async def get_depth_chart(team_id: str) -> dict:
     headers = get_http_headers("depth_chart")
 
     # Build the ESPN depth chart URL
-    url = f"https://www.espn.com/nfl/team/depth/_/name/{team_id.upper()}"
+    url = f"https://www.espn.com/nfl/team/depth/_/name/{_espn_team(team_id)}"
 
     async with create_http_client() as client:
         # Fetch the depth chart page
@@ -297,7 +366,7 @@ async def get_depth_chart(team_id: str) -> dict:
                 i += 1
 
         return create_success_response({
-            "team_id": team_id.upper(),
+            "team_id": _espn_team(team_id),
             "team_name": team_name,
             "depth_chart": depth_chart
         })
@@ -340,7 +409,7 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
 
     # Validate limit
     limit = validate_limit(limit or 50, 1, 100, 50)
-    team_id_upper = team_id.upper()
+    team_id_upper = _espn_team(team_id)
 
     # Try cache first (if advanced enrichment is enabled)
     from .sleeper_tools import ADVANCED_ENRICH_ENABLED
@@ -355,15 +424,15 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
 
                 # Convert cached format to API response format
                 processed_injuries = []
-                for inj in cached_injuries[:limit]:  # Respect limit
+                for inj in cached_injuries:
                     injury = {
                         'player_id': inj.get('player_id'),
                         'player_name': inj.get('player_name'),
-                        'position': inj.get('position', 'N/A'),
-                        'status': inj.get('injury_status', 'Unknown'),
-                        'description': inj.get('injury_description', 'No description'),
-                        'type': inj.get('injury_type', 'Unknown'),
-                        'date': inj.get('date_reported', 'Unknown'),
+                        'position': inj.get('position') or 'N/A',
+                        'status': inj.get('injury_status') or 'Unknown',
+                        'description': inj.get('injury_description') or 'No description',
+                        'type': inj.get('injury_type') or 'Unknown',
+                        'date': inj.get('date_reported') or 'Unknown',
                         'severity': 'Unknown'
                     }
 
@@ -378,11 +447,13 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
 
                     processed_injuries.append(injury)
 
+                current = _current_injuries(processed_injuries)
                 return create_success_response({
                     "team_id": team_id_upper,
                     "team_name": f"{team_id_upper} (from cache)",
-                    "injuries": processed_injuries,
-                    "count": len(processed_injuries),
+                    "injuries": current[:limit],
+                    "count": len(current[:limit]),
+                    "resolved_excluded": len(processed_injuries) - len(current),
                     "cache_source": "database"
                 })
         except Exception as e:
@@ -393,8 +464,10 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
 
     headers = get_http_headers("nfl_teams")  # Reuse existing config
 
-    # ESPN Core API endpoint for team injuries
-    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team_id_upper}/injuries?limit={limit}"
+    # ESPN Core API endpoint for team injuries. The list is every player's
+    # latest report, healthy ones included, so `limit` is applied after the
+    # resolved ones are dropped rather than to the raw list.
+    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team_id_upper}/injuries?limit=200"
 
     async with create_http_client() as client:
         try:
@@ -406,7 +479,7 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
                 # If team abbreviation fails, we might need to map to ESPN team ID
                 # For now, return empty results with a helpful message
                 return create_success_response({
-                    "team_id": team_id.upper(),
+                    "team_id": _espn_team(team_id),
                     "team_name": None,
                     "injuries": [],
                     "count": 0,
@@ -435,6 +508,21 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
                     logger.debug(f"[Injuries] injury ref fetch failed ({ref}): {e}")
                     return None
 
+            # Status may be a plain string (Core API) or a {"name": ...} dict.
+            status = detail.get('status')
+            if isinstance(status, dict):
+                status = status.get('name') or status.get('description')
+            type_obj = detail.get('type') or {}
+            if not status and isinstance(type_obj, dict):
+                status = type_obj.get('description')
+            status = status or 'Unknown'
+            details = detail.get('details') or {}
+
+            # A resolved report is not an injury; skip it before spending a
+            # request on its athlete.
+            if not _is_current_injury(status, detail.get('date'), details.get('returnDate')):
+                return RESOLVED
+
             # Athlete: dereference when given as a $ref, else read inline.
             athlete = detail.get('athlete', {}) or {}
             a_ref = athlete.get('$ref') if isinstance(athlete, dict) else None
@@ -454,18 +542,8 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
             player_id = athlete.get('id')
             position = (athlete.get('position') or {}).get('abbreviation', 'N/A')
 
-            # Status may be a plain string (Core API) or a {"name": ...} dict.
-            status = detail.get('status')
-            if isinstance(status, dict):
-                status = status.get('name') or status.get('description')
-            type_obj = detail.get('type') or {}
-            if not status and isinstance(type_obj, dict):
-                status = type_obj.get('description')
-            status = status or 'Unknown'
-
             # `details` carries the body part / specifics; the top-level `type`
             # is the status classification, not the body part.
-            details = detail.get('details') or {}
             body_part = details.get('type')
             specifics = details.get('detail')
             description = (
@@ -505,15 +583,90 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
                 return await _resolve_injury(item)
 
         resolved = await asyncio.gather(*[_bounded(it) for it in injury_items])
-        processed_injuries = [inj for inj in resolved if inj]
+        processed_injuries = [inj for inj in resolved if inj and inj is not RESOLVED][:limit]
 
         return create_success_response({
             "team_id": team_id_upper,
             "team_name": None,
             "injuries": processed_injuries,
             "count": len(processed_injuries),
+            "resolved_excluded": sum(1 for inj in resolved if inj is RESOLVED),
             "cache_source": "api"
         })
+
+
+# Season-to-date totals per player from Sleeper's stats service — the same
+# numbers its app shows. One request covers the whole league (there is no team
+# filter), so the answer is cached per season and season type.
+SLEEPER_SEASON_STATS_URL = "https://api.sleeper.com/stats/nfl/{season}"
+_SEASON_TYPES = {1: "pre", 2: "regular", 3: "post"}
+_STATS_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
+_SEASON_STATS_TTL_SECONDS = 1800.0
+_season_stats_cache: dict[tuple[int, str], tuple[float, list]] = {}
+
+# Output field -> Sleeper stat key, grouped the way a box score reads.
+_STAT_GROUPS: dict[str, dict[str, str]] = {
+    "passing": {"attempts": "pass_att", "completions": "pass_cmp", "yards": "pass_yd",
+                "touchdowns": "pass_td", "interceptions": "pass_int", "sacks": "pass_sack"},
+    "rushing": {"attempts": "rush_att", "yards": "rush_yd", "touchdowns": "rush_td"},
+    "receiving": {"targets": "rec_tgt", "receptions": "rec", "yards": "rec_yd",
+                  "touchdowns": "rec_td"},
+    "kicking": {"fg_made": "fgm", "fg_att": "fga", "fg_long": "fgm_lng",
+                "xp_made": "xpm", "xp_att": "xpa"},
+    "defense": {"sacks": "sack", "interceptions": "int", "fumbles_recovered": "fum_rec",
+                "touchdowns": "def_td", "points_allowed": "pts_allow"},
+    "snaps": {"offense": "off_snp", "team_offense": "tm_off_snp"},
+}
+
+
+def clear_season_stats_cache() -> None:
+    """Drop cached season stats (tests, or to force a refetch)."""
+    _season_stats_cache.clear()
+
+
+async def _fetch_season_stats(season: int, season_type: str) -> list[dict]:
+    """Every player's season totals for one season type, cached for 30 minutes."""
+    key = (season, season_type)
+    hit = _season_stats_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _SEASON_STATS_TTL_SECONDS:
+        return hit[1]
+    params = [("season_type", season_type)] + [("position[]", p) for p in _STATS_POSITIONS]
+    # ~2 MB for the whole league: the long timeout, not the default.
+    async with create_http_client(timeout=LONG_TIMEOUT) as client:
+        response = await client.get(
+            SLEEPER_SEASON_STATS_URL.format(season=season),
+            params=params, headers=get_http_headers("sleeper_players"),
+        )
+        response.raise_for_status()
+        rows = response.json() or []
+    rows = rows if isinstance(rows, list) else []
+    if rows:
+        _season_stats_cache[key] = (time.monotonic(), rows)
+    return rows
+
+
+def _player_line(row: dict) -> dict:
+    stats = row.get("stats") or {}
+    player = row.get("player") or {}
+    position = player.get("position") or "N/A"
+    name = " ".join(p for p in (player.get("first_name"), player.get("last_name")) if p)
+    line = {
+        "player_id": row.get("player_id"),
+        "player_name": name or row.get("player_id") or "Unknown",
+        "position": position,
+        "games_played": stats.get("gp"),
+        "fantasy_points": {
+            "std": stats.get("pts_std"),
+            "half_ppr": stats.get("pts_half_ppr"),
+            "ppr": stats.get("pts_ppr"),
+        },
+        "injury_status": player.get("injury_status"),
+    }
+    for group, fields in _STAT_GROUPS.items():
+        values = {out: stats[key] for out, key in fields.items() if stats.get(key) is not None}
+        if values:
+            line[group] = values
+    return line
 
 
 @handle_http_errors(
@@ -522,25 +675,28 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
 )
 async def get_team_player_stats(team_id: str, season: int | None = 2026, season_type: int | None = 2, limit: int | None = 50) -> dict:
     """
-    Get current season player statistics for a specific NFL team.
+    Get season-to-date statistics for every fantasy-relevant player on a team.
 
-    This tool fetches individual player performance data from ESPN's Core API,
-    providing key metrics for fantasy football analysis and decision making.
+    Totals come from Sleeper's season stats (the numbers its app shows): games
+    played, fantasy points in standard / half-PPR / PPR, and passing, rushing,
+    receiving, kicking and team-defense lines. Players are sorted by PPR points
+    and only those who have appeared in a game are listed.
 
     Args:
-        team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE') or ESPN team ID
+        team_id: The team abbreviation in any spelling (e.g., 'KC', 'WAS', 'LA')
         season: Season year (defaults to 2026)
-        season_type: 1=Pre, 2=Regular, 3=Post, 4=Off (defaults to 2)
+        season_type: 1=Pre, 2=Regular, 3=Post (defaults to 2)
         limit: Maximum number of player stats to return (1-100, defaults to 50)
 
     Returns:
         A dictionary containing:
-        - team_id: The team identifier used
+        - team_id: The canonical team code
         - team_name: The team's full name
         - season: Season year requested
         - season_type: Season type requested
-        - player_stats: List of players with their statistical performance
+        - player_stats: List of per-player season lines
         - count: Number of player stats returned
+        - source: "sleeper_season_stats"
         - success: Whether the request was successful
         - error: Error message (if any)
         - error_type: Type of error (if any)
@@ -556,81 +712,39 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
     season = season or 2026
     season_type = season_type or 2
     limit = validate_limit(limit or 50, 1, 100, 50)
+    team = normalize_team(team_id)
+    default = {"team_id": team_id, "team_name": None, "season": season,
+               "season_type": season_type, "player_stats": []}
+    if not team:
+        return handle_validation_error(f"Unknown team '{team_id}'", default)
+    if season_type not in _SEASON_TYPES:
+        return handle_validation_error(
+            "season_type must be 1 (pre), 2 (regular) or 3 (post)", default
+        )
 
-    headers = get_http_headers("nfl_teams")  # Reuse existing config
+    rows = await _fetch_season_stats(season, _SEASON_TYPES[season_type])
+    lines = [
+        _player_line(row) for row in rows
+        if normalize_team(row.get("team")) == team
+        and ((row.get("stats") or {}).get("gp") or 0) > 0
+    ]
+    lines.sort(key=lambda p: p["fantasy_points"]["ppr"] or 0.0, reverse=True)
+    lines = lines[:limit]
 
-    # ESPN Core API team roster for the season. The older
-    # /types/{season_type}/ variant now 404s; this endpoint returns athlete
-    # $ref links which we dereference below.
-    url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{season}/teams/{team_id.upper()}/athletes?limit={limit}"
-
-    async with create_http_client() as client:
-        try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                return create_success_response({
-                    "team_id": team_id.upper(),
-                    "team_name": None,
-                    "season": season,
-                    "season_type": season_type,
-                    "player_stats": [],
-                    "count": 0,
-                    "message": f"No player statistics found for team '{team_id}' in season {season}."
-                })
-            else:
-                raise
-
-        # Parse JSON response. `items` are athlete $ref links; dereference each.
-        data = response.json()
-        athlete_items = data.get('items', [])
-
-        async def _resolve_athlete(item):
-            athlete = item
-            ref = item.get('$ref') if isinstance(item, dict) else None
-            if ref and not (isinstance(item, dict) and item.get('id')):
-                try:
-                    r = await client.get(ref, headers=headers)
-                    r.raise_for_status()
-                    athlete = r.json()
-                except Exception as e:
-                    logger.debug(f"[TeamPlayerStats] athlete ref fetch failed ({ref}): {e}")
-                    return None
-            position_ref = athlete.get('position') or {}
-            pos = position_ref.get('abbreviation', 'N/A') if isinstance(position_ref, dict) else 'N/A'
-            experience = athlete.get('experience')
-            return {
-                'player_id': athlete.get('id'),
-                'player_name': (athlete.get('displayName')
-                                or f"{athlete.get('firstName', '')} {athlete.get('lastName', '')}".strip()
-                                or 'Unknown'),
-                'jersey': athlete.get('jersey'),
-                'position': pos,
-                'age': athlete.get('age'),
-                'experience': experience.get('years') if isinstance(experience, dict) else None,
-                'active': athlete.get('active', True),
-                'fantasy_relevant': pos.upper() in ('QB', 'RB', 'WR', 'TE', 'K', 'DST'),
-                'stats_note': 'Detailed per-game statistics require additional API calls per player',
-            }
-
-        sem = asyncio.Semaphore(10)
-
-        async def _bounded(item):
-            async with sem:
-                return await _resolve_athlete(item)
-
-        resolved = await asyncio.gather(*[_bounded(it) for it in athlete_items])
-        processed_stats = [p for p in resolved if p]
-
-        return create_success_response({
-            "team_id": team_id.upper(),
-            "team_name": None,
-            "season": season,
-            "season_type": season_type,
-            "player_stats": processed_stats,
-            "count": len(processed_stats)
-        })
+    result = {
+        "team_id": team,
+        "team_name": CODE_TO_FULL_NAME.get(team),
+        "season": season,
+        "season_type": season_type,
+        "player_stats": lines,
+        "count": len(lines),
+        "source": "sleeper_season_stats",
+    }
+    if not lines:
+        result["message"] = (
+            f"No {_SEASON_TYPES[season_type]}-season stats for {team} in {season} yet."
+        )
+    return create_success_response(result)
 
 
 @handle_http_errors(
@@ -723,16 +837,23 @@ async def get_nfl_standings(season: int | None = 2026, season_type: int | None =
                     team_info['division_record'] = stat.get('displayValue')
 
             # Fantasy implications (only meaningful once games have been played).
+            # Labels come from win% once enough games are in: `wins <= 4` used
+            # to call every team "Development mode" for the first month.
             wins = team_info.get('wins') or 0
             losses = team_info.get('losses') or 0
-            total_games = wins + losses
+            ties = team_info.get('ties') or 0
+            total_games = wins + losses + ties
+            win_pct = (wins + 0.5 * ties) / total_games if total_games else 0.0
             if total_games == 0:
                 team_info['fantasy_context'] = 'Season not started — no games played yet'
                 team_info['motivation_level'] = 'Unknown (preseason)'
-            elif wins >= 12 or (total_games >= 14 and wins / total_games > 0.8):
+            elif total_games < _STANDINGS_MIN_GAMES:
+                team_info['fantasy_context'] = 'Too early to judge motivation - full effort expected'
+                team_info['motivation_level'] = 'High (Early season)'
+            elif total_games >= 12 and win_pct >= 0.8:
                 team_info['fantasy_context'] = 'May rest starters in late season'
                 team_info['motivation_level'] = 'Low (Playoff lock)'
-            elif wins <= 4 or (total_games >= 10 and wins / total_games < 0.3):
+            elif total_games >= 8 and win_pct < 0.3:
                 team_info['fantasy_context'] = 'May evaluate young players'
                 team_info['motivation_level'] = 'Medium (Development mode)'
             else:
@@ -788,7 +909,7 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
 
     # Validate season
     season = season or 2026
-    team_id_upper = team_id.upper()
+    team_id_upper = _espn_team(team_id)
 
     # Try cache first (if advanced enrichment is enabled)
     from .sleeper_tools import ADVANCED_ENRICH_ENABLED
@@ -831,6 +952,9 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
                     "team_name": f"{team_id_upper} (from cache)",
                     "season": season,
                     "schedule": processed_schedule,
+                    # Both paths answer the bye: the cache path used to drop
+                    # it, so the answer depended on NFL_MCP_ADVANCED_ENRICH.
+                    "bye_week": _bye_week(processed_schedule),
                     "count": len(processed_schedule),
                     "cache_source": "database"
                 })
@@ -854,7 +978,7 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return create_success_response({
-                    "team_id": team_id.upper(),
+                    "team_id": _espn_team(team_id),
                     "team_name": None,
                     "season": season,
                     "schedule": [],
@@ -909,14 +1033,14 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
                 competitors = competition.get('competitors', [])
                 for competitor in competitors:
                     team_ref = competitor.get('team', {})
-                    if team_ref and team_ref.get('abbreviation', '').upper() != team_id.upper():
+                    if team_ref and _espn_team(team_ref.get('abbreviation') or '') != team_id_upper:
                         # This is the opponent
                         game['opponent'] = {
                             'abbreviation': team_ref.get('abbreviation', 'UNK'),
                             'name': team_ref.get('displayName', 'Unknown'),
                             'logo': team_ref.get('logo')
                         }
-                    elif team_ref and team_ref.get('abbreviation', '').upper() == team_id.upper():
+                    elif team_ref and _espn_team(team_ref.get('abbreviation') or '') == team_id_upper:
                         # This is our team - check if home or away
                         game['is_home'] = competitor.get('homeAway') == 'home'
 
@@ -929,7 +1053,7 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
                         game['result'] = 'completed'
                         for competitor in competitors:
                             team_ref = competitor.get('team', {})
-                            if team_ref and team_ref.get('abbreviation', '').upper() == team_id.upper():
+                            if team_ref and _espn_team(team_ref.get('abbreviation') or '') == team_id_upper:
                                 winner = competitor.get('winner', False)
                                 game['result'] = 'win' if winner else 'loss'
                     elif status_type in ['STATUS_SCHEDULED', 'STATUS_POSTPONED']:
@@ -956,21 +1080,12 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
 
             processed_schedule.append(game)
 
-        # Derive the bye week: the single regular-season week (1-18) with no game.
-        # ESPN encodes a bye as a *missing* week rather than a game row, so it must
-        # be inferred from the gap (only when we have a near-complete schedule).
-        played_weeks = {g.get('week') for g in processed_schedule if isinstance(g.get('week'), int)}
-        bye_week = (
-            next((w for w in range(1, 19) if w not in played_weeks), None)
-            if len(played_weeks) >= 16 else None
-        )
-
         return create_success_response({
             "team_id": team_id_upper,
             "team_name": team_name,
             "season": season,
             "schedule": processed_schedule,
-            "bye_week": bye_week,
+            "bye_week": _bye_week(processed_schedule),
             "count": len(processed_schedule),
             "cache_source": "api"
         })

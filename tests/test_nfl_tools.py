@@ -1,4 +1,5 @@
 """Tests for nfl_tools module."""
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -190,7 +191,7 @@ class TestGetTeamInjuries:
                     },
                     "status": {"name": "Questionable"},
                     "description": "Ankle injury",
-                    "date": "2026-01-01",
+                    "date": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
                     "type": {"name": "Ankle"}
                 }
             ]
@@ -295,20 +296,11 @@ class TestGetTeamPlayerStats:
         """Test successful player stats retrieval."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "items": [
-                {
-                    "id": "1",
-                    "displayName": "P. Mahomes",
-                    "jersey": "15",
-                    "position": {"abbreviation": "QB"},
-                    "age": 28,
-                    "experience": {"years": 6},
-                    "active": True,
-                    "team": {"displayName": "Kansas City Chiefs"}
-                }
-            ]
-        }
+        mock_response.json.return_value = [
+            {"player_id": "4046", "team": "KC",
+             "player": {"first_name": "P.", "last_name": "Mahomes", "position": "QB"},
+             "stats": {"gp": 2.0, "pass_yd": 566.0, "pts_ppr": 51.6}},
+        ]
 
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
@@ -327,7 +319,7 @@ class TestGetTeamPlayerStats:
         """Test player stats with custom season."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"items": []}
+        mock_response.json.return_value = []
 
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response

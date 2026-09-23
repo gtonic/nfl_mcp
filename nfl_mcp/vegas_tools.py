@@ -27,16 +27,26 @@ TEAM_ABBREVIATIONS = FULL_NAME_TO_CODE
 ABBREVIATION_TO_FULL = CODE_TO_FULL_NAME
 
 
-def get_game_environment_tier(total: float) -> dict[str, Any]:
+def get_game_environment_tier(total: float | None) -> dict[str, Any]:
     """
     Categorize game environment based on total points line.
 
     Args:
-        total: Vegas over/under total
+        total: Vegas over/under total, or None when no totals market is posted
 
     Returns:
         Dict with tier info and fantasy impact
     """
+    if total is None:
+        return {
+            "tier": "unknown",
+            "indicator": "❔",
+            "description": "No over/under posted yet",
+            "fantasy_impact": "Neutral until a total is posted",
+            "qb_boost": "0%",
+            "pass_catchers_boost": "0%",
+            "rb_boost": "0%"
+        }
     if total >= 50:
         return {
             "tier": "shootout",
@@ -341,18 +351,28 @@ class VegasLinesAnalyzer:
                                     if outcome.get("name") == "Over":
                                         totals.append(outcome.get("point", 0))
 
-                    # Calculate consensus
-                    home_spread = round(sum(spreads_home) / len(spreads_home), 1) if spreads_home else 0
-                    # No totals market posted: 45 is a league-average stand-in,
-                    # and the implied team totals below inherit it.
-                    total = round(sum(totals) / len(totals), 1) if totals else 45.0
+                    # Calculate consensus. Either market can be missing on its
+                    # own (books post spreads first); each is flagged apart,
+                    # and a real spread is kept when only the total is absent.
+                    if spreads_home:
+                        home_spread = round(sum(spreads_home) / len(spreads_home), 1)
+                    elif spreads_away:
+                        home_spread = -round(sum(spreads_away) / len(spreads_away), 1)
+                    else:
+                        home_spread = 0
+                    total = round(sum(totals) / len(totals), 1) if totals else None
 
                     # Determine favorite
                     home_is_favorite = home_spread < 0
 
-                    # Calculate implied totals
-                    home_implied = calculate_implied_team_total(total, home_spread, home_is_favorite)
-                    away_implied = calculate_implied_team_total(total, home_spread, not home_is_favorite)
+                    # Implied team totals need a total. Without one there is
+                    # nothing to split — a 45.0 stand-in split by the real
+                    # spread read as a real implied total downstream.
+                    if total is None:
+                        home_implied = away_implied = None
+                    else:
+                        home_implied = calculate_implied_team_total(total, home_spread, home_is_favorite)
+                        away_implied = calculate_implied_team_total(total, home_spread, not home_is_favorite)
 
                     game_key = f"{away_team}@{home_team}"
                     lines[game_key] = {
@@ -371,9 +391,14 @@ class VegasLinesAnalyzer:
                         "away_game_script": get_game_script_projection(-home_spread),
                         "last_updated": datetime.now(UTC).isoformat()
                     }
+                    # Only the missing market is a fallback. Both missing is a
+                    # placeholder game, flagged as such for every consumer.
                     if not totals:
-                        lines[game_key]["is_fallback"] = True
                         lines[game_key]["total_is_fallback"] = True
+                    if not (spreads_home or spreads_away):
+                        lines[game_key]["spread_is_fallback"] = True
+                    if not totals and not (spreads_home or spreads_away):
+                        lines[game_key]["is_fallback"] = True
 
                     # Also index by individual teams. `setdefault`, not
                     # assignment: a team appears once per published week, and
@@ -591,7 +616,7 @@ async def get_vegas_lines(
         games.append(game_data)
 
     # Sort by total (highest scoring games first)
-    games.sort(key=lambda x: x.get("total", 0), reverse=True)
+    games.sort(key=lambda x: x.get("total") or 0, reverse=True)
 
     # Generate summary
     shootout_games = [g for g in games if g.get("game_environment", {}).get("tier") == "shootout"]
@@ -668,7 +693,9 @@ async def get_game_environment(
         "environment": game.get("game_environment"),
         "game_script": game.get("home_game_script") if is_home else game.get("away_game_script"),
         "commence_time": game.get("commence_time"),
-        "is_fallback": game.get("is_fallback", False)
+        "is_fallback": game.get("is_fallback", False),
+        "total_is_fallback": bool(game.get("total_is_fallback")),
+        "spread_is_fallback": bool(game.get("spread_is_fallback")),
     }
 
     # Generate recommendation
@@ -684,6 +711,8 @@ async def get_game_environment(
         recommendations.append(
             "⚠️ No live Vegas lines (set ODDS_API_KEY) — neutral placeholder values shown"
         )
+    elif result["total_is_fallback"]:
+        recommendations.append("⚠️ No over/under posted yet — spread only, no implied total")
 
     if env_tier in ["shootout", "high_scoring"]:
         recommendations.append(f"🔥 GREAT game environment (O/U {result['total']})")
@@ -784,7 +813,8 @@ async def analyze_roster_vegas(
             "spread": game.get("home_spread") if is_home else game.get("away_spread"),
             "environment_tier": env_tier,
             "environment_indicator": env.get("indicator", "➡️"),
-            "is_fallback": game.get("is_fallback", False)
+            "is_fallback": game.get("is_fallback", False),
+            "total_is_fallback": bool(game.get("total_is_fallback")),
         }
 
         # Position-specific boost
@@ -872,9 +902,9 @@ async def get_stack_opportunities(
             continue
         seen_games.add(key)
 
-        total = game_data.get("total", 0)
-        if total < min_total:
-            continue
+        total = game_data.get("total")
+        if total is None or total < min_total:
+            continue  # no over/under posted: nothing to stack on yet
 
         home_team = game_data.get("home_team")
         away_team = game_data.get("away_team")
@@ -906,7 +936,7 @@ async def get_stack_opportunities(
         stacks.append(stack)
 
     # Sort by total
-    stacks.sort(key=lambda x: x.get("total", 0), reverse=True)
+    stacks.sort(key=lambda x: x.get("total") or 0, reverse=True)
 
     # Generate summary
     summary = []
