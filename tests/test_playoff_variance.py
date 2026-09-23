@@ -5,6 +5,7 @@ how often the weaker team wins, so a boom/bust roster and a metronome at equal
 points-per-game came out with identical odds — and nothing had ever checked the
 25 against a real league.
 """
+import math
 import random
 
 import pytest
@@ -56,6 +57,12 @@ class TestLeaguePrior:
     def test_falls_back_when_there_is_nothing_to_measure(self):
         assert league_prior_sd({}) == DEFAULT_SCORE_SD
         assert league_prior_sd({1: [100.0]}) == DEFAULT_SCORE_SD
+
+    def test_two_games_are_not_under_counted(self):
+        # Two weeks ±20 around each team's mean: the unbiased spread is
+        # sqrt(2 × 400 / 1) = 28.3, not the population figure of 20.
+        scores = {1: [80.0, 120.0], 2: [90.0, 130.0]}
+        assert league_prior_sd(scores) == pytest.approx(math.sqrt(800.0), rel=1e-6)
 
     def test_picks_up_real_volatility(self):
         scores = {1: [60.0, 140.0, 60.0, 140.0], 2: [70.0, 130.0, 70.0, 130.0]}

@@ -469,6 +469,11 @@ def ros_input(row: dict, injury_index: dict) -> dict | None:
     team = normalize_team(row.get("team_id") or row.get("team"))
     position = (row.get("position") or "").upper()
     name = row.get("full_name") or row.get("name")
+    if not name and position in _DEFENSE:
+        # Sleeper's team defenses carry no name in the athlete cache; they are
+        # named by their team, as the weekly projection names them. Without
+        # this every DEF was dropped from ROS and a DST slot counted as empty.
+        name = team
     if not team or not position or not name:
         return None
     injury = injury_for_row(row, injury_index) or {}

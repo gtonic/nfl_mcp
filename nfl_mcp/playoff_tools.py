@@ -6,9 +6,16 @@ regular-season matchup thousands of times (each team scores ~ Normal(its
 points-per-game, sd)), rank by record then points, and count how often each team
 lands in a playoff seed.
 
-Team strength defaults to season points-per-game (from Sleeper roster totals),
-which is a simple, robust estimate; when the season hasn't produced enough games
-it falls back to the league average.
+Team strength blends two reads. Points-per-game so far (Sleeper roster totals)
+is what the team actually scored, bad lineups and all — after two games it is
+mostly noise: a 0-2 team that started the wrong players at 88 a week came out
+at 0.0% with twelve games left while its roster projects 115-120. The other
+read is forward: each team's best legal lineup, week by week over the rest of
+the regular season (``ros.py``, byes and injury absences included, in the
+league's scoring). Actual results carry ``games / (games + PROJECTION_PRIOR_GAMES)``
+of the weight, so the projection leads early and the record takes over as the
+season goes on. Without projections (no athlete cache) it is actuals alone, and
+before any games the league average.
 
 Spread is measured rather than assumed. Every team used to share one hard-coded
 weekly sd of 25, which decides how often the weaker team wins and therefore the
@@ -20,10 +27,12 @@ metronomic.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import random
 import statistics
+import time
 from typing import Any
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
@@ -41,6 +50,78 @@ DEFAULT_SCORE_SD = 25.0
 # four weeks of fantasy scores are not enough to call a roster steady.
 SD_SHRINKAGE_GAMES = 4.0
 MIN_GAMES_FOR_SD = 2
+# Games-equivalent weight of the roster projection in team strength: the
+# shrinkage k = σ²_week / τ², with a weekly team spread σ ≈ 25 and a roster
+# projection that misses a team's true level by τ ≈ 8-9 points a game. After
+# eight games the scores so far and the projection count the same; by the last
+# regular-season week the scores carry ~60%.
+PROJECTION_PRIOR_GAMES = 8.0
+# Projected strength per (league, season, week): ~250 players' rest of season
+# is the expensive part, and it only changes with the week or a roster move.
+PROJECTION_CACHE_TTL = 1800.0
+_projection_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def blend_strength(actual_ppg: float | None, games: float, projected_ppg: float | None,
+                   prior_games: float = PROJECTION_PRIOR_GAMES) -> tuple[float | None, float]:
+    """``(points per game to simulate, weight on actual results)``.
+
+    Actual points per game shrunk toward the roster projection, the
+    projection standing in for ``prior_games`` games of evidence.
+    """
+    if projected_ppg is None:
+        return actual_ppg, 1.0
+    if actual_ppg is None or games <= 0:
+        return projected_ppg, 0.0
+    weight = games / (games + prior_games)
+    return weight * actual_ppg + (1 - weight) * projected_ppg, weight
+
+
+async def _projected_strength(league: dict, league_id: str, rosters: list[dict],
+                              season: int | None, week: int, db) -> dict:
+    """``{"ppg": {roster_id: points per remaining week}, "weeks": [...]}``.
+
+    Each team's best legal lineup (lineup_slots optimizer) week by week over
+    the rest of the regular season, from ROS per-week projections — so a bye
+    or an injured starter is covered by that week's next-best player. The
+    current week is left out when later ones exist: games already final score
+    zero in it. Empty without a database or season. Never raises.
+    """
+    if db is None or not season or not week:
+        return {"ppg": {}, "weeks": []}
+    key = (league_id, int(season), int(week),
+           tuple(sorted((r.get("roster_id"), tuple(sorted(map(str, r.get("players") or []))))
+                        for r in rosters)))
+    hit = _projection_cache.get(key)
+    if hit and time.monotonic() - hit[0] < PROJECTION_CACHE_TTL:
+        return hit[1]
+    try:
+        from . import ros
+        from .roster_needs import lineup_slots
+
+        ids_by_roster: dict[int, list[str]] = {}
+        for r in rosters:
+            taxi = {str(p) for p in (r.get("taxi") or [])}
+            ids_by_roster[r.get("roster_id")] = [
+                str(p) for p in (r.get("players") or []) if p and str(p) != "0" and str(p) not in taxi]
+        all_ids = [pid for ids in ids_by_roster.values() for pid in ids]
+        by_id, meta = await ros.ros_for_ids(all_ids, league=league, season=int(season),
+                                            week=int(week), db=db)
+        regular = list(meta["windows"]["regular"])
+        weeks = [w for w in regular if w > week] or regular
+        slots = lineup_slots(league.get("roster_positions"))
+        ppg: dict[int, float] = {}
+        if weeks and slots:
+            for rid, ids in ids_by_roster.items():
+                players = [by_id[pid] for pid in ids if pid in by_id]
+                if players:
+                    ppg[rid] = ros.weekly_lineup_total(players, slots, weeks) / len(weeks)
+        out = {"ppg": ppg, "weeks": weeks}
+    except Exception as e:
+        logger.warning(f"roster projections unavailable for playoff odds: {e}")
+        return {"ppg": {}, "weeks": []}
+    _projection_cache[key] = (time.monotonic(), out)
+    return out
 
 
 def _rank_key(w: float, p: float):
@@ -68,16 +149,21 @@ def league_prior_sd(scores_by_team: dict[int, list[float]]) -> float:
 
     Pooling around the *team* mean rather than the league mean keeps this a
     measure of week-to-week volatility, not of how unequal the league is.
+    Each team's own mean costs it one degree of freedom: dividing by the game
+    count instead halved the variance after two weeks (sd × 0.71), which is
+    most of how a 0-2 team came out at 0.0% in week 3.
     """
-    deviations: list[float] = []
+    squares = 0.0
+    dof = 0
     for scores in scores_by_team.values():
         if len(scores) < MIN_GAMES_FOR_SD:
             continue
         mean = sum(scores) / len(scores)
-        deviations.extend((s - mean) ** 2 for s in scores)
-    if len(deviations) < MIN_GAMES_FOR_SD:
+        squares += sum((s - mean) ** 2 for s in scores)
+        dof += len(scores) - 1
+    if dof < 1:
         return DEFAULT_SCORE_SD
-    return math.sqrt(sum(deviations) / len(deviations))
+    return math.sqrt(squares / dof)
 
 
 def _simulate(
@@ -138,8 +224,13 @@ async def _build_remaining_schedule_by_week(
     the same opponent; a bare ``(a, b)`` pair cannot.
     """
     schedule: list[tuple[int, int, int]] = []
-    for wk in weeks:
-        res = await get_matchups(league_id, wk)
+    # Independent reads, one per week: fetched together.
+    results = await asyncio.gather(*(get_matchups(league_id, wk) for wk in weeks),
+                                   return_exceptions=True)
+    for wk, res in zip(weeks, results, strict=True):
+        if isinstance(res, BaseException):
+            logger.warning(f"matchups unavailable for week {wk}: {res}")
+            continue
         if not res.get("success"):
             continue
         by_mid: dict[Any, list[int]] = {}
@@ -163,11 +254,11 @@ async def _fetch_weekly_scores(league_id: str, weeks: list[int]) -> dict[int, li
     second as the first would invent volatility no roster actually has.
     """
     scores: dict[int, list[float]] = {}
-    for wk in weeks:
-        try:
-            res = await get_matchups(league_id, wk)
-        except Exception as e:
-            logger.debug(f"weekly scores unavailable for week {wk}: {e}")
+    results = await asyncio.gather(*(get_matchups(league_id, wk) for wk in weeks),
+                                   return_exceptions=True)
+    for wk, res in zip(weeks, results, strict=True):
+        if isinstance(res, BaseException):
+            logger.debug(f"weekly scores unavailable for week {wk}: {res}")
             continue
         if not res.get("success"):
             continue
@@ -273,18 +364,27 @@ async def get_playoff_odds(
             "points": fpts,
             "games": games,
             "mean": mean,
+            "actual_ppg": mean,
             "record": f"{int(wins)}-{int(losses)}" + (f"-{int(ties)}" if ties else ""),
         })
     league_avg_ppg = (total_ppg / counted) if counted else 100.0
     for t in teams:
         if t["mean"] is None:
             t["mean"] = league_avg_ppg
+    strength_source = "actual" if counted else "league_average"
 
     # current week
+    season = None
+    try:
+        season = int(league.get("season")) if league.get("season") else None
+    except (TypeError, ValueError):
+        season = None
     if current_week is None:
         try:
             state = await get_nfl_state()
-            current_week = int(state.get("nfl_state", {}).get("week")) if state.get("success") else None
+            nfl_state = state.get("nfl_state", {}) if state.get("success") else {}
+            current_week = int(nfl_state.get("week")) if nfl_state.get("week") else None
+            season = season or (int(nfl_state["season"]) if nfl_state.get("season") else None)
         except Exception:
             current_week = None
     if not current_week or current_week < 1:
@@ -292,11 +392,37 @@ async def get_playoff_odds(
         current_week = int(max_games) + 1
 
     remaining_weeks = list(range(current_week, regular_weeks + 1))
-    dated_schedule = (
-        await _build_remaining_schedule_by_week(league_id, remaining_weeks)
-        if remaining_weeks else []
+
+    async def _no_projection():
+        return {"ppg": {}, "weeks": []}
+
+    async def _no_schedule():
+        return []
+
+    # Team strength: actual points per game shrunk toward each roster's
+    # projected best lineup for the rest of the regular season. The
+    # projection and the schedule are independent reads, fetched together.
+    dated_schedule, projected = await asyncio.gather(
+        _build_remaining_schedule_by_week(league_id, remaining_weeks)
+        if remaining_weeks else _no_schedule(),
+        _projected_strength(league, league_id, rosters, season, current_week, db)
+        if remaining_weeks else _no_projection(),
     )
     schedule = [(a, b) for _, a, b in dated_schedule]
+    if not schedule:
+        projected = {"ppg": {}, "weeks": []}
+    for t in teams:
+        proj_ppg = projected["ppg"].get(t["roster_id"])
+        mean, weight = blend_strength(t["actual_ppg"], t["games"], proj_ppg)
+        t["projected_ppg"] = proj_ppg
+        t["actual_weight"] = weight
+        t["mean"] = mean if mean is not None else league_avg_ppg
+    if not projected["ppg"]:
+        strength_source = "actual" if counted else "league_average"
+    elif counted:
+        strength_source = "blended"
+    else:
+        strength_source = "projected"
 
     # No remaining games (e.g. preseason / schedule not published) -> the sim
     # would otherwise emit a deterministic 100/0 split by roster id. Flag it.
@@ -350,6 +476,13 @@ async def get_playoff_odds(
             "name": names.get(rid, f"Roster {rid}"),
             "record": t["record"],
             "mean_ppg": round(t["mean"], 1),
+            # What mean_ppg is made of: points per game so far, the roster's
+            # projected best lineup per remaining week, and the weight on the
+            # former.
+            "actual_ppg": round(t["actual_ppg"], 1) if t.get("actual_ppg") is not None else None,
+            "projected_ppg": (round(t["projected_ppg"], 1)
+                              if t.get("projected_ppg") is not None else None),
+            "actual_weight": round(t.get("actual_weight", 1.0), 2),
             # Reported so a surprising probability can be traced to the spread
             # behind it, and so a small sample is visible as a small sample.
             "score_sd": round(_team_sd(rid), 1),
@@ -368,6 +501,16 @@ async def get_playoff_odds(
         "num_sims": max(100, min(int(num_sims), 50000)),
         "score_sd_source": sd_source,
         "league_score_sd": round(prior_sd, 1),
+        # "blended" (actual shrunk toward projection), "actual" (no
+        # projections available), "projected" (no games yet) or
+        # "league_average".
+        "strength_source": strength_source,
+        "strength_method": (
+            f"mean_ppg = w × actual_ppg + (1 − w) × projected_ppg, w = games / "
+            f"(games + {PROJECTION_PRIOR_GAMES:g}); projected_ppg = best legal lineup "
+            "per remaining regular-season week (ROS, byes and injuries included)"
+        ),
+        "projection_weeks": projected["weeks"],
         "message": (f"Playoff odds over {len(schedule)} remaining games "
                     f"({max(100, min(int(num_sims), 50000))} sims); top {playoff_teams} make it"),
     }

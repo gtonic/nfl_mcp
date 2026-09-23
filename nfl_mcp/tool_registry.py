@@ -692,10 +692,12 @@ async def get_playoff_odds(
     """Compute playoff probabilities via Monte-Carlo of the rest of the season.
 
     Simulates every remaining regular-season matchup (each team scores ~ Normal
-    around its points-per-game), ranks by record then points, and counts how
-    often each team makes a playoff seed. Each team's weekly spread is measured
-    from its own played weeks and shrunk toward the league's, so a boom/bust
-    roster and a steady one at equal points-per-game get different odds.
+    around its strength), ranks by record then points, and counts how often
+    each team makes a playoff seed. Strength blends points-per-game so far with
+    the roster's projected best lineup for each remaining week (byes and
+    injuries included); the projection leads early, actual results take over
+    as the season goes on. Each team's weekly spread is measured from its own
+    played weeks and shrunk toward the league's.
 
     Parameters:
         league_id (str, required): Sleeper league id.
@@ -705,10 +707,12 @@ async def get_playoff_odds(
             for every team. Leave unset to measure it.
         my_roster_id (int, optional): Also returns your win/lose-this-week swing.
         seed (int, optional): RNG seed for reproducibility.
-    Returns: {odds:[{roster_id, name, record, mean_ppg, score_sd, games_scored,
-              playoff_pct, avg_seed}], score_sd_source ('measured'|'default'|
-              'caller'), league_score_sd, this_week_swing?, playoff_teams,
-              current_week, success}
+    Returns: {odds:[{roster_id, name, record, mean_ppg, actual_ppg,
+              projected_ppg, actual_weight, score_sd, games_scored,
+              playoff_pct, avg_seed}], strength_source ('blended'|'actual'|
+              'projected'|'league_average'), score_sd_source ('measured'|
+              'default'|'caller'), league_score_sd, this_week_swing?,
+              playoff_teams, current_week, success}
 
     IMPORTANT FOR LLM AGENTS: Render the odds immediately without asking for confirmation.
     """
