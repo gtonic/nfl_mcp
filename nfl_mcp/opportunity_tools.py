@@ -10,12 +10,13 @@ from __future__ import annotations
 import csv
 import logging
 import re
+from datetime import UTC, datetime
 from io import StringIO
 
 from . import opportunity
 from .config import LONG_TIMEOUT, create_http_client
 from .errors import create_success_response, handle_http_errors, handle_validation_error
-from .matchup_tools import NFLVERSE_PLAYER_STATS_URL
+from .matchup_tools import NFLVERSE_PLAYER_STATS_URL, season_cache_fresh
 from .player_values import scoring_to_ppr
 from .teams import normalize_team
 
@@ -26,7 +27,9 @@ _STAT_FIELDS = (
     "receiving_yards", "receiving_tds", "rushing_yards", "rushing_tds",
     "passing_yards", "passing_tds", "interceptions",
 )
-_logs_cache: dict[int, dict[str, dict]] = {}
+# season -> (fetched_at, logs). The current season expires so a long-running
+# server does not keep projecting week 8 from the weeks it saw at startup.
+_logs_cache: dict[int, tuple[datetime, dict[str, dict]]] = {}
 
 
 def _to_float(v) -> float:
@@ -69,8 +72,9 @@ def parse_game_logs(csv_text: str) -> dict[str, dict]:
 
 async def _fetch_game_logs(season: int) -> dict[str, dict]:
     """Fetch + parse a season's game logs (cached per season). ``{}`` if unavailable."""
-    if season in _logs_cache:
-        return _logs_cache[season]
+    cached = _logs_cache.get(season)
+    if cached and season_cache_fresh(season, cached[0]):
+        return cached[1]
     url = NFLVERSE_PLAYER_STATS_URL.format(season=season)
     try:
         async with create_http_client(timeout=LONG_TIMEOUT) as client:
@@ -82,7 +86,7 @@ async def _fetch_game_logs(season: int) -> dict[str, dict]:
     except Exception as e:
         logger.debug(f"opportunity game-log fetch failed for {season}: {e}")
         return {}
-    _logs_cache[season] = logs
+    _logs_cache[season] = (datetime.now(UTC), logs)
     return logs
 
 

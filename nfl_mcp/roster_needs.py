@@ -12,46 +12,34 @@ way the league fills them.
 """
 from __future__ import annotations
 
-from .win_probability import _eligible, expand_slots, greedy_mean_lineup, player_mean
-
-# Slots that hold no projectable player, or hold one who cannot be started.
-_NON_STARTING_SLOTS = {"BN", "IR", "TAXI"}
-_FLEX_SLOTS = {"FLEX", "WRRB_FLEX", "REC_FLEX", "SUPER_FLEX"}
-_FLEX_ELIGIBLE = ("RB", "WR", "TE")
+from .lineup_slots import (
+    SLOT_ELIGIBILITY,
+    expand_slots,
+    normalize_position,
+    slot_accepts,
+    starting_slots,
+)
+from .win_probability import mean_optimal_lineup, player_mean
 
 
 def slot_counts(roster_positions: list[str] | None) -> dict[str, float]:
-    """Starting slots per position, with FLEX spread over the positions that fill it.
+    """Starting slots per position, with each flex spread over what fills it.
 
-    Fractional on purpose: a single flex seat is a third of a starting job for
-    each of RB/WR/TE, which is what makes the replacement level reflect how deep
-    a roster actually starts.
+    Fractional on purpose: a single FLEX seat is a third of a starting job for
+    each of RB/WR/TE (a REC_FLEX half a job for WR and TE), which is what makes
+    the replacement level reflect how deep a roster actually starts.
     """
     counts: dict[str, float] = {}
-    flex = 0
-    for raw in roster_positions or []:
-        if raw in _NON_STARTING_SLOTS:
-            continue
-        if raw in _FLEX_SLOTS:
-            flex += 1
-            continue
-        slot = "DEF" if raw == "DST" else raw
-        counts[slot] = counts.get(slot, 0) + 1
-    for position in _FLEX_ELIGIBLE:
-        counts[position] = counts.get(position, 0) + flex / 3.0
+    for slot, n in starting_slots(roster_positions).items():
+        allowed = SLOT_ELIGIBILITY.get(slot) or frozenset({normalize_position(slot)})
+        for position in allowed:
+            counts[position] = counts.get(position, 0) + n / len(allowed)
     return counts
 
 
 def lineup_slots(roster_positions: list[str] | None) -> dict[str, int]:
     """Whole starting slots, keyed as the lineup optimizer expects them."""
-    slots: dict[str, int] = {}
-    for raw in roster_positions or []:
-        if raw in _NON_STARTING_SLOTS:
-            continue
-        slot = {"SUPER_FLEX": "SUPERFLEX", "WRRB_FLEX": "FLEX",
-                "REC_FLEX": "FLEX", "DEF": "DST"}.get(raw, raw)
-        slots[slot] = slots.get(slot, 0) + 1
-    return slots
+    return starting_slots(roster_positions)
 
 
 def replacement_levels(
@@ -79,7 +67,7 @@ def replacement_levels(
 
 def lineup_total(players: list[dict], slot_list: list[str]) -> float:
     """Projected points of the best legal starting lineup from these players."""
-    assignment = greedy_mean_lineup(players, slot_list)
+    assignment = mean_optimal_lineup(players, slot_list)
     return sum(player_mean(p) for p in assignment if p)
 
 
@@ -117,22 +105,20 @@ def lineup_bars(players: list[dict], slots: dict[str, int]) -> dict[str, float]:
     make a roster's never-starting TE2 the bar.
     """
     slot_list = expand_slots(slots)
-    assignment = greedy_mean_lineup(players, slot_list)
+    assignment = mean_optimal_lineup(players, slot_list)
     bars: dict[str, float] = {}
-    positions = {_position_of(slot) for slot in slot_list} - {"FLEX", "SUPERFLEX"}
-    for position in positions | set(_FLEX_ELIGIBLE):
+    positions: set[str] = set()
+    for slot in slot_list:
+        positions |= SLOT_ELIGIBILITY.get(slot) or {normalize_position(slot)}
+    for position in positions:
         held = [
             player_mean(p) if p else 0.0
             for slot, p in zip(slot_list, assignment, strict=True)
-            if _eligible(slot, position)
+            if slot_accepts(slot, position)
         ]
         if held:
             bars[position] = min(held)
     return bars
-
-
-def _position_of(slot: str) -> str:
-    return "DEF" if slot == "DST" else slot
 
 
 def surplus_players(

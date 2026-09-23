@@ -40,6 +40,19 @@ FANTASYCALC_URL = "https://api.fantasycalc.com/values/current"
 CACHE_TTL_HOURS = 12
 # How stale DB data may be before we consider it unusable for a "fresh" answer.
 DB_FRESH_HOURS = 24
+# While FantasyCalc is down the DB snapshot is held this long before retrying.
+STALE_RETRY_MINUTES = 10
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    """ISO timestamp -> aware UTC datetime, or None."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 # Name suffixes to strip when matching by name.
 _NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
@@ -177,7 +190,13 @@ class PlayerValuesService:
         # 1) In-memory cache
         if not force_refresh:
             cached = self._mem.get(format_key)
-            if cached and (now - cached["fetched_at"]) < timedelta(hours=CACHE_TTL_HOURS):
+            if cached and cached.get("stale"):
+                # A DB copy held while FantasyCalc was down: served as what it
+                # is, and only briefly, so the API is retried soon.
+                if (now - cached["cached_at"]) < timedelta(minutes=STALE_RETRY_MINUTES):
+                    return {**cached, "format_key": format_key, "source": "db_cache",
+                            "stale": True, "count": len(cached["list"])}
+            elif cached and (now - cached["fetched_at"]) < timedelta(hours=CACHE_TTL_HOURS):
                 return {**cached, "format_key": format_key, "source": "fantasycalc",
                         "stale": False, "count": len(cached["list"])}
 
@@ -205,7 +224,12 @@ class PlayerValuesService:
                 if rows:
                     idx = self._index(rows)
                     last = self.db.get_player_values_last_updated(format_key)
-                    idx["fetched_at"] = now
+                    # Keep the snapshot's own age: stamping it `now` made it
+                    # pass as a fresh FantasyCalc answer for CACHE_TTL_HOURS.
+                    idx["fetched_at"] = _parse_ts(last) or now
+                    idx["cached_at"] = now
+                    idx["stale"] = True
+                    idx["snapshot_updated_at"] = last
                     self._mem[format_key] = idx
                     return {**idx, "format_key": format_key, "source": "db_cache",
                             "stale": True, "snapshot_updated_at": last,
