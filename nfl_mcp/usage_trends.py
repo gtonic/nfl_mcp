@@ -17,18 +17,23 @@ window, times the window length — "how much did it move across the window" —
 against a per-metric threshold, so a 2-point wobble in target share is
 `stable` rather than a trend. Weeks on bye or not played are shown and left out
 of the trend. Key-free.
+
+A week without a stat line is a ``bye`` only when the schedule says his team
+had no game. Otherwise the team played without him: ``injured`` when the
+injury history had him on the report at kickoff, ``inactive`` for a
+suspension, ``did_not_play`` when there is no record either way.
 """
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from . import opportunity_tools
 from .config import DEFAULT_TIMEOUT, create_http_client
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .matchup_tools import season_cache_fresh
 from .teams import normalize_team
-from .week_context import resolve_season_week
+from .week_context import resolve_season_week, week_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +107,56 @@ def teams_with_games(logs: dict[str, dict]) -> dict[int, set[str]]:
     return out
 
 
+# Report statuses that mean "held out for a non-injury reason".
+_INACTIVE_STATUSES = frozenset({"suspended", "sus", "suspension", "inactive", "exempt",
+                                "commissioner exempt", "personal"})
+# How long after a kickoff the first report still describes that game: the
+# history can start mid-week, and the report right after a missed game is
+# about the injury he missed it with.
+_REPORT_AFTER_KICKOFF = timedelta(days=4)
+
+
+def _parse_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        when = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def status_at_kickoff(history: list[dict] | None, kickoff: str | None) -> str | None:
+    """His injury-report status for a game, from ``injury_history`` rows. Pure.
+
+    The latest report before kickoff; failing that, the first one within a
+    few days after it. None without either.
+    """
+    ko = _parse_time(kickoff)
+    if ko is None or not history:
+        return None
+    dated = sorted(
+        ((when, row.get("injury_status")) for row in history
+         if (when := _parse_time(row.get("recorded_at"))) is not None),
+        key=lambda x: x[0],
+    )
+    before = [status for when, status in dated if when <= ko]
+    if before:
+        return before[-1]
+    after = [status for when, status in dated if ko < when <= ko + _REPORT_AFTER_KICKOFF]
+    return after[0] if after else None
+
+
+def missed_week_status(injury_status: str | None) -> str:
+    """``injured`` / ``inactive`` / ``did_not_play`` for a game his team played."""
+    s = (injury_status or "").strip().lower()
+    if not s or s == "active":
+        return "did_not_play"
+    if s in _INACTIVE_STATUSES or s.startswith("susp"):
+        return "inactive"
+    return "injured"
+
+
 def week_row(
     week: int,
     game: dict | None,
@@ -109,20 +164,32 @@ def week_row(
     team: str,
     team_carries: dict[tuple[str, int], float],
     played_teams: set[str] | None,
+    schedule: dict[str, str] | None = None,
+    injury_status: str | None = None,
 ) -> dict:
     """One player-week of usage. Pure.
 
     `game` is his nflverse row (None when he has none that week), `sleeper` his
-    Sleeper stat line. A week his team did not play is a bye; a week it did
-    but he has no line is `did_not_play`.
+    Sleeper stat line. A week his team did not play is a bye — decided by the
+    week's `schedule` (``{team: opponent}``) when known, by who appears in the
+    weekly file otherwise. A week it did play without him is `injured`,
+    `inactive` or `did_not_play`, from his report status at kickoff.
     """
     sleeper = sleeper or {}
     team_snaps = float(sleeper.get("tm_off_snp") or 0.0)
     snaps = sleeper.get("off_snp")
     played = game is not None or bool(snaps)
     if not played:
-        status = "bye" if played_teams is not None and team not in played_teams else "did_not_play"
-        return {"week": week, "status": status}
+        if schedule is not None:
+            on_bye = bool(team) and team not in schedule
+        else:
+            on_bye = played_teams is not None and team not in played_teams
+        if on_bye:
+            return {"week": week, "status": "bye"}
+        row = {"week": week, "status": missed_week_status(injury_status)}
+        if injury_status:
+            row["injury_status"] = injury_status
+        return row
     g = game or {}
     wk_team = g.get("team") or team
     carries = float(g.get("carries") or 0.0)
@@ -217,10 +284,50 @@ def metric_trends(rows: list[dict], position: str | None = None) -> tuple[dict[s
         flags.append(f"part-time role: {latest['snap_share']:.0f}% of snaps in week {latest['week']}")
     if latest and (latest.get("rz_opportunities") or 0) >= 3:
         flags.append(f"{latest['rz_opportunities']:.0f} red-zone opportunities in week {latest['week']}")
-    missed = [r["week"] for r in rows if r.get("status") == "did_not_play"]
+    missed = [r["week"] for r in rows if r.get("status") in ("did_not_play", "inactive")]
     if missed:
         flags.append("did not play week " + ", ".join(str(w) for w in missed))
+    hurt = [r["week"] for r in rows if r.get("status") == "injured"]
+    if hurt:
+        flags.append("missed week " + ", ".join(str(w) for w in hurt) + " injured")
     return trends, flags
+
+
+def _kickoffs(db, season: int, week: int) -> dict[str, str]:
+    """``{team: kickoff}`` for a week, canonical team codes."""
+    if db is None or not hasattr(db, "get_week_kickoffs"):
+        return {}
+    try:
+        raw = db.get_week_kickoffs(season, week) or {}
+    except Exception:
+        return {}
+    return {normalize_team(t) or t: k for t, k in raw.items()}
+
+
+def _injury_index(db) -> dict:
+    if db is None or not hasattr(db, "get_all_current_injuries"):
+        return {}
+    try:
+        from .injury_match import build_injury_index
+        return build_injury_index(db.get_all_current_injuries())
+    except Exception as e:
+        logger.debug(f"injury reports unavailable for usage trends: {e}")
+        return {}
+
+
+def _injury_history(db, injury_index: dict, name: str | None, team: str) -> list[dict]:
+    """His recorded report statuses. ``injury_history`` is keyed by the report's
+    (ESPN) id, so the join goes through the name + team of the current report."""
+    if not name or not injury_index or not hasattr(db, "get_injury_history"):
+        return []
+    from .injury_match import find_report
+    report = find_report({"full_name": name}, injury_index, team)
+    if not report or not report.get("player_id"):
+        return []
+    try:
+        return db.get_injury_history(str(report["player_id"]), limit=100) or []
+    except Exception:
+        return []
 
 
 async def _roster_players(league_id: str, roster_id: int, db) -> tuple[list[dict], str | None]:
@@ -328,15 +435,21 @@ async def get_usage_trends(
     week_stats = {wk: await _fetch_week_stats(season, wk) for wk in window}
     carries = team_week_carries(logs)
     played_teams = teams_with_games(logs)
+    schedules = {wk: week_schedule(db, season, wk) for wk in window}
+    kickoffs = {wk: _kickoffs(db, season, wk) for wk in window}
+    injury_index = _injury_index(db)
 
     players_out = []
     for w in wanted:
         entry = w.get("entry")
         games = {g["week"]: g for g in (entry or {}).get("games", [])}
+        team = normalize_team(w.get("team") or (entry or {}).get("team")) or (
+            w.get("team") or (entry or {}).get("team") or "")
+        history = _injury_history(db, injury_index, w.get("name"), team)
         rows = [
             week_row(wk, games.get(wk), (week_stats.get(wk) or {}).get(w.get("sleeper_id") or ""),
-                     w.get("team") or (entry or {}).get("team") or "", carries,
-                     played_teams.get(wk))
+                     team, carries, played_teams.get(wk), schedule=schedules.get(wk),
+                     injury_status=status_at_kickoff(history, kickoffs[wk].get(team)))
             for wk in window
         ]
         trends, flags = metric_trends(rows, w.get("position"))
