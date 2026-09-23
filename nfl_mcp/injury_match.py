@@ -37,7 +37,7 @@ def sleeper_injury_status(row: dict | None) -> str | None:
 
 
 def build_injury_index(injuries: list[dict]) -> dict[tuple[str, str], dict]:
-    """Index the multi-source injury reports by (normalized name, team)."""
+    """Index the stored (ESPN) injury reports by (normalized name, team)."""
     index: dict[tuple[str, str], dict] = {}
     for row in injuries:
         name = norm_name(row.get("player_name"))
@@ -70,7 +70,7 @@ def report_ids_for(athlete_rows: list[dict], injury_index: dict[tuple[str, str],
 def resolve_injury(
     athlete_row: dict | None, injury_index: dict[tuple[str, str], dict], team: str
 ) -> dict | None:
-    """Combine Sleeper's status with the ESPN/CBS report, worst case wins.
+    """Combine Sleeper's status with the ESPN injury report, worst case wins.
 
     Returns ``{status, source, sleeper_status, report_status, injury_type}``
     or None when neither source says anything. Disagreement is the

@@ -35,6 +35,8 @@ async def test_league_leaders_flag_disabled(monkeypatch):
 @pytest.mark.asyncio
 async def test_league_leaders_flag_enabled(monkeypatch):
     monkeypatch.setenv('MCP_FEATURE_LEAGUE_LEADERS', '1')
+    # Niche tool: registered only in the `full` profile.
+    monkeypatch.setenv('NFL_MCP_TOOL_PROFILE', 'full')
     from nfl_mcp import config as cfg
     reload(cfg)
     from nfl_mcp import tool_registry

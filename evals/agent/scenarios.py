@@ -29,7 +29,7 @@ SCENARIOS = [
     {
         "id": "player_value",
         "prompt": "What is Bijan Robinson worth in a 12-team PPR league?",
-        "expect": ["get_player_value", "get_player_values"],
+        "expect": ["get_player_values"],
     },
     {
         "id": "trade_fairness",
@@ -54,29 +54,36 @@ SCENARIOS = [
     },
     {
         "id": "lineup",
-        "prompt": "Here's my week-6 roster with players, teams and opponents — set my optimal starting lineup.",
-        "expect": ["analyze_full_lineup", "get_roster_recommendations"],
+        "prompt": "I'm roster 7 in league 555 — grade the lineup I have set this week and tell me what to change.",
+        "expect": ["analyze_lineup", "get_weekly_briefing"],
+        "args": {"league_id": "555"},
     },
     {
         "id": "start_sit_compare",
         "prompt": "Should I start Player A (WR, MIA vs NE) or Player B (RB, SF vs ARI) in my flex this week?",
-        "expect": ["compare_players_for_slot", "get_start_sit_recommendation", "get_roster_recommendations"],
+        "expect": ["compare_players_for_slot", "get_start_sit_recommendation"],
     },
     {
         "id": "matchup",
         "prompt": "How tough is the WR matchup against the Kansas City defense?",
-        "expect": ["get_matchup_difficulty"],
+        "expect": ["get_defense_rankings"],
     },
     {
         "id": "injuries",
         "prompt": "Give me the high-confidence injuries for KC and SF.",
-        "expect": ["get_high_confidence_injuries", "get_injury_report"],
+        "expect": ["get_injury_report"],
     },
     {
         "id": "waiver_dashboard",
         "prompt": "Show me the waiver-wire dashboard for league 555.",
-        "expect": ["get_waiver_wire_dashboard", "get_waiver_log"],
+        "expect": ["get_waiver_log"],
         "args": {"league_id": "555"},
+    },
+    {
+        "id": "bye_weeks",
+        "prompt": "Which upcoming weeks will byes wreck my lineup? League 555, roster 7.",
+        "expect": ["get_bye_week_plan"],
+        "args": {"league_id": "555", "roster_id": 7},
     },
     {
         "id": "trending",

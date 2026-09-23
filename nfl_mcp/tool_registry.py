@@ -74,15 +74,74 @@ def get_db() -> NFLDatabase | None:
     """Return the current request's database instance (or None)."""
     return _db_token.get()
 
-def get_all_tools() -> list[Callable]:
-    """Get list of all tool functions to register with FastMCP server."""
+# ---------------------------------------------------------------------------
+# Tool profiles (NFL_MCP_TOOL_PROFILE). Too many overlapping tools hurt an
+# assistant's tool routing, so the in-season default hides what a weekly
+# check-in never needs. `full` registers everything.
+# ---------------------------------------------------------------------------
+TOOL_PROFILES = ("season", "full", "offseason")
+DEFAULT_TOOL_PROFILE = "season"
+
+DRAFT_TOOLS = frozenset({
+    "get_league_drafts", "get_draft", "get_draft_picks", "get_draft_traded_picks",
+    "get_traded_picks", "get_draft_board", "recommend_draft_pick", "simulate_draft",
+})
+COACHING_TOOLS = frozenset({
+    "get_coaching_staff", "get_all_coaching_staffs", "get_coaching_tree",
+    "get_scheme_classification",
+})
+# Cache refreshes the prefetch loop already runs.
+ADMIN_TOOLS = frozenset({"fetch_athletes", "fetch_all_players", "fetch_teams"})
+# Rarely the right answer to a fantasy question.
+NICHE_TOOLS = frozenset({"get_league_leaders", "get_cbs_expert_picks"})
+# Only meaningful while games are being played.
+IN_SEASON_TOOLS = frozenset({
+    "get_weekly_briefing", "get_weekly_retro", "get_league_changes", "get_bye_week_plan",
+    "get_playoff_odds", "get_playoff_bracket", "get_matchups", "get_waiver_targets",
+    "recommend_faab_bid", "get_waiver_log", "audit_ir_slots", "get_start_sit_recommendation",
+    "compare_players_for_slot", "analyze_lineup", "get_win_probability_lineup",
+    "get_gameday_inactives", "get_streaming_options", "get_weather_forecast",
+    "analyze_opponent", "analyze_roster_matchups", "get_stack_opportunities",
+    "get_vegas_lines", "find_trade_targets", "get_opportunity_projections",
+    "get_usage_trends",
+})
+
+_PROFILE_HIDDEN = {
+    "season": DRAFT_TOOLS | COACHING_TOOLS | ADMIN_TOOLS | NICHE_TOOLS,
+    "offseason": IN_SEASON_TOOLS | ADMIN_TOOLS | {"get_cbs_expert_picks"},
+    "full": frozenset(),
+}
+
+
+def tool_profile(profile: str | None = None) -> str:
+    """The active profile: `profile`, else NFL_MCP_TOOL_PROFILE, else season."""
+    import os
+
+    raw = (profile or os.getenv("NFL_MCP_TOOL_PROFILE") or DEFAULT_TOOL_PROFILE).strip().lower()
+    if raw not in TOOL_PROFILES:
+        logger.warning(f"Unknown NFL_MCP_TOOL_PROFILE={raw!r}; using {DEFAULT_TOOL_PROFILE!r} "
+                       f"(valid: {', '.join(TOOL_PROFILES)})")
+        return DEFAULT_TOOL_PROFILE
+    return raw
+
+
+def get_all_tools(profile: str | None = None) -> list[Callable]:
+    """Tool functions to register with FastMCP for a profile (see TOOL_PROFILES).
+
+    `profile` defaults to NFL_MCP_TOOL_PROFILE, else "season".
+    """
+    hidden = _PROFILE_HIDDEN[tool_profile(profile)]
+    return [t for t in _registered_tools() if t.__name__ not in hidden]
+
+
+def _registered_tools() -> list[Callable]:
+    """Every tool, in registration order (the `full` profile)."""
     tools = [
         # NFL News and Info
         get_nfl_news,
         get_teams,
         fetch_teams,
         get_depth_chart,
-        get_team_injuries,
         get_team_player_stats,
         get_nfl_standings,
         get_team_schedule,
@@ -116,11 +175,8 @@ def get_all_tools() -> list[Callable]:
         get_weekly_retro,
         get_league_changes,
 
-        # Sleeper API Tools - Strategic Planning (New from main)
-        get_strategic_matchup_preview,
-        get_season_bye_week_coordination,
-        get_trade_deadline_analysis,
-        get_playoff_preparation_plan,
+        # Season planning
+        get_bye_week_plan,
         get_playoff_odds,
 
     # Sleeper Additional Core Endpoints
@@ -134,8 +190,6 @@ def get_all_tools() -> list[Callable]:
 
         # Waiver Wire Analysis Tools (New from main)
         get_waiver_log,
-        check_re_entry_status,
-        get_waiver_wire_dashboard,
         get_waiver_targets,
         audit_ir_slots,
         recommend_faab_bid,
@@ -147,7 +201,6 @@ def get_all_tools() -> list[Callable]:
 
         # Player Value Tools (real market-consensus values)
         get_player_values,
-        get_player_value,
 
         # Draft Assistant Tools (VBD board + live pick recommendations)
         get_draft_board,
@@ -155,7 +208,6 @@ def get_all_tools() -> list[Callable]:
         simulate_draft,
 
         # Projection Tools (transparent weekly projections)
-        project_player,
         project_players,
         get_opportunity_projections,
         get_ros_projections,
@@ -166,12 +218,10 @@ def get_all_tools() -> list[Callable]:
 
         # Matchup Analysis Tools (Lineup Optimization)
         get_defense_rankings,
-        get_matchup_difficulty,
         analyze_roster_matchups,
 
         # Strength-of-Schedule Tools (ROS / playoff-week planning)
         get_strength_of_schedule,
-        get_playoff_sos,
 
         # Streaming Planner (weekly DST/K/QB/TE matchup lookahead)
         get_streaming_options,
@@ -181,20 +231,16 @@ def get_all_tools() -> list[Callable]:
 
         # Lineup Optimizer Tools (Start/Sit Recommendations)
         get_start_sit_recommendation,
-        get_roster_recommendations,
         compare_players_for_slot,
-        analyze_full_lineup,
+        analyze_lineup,
         get_win_probability_lineup,
 
         # Vegas Lines Tools (Game Environment Analysis)
         get_vegas_lines,
-        get_game_environment,
-        analyze_roster_vegas,
         get_stack_opportunities,
 
-        # Injury Report Tools (Multi-source with confidence scoring)
+        # Injury Report Tools (ESPN reports + practice + timeline)
         get_injury_report,
-        get_high_confidence_injuries,
         get_injury_trends,
         get_gameday_inactives,
 
@@ -258,25 +304,6 @@ async def get_depth_chart(team_id: str) -> dict:
     Example: get_depth_chart(team_id="KC")
     """
     return await nfl_tools.get_depth_chart(team_id)
-
-
-@timing_decorator("get_team_injuries", tool_type="nfl")
-async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
-    """Fetch current injury report for a team (ESPN Core API).
-
-    Parameters:
-        team_id (str, required): Team abbreviation or ESPN team id (e.g. 'KC').
-        limit (int, default 50, range 1-100): Max injuries to return.
-    Returns: {team_id, team_name, injuries:[...], count, success, error?}
-    Example: get_team_injuries(team_id="KC", limit=20)
-    """
-    try:
-        if team_id is None or not isinstance(team_id, str):
-            raise ValueError("team_id required")
-        limit_val = int(limit) if limit is not None else 50
-    except Exception:
-        limit_val = 50
-    return await nfl_tools.get_team_injuries(team_id=team_id, limit=limit_val)
 
 
 @timing_decorator("get_team_player_stats", tool_type="nfl")
@@ -371,53 +398,56 @@ async def get_cbs_player_news(limit: int | None = 50) -> dict:
 @timing_decorator("get_cbs_projections", tool_type="cbs_fantasy")
 async def get_cbs_projections(
     position: str = "QB",
-    week: int | None = None,
     season: int | None = 2026,
-    scoring: str = "ppr"
+    scoring: str = "ppr",
 ) -> dict:
-    """Fetch SEASON-LONG fantasy football projections from CBS Sports for a position.
+    """CBS Sports SEASON-LONG fantasy projections for one position (not weekly).
 
-    CBS only publishes season-long projections: the week is validated and echoed
-    back, but the source returns identical full-season numbers for every week.
-    Results carry period="season" and week_honoured=False. Do NOT use these as
-    week-level projections; use project_player/project_players for that.
+    CBS publishes only full-season totals at this source — there is no week
+    parameter because CBS ignores it (every week returns the same numbers).
+    Use it as a season-long outside opinion; for this week's points use
+    project_players, for rest-of-season in your league's scoring
+    get_ros_projections.
 
     Parameters:
-        position (str, default "QB"): Player position (QB, RB, WR, TE, K, DST).
-        week (int, required): NFL week number (1-18). Validated, not honoured.
+        position (str, default "QB"): QB, RB, WR, TE, K or DST.
         season (int, default 2026): Season year.
-        scoring (str, default "ppr"): Scoring format (ppr, half-ppr, standard).
-    Returns: {projections: [...], total_projections, week, period, week_honoured,
-        position, success, error?}
-    Example: get_cbs_projections(position="RB", week=11, season=2026, scoring="ppr")
+        scoring (str, default "ppr"): ppr, half-ppr or standard.
+    Returns: {projections: [...], total_projections, period: "season",
+        week_honoured: false, position, success, error?}
+    Example: get_cbs_projections(position="RB", scoring="half-ppr")
     """
     try:
-        week_i = int(week) if week is not None else None
         season_i = int(season) if season is not None else 2026
     except Exception:
-        week_i = None
         season_i = 2026
-    return await cbs_fantasy_tools.get_cbs_projections(
-        position=position,
-        week=week_i,
-        season=season_i,
-        scoring=scoring
+    # The source URL carries a week segment CBS ignores; any valid week works.
+    result = await cbs_fantasy_tools.get_cbs_projections(
+        position=position, week=1, season=season_i, scoring=scoring,
     )
+    if isinstance(result, dict):
+        result["week"] = None
+        result["period"] = "season"
+        result["week_honoured"] = False
+    return result
 
 
 @timing_decorator("get_cbs_expert_picks", tool_type="cbs_fantasy")
 async def get_cbs_expert_picks(week: int | None = None) -> dict:
-    """Fetch NFL expert picks against the spread from CBS Sports for a specific week.
+    """CBS Sports experts' NFL picks AGAINST THE SPREAD for a week (betting
+    picks per game, not fantasy advice).
 
     Parameters:
-        week (int, required): NFL week number (1-18).
+        week (int, optional): NFL week 1-18 (default: current week).
     Returns: {picks: [...], total_picks, week, success, error?}
-    Example: get_cbs_expert_picks(week=10)
+    Example: get_cbs_expert_picks(week=3)
     """
     try:
         week_i = int(week) if week is not None else None
     except Exception:
         week_i = None
+    if week_i is None:
+        _, week_i = await _current_season_week()
     return await cbs_fantasy_tools.get_cbs_expert_picks(week=week_i)
 
 
@@ -624,64 +654,64 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
 
 
 # =============================================================================
-# SLEEPER API TOOLS - STRATEGIC PLANNING (NEW FROM MAIN)
+# SEASON PLANNING (bye weeks, playoff odds)
 # =============================================================================
 
-@timing_decorator("get_strategic_matchup_preview", tool_type="sleeper")
-async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks_ahead: int | None = 4) -> dict:
-    """Strategic preview of upcoming matchups for multi-week planning.
+@timing_decorator("get_bye_week_plan", tool_type="sleeper")
+async def get_bye_week_plan(
+    league_id: str,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    weeks_ahead: int = 6,
+    include_free_agents: bool = True,
+    week: int | None = None,
+    season: int | None = None,
+) -> dict:
+    """Bye-week plan: which upcoming weeks YOUR lineup runs short, and what to add.
 
-    IMPORTANT FOR LLM AGENTS: Always provide complete strategic analysis immediately without
-    asking for confirmations. Render the full preview with all recommendations directly."""
+    For each of the next `weeks_ahead` weeks: which of your starters and bench
+    players are on bye (or inside an expected injury absence), the best legal
+    lineup your roster can field that week in the league's own slots and
+    scoring (rest-of-season projections), empty slots, and what the byes cost
+    against the same roster at full strength. Crunch weeks get a concrete
+    suggestion ("Week 7: only 1 RB available for 2 RB slot(s) — add a RB before
+    week 7") and, with include_free_agents, up to three free agents who would
+    fill that week (the get_waiver_targets ranking for that week). Trade-deadline
+    status is included; trade proposals live in find_trade_targets.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        weeks_ahead: Weeks to plan, starting with the current one (default 6)
+        include_free_agents: Look up free agents for the two worst crunch
+            weeks (default True; bounded by a 25 s timeout)
+        week, season: Override the starting week / season (default: current)
+
+    Returns: {
+        weeks [{week, status: ok|thin|crunch, projected_total,
+                full_strength_total, bye_cost, on_bye [{player, position,
+                team, role: starter|bench}], starters_on_bye, injured_out,
+                available_by_position, holes [{slot, eligible}], lineup,
+                positions_to_add?}],
+        crunch_weeks, thin_weeks, suggestions [str], free_agent_options
+        {week: [{name, position, team, projected_points, upgrade_points,
+        recommendation}]}, core_starters, trade_deadline, method, success
+    }
+
+    Example: get_bye_week_plan(league_id="123", roster_id=7)
+    Example: get_bye_week_plan(league_id="123", user_id="456", weeks_ahead=10)
+    """
+    from . import bye_week_tools
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
-        weeks_ahead = validate_numeric_input(weeks_ahead, min_val=1, max_val=8, default=4, required=False)
-        return await sleeper_tools.get_strategic_matchup_preview(league_id, current_week, weeks_ahead)
     except ValueError as e:
-        return {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id, "success": False, "error": f"Invalid input: {e!s}"}
-
-
-@timing_decorator("get_season_bye_week_coordination", tool_type="sleeper")
-async def get_season_bye_week_coordination(league_id: str, season: int | None = 2026) -> dict:
-    """Season-long bye week coordination with fantasy league schedule.
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete bye week coordination plan immediately
-    without asking for confirmations. Render the full seasonal strategy with all recommendations directly."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        season = validate_numeric_input(season, min_val=2020, max_val=2030, default=2026, required=False)
-        return await sleeper_tools.get_season_bye_week_coordination(league_id, season)
-    except ValueError as e:
-        return {"coordination_plan": {}, "season": season, "league_id": league_id, "success": False, "error": f"Invalid input: {e!s}"}
-
-
-@timing_decorator("get_trade_deadline_analysis", tool_type="sleeper")
-async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict:
-    """Strategic trade deadline timing analysis.
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete trade deadline analysis immediately
-    without asking for confirmations. Render the full timing strategy with all recommendations directly."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
-        return await sleeper_tools.get_trade_deadline_analysis(league_id, current_week)
-    except ValueError as e:
-        return {"trade_analysis": {}, "league_id": league_id, "current_week": current_week, "success": False, "error": f"Invalid input: {e!s}"}
-
-
-@timing_decorator("get_playoff_preparation_plan", tool_type="sleeper")
-async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dict:
-    """Comprehensive playoff preparation plan combining league and NFL data.
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete playoff preparation plan immediately
-    without asking for confirmations. Render the full strategy with all recommendations directly."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
-        return await sleeper_tools.get_playoff_preparation_plan(league_id, current_week)
-    except ValueError as e:
-        return {"playoff_plan": {}, "league_id": league_id, "readiness_score": 0, "success": False, "error": f"Invalid input: {e!s}"}
+        return {"weeks": [], "success": False, "error": f"Invalid input: {e!s}"}
+    return await bye_week_tools.get_bye_week_plan(
+        league_id=league_id, roster_id=roster_id, user_id=user_id,
+        weeks_ahead=weeks_ahead, week=week, season=season,
+        include_free_agents=include_free_agents, db=get_db(),
+    )
 
 
 @timing_decorator("get_playoff_odds", tool_type="sleeper")
@@ -809,46 +839,138 @@ async def fetch_all_players(force_refresh: bool = False) -> dict:
 
 
 # =============================================================================
-# WAIVER WIRE ANALYSIS TOOLS (NEW FROM MAIN)
+# WAIVER WIRE TOOLS
 # =============================================================================
 
+_WAIVER_SECTIONS = ("log", "summary", "re_entries")
+
+
+def _player_ids_for(player: str) -> set[str]:
+    """Sleeper ids matching a waiver-log player filter (an id or a name)."""
+    player = str(player).strip()
+    if player.isdigit() or (player.isalpha() and player.isupper() and len(player) <= 4):
+        return {player}
+    db = get_db()
+    hits = (db.search_athletes_by_name(player, limit=10) or []) if db is not None else []
+    return {str(h.get("id")) for h in hits if h.get("id")}
+
+
 @timing_decorator("get_waiver_log", tool_type="waiver")
-async def get_waiver_log(league_id: str, round: int | None = None, dedupe: bool = True) -> dict:
-    """Get waiver wire activity log with de-duplication."""
+async def get_waiver_log(
+    league_id: str,
+    round: int | None = None,
+    sections: list[str] | None = None,
+    player: str | None = None,
+    dedupe: bool = True,
+) -> dict:
+    """What already HAPPENED on this league's waiver wire: processed claims,
+    failed claims, summary counts, and players dropped and re-added.
+
+    One tool for the transaction-log view of waivers (who to pick up next is
+    get_waiver_targets; how much to bid is recommend_faab_bid). Pending claims
+    are never visible — Sleeper only exposes a claim once processed.
+
+    Parameters:
+        league_id (str, required): Sleeper league id.
+        round (int, optional): NFL week to read (default: current week).
+        sections (list, optional): any of "log" (de-duplicated waiver/free-agent
+            transactions + failed claims), "summary" (dashboard counts),
+            "re_entries" (players dropped and re-added; volatile = more than one
+            re-entry). Default: all three.
+        player (str, optional): Sleeper player id or name — keep only
+            transactions/re-entries involving him.
+        dedupe (bool, default True): Remove duplicate transactions from the log.
+
+    Returns: {
+        waiver_log, duplicates_found, total_transactions, unique_transactions,
+        failed_claims, failed_claims_count            (section "log"),
+        dashboard_summary {total_waiver_transactions, duplicates_removed,
+            players_with_re_entries, volatile_players_count, failed_claims,
+            deduplication_rate}                        (section "summary"),
+        re_entry_players {player_id: {re_entries, is_volatile, ...}},
+        volatile_players, total_players_analyzed        (section "re_entries"),
+        sections, player_filter?, league_id, round, success
+    }
+
+    Example: get_waiver_log(league_id="123")
+    Example: get_waiver_log(league_id="123", round=3, sections=["re_entries"], player="Tyler Allgeier")
+    """
+    import asyncio
+
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
         if round is not None:
             round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
-        return await waiver_tools.get_waiver_log(league_id, round, dedupe)
     except ValueError as e:
         return {"waiver_log": [], "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {e!s}"}
 
+    alias = {"dashboard": "summary", "re_entry": "re_entries", "reentries": "re_entries"}
+    wanted = [s.strip().lower() for s in (sections or _WAIVER_SECTIONS) if isinstance(s, str)]
+    wanted = list(dict.fromkeys(alias.get(s, s) for s in wanted))
+    unknown = sorted(set(wanted) - set(_WAIVER_SECTIONS))
+    if unknown or not wanted:
+        return {"success": False, "league_id": league_id, "round": round,
+                "error": f"Unknown section(s) {unknown}; use any of {list(_WAIVER_SECTIONS)}."}
 
-@timing_decorator("check_re_entry_status", tool_type="waiver")
-async def check_re_entry_status(league_id: str, round: int | None = None) -> dict:
-    """Check player re-entry status on waiver wire."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        if round is not None:
-            round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
-        return await waiver_tools.check_re_entry_status(league_id, round)
-    except ValueError as e:
-        return {"re_entry_status": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {e!s}"}
+    need_log = "log" in wanted or "summary" in wanted
+    need_re = "re_entries" in wanted or "summary" in wanted
+    log_res, re_res = await asyncio.gather(
+        waiver_tools.get_waiver_log(league_id, round, dedupe) if need_log else asyncio.sleep(0, {}),
+        waiver_tools.check_re_entry_status(league_id, round) if need_re else asyncio.sleep(0, {}),
+    )
+    for res in (log_res, re_res):
+        if res and not res.get("success", True):
+            return {**res, "sections": wanted}
 
+    ids = _player_ids_for(player) if player else None
 
-@timing_decorator("get_waiver_wire_dashboard", tool_type="waiver")
-async def get_waiver_wire_dashboard(league_id: str, round: int | None = None) -> dict:
-    """Get comprehensive waiver wire analysis dashboard.
+    def _involves(tx: dict) -> bool:
+        keys = set((tx.get("adds") or {}).keys()) | set((tx.get("drops") or {}).keys())
+        keys |= set(tx.get("wanted") or []) | set(tx.get("would_have_dropped") or [])
+        return bool(keys & ids)
 
-    IMPORTANT FOR LLM AGENTS: Always provide complete waiver wire analysis immediately without
-    asking for confirmations. Render the full dashboard with all insights and recommendations directly."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        if round is not None:
-            round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
-        return await waiver_tools.get_waiver_wire_dashboard(league_id, round)
-    except ValueError as e:
-        return {"dashboard": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {e!s}"}
+    out: dict = {"league_id": league_id, "round": round, "sections": wanted, "success": True, "error": None}
+    log = log_res.get("waiver_log") or []
+    failed = log_res.get("failed_claims") or []
+    re_players = re_res.get("re_entry_players") or {}
+    volatile = re_res.get("volatile_players") or []
+    if ids is not None:
+        log = [t for t in log if _involves(t)]
+        failed = [t for t in failed if _involves(t)]
+        re_players = {k: v for k, v in re_players.items() if k in ids}
+        volatile = [p for p in volatile if p in ids]
+        out["player_filter"] = {"query": player, "player_ids": sorted(ids)}
+    if "log" in wanted:
+        out.update({
+            "waiver_log": log,
+            "duplicates_found": log_res.get("duplicates_found") or [],
+            "total_transactions": log_res.get("total_transactions", 0),
+            "unique_transactions": log_res.get("unique_transactions", 0),
+            "deduplication_enabled": log_res.get("deduplication_enabled", dedupe),
+            "failed_claims": failed,
+            "failed_claims_count": len(failed),
+        })
+    if "re_entries" in wanted:
+        out.update({
+            "re_entry_players": re_players,
+            "volatile_players": volatile,
+            "total_players_analyzed": re_res.get("total_players_analyzed", 0),
+            "players_with_re_entries": len(re_players),
+        })
+    if "summary" in wanted:
+        total = log_res.get("total_transactions", 0) or 0
+        unique = log_res.get("unique_transactions", 0) or 0
+        out["dashboard_summary"] = {
+            "total_waiver_transactions": total,
+            "unique_waiver_transactions": unique,
+            "duplicates_removed": total - unique,
+            "players_with_re_entries": len(re_res.get("re_entry_players") or {}),
+            "volatile_players_count": len(re_res.get("volatile_players") or []),
+            "total_players_analyzed": re_res.get("total_players_analyzed", 0),
+            "failed_claims": log_res.get("failed_claims_count", 0),
+            "deduplication_rate": ((total - unique) / total * 100) if total else 0,
+        }
+    return out
 
 
 @timing_decorator("recommend_faab_bid", tool_type="waiver")
@@ -1014,6 +1136,7 @@ async def analyze_trade(
 
 @timing_decorator("get_player_values", tool_type="values")
 async def get_player_values(
+    players: list[str] | None = None,
     scoring: str = "ppr",
     superflex: bool = False,
     num_teams: int = 12,
@@ -1021,21 +1144,46 @@ async def get_player_values(
     position: str | None = None,
     limit: int | None = 100,
 ) -> dict:
-    """Get consensus player market values (real values, not heuristics), best-first.
+    """Consensus player market values (FantasyCalc; real values, not heuristics).
 
-    Format-aware values you can trust for trades and draft ordering.
+    Format-aware values you can trust for trades and draft ordering. Without
+    `players`: the best-first list. With `players`: just those players (a
+    one-element list for a single player).
 
     Parameters:
+        players (list, optional): Sleeper player ids or names to look up (max 25).
         scoring (str): "ppr", "half-ppr", or "standard".
         superflex (bool): True for 2-QB / superflex leagues.
         num_teams (int): League size (default 12).
         dynasty (bool): Dynasty values vs redraft.
-        position (str, optional): Filter (QB, RB, WR, TE).
-        limit (int): Max players (default 100).
-    Returns: {values:[...], total, format, source, stale, updated_at, success}
+        position (str, optional): Filter the list (QB, RB, WR, TE).
+        limit (int): Max players in the list (default 100).
+    Returns: {values:[{name, position, team, value, overall_rank, ...}], total,
+              not_found? (lookups only), format, source, stale, updated_at, success}
+
+    Example: get_player_values(players=["Bijan Robinson"], scoring="half-ppr")
 
     IMPORTANT FOR LLM AGENTS: Provide the values immediately without asking for confirmation.
     """
+    if players:
+        import asyncio
+        wanted = [str(p).strip() for p in players[:25] if str(p).strip()]
+        hits = await asyncio.gather(*(
+            player_values.get_player_value(
+                player_id=p if p.isdigit() else None, name=None if p.isdigit() else p,
+                scoring=scoring, superflex=superflex, num_teams=num_teams,
+                dynasty=dynasty, db=get_db())
+            for p in wanted))
+        values = [h["value"] for h in hits if h.get("value")]
+        return {
+            "values": values,
+            "total": len(values),
+            "not_found": [p for p, h in zip(wanted, hits, strict=True) if not h.get("value")],
+            "source": next((h.get("source") for h in hits if h.get("source")), None),
+            "stale": any(h.get("stale") for h in hits),
+            "success": True,
+            "error": None,
+        }
     if position is not None:
         try:
             position = validate_string_input(position, 'position', max_length=5, required=False)
@@ -1044,29 +1192,6 @@ async def get_player_values(
     return await player_values.get_player_values(
         scoring=scoring, superflex=superflex, num_teams=num_teams,
         dynasty=dynasty, position=position, limit=limit, db=get_db(),
-    )
-
-
-@timing_decorator("get_player_value", tool_type="values")
-async def get_player_value(
-    player_id: str | None = None,
-    name: str | None = None,
-    scoring: str = "ppr",
-    superflex: bool = False,
-    num_teams: int = 12,
-    dynasty: bool = False,
-) -> dict:
-    """Get the consensus market value for one player (by Sleeper id or name).
-
-    Parameters:
-        player_id (str, optional): Sleeper player id (preferred).
-        name (str, optional): Player name (fallback lookup).
-        scoring / superflex / num_teams / dynasty: League format.
-    Returns: {value:{...}|None, found, source, stale, success}
-    """
-    return await player_values.get_player_value(
-        player_id=player_id, name=name, scoring=scoring, superflex=superflex,
-        num_teams=num_teams, dynasty=dynasty, db=get_db(),
     )
 
 
@@ -1196,69 +1321,6 @@ async def simulate_draft(
 # PROJECTION TOOLS (transparent weekly fantasy point projections)
 # =============================================================================
 
-@timing_decorator("project_player", tool_type="projection")
-async def project_player(
-    player_name: str,
-    position: str,
-    team: str,
-    opponent: str = "",
-    snap_percentage: float | None = None,
-    usage_trend: str | None = None,
-    injury_status: str | None = None,
-    scoring: str = "ppr",
-    superflex: bool = False,
-    season: int | None = None,
-    week: int | None = None,
-    wind_mph: float | None = None,
-    is_dome: bool = False,
-    league_id: str | None = None,
-) -> dict:
-    """Project weekly fantasy points for one player (transparent, no scraping).
-
-    Combines a baseline × matchup × Vegas game environment × usage × injury into a
-    projection with floor/ceiling, confidence and a full breakdown. season/week
-    default to the current NFL week (`week_inferred` says so); with week > 1 the
-    opportunity-based baseline is used (trailing nflverse volume, backtested to
-    beat rank-bucket PPG).
-
-    Parameters:
-        player_name, position (QB/RB/WR/TE/K/DEF), team (required abbreviations).
-        opponent (optional): opponent abbreviation, or "BYE". Omit it to have it
-            filled from the cached schedule; a team with no game that week
-            projects 0 with `on_bye: true`.
-        injury_status (optional): looked up in the injury tables when omitted.
-        snap_percentage (float, optional), usage_trend ("up"/"down", optional),
-        scoring ("ppr"/"half-ppr"/"standard"), superflex (bool),
-        season (int, optional), week (int, optional).
-        league_id (str, optional): Sleeper league id — prices every stat with
-            the league's full scoring_settings (pass TD/INT values, fumbles, TE
-            premium, first downs, bonuses, K distance and DEF points-allowed
-            tiers) instead of the preset; reported as `scoring_used`.
-    Returns: {projection:{projected_points, floor, ceiling, confidence, on_bye,
-              bye_status, breakdown, sleeper_projection, consensus,
-              disagreement, gap,...}, sleeper_second_opinion, season, week,
-              week_inferred, success}
-        `projected_points` is ours and primary. `sleeper_projection` is
-        Sleeper's weekly stat line priced in the same scoring, `consensus`
-        the plain average, `disagreement` true when they differ by > 4 pts or
-        > 25% (`gap` = ours - Sleeper's).
-    """
-    try:
-        player_name = validate_string_input(player_name, 'player_name', max_length=100, required=True)
-        position = validate_string_input(position, 'position', max_length=5, required=True)
-        team = validate_string_input(team, 'team', max_length=5, required=True)
-        opponent = validate_string_input(opponent or '', 'opponent', max_length=8, required=False)
-    except ValueError as e:
-        return {"projection": None, "success": False, "error": f"Invalid input: {e!s}"}
-    return await projections.project_player(
-        player_name=player_name, position=position.upper(), team=team.upper(),
-        opponent=opponent.upper(), snap_percentage=snap_percentage, usage_trend=usage_trend,
-        injury_status=injury_status, scoring=scoring, superflex=superflex,
-        season=season, week=week, wind_mph=wind_mph, is_dome=is_dome, db=get_db(),
-        league_id=league_id,
-    )
-
-
 @timing_decorator("project_players", tool_type="projection")
 async def project_players(
     players: list[dict],
@@ -1269,11 +1331,18 @@ async def project_players(
     week: int | None = None,
     league_id: str | None = None,
 ) -> dict:
-    """Project weekly fantasy points for multiple players at once.
+    """Project THIS WEEK's fantasy points for one or more players (transparent).
+
+    Combines a baseline × matchup × Vegas game environment × usage × injury into
+    a projection with floor/ceiling, confidence and a full breakdown. Pass a
+    one-element list for a single player. For anything beyond this week use
+    get_ros_projections.
 
     Parameters:
-        players (list, required): dicts with name, position, team, opponent and
-            optional usage {snap_percentage, usage_trend} and injury {status}.
+        players (list, required): dicts with name, position (QB/RB/WR/TE/K/DEF),
+            team, and optionally opponent, player_id (Sleeper, exact match),
+            usage {snap_percentage, usage_trend}, injury {status} and weather
+            {wind_mph, is_dome} (e.g. from get_weather_forecast).
             opponent "BYE" (or a team the cached schedule has no game for)
             projects 0 with `on_bye: true`; a blank opponent is filled from the
             schedule. A missing injury status is looked up in the injury tables.
@@ -1294,6 +1363,9 @@ async def project_players(
         Our `projected_points` stays primary; Sleeper's projection (priced in
         the league's scoring) is a labelled second opinion. Pass each
         player's Sleeper `player_id` for an exact match (else name + team).
+
+    Example: project_players(players=[{"name": "Puka Nacua", "position": "WR", "team": "LAR"}],
+                             league_id="123")
 
     IMPORTANT FOR LLM AGENTS: Return projections immediately without asking for confirmation.
     """
@@ -1537,135 +1609,121 @@ async def analyze_opponent(
 @timing_decorator("get_defense_rankings", tool_type="matchup")
 async def get_defense_rankings(
     positions: list[str] | None = None,
-    season: int | None = None
+    season: int | None = None,
+    opponent_team: str | None = None,
 ) -> dict:
-    """Get NFL defense rankings against fantasy positions for matchup analysis.
+    """NFL defenses ranked by fantasy points allowed per position (QB/RB/WR/TE),
+    or how tough ONE defense is for each position.
 
-    Shows how each NFL defense performs against QBs, RBs, WRs, and TEs,
-    helping identify favorable and unfavorable matchups for lineup decisions.
+    Built from real weekly results, shrunk toward the prior season early on.
+    With `opponent_team`, also returns `matchups` {position: {rank,
+    rank_display, matchup_tier, tier_indicator, recommendation}} for that
+    defense — "how tough is the WR matchup vs KC". For your own players'
+    matchups this week use analyze_roster_matchups.
 
     Parameters:
-        positions (list, optional): Positions to get rankings for. Valid: "QB", "RB", "WR", "TE"
+        positions (list, optional): "QB", "RB", "WR", "TE" (default all).
         season (int, optional): NFL season year (defaults to current).
+        opponent_team (str, optional): One defense to grade, e.g. "KC".
 
     Returns: {
         rankings: dict mapping position to list of team rankings,
-        positions: list of positions included,
-        season: int,
-        tiers_explained: dict explaining matchup tiers,
-        success: bool,
-        error?: str
+        matchups?: {position: matchup} for opponent_team,
+        positions, season, is_fallback, tiers_explained, success, error?
     }
 
     Example: get_defense_rankings(positions=["WR", "RB"])
+    Example: get_defense_rankings(positions=["WR"], opponent_team="KC")
 
     IMPORTANT FOR LLM AGENTS: Always provide complete defense rankings immediately without
     asking for confirmations. Render the full analysis with matchup tiers directly.
     """
-    return await matchup_tools.get_defense_rankings(
-        positions=positions,
-        season=season
-    )
-
-
-@timing_decorator("get_matchup_difficulty", tool_type="matchup")
-async def get_matchup_difficulty(
-    position: str,
-    opponent_team: str,
-    include_rankings: bool = False
-) -> dict:
-    """Get matchup difficulty for a specific position vs opponent defense.
-
-    Analyzes how the opponent defense performs against the given position
-    and provides a recommendation for lineup decisions.
-
-    Parameters:
-        position (str, required): Fantasy position - "QB", "RB", "WR", or "TE"
-        opponent_team (str, required): Opponent team abbreviation (e.g., "KC", "SF", "DAL")
-        include_rankings (bool, default False): Whether to include full position rankings
-
-    Returns: {
-        matchup: {rank, rank_display, matchup_tier, tier_indicator, recommendation},
-        position_rankings?: list (if include_rankings=True),
-        success: bool,
-        error?: str
-    }
-
-    Example: get_matchup_difficulty(position="WR", opponent_team="KC")
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete matchup analysis immediately without
-    asking for confirmations. Render the recommendation directly.
-    """
-    try:
-        position = validate_string_input(position, 'position', max_length=5, required=True)
-        opponent_team = validate_string_input(opponent_team, 'opponent_team', max_length=5, required=True)
-
-        return await matchup_tools.get_matchup_difficulty(
-            position=position.upper(),
-            opponent_team=opponent_team.upper(),
-            include_rankings=include_rankings
-        )
-    except ValueError as e:
-        return {
-            "matchup": None,
-            "success": False,
-            "error": f"Invalid input: {e!s}"
+    result = await matchup_tools.get_defense_rankings(positions=positions, season=season)
+    if opponent_team and isinstance(result, dict) and result.get("success", True):
+        try:
+            opponent_team = validate_string_input(opponent_team, 'opponent_team', max_length=5, required=True)
+        except ValueError as e:
+            return {**result, "success": False, "error": f"Invalid input: {e!s}"}
+        team = normalize_team(opponent_team) or opponent_team.upper()
+        analyzer = matchup_tools.get_defense_analyzer()
+        rankings = result.get("rankings") or {}
+        result["opponent_team"] = team
+        result["matchups"] = {
+            pos: analyzer.get_matchup_difficulty(pos, team, rankings)
+            for pos in (result.get("positions") or []) if pos in ("QB", "RB", "WR", "TE")
         }
+    return result
 
 
 @timing_decorator("analyze_roster_matchups", tool_type="matchup")
 async def analyze_roster_matchups(
-    players: list[dict],
-    week: int | None = None
+    league_id: str | None = None,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    players: list[dict] | None = None,
+    week: int | None = None,
+    season: int | None = None,
 ) -> dict:
-    """Analyze matchup difficulty for multiple players on a roster.
+    """This week's defensive matchup for every player on YOUR roster: smash
+    spots and tough matchups.
 
-    Takes a list of players with their positions and opponents,
-    returns matchup analysis for each to help with lineup decisions.
+    With league_id + roster_id (or user_id) the roster and each player's
+    opponent (cached schedule) are loaded for you; players on bye are listed
+    separately. Alternatively pass `players` [{name, position, opponent}] for
+    an ad-hoc list (one player works too).
 
     Parameters:
-        players (list, required): List of player dicts with:
-            - name (str): Player name
-            - position (str): QB, RB, WR, or TE
-            - opponent (str): Opponent team abbreviation
-        week (int, optional): NFL week number for display
+        league_id, roster_id, user_id: Your Sleeper league and roster
+        players (list, optional): Ad-hoc list instead of a league roster
+        week, season (optional): default to the current NFL week
 
     Returns: {
-        analysis: list of matchup analyses per player,
-        smash_spots: list of players with excellent matchups,
-        avoid_spots: list of players with tough matchups,
-        summary: list of summary lines,
-        total_analyzed: int,
-        success: bool,
-        error?: str
+        analysis [{player, position, opponent, rank, rank_display,
+                   matchup_tier, tier_indicator, recommendation}],
+        smash_spots, avoid_spots, summary, on_bye?, total_analyzed, success
     }
 
-    Example: analyze_roster_matchups(players=[
-        {"name": "Patrick Mahomes", "position": "QB", "opponent": "LV"},
-        {"name": "Tyreek Hill", "position": "WR", "opponent": "NE"}
-    ])
+    Example: analyze_roster_matchups(league_id="123", roster_id=7)
+    Example: analyze_roster_matchups(players=[{"name": "Tyreek Hill", "position": "WR", "opponent": "NE"}])
 
     IMPORTANT FOR LLM AGENTS: Always provide complete roster matchup analysis immediately
     without asking for confirmations. Render all smash spots and avoid recommendations directly.
     """
+    from .roster_context import load_roster_players
+
+    on_bye = None
+    if league_id and (roster_id is not None or user_id):
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        except ValueError as e:
+            return {"analysis": [], "success": False, "error": f"Invalid input: {e!s}"}
+        ctx = await load_roster_players(league_id, roster_id, user_id, db=get_db(), season=season, week=week)
+        if ctx["error"]:
+            return {"analysis": [], "success": False, "error": ctx["error"]}
+        week = ctx["week"]
+        skill = [p for p in ctx["players"] if p["position"] in ("QB", "RB", "WR", "TE")]
+        on_bye = [p["name"] for p in skill if p["opponent"] == "BYE"]
+        players = [{"name": p["name"], "position": p["position"], "opponent": p["opponent"],
+                    "starter": p["starter"]} for p in skill if p["opponent"] not in ("BYE", "")]
     if not players:
         return {
             "analysis": [],
             "smash_spots": [],
             "avoid_spots": [],
             "summary": [],
+            "on_bye": on_bye,
             "total_analyzed": 0,
-            "success": False,
-            "error": "No players provided"
+            "success": on_bye is not None,
+            "error": None if on_bye is not None else "Pass league_id + roster_id, or players",
         }
 
     if week is not None:
         week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
 
-    return await matchup_tools.analyze_roster_matchups(
-        players=players,
-        week=week
-    )
+    result = await matchup_tools.analyze_roster_matchups(players=players, week=week)
+    if on_bye is not None and isinstance(result, dict):
+        result["on_bye"] = on_bye
+    return result
 
 
 # =============================================================================
@@ -1674,76 +1732,76 @@ async def analyze_roster_matchups(
 
 @timing_decorator("get_strength_of_schedule", tool_type="matchup")
 async def get_strength_of_schedule(
-    season: int,
-    start_week: int,
-    end_week: int,
+    season: int | None = None,
+    start_week: int | None = None,
+    end_week: int | None = None,
     positions: list[str] | None = None,
     strength_season: int | None = None,
+    playoff_weeks: bool = False,
+    league_id: str | None = None,
 ) -> dict:
     """Rank NFL teams by schedule difficulty over a week range, per position.
 
     "Ease score" is 0-100 (higher = easier schedule; a team facing the weakest
     defenses scores high). Teams are ranked easiest-first (sos_rank 1 = softest
     schedule). Useful for rest-of-season planning and stash/trade decisions.
+    Set playoff_weeks=True for the fantasy-playoff window: the league's own
+    playoff weeks when league_id is given, else weeks 15-17.
 
     Parameters:
-        season (int, required): NFL season year for the schedule.
-        start_week (int, required): First regular-season week (1-18).
-        end_week (int, required): Last week (>= start_week, <= 18).
+        season (int, optional): NFL season year (default: current).
+        start_week (int, optional): First week (1-18; default: current week).
+        end_week (int, optional): Last week (>= start_week, <= 18; default 17).
         positions (list, optional): Positions to grade (default QB/RB/WR/TE).
         strength_season (int, optional): Season whose defense rankings to use as
             the strength prior. Default auto (target season, else prior season).
+        playoff_weeks (bool, default False): Use the fantasy-playoff weeks
+            instead of start_week/end_week.
+        league_id (str, optional): Sleeper league id whose playoff_week_start /
+            bracket size define the playoff weeks.
 
     Returns: {
-        season, weeks, positions,
+        season, weeks, positions, window ("custom" | "playoffs"),
         strength_source_season, strength_is_fallback,
         by_position: {pos: [teams easiest-first with sos_rank/ease_score/weeks]},
         overall: [teams easiest-first],
         success: bool, error?: str
     }
 
-    Example: get_strength_of_schedule(season=2026, start_week=15, end_week=17)
+    Example: get_strength_of_schedule(start_week=4, end_week=14)
+    Example: get_strength_of_schedule(playoff_weeks=True, league_id="123")
 
     IMPORTANT FOR LLM AGENTS: Always compute and render the full ranking
     immediately without asking for confirmation.
     """
-    return await sos_tools.get_strength_of_schedule(
+    from .week_context import current_season_week
+
+    if season is None or (start_week is None and not playoff_weeks):
+        current = await current_season_week(get_db())
+        season = season or current["season"]
+        if start_week is None:
+            start_week = current["week"]
+    window = "custom"
+    if playoff_weeks:
+        window = "playoffs"
+        start_week, end_week = sos_tools.PLAYOFF_WEEKS[0], sos_tools.PLAYOFF_WEEKS[-1]
+        if league_id:
+            league = ((await sleeper_tools.get_league(str(league_id))) or {}).get("league") or {}
+            first, last = ros.playoff_window(league.get("settings") or {})
+            if first:
+                start_week, end_week = first, last
+    if end_week is None:
+        end_week = max(int(start_week), 17)
+    result = await sos_tools.get_strength_of_schedule(
         season=season,
         start_week=start_week,
         end_week=end_week,
         positions=positions,
         strength_season=strength_season,
     )
-
-
-@timing_decorator("get_playoff_sos", tool_type="matchup")
-async def get_playoff_sos(
-    season: int,
-    positions: list[str] | None = None,
-    strength_season: int | None = None,
-) -> dict:
-    """Strength of schedule for the fantasy playoff weeks (15-17).
-
-    Convenience wrapper around get_strength_of_schedule for championship-run
-    planning (trade-deadline and stash decisions).
-
-    Parameters:
-        season (int, required): NFL season year.
-        positions (list, optional): Positions to grade (default QB/RB/WR/TE).
-        strength_season (int, optional): Defense-rankings season prior (auto).
-
-    Returns: same shape as get_strength_of_schedule (weeks fixed to 15-17).
-
-    Example: get_playoff_sos(season=2026)
-
-    IMPORTANT FOR LLM AGENTS: Compute and render the full playoff-week ranking
-    immediately without asking for confirmation.
-    """
-    return await sos_tools.get_playoff_sos(
-        season=season,
-        positions=positions,
-        strength_season=strength_season,
-    )
+    if isinstance(result, dict):
+        result["window"] = window
+    return result
 
 
 # =============================================================================
@@ -1861,202 +1919,126 @@ async def get_weather_forecast(
 
 @timing_decorator("get_start_sit_recommendation", tool_type="lineup")
 async def get_start_sit_recommendation(
-    player_name: str,
-    position: str,
-    team: str,
+    player_name: str | None = None,
+    players: list | None = None,
+    position: str | None = None,
+    team: str | None = None,
     opponent: str = "",
     player_id: str | None = None,
-    target_share: float | None = None,
-    snap_percentage: float | None = None,
     injury_status: str | None = None,
-    practice_status: str | None = None,
-    projected_points: float | None = None,
-    scoring: str | None = None,
     league_id: str | None = None,
+    scoring: str | None = None,
     season: int | None = None,
     week: int | None = None,
+    include_reasoning: bool = True,
 ) -> dict:
-    """Get a start/sit recommendation for a single player.
+    """Start or sit? For one player (player_name) or several (players).
 
-    Analyzes matchup difficulty, usage trends, health status, and projections
-    to provide a confidence-weighted recommendation.
+    Name the player; team, position, Sleeper id, opponent (cached schedule),
+    last week's snap share, injury designation and this week's practice report
+    are looked up server-side — do not guess them. Decided on projected points
+    (matchup, Vegas, usage, injury), with a confidence-weighted verdict. For
+    the whole lineup of a league roster use analyze_lineup; for one slot
+    between 2-5 candidates compare_players_for_slot; for a full weekly plan
+    get_weekly_briefing.
+
+    K and DEF are priced off Vegas totals (own for K, opponent's for DEF) or,
+    without live lines, the season's scoring; their matchup is an offense rank.
 
     Parameters:
-        player_name (str, required): Player's full name
-        position (str, required): Fantasy position (QB, RB, WR, TE, K, DEF).
-            K and DEF are priced off Vegas totals (own for K, opponent's for
-            DEF) or, without live lines, the season's scoring; their matchup
-            is an offense rank (DEF: the opponent's, K: his own) and the
-            good-week marks are rebased to the league's K/DEF scoring.
-        team (str, required): Player's team abbreviation (for a DEF: the team
-            itself — Sleeper's DEF id is the team code)
-        opponent (str, optional): Opponent team abbreviation, or "BYE". Omit to
-            fill it from the cached schedule. A team with no game that week is
-            must_sit with `on_bye: true`, whatever else is passed.
-        player_id (str, optional): Sleeper player id (sharpens the Sleeper
-            projection match; names + team are used otherwise)
-        target_share (float, optional): Target share percentage (0-100)
-        snap_percentage (float, optional): Snap count percentage (0-100)
-        injury_status (str, optional): Injury status (healthy, questionable, doubtful, out)
-        practice_status (str, optional): Practice status (full, limited, dnp)
-        projected_points (float, optional): Projected fantasy points
-        league_id (str, optional): Sleeper league id. Supplies the league's real
-            scoring and size when `scoring` is not passed — prefer it.
-        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
-            'standard', or a raw per-reception value like '0.5'. Pass the real
-            setting: it changes the points AND what counts as a good week.
-        season (int, optional), week (int, optional): pass both (week > 1) to
-            project off trailing volume instead of the positional-rank baseline
+        player_name (str): One player's name (single mode).
+        players (list): Several players, as names or dicts {name, position?,
+            team?, opponent?, player_id?} (list mode — replaces the old
+            get_roster_recommendations).
+        position, team, player_id (optional): Disambiguate a common name.
+        opponent (optional): Opponent abbreviation or "BYE"; default from the
+            schedule. A team with no game that week is must_sit (`on_bye`).
+        injury_status (optional): Override the looked-up designation
+            (healthy, questionable, doubtful, out).
+        league_id (optional): Sleeper league id — the league's real scoring and
+            size. Prefer it over `scoring`.
+        scoring (optional): 'ppr', 'half_ppr', 'standard' or '0.5'.
+        season, week (optional): default to the current NFL week.
+        include_reasoning (bool, list mode): Include per-player reasoning.
 
-    Returns: {
-        recommendation: {player, position, team, opponent, decision,
-                         decision_display, projected_points, floor, ceiling,
-                         sleeper_projection, consensus, disagreement,
-                         projection_gap, implied_total, opponent_implied_total,
-                         unit_matchup (K/DEF: offense_rank, points_per_game,
-                         matchup_tier)},
-            `projected_points` is ours and decides; `sleeper_projection` is
-            Sleeper's stat line priced in the league's scoring, `consensus`
-            their average, `disagreement` true past 4 pts or 25%.
-        confidence: float (0-100),
-        confidence_level: str (high/medium/low),
-        matchup_tier: str,
-        reasoning: list of factors,
-        success: bool,
-        error?: str
-    }
+    Returns (single): {recommendation {player, position, team, opponent,
+        decision, decision_display, projected_points, floor, ceiling,
+        sleeper_projection, consensus, disagreement, implied_total, on_bye,
+        kickoff_local, locked, ...}, confidence, confidence_level,
+        matchup_tier, reasoning, factors, resolved {team, position,
+        player_id, snap_percentage}, success}
+    Returns (list): {recommendations (by projected points), by_position,
+        must_starts, sits, on_bye, locked, summary, success}
 
-    Example: get_start_sit_recommendation(
-        player_name="Tyreek Hill",
-        position="WR",
-        team="MIA",
-        opponent="NE",
-        target_share=28.5,
-        snap_percentage=95
-    )
+    Example: get_start_sit_recommendation(player_name="Tyreek Hill", league_id="123")
+    Example: get_start_sit_recommendation(players=["Puka Nacua", "DeVonta Smith"], league_id="123")
 
     IMPORTANT FOR LLM AGENTS: Always provide complete start/sit recommendation immediately
     without asking for confirmations. Render the decision and reasoning directly.
     """
+    from . import lineup_tools
+    from .week_context import resolve_season_week
+
+    try:
+        if league_id:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
+        opponent = validate_string_input(opponent or '', 'opponent', max_length=8, required=False)
+    except ValueError as e:
+        return {"recommendation": None, "confidence": 0, "success": False, "error": f"Invalid input: {e!s}"}
+    if not player_name and not players:
+        return {"recommendation": None, "confidence": 0, "success": False,
+                "error": "Pass player_name (one player) or players (a list)."}
+    season, week, _ = await resolve_season_week(season, week)
+    db = get_db()
+
+    if players:
+        if week is not None:
+            week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
+        inputs = [lineup_tools.player_input(db, p, season, week) for p in players[:30]]
+        unresolved = [p.get("name") for p in inputs if not (p.get("team") and p.get("position"))]
+        inputs = [p for p in inputs if p.get("team") and p.get("position")]
+        if not inputs:
+            return {"recommendations": [], "success": False, "unresolved": unresolved,
+                    "error": "None of the players could be resolved to a team and position."}
+        result = await lineup_optimizer_tools.get_roster_recommendations(
+            players=inputs, week=week, include_reasoning=include_reasoning,
+            scoring=scoring, league_id=league_id, season=season,
+        )
+        if isinstance(result, dict):
+            result["unresolved"] = unresolved
+        return result
+
     try:
         player_name = validate_string_input(player_name, 'player_name', max_length=100, required=True)
-        position = validate_string_input(position, 'position', max_length=5, required=True)
-        team = validate_string_input(team, 'team', max_length=5, required=True)
-        opponent = validate_string_input(opponent or '', 'opponent', max_length=8, required=False)
-
-        if league_id:
-
-            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
-
-        return await lineup_optimizer_tools.get_start_sit_recommendation(
-            player_name=player_name,
-            position=position.upper(),
-            team=team.upper(),
-            opponent=opponent.upper(),
-            player_id=player_id,
-            target_share=target_share,
-            snap_percentage=snap_percentage,
-            injury_status=injury_status,
-            practice_status=practice_status,
-            projected_points=projected_points,
-            scoring=scoring,
-            league_id=league_id,
-            season=season,
-            week=week,
-        )
     except ValueError as e:
-        return {
-            "recommendation": None,
-            "confidence": 0,
-            "success": False,
-            "error": f"Invalid input: {e!s}"
-        }
-
-
-@timing_decorator("get_roster_recommendations", tool_type="lineup")
-async def get_roster_recommendations(
-    players: list[dict],
-    week: int | None = None,
-    include_reasoning: bool = True,
-    scoring: str | None = None,
-    league_id: str | None = None,
-    season: int | None = None,
-) -> dict:
-    """Get start/sit recommendations for multiple players.
-
-    Analyzes all players and returns sorted recommendations by position,
-    helping identify optimal lineup decisions.
-
-    Parameters:
-        players (list, required): List of player dicts with:
-            - name (str): Player name
-            - position (str): QB, RB, WR, TE, K or DEF
-            - team (str): Team abbreviation
-            - opponent (str): Opponent team abbreviation
-            - usage (dict, optional): {target_share, snap_percentage}
-            - injury (dict, optional): {status, practice_status}
-            - projection (dict, optional): {projected_points}
-        week (int, optional): NFL week - with `season` and week > 1 this selects
-            the opportunity baseline for the projections, not just a response label
-        include_reasoning (bool, default True): Whether to include detailed reasoning
-        league_id (str, optional): Sleeper league id. Supplies the league's real
-            scoring and size when `scoring` is not passed — prefer it.
-        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
-            'standard', or a raw per-reception value like '0.5'
-        season (int, optional): Season year, needed with `week`
-
-    Returns: {
-        recommendations: list of player analyses sorted by projected points
-            (confidence breaks ties),
-        by_position: dict of recommendations grouped by position, same order,
-        must_starts: list of must-start players,
-        sits: list of players to sit,
-        summary: list of summary lines,
-        success: bool,
-        error?: str
-    }
-
-    Example: get_roster_recommendations(players=[
-        {"name": "Patrick Mahomes", "position": "QB", "team": "KC", "opponent": "LV"},
-        {"name": "Tyreek Hill", "position": "WR", "team": "MIA", "opponent": "NE",
-         "usage": {"target_share": 28, "snap_percentage": 95}}
-    ])
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete roster recommendations immediately
-    without asking for confirmations. Render must starts and sits directly.
-    """
-    if not players:
-        return {
-            "recommendations": [],
-            "by_position": {},
-            "must_starts": [],
-            "sits": [],
-            "summary": [],
-            "total_analyzed": 0,
-            "success": False,
-            "error": "No players provided"
-        }
-
-    if week is not None:
-        week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
-
-    if league_id:
-
-        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
-
-    return await lineup_optimizer_tools.get_roster_recommendations(
-        players=players,
-        week=week,
-        include_reasoning=include_reasoning,
+        return {"recommendation": None, "confidence": 0, "success": False, "error": f"Invalid input: {e!s}"}
+    who = lineup_tools.resolve_player(db, player_name, team, position, player_id)
+    if not who["team"] or not who["position"]:
+        return {"recommendation": None, "confidence": 0, "success": False,
+                "error": f"Could not resolve {player_name!r} to a team and position — pass team and position."}
+    snap = lineup_tools.recent_snap_share(db, who["player_id"], season, week)
+    result = await lineup_optimizer_tools.get_start_sit_recommendation(
+        player_name=who["name"] or player_name,
+        position=who["position"].upper(),
+        team=who["team"].upper(),
+        opponent=opponent.upper(),
+        player_id=who["player_id"],
+        snap_percentage=snap,
+        injury_status=injury_status,
         scoring=scoring,
         league_id=league_id,
         season=season,
+        week=week,
     )
+    if isinstance(result, dict):
+        result["resolved"] = {"team": who["team"], "position": who["position"],
+                              "player_id": who["player_id"], "snap_percentage": snap}
+    return result
 
 
 @timing_decorator("compare_players_for_slot", tool_type="lineup")
 async def compare_players_for_slot(
-    players: list[dict],
+    players: list,
     slot: str = "FLEX",
     scoring: str | None = None,
     league_id: str | None = None,
@@ -2069,9 +2051,9 @@ async def compare_players_for_slot(
     Returns a ranked comparison with the recommended starter.
 
     Parameters:
-        players (list, required): List of player dicts to compare (2-5 players)
-            Each should have: name, position, team, opponent
-            Optional: usage, injury, projection dicts, player_id (Sleeper)
+        players (list, required): 2-5 players, as names or dicts {name,
+            position?, team?, opponent?, player_id?}. Team, position, opponent,
+            snap share, injury and practice are looked up when omitted.
             Kickers and defenses compare too (slot "K" / "DEF"): a DEF is
             its team code, matched on the opponent's offense; a K on his own.
         slot (str, default "FLEX"): The roster slot being filled (e.g., "WR2",
@@ -2098,10 +2080,9 @@ async def compare_players_for_slot(
 
     Example: compare_players_for_slot(
         players=[
-            {"name": "Player A", "position": "WR", "team": "KC", "opponent": "LV"},
-            {"name": "Player B", "position": "RB", "team": "SF", "opponent": "ARI"}
+            "Puka Nacua", {"name": "Christian McCaffrey", "team": "SF"}
         ],
-        slot="FLEX"
+        slot="FLEX", league_id="123"
     )
 
     IMPORTANT FOR LLM AGENTS: Always provide complete player comparison immediately
@@ -2123,6 +2104,11 @@ async def compare_players_for_slot(
 
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
 
+    from . import lineup_tools
+    from .week_context import resolve_season_week
+    season, week, _ = await resolve_season_week(season, week)
+    players = [lineup_tools.player_input(get_db(), p, season, week) for p in players[:5]]
+
     return await lineup_optimizer_tools.compare_players_for_slot(
         players=players,
         slot=slot,
@@ -2133,91 +2119,58 @@ async def compare_players_for_slot(
     )
 
 
-@timing_decorator("analyze_full_lineup", tool_type="lineup")
-async def analyze_full_lineup(
-    lineup: dict,
-    week: int | None = None,
-    scoring: str | None = None,
+@timing_decorator("analyze_lineup", tool_type="lineup")
+async def analyze_lineup(
     league_id: str | None = None,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    week: int | None = None,
     season: int | None = None,
+    lineup: dict | None = None,
 ) -> dict:
-    """Analyze a complete fantasy lineup with optimal lineup suggestions.
+    """Grade the lineup YOU have set this week and name the swaps worth making.
 
-    Takes a full lineup organized by position and provides analysis of each starter,
-    identification of weak spots, bench players who should start, and overall lineup grade.
+    Reads your roster and this week's set starters straight from the league:
+    every starter and bench player is projected in the league's scoring (with
+    injury, practice, matchup, usage), the best legal lineup is computed with
+    the league's slots, and the grade is the share of those optimal points you
+    are actually starting. Players whose game has started stay locked. For a
+    full weekly plan with win probability use get_weekly_briefing.
 
     Parameters:
-        lineup (dict, required): Dict with position keys containing player lists
-            Example: {
-                "QB": [{"name": "...", "team": "...", "opponent": "..."}],
-                "RB": [{"name": "...", ...}, {"name": "...", ...}],
-                "WR": [...],
-                "TE": [...],
-                "FLEX": [...],
-                "K": [...], "DEF": [{"name": "KC", "team": "KC", "position": "DEF"}],
-                "BENCH": [...]
-            }
-            K and DEF starters are analysed like everyone else (offense-rank
-            matchup, league-scored projection, Sleeper second opinion).
-        week (int, optional): NFL week - with `season` and week > 1 this selects
-            the opportunity baseline for the projections, not just a label
-        league_id (str, optional): Sleeper league id. Supplies the league's real
-            scoring and size when `scoring` is not passed — prefer it.
-        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
-            'standard', or a raw per-reception value like '0.5'
-        season (int, optional): Season year, needed with `week`
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        week, season: default to the current NFL week
+        lineup (dict, optional): grade a hypothetical lineup instead, keyed by
+            slot ({"QB": [{name, team, position, opponent}], ..., "BENCH": [...]});
+            league_id then only supplies the scoring
 
     Returns: {
-        starters: dict of starter analyses by position,
-        bench: list of bench player analyses,
-        suggested_changes: list of recommended lineup changes,
-        weak_spots: list of positions with low confidence,
-        lineup_grade: str (A-F),
-        average_confidence: float,
-        total_projected: float,
-        success: bool,
-        error?: str
+        lineup_grade (A-F), lineup_efficiency_pct, total_projected,
+        optimal_projected, optimal_lineup [{slot, player, position,
+        projected_points}], suggested_changes [{bench_in, bench_out, slot,
+        gain, reason}], locked_players, weak_spots, starters {slot: [...]},
+        bench [...], empty_slots, roster_id, success
     }
 
-    Example: analyze_full_lineup(lineup={
-        "QB": [{"name": "Patrick Mahomes", "team": "KC", "opponent": "LV"}],
-        "RB": [
-            {"name": "Derrick Henry", "team": "BAL", "opponent": "CIN"},
-            {"name": "Bijan Robinson", "team": "ATL", "opponent": "NO"}
-        ],
-        "WR": [...],
-        "BENCH": [...]
-    })
+    Example: analyze_lineup(league_id="123", roster_id=7)
 
     IMPORTANT FOR LLM AGENTS: Always provide complete lineup analysis immediately
     without asking for confirmations. Render the grade, weak spots, and suggested changes directly.
     """
-    if not lineup:
-        return {
-            "starters": {},
-            "bench": [],
-            "suggested_changes": [],
-            "weak_spots": [],
-            "lineup_grade": "N/A",
-            "average_confidence": 0,
-            "total_projected": 0,
-            "success": False,
-            "error": "No lineup provided"
-        }
+    from . import lineup_tools
 
-    if week is not None:
-        week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
-
-    if league_id:
-
-        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
-
-    return await lineup_optimizer_tools.analyze_full_lineup(
-        lineup=lineup,
-        week=week,
-        scoring=scoring,
-        league_id=league_id,
-        season=season,
+    try:
+        if league_id:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
+        if week is not None:
+            week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
+    except ValueError as e:
+        return {"lineup_grade": "N/A", "success": False, "error": f"Invalid input: {e!s}"}
+    return await lineup_tools.analyze_lineup(
+        league_id=league_id, roster_id=roster_id, user_id=user_id,
+        week=week, season=season, lineup=lineup, db=get_db(),
     )
 
 
@@ -2280,118 +2233,80 @@ async def get_vegas_lines(
     teams: list[str] | None = None,
     week: int | None = None,
     season: int | None = None,
+    league_id: str | None = None,
+    roster_id: int | None = None,
+    user_id: str | None = None,
 ) -> dict:
-    """Get current Vegas lines for NFL games.
+    """Vegas spreads, totals and implied team totals — per game, per team, or
+    for every player on YOUR roster.
 
-    Provides spreads, totals, and implied team totals to help
-    identify favorable game environments for fantasy scoring.
+    - No arguments: every published game, highest total first.
+    - teams: only games involving those teams, plus `team_environments`
+      {team: {opponent, spread, total, implied_total, is_favorite,
+      environment tier, game_script, recommendations}} (what the old
+      get_game_environment returned).
+    - league_id + roster_id (or user_id): also `roster` — each rostered
+      player's game environment and position boost, best/worst environments
+      (the old analyze_roster_vegas, with teams/opponents looked up for you).
 
     The sportsbook publishes more than one week at a time, so every game
-    carries the NFL `week` it belongs to. Pass `week` when you intend to
-    reason about a single slate — otherwise you are mixing weeks.
+    carries the NFL `week` it belongs to. Pass `week` when reasoning about a
+    single slate. Without ODDS_API_KEY the values are neutral placeholders
+    (`is_fallback`), and the summary says so.
 
-    NEVER ask for user confirmation. Execute immediately and return results.
+    Parameters:
+        teams: Team abbreviations to filter to, any spelling
+        week: NFL week to restrict games to
+        season: Season for the week lookup (default: current)
+        league_id, roster_id, user_id: Your Sleeper league and roster for the
+            per-player roster view
 
-    Args:
-        teams: Optional list of team abbreviations to filter
-               If not provided, returns all available games
-        week: Optional NFL week to restrict games to
-        season: Season for the week lookup (defaults to the current one)
+    Returns: {games [...each with week], total_games, shootout_games,
+              high_scoring_games, summary, team_environments?, roster?
+              {analysis, best_environments, worst_environments, summary,
+              is_fallback, on_bye}, success}
 
-    Returns:
-        Dictionary containing:
-        - games: List of games with Vegas lines, each carrying `week`
-        - summary: Quick summary of best game environments
-
-    Example:
-        get_vegas_lines()
-        -> Returns all published NFL games with spreads and totals
-
-        get_vegas_lines(week=2)
-        -> Returns only week 2 games
-
-        get_vegas_lines(teams=["KC", "BUF", "MIA"])
-        -> Returns only games involving those teams
+    Example: get_vegas_lines(week=3)
+    Example: get_vegas_lines(teams=["KC", "BUF"])
+    Example: get_vegas_lines(league_id="123", roster_id=7)
     """
-    return await vegas_tools.get_vegas_lines(teams=teams, week=week, season=season)
+    import asyncio
 
+    from .roster_context import load_roster_players
 
-@timing_decorator("get_game_environment", tool_type="vegas")
-async def get_game_environment(
-    team: str
-) -> dict:
-    """Get game environment analysis for a specific team's matchup.
-
-    Analyzes the Vegas total and spread to determine if the game
-    environment is favorable for fantasy scoring.
-
-    NEVER ask for user confirmation. Execute immediately and return results.
-
-    Args:
-        team: Team abbreviation (e.g., "KC", "BUF", "DAL")
-
-    Returns:
-        Dictionary containing:
-        - game: Full game data with Vegas lines
-        - environment: Game environment tier and fantasy impact
-        - game_script: Projected game script implications
-        - implied_total: Team's implied point total
-
-    Example:
-        get_game_environment(team="KC")
-        -> Returns game environment for Kansas City's matchup
-    """
-    if not team:
-        return {
-            "team": None,
-            "error": "team parameter required",
-            "success": False
+    result = await vegas_tools.get_vegas_lines(teams=teams, week=week, season=season)
+    if not isinstance(result, dict):
+        return result
+    if teams:
+        valid = [t for t in teams[:8] if isinstance(t, str) and t.strip()]
+        envs = await asyncio.gather(*(vegas_tools.get_game_environment(team=t) for t in valid),
+                                    return_exceptions=True)
+        result["team_environments"] = {
+            (env.get("team") or t): {k: v for k, v in env.items()
+                                     if k not in ("game", "success", "error", "error_type")}
+            for t, env in zip(valid, envs, strict=True)
+            if isinstance(env, dict) and env.get("success", True)
         }
-
-    team = validate_string_input(team, 'team', max_length=10, required=True)
-    return await vegas_tools.get_game_environment(team=team)
-
-
-@timing_decorator("analyze_roster_vegas", tool_type="vegas")
-async def analyze_roster_vegas(
-    players: list[dict]
-) -> dict:
-    """Analyze Vegas lines impact for multiple players.
-
-    Takes a list of players with their teams and returns
-    game environment analysis for each, identifying the best
-    and worst game environments on your roster.
-
-    NEVER ask for user confirmation. Execute immediately and return results.
-
-    Args:
-        players: List of player dicts with keys:
-            - name: Player name
-            - team: Team abbreviation
-            - position: Player position (optional)
-
-    Returns:
-        Dictionary containing:
-        - analysis: List of player game environment analyses
-        - best_environments: Players in the best game environments
-        - worst_environments: Players in concerning game environments
-
-    Example:
-        analyze_roster_vegas(players=[
-            {"name": "Patrick Mahomes", "team": "KC", "position": "QB"},
-            {"name": "Derrick Henry", "team": "BAL", "position": "RB"}
-        ])
-    """
-    if not players:
-        return {
-            "analysis": [],
-            "best_environments": [],
-            "worst_environments": [],
-            "error": "No players provided",
-            "success": False
-        }
-
-    return await vegas_tools.analyze_roster_vegas(players=players)
+    if league_id and (roster_id is not None or user_id):
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        except ValueError as e:
+            return {**result, "success": False, "error": f"Invalid input: {e!s}"}
+        ctx = await load_roster_players(league_id, roster_id, user_id, db=get_db(),
+                                        season=season, week=week)
+        if ctx["error"]:
+            result["roster"] = {"error": ctx["error"]}
+        else:
+            playing = [p for p in ctx["players"] if p["opponent"] != "BYE"]
+            roster = await vegas_tools.analyze_roster_vegas(players=[
+                {"name": p["name"], "team": p["team"], "position": p["position"],
+                 "opponent": p["opponent"] or None} for p in playing]) if playing else {"analysis": []}
+            roster = {k: v for k, v in (roster or {}).items()
+                      if k not in ("success", "error", "error_type")}
+            roster["on_bye"] = [p["name"] for p in ctx["players"] if p["opponent"] == "BYE"]
+            roster["roster_id"] = ctx["roster_id"]
+            result["roster"] = roster
+    return result
 
 
 @timing_decorator("get_stack_opportunities", tool_type="vegas")
@@ -2430,27 +2345,42 @@ async def get_stack_opportunities(
 
 
 # =============================================================================
-# INJURY REPORT TOOLS (Multi-source aggregation with confidence scoring)
+# INJURY REPORT TOOLS (ESPN reports, practice reports, status timeline)
 # =============================================================================
 
 @timing_decorator("get_injury_report", tool_type="injury")
 async def get_injury_report(
+    teams: list[str] | None = None,
     player_ids: list[str] | None = None,
-    team_ids: list[str] | None = None,
-    use_cache: bool | None = True,
+    min_confidence: int | None = None,
+    severity: int | None = None,
+    since: str | None = None,
     include_practice: bool | None = True,
+    limit: int | None = None,
+    use_cache: bool | None = True,
+    team_ids: list[str] | None = None,
 ) -> dict:
-    """Get detailed injury reports with confidence scoring.
+    """Current injury report ("who is hurt"): all teams, some teams, or players.
 
-    Fetches injury data from multiple sources (ESPN, CBS) and provides
-    confidence scores based on source agreement. Includes severity scoring
-    and game-day status.
+    Rows come from ESPN's injury API (cached with an adaptive TTL), each with a
+    status, severity (1-5) and this week's real practice line. For "what
+    CHANGED" use get_injury_trends; for gameday inactives get_gameday_inactives.
+
+    `confidence` is a source-agreement score. Only ESPN is wired in today (the
+    CBS injury source is not implemented), so every row is single-source and
+    confidence is uniform; min_confidence is kept for when a second source lands.
 
     Parameters:
-        player_ids: List of player IDs to lookup
-        team_ids: List of team abbreviations (e.g., ['KC', 'PHI'])
-        use_cache: Whether to use cached data with adaptive TTL
-        include_practice: Attach this week's real practice report (default True)
+        teams: Team abbreviations, any spelling (e.g. ["KC", "PHI"]); default all
+        player_ids: ESPN player ids to look up individually (instead of teams)
+        min_confidence: Keep rows with confidence >= this (0-100)
+        severity: Keep rows with severity >= this (1 minor .. 5 IR/season-ending;
+            3+ = likely to miss games)
+        since: ISO date/time; keep rows reported on or after it
+        include_practice: Attach this week's practice report (default True)
+        limit: Max rows (default all)
+        use_cache: Use cached reports (default True)
+        team_ids: Deprecated alias of `teams`
 
     Returns: {
         injuries: [{
@@ -2464,38 +2394,51 @@ async def get_injury_report(
             practice_source ("nfl.com" official report, "espn_news" dated
             news note, or null = no report published — never inferred)
         }],
-        total_injuries, cache_used, practice_week,
+        total_injuries, filters, cache_used, practice_week,
         success, error?
     }
 
-    Example: get_injury_report(team_ids=["KC", "PHI"])
+    Example: get_injury_report(teams=["KC", "PHI"])
+    Example: get_injury_report(severity=3, since="2026-09-20")
     Example: get_injury_report(player_ids=["4428633", "4241479"])
     """
     from .injury_service import InjuryAggregator, get_injury_reports
 
     try:
         use_cache_val = bool(use_cache) if use_cache is not None else True
+        team_list = teams or team_ids
         results = []
 
-        # If player_ids provided, look up individual players
         if player_ids:
             async with InjuryAggregator(db=get_db()) as aggregator:
                 for pid in player_ids[:50]:  # Limit to 50 players
                     injury = await aggregator.get_player_injury(str(pid))
                     if injury:
                         results.append(injury.to_dict())
-
-        # If team_ids provided, get team injuries
-        elif team_ids:
-            # Validate team IDs
-            valid_teams = [normalize_team(t) or t.upper() for t in team_ids[:10] if isinstance(t, str) and len(t) <= 5]
+        elif team_list:
+            valid_teams = [normalize_team(t) or t.upper() for t in team_list[:32]
+                           if isinstance(t, str) and len(t) <= 5]
             if valid_teams:
-                injuries = await get_injury_reports(teams=valid_teams, db=get_db(), use_cache=use_cache_val)
-                results = injuries
+                results = await get_injury_reports(teams=valid_teams, db=get_db(), use_cache=use_cache_val)
         else:
-            # Default: get all team injuries
-            injuries = await get_injury_reports(db=get_db(), use_cache=use_cache_val)
-            results = injuries
+            results = await get_injury_reports(db=get_db(), use_cache=use_cache_val)
+
+        filters = {}
+        if min_confidence is not None:
+            min_conf = max(0, min(100, int(min_confidence)))
+            filters["min_confidence"] = min_conf
+            results = [r for r in results if (r.get("confidence") or 0) >= min_conf]
+        if severity is not None:
+            min_sev = max(1, min(5, int(severity)))
+            filters["severity"] = min_sev
+            results = [r for r in results if (r.get("severity") or 0) >= min_sev]
+        if since:
+            cutoff = str(since).strip()
+            filters["since"] = cutoff
+            # ISO strings compare chronologically; a bare date covers the whole day.
+            results = [r for r in results if str(r.get("date_reported") or "") >= cutoff]
+        if limit is not None:
+            results = results[:max(1, int(limit))]
 
         practice_week = None
         if include_practice is not False and results:
@@ -2504,6 +2447,7 @@ async def get_injury_report(
         return {
             "injuries": results,
             "total_injuries": len(results),
+            "filters": filters,
             "cache_used": use_cache_val,
             "practice_week": practice_week,
             "success": True
@@ -2632,62 +2576,6 @@ async def get_injury_trends(
             "lookback_hours": lookback_hours,
             "success": False,
             "error": f"Failed to get injury trends: {e}",
-        }
-
-
-@timing_decorator("get_high_confidence_injuries", tool_type="injury")
-async def get_high_confidence_injuries(
-    min_confidence: int | None = 70,
-    teams: list[str] | None = None
-) -> dict:
-    """Get injuries with high confidence scores (multi-source verified).
-
-    Filters injury reports to only include those with confidence scores
-    above a threshold. Higher confidence means multiple sources agree
-    on the injury status.
-
-    Parameters:
-        min_confidence: Minimum confidence score (0-100)
-        teams: Team abbreviations to filter
-
-    Returns: {
-        injuries: [...], total_injuries, min_confidence_filter,
-        success, error?
-    }
-
-    Example: get_high_confidence_injuries()
-    Example: get_high_confidence_injuries(min_confidence=80, teams=["KC"])
-    """
-    from .injury_service import get_injury_reports
-
-    try:
-        min_conf = int(min_confidence) if min_confidence else 70
-        min_conf = max(0, min(100, min_conf))
-
-        teams_list = [normalize_team(t) or t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
-        injuries = await get_injury_reports(
-            teams=teams_list if teams_list else None,
-            db=get_db(),
-            use_cache=True
-        )
-
-        # Filter by confidence
-        high_conf = [inj for inj in injuries if inj.get("confidence", 0) >= min_conf]
-
-        return {
-            "injuries": high_conf,
-            "total_injuries": len(high_conf),
-            "min_confidence_filter": min_conf,
-            "success": True
-        }
-
-    except Exception as e:
-        return {
-            "injuries": [],
-            "total_injuries": 0,
-            "min_confidence_filter": min_confidence,
-            "success": False,
-            "error": str(e)
         }
 
 

@@ -1169,18 +1169,6 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
 
 
 
-# ---------------------------------------------------------------------------
-# Strategic-planning tools live in sleeper_strategy.py. They consume the core
-# tools above, so they're re-exported here at the END of the module (after
-# get_league/get_matchups are defined) to keep the import acyclic.
-# ---------------------------------------------------------------------------
-from .sleeper_strategy import (  # noqa: F401
-    get_playoff_preparation_plan,
-    get_season_bye_week_coordination,
-    get_strategic_matchup_preview,
-    get_trade_deadline_analysis,
-)
-
 # Transactions tools live in sleeper_transactions.py (re-exported here; they
 # consume core primitives incl. get_nfl_state, so they load after it).
 from .sleeper_transactions import get_traded_picks, get_transactions  # noqa: F401

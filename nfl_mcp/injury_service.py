@@ -579,10 +579,12 @@ class InjuryAggregator:
             return None
 
     async def fetch_cbs_injuries(self, teams: list[str] | None = None) -> list[InjuryReport]:
-        """Fetch injury reports from CBS Sports.
+        """CBS injury source: NOT IMPLEMENTED — always returns ``[]``.
 
-        Note: CBS doesn't have a public API, so this uses web scraping.
-        This is a placeholder for future implementation.
+        CBS has no public injury API and no scraper is wired in, so every
+        report is ESPN-only (single source) and ``confidence`` does not vary
+        with source agreement. Kept as the hook for a second source; do not
+        describe injuries as multi-source or CBS-verified.
 
         Args:
             teams: Optional list of team abbreviations

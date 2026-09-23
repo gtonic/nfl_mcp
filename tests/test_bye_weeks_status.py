@@ -224,14 +224,16 @@ class TestProjectPlayerTools:
         assert mock.call_args.kwargs["scoring"] == "0.5"
 
     @pytest.mark.asyncio
-    async def test_registry_project_player_accepts_bye_and_blank_opponent(self):
+    async def test_registry_project_players_accepts_bye_and_blank_opponent(self):
         from nfl_mcp import tool_registry
         mock = AsyncMock(return_value={"success": True})
-        with patch.object(pj, "project_player", mock):
-            await tool_registry.project_player("Star WR", "WR", "KC", "BYE")
-            await tool_registry.project_player("Star WR", "WR", "KC")
-        assert mock.call_args_list[0].kwargs["opponent"] == "BYE"
-        assert mock.call_args_list[1].kwargs["opponent"] == ""
+        with patch.object(pj, "project_players", mock):
+            await tool_registry.project_players(
+                [{"name": "Star WR", "position": "WR", "team": "KC", "opponent": "BYE"},
+                 {"name": "Star WR", "position": "WR", "team": "KC"}])
+        sent = mock.call_args.kwargs["players"]
+        assert sent[0]["opponent"] == "BYE"
+        assert "opponent" not in sent[1]
 
 
 # --------------------------------------------------------------------------

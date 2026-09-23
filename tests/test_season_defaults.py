@@ -69,13 +69,6 @@ class TestSeasonDefaults:
         season_param = sig.parameters['season']
         assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
 
-    def test_sleeper_bye_week_coordination_default_season(self):
-        """Verify sleeper bye_week_coordination defaults to season=2026."""
-        from nfl_mcp.sleeper_tools import get_season_bye_week_coordination
-        sig = inspect.signature(get_season_bye_week_coordination)
-        season_param = sig.parameters['season']
-        assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
-
     def test_get_current_season_and_week_exists(self):
         """Verify get_current_season_and_week function exists."""
         from nfl_mcp.nfl_tools import get_current_season_and_week

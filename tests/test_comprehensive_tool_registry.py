@@ -13,12 +13,9 @@ import pytest
 sys.path.insert(0, '/tmp/nfl_mcp')
 
 from nfl_mcp.tool_registry import (
-    analyze_full_lineup,
     analyze_opponent,
     analyze_roster_matchups,
-    analyze_roster_vegas,
     analyze_trade,
-    check_re_entry_status,
     compare_players_for_slot,
     crawl_url,
     fetch_all_players,
@@ -37,33 +34,24 @@ from nfl_mcp.tool_registry import (
     get_draft_picks,
     get_draft_traded_picks,
     get_fantasy_context,
-    get_game_environment,
     get_gameday_inactives,
-    get_high_confidence_injuries,
     get_injury_report,
     get_league,
     get_league_drafts,
     get_league_leaders,
     get_league_users,
-    get_matchup_difficulty,
     get_matchups,
     get_nfl_news,
     get_nfl_standings,
     get_nfl_state,
     get_playoff_bracket,
-    get_playoff_preparation_plan,
-    get_roster_recommendations,
     get_rosters,
     get_scheme_classification,
-    get_season_bye_week_coordination,
     get_stack_opportunities,
     get_start_sit_recommendation,
-    get_strategic_matchup_preview,
-    get_team_injuries,
     get_team_player_stats,
     get_team_schedule,
     get_teams,
-    get_trade_deadline_analysis,
     get_traded_picks,
     get_transactions,
     get_trending_players,
@@ -71,7 +59,6 @@ from nfl_mcp.tool_registry import (
     get_user_leagues,
     get_vegas_lines,
     get_waiver_log,
-    get_waiver_wire_dashboard,
     lookup_athlete,
     search_athletes,
 )
@@ -105,7 +92,6 @@ class TestToolRegistry:
         assert callable(get_teams)
         assert callable(fetch_teams)
         assert callable(get_depth_chart)
-        assert callable(get_team_injuries)
         assert callable(get_team_player_stats)
         assert callable(get_nfl_standings)
         assert callable(get_team_schedule)
@@ -127,10 +113,6 @@ class TestToolRegistry:
         assert callable(get_nfl_state)
         assert callable(get_trending_players)
         assert callable(get_fantasy_context)
-        assert callable(get_strategic_matchup_preview)
-        assert callable(get_season_bye_week_coordination)
-        assert callable(get_trade_deadline_analysis)
-        assert callable(get_playoff_preparation_plan)
         assert callable(get_user)
         assert callable(get_user_leagues)
         assert callable(get_league_drafts)
@@ -139,23 +121,15 @@ class TestToolRegistry:
         assert callable(get_draft_traded_picks)
         assert callable(fetch_all_players)
         assert callable(get_waiver_log)
-        assert callable(check_re_entry_status)
-        assert callable(get_waiver_wire_dashboard)
         assert callable(analyze_trade)
         assert callable(analyze_opponent)
         assert callable(get_defense_rankings)
-        assert callable(get_matchup_difficulty)
         assert callable(analyze_roster_matchups)
         assert callable(get_start_sit_recommendation)
-        assert callable(get_roster_recommendations)
         assert callable(compare_players_for_slot)
-        assert callable(analyze_full_lineup)
         assert callable(get_vegas_lines)
-        assert callable(get_game_environment)
-        assert callable(analyze_roster_vegas)
         assert callable(get_stack_opportunities)
         assert callable(get_injury_report)
-        assert callable(get_high_confidence_injuries)
         assert callable(get_gameday_inactives)
         assert callable(get_coaching_staff)
         assert callable(get_all_coaching_staffs)
@@ -180,9 +154,9 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         assert 'teams' in result or 'success' in result or 'error' in result
 
-        result = await get_team_injuries(team_id="KC")
+        result = await get_injury_report(teams=["KC"], include_practice=False)
         assert isinstance(result, dict)
-        assert 'team_id' in result or 'success' in result or 'error' in result
+        assert 'injuries' in result or 'success' in result or 'error' in result
 
     @pytest.mark.asyncio
     async def test_cbs_tools_functionality(self):
@@ -192,7 +166,7 @@ class TestToolRegistry:
         assert 'news' in result or 'success' in result or 'error' in result
 
         # Test with invalid parameters
-        result = await get_cbs_projections(position="INVALID", week=1)
+        result = await get_cbs_projections(position="INVALID")
         assert isinstance(result, dict)
         assert 'success' in result or 'error' in result
 
@@ -210,13 +184,9 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         assert 'games' in result or 'success' in result or 'error' in result
 
-        result = await get_game_environment(team="KC")
+        result = await get_vegas_lines(teams=["KC"])
         assert isinstance(result, dict)
-        assert 'team' in result or 'success' in result or 'error' in result
-
-        result = await analyze_roster_vegas(players=TEST_PLAYER_DATA)
-        assert isinstance(result, dict)
-        assert 'analysis' in result or 'success' in result or 'error' in result
+        assert 'team_environments' in result or 'success' in result or 'error' in result
 
         result = await get_stack_opportunities()
         assert isinstance(result, dict)
@@ -249,11 +219,6 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         assert 'success' in result or 'error' in result
 
-        # Test invalid player data for Vegas analysis
-        result = await analyze_roster_vegas(players=[])
-        assert isinstance(result, dict)
-        assert 'success' in result or 'error' in result
-
         # Test invalid team ID for scheme classification
         result = await get_scheme_classification(team_id="")
         assert isinstance(result, dict)
@@ -265,7 +230,7 @@ class TestToolRegistry:
         # Test that all tools return dictionaries with expected keys
         test_cases = [
             ("get_teams", {}),
-            ("get_team_injuries", {"team_id": "KC"}),
+            ("get_injury_report", {"teams": ["KC"], "include_practice": False}),
             ("get_cbs_player_news", {"limit": 5}),
             ("search_athletes", {"name": "Smith", "limit": 5}),
             ("get_vegas_lines", {}),
@@ -275,7 +240,7 @@ class TestToolRegistry:
 
         for tool_name, params in test_cases:
             tool_func = globals()[tool_name]
-            if tool_name in ["get_team_injuries", "get_coaching_staff"]:
+            if tool_name in ["get_injury_report", "get_coaching_staff"]:
                 # These require valid teams, so test with a known good one
                 try:
                     result = await tool_func(**params)
@@ -299,7 +264,7 @@ class TestToolRegistry:
         # Test parameter validation for various tools
         test_cases = [
             ("get_nfl_news", {"limit": 1000}),  # Too high limit
-            ("get_cbs_projections", {"position": "QB", "week": 18}),  # Valid
+            ("get_cbs_projections", {"position": "QB"}),  # Valid
             ("get_cbs_expert_picks", {"week": 18}),  # Valid
             ("get_team_schedule", {"team_id": "KC", "season": 2025}),  # Valid
             ("get_league", {"league_id": "1234567890"}),  # Valid

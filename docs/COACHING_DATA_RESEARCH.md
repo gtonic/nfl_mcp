@@ -374,8 +374,8 @@ get_coordinator_tendencies,  # Play-calling patterns and tendencies
 |--------------|---------------------|
 | `get_depth_chart` | Add coach responsible for each position group |
 | `analyze_trade` | Factor in coaching quality at destination |
-| `get_strategic_matchup_preview` | Include scheme matchup analysis |
-| `get_roster_recommendations` | Consider coaching scheme fit |
+| `analyze_roster_matchups` | Include scheme matchup analysis |
+| `get_start_sit_recommendation` | Consider coaching scheme fit |
 
 ---
 

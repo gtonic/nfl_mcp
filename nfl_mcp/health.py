@@ -70,6 +70,17 @@ def _get_prefetch_config() -> dict[str, Any]:
     }
 
 
+def _get_tool_profile() -> dict[str, Any]:
+    """The registered tool profile and how many tools it exposes."""
+    try:
+        from .tool_registry import get_all_tools, tool_profile
+
+        profile = tool_profile()
+        return {"profile": profile, "count": len(get_all_tools(profile))}
+    except Exception as e:
+        return {"profile": None, "count": None, "error": str(e)}
+
+
 async def health_check() -> JSONResponse:
     """Health check endpoint for monitoring server status.
 
@@ -126,6 +137,7 @@ async def health_check() -> JSONResponse:
             "rate_limiters": rate_limiters,
             "open_circuit_breakers": open_breakers,
             "prefetch": _get_prefetch_config(),
+            "tools": _get_tool_profile(),
         },
         status_code=status_code,
     )
