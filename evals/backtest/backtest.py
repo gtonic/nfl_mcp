@@ -136,11 +136,14 @@ def build_samples(
         season: compute_defense_rankings(_weekly_allowed(rs), season)
         for season, rs in (prior_records or {}).items()
     }
-    games_by_player: dict[str, dict[int, dict]] = defaultdict(dict)
+    # Keyed by season too: with several seasons in `records`, a (player, week)
+    # key let 2024's weeks overwrite 2023's, so 2023 samples were "predicted"
+    # from the next season's games.
+    games_by_player: dict[tuple[int, str], dict[int, dict]] = defaultdict(dict)
     for r in records:
-        games_by_player[r["player_id"]][r["week"]] = r
+        games_by_player[(r["season"], r["player_id"])][r["week"]] = r
 
-    dcache: dict[int, dict[str, dict[str, int]]] = {}
+    dcache: dict[tuple[int, int], dict[str, dict[str, int]]] = {}
     rcache: dict[tuple[int, int], dict] = {}
     by_season: dict[int, list[dict]] = defaultdict(list)
     for r in records:
@@ -153,16 +156,17 @@ def build_samples(
             continue
         if positions and r["position"] not in positions:
             continue
-        prior = [g for w, g in games_by_player[r["player_id"]].items() if w < wk]
+        prior = [g for w, g in games_by_player[(r["season"], r["player_id"])].items() if w < wk]
         if len(prior) < min_prior:
             continue
         trailing = sum(g["ppr"] for g in prior) / len(prior)
         if trailing < min_trailing:
             continue
 
-        if wk not in dcache:
-            dcache[wk] = _defense_ranks(records, wk)
-        rank = dcache[wk].get(r["position"], {}).get(r["opponent"])
+        key = (r["season"], wk)
+        if key not in dcache:
+            dcache[key] = _defense_ranks(by_season[r["season"]], wk)
+        rank = dcache[key].get(r["position"], {}).get(r["opponent"])
         tier = _tier_for(rank)
         m_mult = matchup_multiplier(r["position"], tier)  # position-aware (live)
         tier_dev = _MATCHUP_TIER_DEV.get(tier, 0.0)        # raw ±dev for sweeps
@@ -346,7 +350,8 @@ def print_report(res: dict) -> None:
     for pos, d in res["per_position"].items():
         bm, om = d["base"]["mae"], d["opportunity"]["mae"]
         print(f"  {pos}: n={d['n']:<4} MAE {bm} -> {om} ({(bm-om)/bm*100:+.1f}%)  "
-              f"Spearman {d['base']['spearman']} -> {d['opportunity']['spearman']}")
+              f"Spearman {d['base']['spearman']} -> {d['opportunity']['spearman']}  "
+              f"bias {d['base']['bias']:+.2f} -> {d['opportunity']['bias']:+.2f}")
 
     we = res.get("weather_effect", {})
     print("\nWeather (wind) effect on passing (QB/WR/TE) in windy outdoor games "
