@@ -142,6 +142,29 @@ def compute_streaming_scores(
     return out
 
 
+def unit_points(position: str, week_row: dict, model) -> float | None:
+    """Expected fantasy points for a DST/K streaming week in the league's scoring.
+
+    Priced like the projection engine: the default-scoring DST/K baseline from
+    the relevant scoring average (opponent's for a defense, own for a kicker),
+    rescaled by the league's points-allowed tiers / FG distance values. None
+    when the week has no scoring average to price.
+    """
+    from .projections import defense_base, kicker_base
+    pos = position.upper()
+    if pos in ("DST", "DEF"):
+        total = week_row.get("opponent_points_scored_avg")
+        if total is None:
+            return None
+        return round(defense_base(total) * model.defense_scale(total), 1)
+    if pos == "K":
+        total = week_row.get("own_points_scored_avg")
+        if total is None:
+            return None
+        return round(kicker_base(total) * model.kicker_scale(), 1)
+    return None
+
+
 async def _resolve_offense(season: int, strength_season: int | None):
     """Return ``(offense_rankings, used_season, is_fallback)`` with prior-season fallback."""
     target = strength_season if strength_season is not None else season
@@ -208,6 +231,7 @@ async def get_streaming_options(
     top_n: int = 8,
     league_id: str | None = None,
     only_available: bool = False,
+    scoring: str | None = None,
 ) -> dict:
     """Rank weekly streaming options per position over the next 1-4 weeks.
 
@@ -230,6 +254,10 @@ async def get_streaming_options(
             players at that position from the athletes cache).
         only_available: with league_id, keep only options that have a free-agent
             streamer (applied before top_n, so you get the top_n *available*).
+        scoring: League scoring label. DST/K options carry `projected_points`
+            priced in the league's full scoring_settings when league_id is
+            given (points-allowed tiers, FG distance values), else in this
+            preset (Sleeper defaults). Reported as `scoring_used`.
 
     Returns a dict with ``streaming_options`` (per-position, best-first) plus
     ``defense_source_season`` / ``offense_source_season`` transparency fields.
@@ -274,9 +302,21 @@ async def get_streaming_options(
         rostered, rosters_ok = await _rostered_ids(league_id)
         availability_active = rosters_ok
 
+    from .projections import _scoring_for
+    from .scoring import resolve_scoring
+    model = resolve_scoring(await _scoring_for(scoring, league_id))
+
     streaming_options: dict[str, list[dict]] = {}
     for pos, teams in scores.items():
         rows = [{"team": team, **data} for team, data in teams.items()]
+        if pos in ("DST", "DEF", "K"):
+            for r in rows:
+                pts = []
+                for w in r["weeks"]:
+                    w["projected_points"] = unit_points(pos, w, model)
+                    if w["projected_points"] is not None:
+                        pts.append(w["projected_points"])
+                r["projected_points"] = round(sum(pts) / len(pts), 1) if pts else None
         rows.sort(key=lambda r: r["stream_score"], reverse=True)
         if availability_active:
             for r in rows:
@@ -307,6 +347,7 @@ async def get_streaming_options(
         "offense_source_season": off_season,
         "offense_is_fallback": off_fb,
         "availability_active": availability_active,
+        "scoring_used": model.summary(),
         "streaming_options": streaming_options,
         "stream_score_explained": (
             "0-100, higher = better weekly stream. QB/RB/WR/TE: softer opponent "

@@ -1180,6 +1180,7 @@ async def project_player(
     week: int | None = None,
     wind_mph: float | None = None,
     is_dome: bool = False,
+    league_id: str | None = None,
 ) -> dict:
     """Project weekly fantasy points for one player (transparent, no scraping).
 
@@ -1198,6 +1199,10 @@ async def project_player(
         snap_percentage (float, optional), usage_trend ("up"/"down", optional),
         scoring ("ppr"/"half-ppr"/"standard"), superflex (bool),
         season (int, optional), week (int, optional).
+        league_id (str, optional): Sleeper league id — prices every stat with
+            the league's full scoring_settings (pass TD/INT values, fumbles, TE
+            premium, first downs, bonuses, K distance and DEF points-allowed
+            tiers) instead of the preset; reported as `scoring_used`.
     Returns: {projection:{projected_points, floor, ceiling, confidence, on_bye,
               bye_status, breakdown,...}, season, week, week_inferred, success}
     """
@@ -1213,6 +1218,7 @@ async def project_player(
         opponent=opponent.upper(), snap_percentage=snap_percentage, usage_trend=usage_trend,
         injury_status=injury_status, scoring=scoring, superflex=superflex,
         season=season, week=week, wind_mph=wind_mph, is_dome=is_dome, db=get_db(),
+        league_id=league_id,
     )
 
 
@@ -1224,6 +1230,7 @@ async def project_players(
     num_teams: int = 12,
     season: int | None = None,
     week: int | None = None,
+    league_id: str | None = None,
 ) -> dict:
     """Project weekly fantasy points for multiple players at once.
 
@@ -1238,6 +1245,10 @@ async def project_players(
             NFL week (`week_inferred`); with week > 1 the opportunity-based
             baseline is used (trailing nflverse volume, backtested to beat
             rank-bucket PPG).
+        league_id (str, optional): Sleeper league id — prices every stat with
+            the league's full scoring_settings (pass TD/INT values, fumbles, TE
+            premium, first downs, bonuses, K distance and DEF points-allowed
+            tiers) instead of the preset; reported as `scoring_used`.
     Returns: {projections:[...], on_bye:[names], schedule_known, season, week,
               week_inferred, total, success}
 
@@ -1247,7 +1258,7 @@ async def project_players(
         return {"projections": [], "total": 0, "success": False, "error": "No players provided"}
     return await projections.project_players(
         players=players, scoring=scoring, superflex=superflex, num_teams=num_teams,
-        season=season, week=week, db=get_db(),
+        season=season, week=week, db=get_db(), league_id=league_id,
     )
 
 
@@ -1260,6 +1271,7 @@ async def get_opportunity_projections(
     min_games: int = 2,
     top_n: int = 50,
     scoring: str = "ppr",
+    league_id: str | None = None,
 ) -> dict:
     """Opportunity-based projections from trailing volume (beats trailing-PPG).
 
@@ -1280,9 +1292,13 @@ async def get_opportunity_projections(
         scoring (str, optional): 'ppr' (default), 'half_ppr', 'standard', or a
             raw per-reception value like '0.5'. Changes both the points and the
             receiver-vs-runner order, so pass your league's real setting.
+        league_id (str, optional): Sleeper league id — prices every stat with
+            the league's full scoring_settings (pass TD/INT values, fumbles, TE
+            premium, first downs, bonuses, K distance and DEF points-allowed
+            tiers) instead of the preset; reported as `scoring_used`.
 
     Returns: {
-        season, week, lookback, count, scoring, ppr,
+        season, week, lookback, count, scoring, ppr, scoring_used,
         projections: [{player_id, name, position, team, projected_points
                        (in `scoring`; `projected_ppr` is the same number under
                        its historical key), exp_targets, exp_carries,
@@ -1303,6 +1319,7 @@ async def get_opportunity_projections(
         min_games=min_games,
         top_n=top_n,
         scoring=scoring,
+        league_id=league_id,
     )
 
 
@@ -1594,6 +1611,7 @@ async def get_streaming_options(
     top_n: int = 8,
     league_id: str | None = None,
     only_available: bool = False,
+    scoring: str | None = None,
 ) -> dict:
     """Rank weekly streaming options per position over the next 1-4 weeks.
 
@@ -1616,6 +1634,9 @@ async def get_streaming_options(
         top_n (int, optional): Max options per position (default 8; 0 = all).
         league_id (str, optional): Sleeper league id for free-agent availability.
         only_available (bool, optional): keep only free-agent-available options.
+        scoring (str, optional): preset for DST/K `projected_points` when no
+            league_id is given; with league_id the league's own K distance and
+            DEF points-allowed values are used (`scoring_used`).
 
     Returns: {
         season, weeks, positions,
@@ -1640,6 +1661,7 @@ async def get_streaming_options(
         top_n=top_n,
         league_id=league_id,
         only_available=only_available,
+        scoring=scoring,
     )
 
 

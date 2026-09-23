@@ -35,7 +35,12 @@ def league_format_from_settings(league: dict | None) -> dict:
     num_teams = league.get("total_rosters") or len(league.get("rosters", []) or []) or 12
     # Sleeper league settings.type: 0=redraft, 1=keeper, 2=dynasty
     dynasty = (league.get("settings", {}) or {}).get("type") == 2
+    from .scoring import ScoringModel
     return {
+        # Everything beyond `rec` (pass TD value, TE premium, bonuses): market
+        # values are priced for a stock league of this PPR, so callers correct
+        # them per position with `scoring_model.value_multiplier`.
+        "scoring_model": ScoringModel.from_settings(scoring, league.get("name")),
         "ppr": ppr,
         "num_qbs": 2 if superflex else 1,
         "num_teams": int(num_teams),
@@ -372,6 +377,9 @@ async def analyze_trade(
                 value, value_source, market = analyzer._calculate_player_value(
                     player, service, values_index
                 )
+                if model is not None:
+                    pos = player.get("position") or (market or {}).get("position")
+                    value *= model.value_multiplier(pos)
                 # If the player wasn't on the roster we still resolved a market
                 # value — backfill the real name/position instead of "Unknown (id)".
                 if market and str(player.get("full_name", "")).startswith("Unknown"):
@@ -387,6 +395,7 @@ async def analyze_trade(
                 out.append(player)
             return out
 
+        model = league_fmt.get("scoring_model")
         team1_gives_enriched = _enrich_gives(team1_gives, team1_players)
         team2_gives_enriched = _enrich_gives(team2_gives, team2_players)
 
@@ -465,6 +474,9 @@ async def analyze_trade(
                 "num_teams": league_fmt["num_teams"],
                 "dynasty": league_fmt["is_dynasty"],
             },
+            # Values are scaled per position by what this league's settings
+            # beyond PPR are worth (1.0 everywhere in a stock league).
+            "scoring_used": model.summary() if model is not None else None,
             "value_source": values_index.get("source"),
             "values_stale": values_stale,
             "team1_analysis": {

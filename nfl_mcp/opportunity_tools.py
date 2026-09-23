@@ -18,6 +18,7 @@ from .config import LONG_TIMEOUT, create_http_client
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .matchup_tools import NFLVERSE_PLAYER_STATS_URL, season_cache_fresh
 from .player_values import scoring_to_ppr
+from .scoring import ScoringModel, league_scoring, resolve_scoring
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,19 @@ _STAT_FIELDS = (
     "targets", "carries", "attempts", "receptions",
     "receiving_yards", "receiving_tds", "rushing_yards", "rushing_tds",
     "passing_yards", "passing_tds", "interceptions",
+    # Priced only when the league scores them (see `scoring.ScoringModel`).
+    "completions", "sacks_suffered", "sack_fumbles", "sack_fumbles_lost",
+    "passing_first_downs", "passing_2pt_conversions",
+    "rushing_fumbles", "rushing_fumbles_lost", "rushing_first_downs",
+    "rushing_2pt_conversions",
+    "receiving_fumbles", "receiving_fumbles_lost", "receiving_first_downs",
+    "receiving_2pt_conversions",
 )
+# nflverse renamed some columns in the `stats_player` release; read the new
+# name first. `interceptions` used to be read as-is and was always 0 in the
+# current files, so no QB was ever charged for an interception.
+_COLUMN_ALIASES = {"interceptions": ("passing_interceptions", "interceptions"),
+                   "sacks_suffered": ("sacks_suffered", "sacks")}
 # season -> (fetched_at, logs). The current season expires so a long-running
 # server does not keep projecting week 8 from the weeks it saw at startup.
 _logs_cache: dict[int, tuple[datetime, dict[str, dict]]] = {}
@@ -65,7 +78,8 @@ def parse_game_logs(csv_text: str) -> dict[str, dict]:
         })
         game = {"week": int(wk)}
         for f in _STAT_FIELDS:
-            game[f] = _to_float(row.get(f))
+            cols = _COLUMN_ALIASES.get(f, (f,))
+            game[f] = _to_float(next((row[c] for c in cols if row.get(c) not in (None, "")), None))
         entry["games"].append(game)
     return logs
 
@@ -213,6 +227,7 @@ def opportunity_base_for(
     min_games: int = 2,
     ppr: float = opportunity.FULL_PPR,
     extra_volume: dict[str, float] | None = None,
+    scoring: ScoringModel | None = None,
 ) -> float | None:
     """Opportunity projection for a player (by name) usable as a projection base.
 
@@ -226,20 +241,22 @@ def opportunity_base_for(
     if len(prior) < min_games:
         return None
     return opportunity.project_opportunity(
-        prior, position, lookback=lookback, ppr=ppr, extra_volume=extra_volume
+        prior, position, lookback=lookback, ppr=ppr, extra_volume=extra_volume,
+        scoring=scoring,
     )
 
 
 def _project_entry(
     entry: dict, week: int, lookback: int, min_games: int,
     ppr: float = opportunity.FULL_PPR,
+    scoring: ScoringModel | None = None,
 ) -> dict | None:
     """Project one player from games before `week`. None if too few prior games."""
     prior = [g for g in entry["games"] if g["week"] < week]
     if len(prior) < min_games:
         return None
     proj = opportunity.project_opportunity(
-        prior, entry["position"], lookback=lookback, ppr=ppr
+        prior, entry["position"], lookback=lookback, ppr=ppr, scoring=scoring
     )
     if proj is None:
         return None
@@ -261,6 +278,17 @@ def _project_entry(
     }
 
 
+async def _league_model(league_id: str) -> ScoringModel | None:
+    """The league's full scoring model, or None when it cannot be loaded."""
+    try:
+        from . import sleeper_tools
+        league = ((await sleeper_tools.get_league(league_id)) or {}).get("league") or {}
+    except Exception as e:  # a league lookup must not sink the projection
+        logger.debug(f"league lookup for scoring failed: {e}")
+        return None
+    return league_scoring(league).model if league else None
+
+
 @handle_http_errors(
     default_data={"season": None, "week": None, "projections": []},
     operation_name="computing opportunity projections",
@@ -273,6 +301,7 @@ async def get_opportunity_projections(
     min_games: int = 2,
     top_n: int = 50,
     scoring: str = "ppr",
+    league_id: str | None = None,
 ) -> dict:
     """Opportunity-based projections for `week` from trailing volume.
 
@@ -292,6 +321,10 @@ async def get_opportunity_projections(
         scoring: League scoring — 'ppr', 'half_ppr', 'standard', or a raw
             per-reception value like '0.5'. Changes both the points and the
             ordering (receivers vs runners), so pass your league's real setting.
+        league_id: Sleeper league id. When given, the league's full
+            scoring_settings are used (pass TD / INT values, fumbles, TE
+            premium, first downs, yardage bonuses) instead of the preset;
+            reported as `scoring_used`.
 
     Returns a dict with `projections` (highest-first), each carrying the expected
     volume and projected points in the requested scoring.
@@ -299,7 +332,10 @@ async def get_opportunity_projections(
     default_data = {"season": season, "week": week, "projections": []}
     if not isinstance(week, int) or week < 2:
         return handle_validation_error("week must be an integer >= 2 (needs prior weeks)", default_data)
-    ppr = scoring_to_ppr(scoring)
+    model = resolve_scoring(scoring)
+    if league_id:
+        model = await _league_model(league_id) or model
+    ppr = model.rec if league_id else scoring_to_ppr(scoring)
 
     logs = await _fetch_game_logs(season)
     if not logs:
@@ -313,7 +349,8 @@ async def get_opportunity_projections(
         entries = list(logs.values())
 
     projections = [
-        p for e in entries if (p := _project_entry(e, week, lookback, min_games, ppr))
+        p for e in entries
+        if (p := _project_entry(e, week, lookback, min_games, ppr, model))
     ]
     projections.sort(key=lambda p: p["projected_points"], reverse=True)
     if not players and top_n:
@@ -325,11 +362,13 @@ async def get_opportunity_projections(
         "lookback": lookback,
         "scoring": scoring,
         "ppr": ppr,
+        "scoring_used": model.summary(),
         "count": len(projections),
         "projections": projections,
         "method": (
             "opportunity baseline: recency-weighted trailing volume × "
-            f"position-shrunk points-per-opportunity ({ppr} pts/reception). "
+            f"position-shrunk points-per-opportunity ({ppr} pts/reception, "
+            "every other stat at the league's scoring). "
             "Beats trailing-PPG on backtest."
         ),
         "message": (

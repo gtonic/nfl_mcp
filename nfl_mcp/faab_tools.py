@@ -141,8 +141,11 @@ async def recommend_faab_bid(
             "message": (f"'{player_id or player_name}' not in the consensus value list "
                         "(deep bench / K / DST) — minimal FAAB (0-1%) or a priority claim."),
         })
-    target_value = float(target.get("value") or 0)
     position = (target.get("position") or "").upper()
+    # Market values are priced for a stock league at this PPR; this league's
+    # other settings (TE premium, 6-pt pass TD …) move them per position.
+    model = fmt["scoring_model"]
+    target_value = float(target.get("value") or 0) * model.value_multiplier(position)
 
     # A player someone already rosters is not a waiver target at any price —
     # reserve and taxi included, since those are owned too.
@@ -192,8 +195,9 @@ async def recommend_faab_bid(
             for p in active_enriched(my_roster):
                 v = service.lookup(values, player_id=p.get("player_id"), name=p.get("full_name"))
                 if v and v.get("value") is not None:
-                    mine.append({"position": (p.get("position") or "").upper(),
-                                 "projected_points": float(v["value"])})
+                    pos = (p.get("position") or "").upper()
+                    mine.append({"position": pos, "projected_points":
+                                 float(v["value"]) * model.value_multiplier(pos)})
             upgrade = max(0.0, lineup_gain(mine, slots, {"position": position,
                                                           "projected_points": target_value}))
             replacement_value = target_value - upgrade
@@ -304,6 +308,7 @@ async def recommend_faab_bid(
         # Market value is season-long; get_waiver_targets answers for this week.
         # A player can be a strong claim for one and depth for the other.
         "horizon": "rest_of_season",
+        "scoring_used": model.summary(),
         "total_budget": total_budget if is_faab else None,
         "remaining_budget": remaining_budget,
         "message": (
