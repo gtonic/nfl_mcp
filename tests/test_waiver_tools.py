@@ -373,3 +373,40 @@ class TestNullAddsDrops:
         assert by_id["1"]["drops"] == {"6803": 3}
         assert by_id["2"]["adds"] == {"1234": 7}
         assert by_id["2"]["drops"] == {}
+
+
+class TestFailedClaims:
+    """A failed claim moved nobody and must not count as an add."""
+
+    TXNS = [
+        {"type": "waiver", "status": "complete", "transaction_id": "a", "created": 100,
+         "adds": {"p1": 3}, "drops": {"p9": 3}, "roster_ids": [3]},
+        # Lost claim on the same player by another team.
+        {"type": "waiver", "status": "failed", "transaction_id": "b", "created": 100,
+         "adds": {"p1": 5}, "drops": {"p8": 5}, "roster_ids": [5],
+         "settings": {"waiver_bid": 7}},
+        # p9 dropped by 3, then a failed claim on him: not a re-entry.
+        {"type": "waiver", "status": "failed", "transaction_id": "c", "created": 200,
+         "adds": {"p9": 4}, "drops": None, "roster_ids": [4]},
+    ]
+
+    def test_failed_claims_are_not_extracted(self):
+        out = WaiverAnalyzer()._extract_waiver_transactions(self.TXNS)
+        assert [t["transaction_id"] for t in out] == ["a"]
+
+    def test_failed_claim_is_not_a_re_entry(self):
+        analyzer = WaiverAnalyzer()
+        re_entries = analyzer._track_re_entries(analyzer._extract_waiver_transactions(self.TXNS))
+        assert "p9" not in re_entries
+
+    @pytest.mark.asyncio
+    async def test_waiver_log_reports_failed_claims_separately(self):
+        async def _txns(league_id, round):
+            return {"success": True, "transactions": self.TXNS}
+
+        with patch("nfl_mcp.waiver_tools.get_transactions", side_effect=_txns):
+            res = await get_waiver_log("league1")
+        assert res["unique_transactions"] == 1
+        assert res["failed_claims_count"] == 2
+        assert res["failed_claims"][0]["wanted"] == ["p1"]
+        assert res["failed_claims"][0]["waiver_bid"] == 7

@@ -23,13 +23,40 @@ class WaiverAnalyzer:
         self.waiver_cache: dict[str, list[dict]] = {}
         self.re_entry_tracking: dict[str, dict[str, list[datetime]]] = defaultdict(lambda: defaultdict(list))
 
+    @staticmethod
+    def _is_failed(transaction: dict) -> bool:
+        """A claim that lost (outbid, lower priority, player gone): nobody was
+        added or dropped, even though Sleeper still lists the adds/drops asked for."""
+        return (transaction.get('status') or '').lower() == 'failed'
+
+    def _failed_claims(self, transactions: list[dict]) -> list[dict]:
+        """Failed waiver claims, reported apart from the moves that happened."""
+        return [
+            {
+                'transaction_id': t.get('transaction_id'),
+                'created': t.get('created'),
+                'roster_ids': t.get('roster_ids', []),
+                'wanted': list((t.get('adds') or {}).keys()),
+                'would_have_dropped': list((t.get('drops') or {}).keys()),
+                'waiver_bid': (t.get('settings') or {}).get('waiver_bid'),
+                'week': t.get('leg', t.get('week')),
+            }
+            for t in transactions
+            if t.get('type') in ['waiver', 'free_agent'] and self._is_failed(t)
+        ]
+
     def _extract_waiver_transactions(self, transactions: list[dict]) -> list[dict]:
-        """Extract waiver-related transactions from transaction list."""
+        """Extract waiver-related transactions from transaction list.
+
+        Failed claims are left out: they added and dropped nobody, and counting
+        them made a player look added (and "re-entered") when he never moved.
+        See `_failed_claims` for them.
+        """
         waiver_transactions = []
 
         for transaction in transactions:
             # Check if this is a waiver transaction
-            if transaction.get('type') in ['waiver', 'free_agent']:
+            if transaction.get('type') in ['waiver', 'free_agent'] and not self._is_failed(transaction):
                 # Process adds and drops
                 # Sleeper sends `null` (not an omitted key) for a pure add or
                 # pure drop, so the `{}` default never applies there.
@@ -198,6 +225,7 @@ async def get_waiver_log(league_id: str, round: int | None = None, dedupe: bool 
         waiver_transactions = analyzer._extract_waiver_transactions(transactions)
 
         total_waiver_count = len(waiver_transactions)
+        failed_claims = analyzer._failed_claims(transactions)
 
         if dedupe:
             # Perform de-duplication
@@ -210,7 +238,9 @@ async def get_waiver_log(league_id: str, round: int | None = None, dedupe: bool 
                 "unique_transactions": len(unique_transactions),
                 "league_id": league_id,
                 "round": round,
-                "deduplication_enabled": True
+                "deduplication_enabled": True,
+                "failed_claims": failed_claims,
+                "failed_claims_count": len(failed_claims),
             })
         else:
             # Return all waiver transactions without deduplication
@@ -221,7 +251,9 @@ async def get_waiver_log(league_id: str, round: int | None = None, dedupe: bool 
                 "unique_transactions": total_waiver_count,
                 "league_id": league_id,
                 "round": round,
-                "deduplication_enabled": False
+                "deduplication_enabled": False,
+                "failed_claims": failed_claims,
+                "failed_claims_count": len(failed_claims),
             })
 
     except Exception as e:
@@ -363,6 +395,7 @@ async def get_waiver_wire_dashboard(league_id: str, round: int | None = None) ->
             "players_with_re_entries": len(re_entry_players),
             "volatile_players_count": len(re_entry_result.get('volatile_players', [])),
             "total_players_analyzed": re_entry_result.get('total_players_analyzed', 0),
+            "failed_claims": waiver_log_result.get('failed_claims_count', 0),
             "deduplication_rate": (
                 (waiver_log_result.get('total_transactions', 0) - waiver_log_result.get('unique_transactions', 0)) /
                 max(waiver_log_result.get('total_transactions', 1), 1) * 100
