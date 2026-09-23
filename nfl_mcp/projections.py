@@ -255,6 +255,51 @@ def _starters_ahead(
     return out
 
 
+def projection_confidence(
+    *,
+    has_market: bool,
+    base_source: str,
+    usage_games: int = 0,
+    volume_cv: float | None = None,
+    has_real_usage: bool = False,
+    vegas_real: bool = False,
+    injury_mult: float = 1.0,
+    inherits_volume: bool = False,
+) -> int:
+    """How much to trust a projection, 0-100.
+
+    It used to count signals present and cap at 100, crediting an opportunity
+    base twice (+20 as a "value" signal, +15 as "real usage"), so with Vegas on
+    every skill player with two games of history scored 100 and the number
+    ranked nothing. Now it measures what actually makes a weekly projection
+    reliable: how many weeks of real usage back it, how steady that role is,
+    whether the player's availability is in doubt, and whether the inputs are
+    fallbacks (rank bucket, constant game environment).
+    """
+    conf = 45
+    if has_market:
+        conf += 10
+    if base_source == "opportunity":
+        # Two games (the minimum) is thin; a full six-game window is not.
+        conf += 5 + 3 * min(max(usage_games, 0), 6)
+    elif has_real_usage:
+        conf += 8
+    if vegas_real:
+        conf += 10
+    if volume_cv is not None:
+        if volume_cv > 0.5:
+            conf -= 10  # the role swings week to week
+        elif volume_cv > 0.3:
+            conf -= 5
+    if inherits_volume:
+        conf -= 8   # priced on an assumed share of a teammate's workload
+    if 0.0 < injury_mult < 1.0:
+        # Questionable (0.9) or doubtful (0.35): whether he plays is unknown.
+        # An Out player projects to a certain zero, which is not uncertain.
+        conf -= 10 if injury_mult >= 0.5 else 20
+    return max(0, min(100, conf))
+
+
 class ProjectionEngine:
     """Projects fantasy points by combining value, matchup, environment, usage."""
 
@@ -384,23 +429,23 @@ class ProjectionEngine:
             floor = round(projected * (1 - vol), 1)
             ceiling = round(projected * (1 + vol), 1)
 
-        # Confidence = how many real signals we had
-        conf = 50
-        if market or base_source == "opportunity":
-            conf += 20
-        if not env_is_fallback:
-            conf += 15
-        # Only credit real usage signal — project_player always passes a
-        # {snap_percentage: None, usage_trend: None} dict (truthy), which used to
-        # inflate confidence to 85/high with no actual usage data.
+        sample = None
+        if base_source == "opportunity" and opp_index and week and name:
+            sample = opportunity_tools.usage_sample(opp_index, name, week)
         has_real_usage = (
-            base_source == "opportunity"
-            or usage.get("snap_percentage") is not None
+            usage.get("snap_percentage") is not None
             or usage.get("usage_trend") is not None
         )
-        if has_real_usage:
-            conf += 15
-        conf = min(conf, 100)
+        conf = projection_confidence(
+            has_market=bool(market),
+            base_source=base_source,
+            usage_games=(sample or {}).get("games", 0),
+            volume_cv=(sample or {}).get("volume_cv"),
+            has_real_usage=has_real_usage,
+            vegas_real=not env_is_fallback,
+            injury_mult=inj_mult,
+            inherits_volume=bool(vacated),
+        )
         conf_level = "high" if conf >= 80 else "medium" if conf >= 60 else "low"
 
         return {
@@ -426,6 +471,10 @@ class ProjectionEngine:
                 "usage_mult": round(usage_mult, 3),
                 "weather_mult": round(weather_mult, 3),
                 "injury_mult": round(inj_mult, 3),
+                # What the confidence rests on: weeks of real usage behind the
+                # opportunity base, and how much that weekly volume swings.
+                "usage_games": (sample or {}).get("games"),
+                "volume_cv": (sample or {}).get("volume_cv"),
                 # Which unavailable teammates were priced in, and the volume
                 # inherited from them. Empty when nobody ahead is out, or when
                 # they have no recent volume to vacate.

@@ -12,11 +12,25 @@ from nfl_mcp.waiver_target_tools import get_waiver_targets
 LEAGUE = "L1"
 
 
-def _athlete(pid, name, position, team, status="Active"):
+def _athlete(pid, name, position, team, status="Active", injury_status=None):
     return pid, {
         "player_id": pid, "full_name": name, "position": position,
-        "team": team, "status": status,
+        "team": team, "status": status, "injury_status": injury_status,
     }
+
+
+class _FakeValues:
+    """Market values by player name; None when a test does not care."""
+
+    def __init__(self, by_name):
+        self.by_name = by_name
+
+    async def get_values(self, *a, **k):
+        return {"list": [{"value": v} for v in self.by_name.values()]}
+
+    def lookup(self, idx, player_id=None, name=None, position=None):
+        value = self.by_name.get(name)
+        return {"value": value} if value is not None else None
 
 
 @pytest.fixture
@@ -48,7 +62,8 @@ def db(monkeypatch):
         yield database
 
 
-def _stub_sleeper(monkeypatch, points, roster_positions=None, mine=None):
+def _stub_sleeper(monkeypatch, points, roster_positions=None, mine=None,
+                  values=None, starters=None):
     """Sleeper + projection stubs; `points` maps player name -> projection.
 
     No FLEX by default: the fixture roster is three players deep, and an empty
@@ -69,7 +84,8 @@ def _stub_sleeper(monkeypatch, points, roster_positions=None, mine=None):
 
     async def _rosters(_):
         return {"rosters": [
-            {"roster_id": 7, "owner_id": "me", "players": mine or ["m1", "m2", "m3"]},
+            {"roster_id": 7, "owner_id": "me", "players": mine or ["m1", "m2", "m3"],
+             "starters": starters or []},
             {"roster_id": 2, "owner_id": "them", "players": ["o1"]},
         ]}
 
@@ -80,6 +96,8 @@ def _stub_sleeper(monkeypatch, points, roster_positions=None, mine=None):
     monkeypatch.setattr(sleeper_tools, "get_league", _league)
     monkeypatch.setattr(sleeper_tools, "get_rosters", _rosters)
     monkeypatch.setattr(sleeper_tools, "get_trending_players", _trending)
+    monkeypatch.setattr(waiver_target_tools, "get_values_service",
+                        lambda db=None: _FakeValues(values or {}))
 
     from nfl_mcp import projections
 
@@ -193,12 +211,14 @@ class TestWaiverTargets:
         assert out["waiver_type"] == "priority"
 
     @pytest.mark.asyncio
-    async def test_drop_candidates_are_your_weakest_first(self, db, monkeypatch):
+    async def test_a_full_starting_lineup_offers_no_drops(self, db, monkeypatch):
+        # All three start (RB/WR/WR): the old list was simply the five lowest
+        # projections, starters included.
         _stub_sleeper(monkeypatch, {
             "My Starter WR": 14.0, "My Second WR": 9.0, "My Weak RB": 3.0,
         })
         out = await get_waiver_targets(LEAGUE, roster_id=7)
-        assert out["drop_candidates"][0]["name"] == "My Weak RB"
+        assert out["drop_candidates"] == []
 
     @pytest.mark.asyncio
     async def test_never_offers_a_position_the_league_does_not_start(self, db, monkeypatch):
@@ -308,3 +328,77 @@ class TestLineupBars:
         bars = lineup_bars([{"position": "RB", "projected_points": 9.0}],
                            {"QB": 1, "RB": 2})
         assert bars == {"QB": 0.0, "RB": 0.0}
+
+
+class TestDropCandidates:
+    """The Mike Evans case: a FLEX starter worth 2249 listed as a drop.
+
+    Drops were the five lowest projections this week, starters included, with
+    no regard for rest-of-season value, and any claim could be paired with them.
+    """
+
+    SLOTS = ["RB", "WR", "WR", "BN", "BN", "BN"]
+    ROSTER = ["m1", "m2", "m3", "b1", "b2", "b3"]
+    POINTS = {"My Starter WR": 14.0, "My Second WR": 9.0, "My Weak RB": 8.0,
+              "Bench Stud WR": 4.0, "Bench Scrub RB": 6.0, "Hurt Bench RB": 0.0,
+              "Free Good RB": 12.0, "Free Weak WR": 9.2}
+    VALUES = {"My Starter WR": 6000, "My Second WR": 2249, "My Weak RB": 1500,
+              "Bench Stud WR": 5000, "Bench Scrub RB": 100, "Hurt Bench RB": 4000,
+              "Free Good RB": 900, "Free Weak WR": 50}
+
+    @pytest.fixture(autouse=True)
+    def _bench(self, db):
+        db.upsert_athletes(dict([
+            _athlete("b1", "Bench Stud WR", "WR", "KC"),
+            _athlete("b2", "Bench Scrub RB", "RB", "NYJ"),
+            _athlete("b3", "Hurt Bench RB", "RB", "SF", injury_status="Out"),
+        ]))
+
+    async def _run(self, monkeypatch, **kw):
+        args = {"roster_positions": self.SLOTS, "mine": self.ROSTER,
+                "values": self.VALUES}
+        args.update(kw)
+        _stub_sleeper(monkeypatch, {**self.POINTS, **args.pop("points", {})}, **args)
+        return await get_waiver_targets(LEAGUE, roster_id=7)
+
+    @pytest.mark.asyncio
+    async def test_only_bench_players_ranked_by_value_then_projection(self, db, monkeypatch):
+        out = await self._run(monkeypatch)
+        names = [d["name"] for d in out["drop_candidates"]]
+        # Starters never; the Out player never (a zero says nothing about his
+        # season); the low-value scrub before the valuable stash, even though
+        # the stash projects fewer points this week.
+        assert names == ["Bench Scrub RB", "Bench Stud WR"]
+        assert out["drop_candidates"][0]["value"] == 100
+        assert [p["name"] for p in out["injured_not_dropped"]] == ["Hurt Bench RB"]
+
+    @pytest.mark.asyncio
+    async def test_a_set_starter_is_never_a_drop(self, db, monkeypatch):
+        # He projects below the bench stash, so the optimizer would sit him —
+        # but the manager starts him, and that is not a drop recommendation.
+        out = await self._run(monkeypatch, points={"My Second WR": 3.0},
+                              starters=["m1", "m2", "m3"])
+        assert "My Second WR" not in [d["name"] for d in out["drop_candidates"]]
+
+    @pytest.mark.asyncio
+    async def test_a_claim_is_paired_only_with_a_player_worth_less(self, db, monkeypatch):
+        out = await self._run(monkeypatch)
+        by_name = {t["name"]: t for t in out["targets"]}
+        # 900 beats the 100 scrub: a real pairing.
+        assert by_name["Free Good RB"]["drop"]["name"] == "Bench Scrub RB"
+        # 50 beats nobody on the bench: no drop, and says why.
+        weak = by_name["Free Weak WR"]
+        assert weak["drop"] is None
+        assert "Nobody on your bench" in weak["drop_note"]
+
+    @pytest.mark.asyncio
+    async def test_an_open_roster_spot_needs_no_drop(self, db, monkeypatch):
+        out = await self._run(monkeypatch, roster_positions=[*self.SLOTS, "BN"])
+        assert out["open_roster_spots"] == 1
+        assert out["targets"]
+        assert all(t["drop"] is None for t in out["targets"])
+
+    @pytest.mark.asyncio
+    async def test_rolling_waivers_say_a_claim_costs_priority(self, db, monkeypatch):
+        out = await self._run(monkeypatch)
+        assert "back of the order" in out["message"]
