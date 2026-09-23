@@ -18,13 +18,12 @@ Design:
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .config import create_http_client, get_rate_limiter
+from .config import create_http_client
 from .errors import (
     ErrorType,
     create_error_response,
@@ -146,8 +145,6 @@ class PlayerValuesService:
             "numTeams": int(num_teams),
             "ppr": ppr,
         }
-        with contextlib.suppress(Exception):
-            await get_rate_limiter("fantasycalc").acquire()
         async with create_http_client() as client:
             resp = await client.get(FANTASYCALC_URL, params=params)
             resp.raise_for_status()

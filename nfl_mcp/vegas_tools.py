@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from .config import create_http_client
 from .database import NFLDatabase
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .teams import CODE_TO_FULL_NAME, FULL_NAME_TO_CODE, normalize_team
@@ -271,7 +272,9 @@ class VegasLinesAnalyzer:
             return self._get_fallback_lines()
 
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            # Shared client factory: paced by the Odds API limiter (quota is
+            # per credit, and a 429 costs the whole refresh).
+            async with create_http_client(timeout=httpx.Timeout(15.0)) as client:
                 # Fetch spreads and totals in one call (costs 2 API credits)
                 url = f"{self.ODDS_API_BASE}/sports/{self.SPORT_KEY}/odds"
                 params = {

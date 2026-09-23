@@ -18,6 +18,7 @@ from .config import (
 from .game_clock import progress_of, week_games
 from .injury_match import sleeper_injury_status
 from .injury_service import worst_status
+from .retry_utils import raise_for_retryable_status
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,9 @@ async def _fetch_week_player_snaps(season: int, week: int):
 
         async with create_http_client() as client:
             resp = await client.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+            # 5xx/429 raise so the retry wrapper retries and the breaker counts
+            # it; other non-200s (404 for an unplayed week) are a legit "no data".
+            raise_for_retryable_status(resp)
             if resp.status_code != 200:
                 logger.warning(f"[Fetch Snaps] API returned status {resp.status_code}")
                 return []
@@ -158,6 +162,7 @@ async def _fetch_week_schedule(season: int, week: int, force: bool = False):
 
         async with create_http_client() as client:
             resp = await client.get(url, timeout=DEFAULT_TIMEOUT)
+            raise_for_retryable_status(resp)
             if resp.status_code != 200:
                 logger.warning(f"[Fetch Schedule] ESPN API returned status {resp.status_code}")
                 return []
@@ -425,6 +430,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int):
 
         async with create_http_client() as client:
             resp = await client.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+            raise_for_retryable_status(resp)
             if resp.status_code == 200:
                 data = resp.json() or {}
                 if isinstance(data, dict):

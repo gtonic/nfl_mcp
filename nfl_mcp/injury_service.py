@@ -184,6 +184,9 @@ class InjuryAggregator:
     _athlete_name_cache: dict[str, str] = {}  # player_id -> name
     _etag_cache: dict[str, str] = {}  # url -> etag
     _last_modified_cache: dict[str, str] = {}  # url -> last-modified
+    # url -> (pageCount, injury $ref URLs) of the last 200 for that list page,
+    # reused on a 304 (which has no body) so "not modified" != "no injuries".
+    _page_refs_cache: dict[str, tuple[int, list[str]]] = {}
 
     def __init__(self, http_client=None, db=None):
         """Initialize the aggregator.
@@ -241,10 +244,12 @@ class InjuryAggregator:
             "athlete_names": len(cls._athlete_name_cache),
             "etags": len(cls._etag_cache),
             "last_modified": len(cls._last_modified_cache),
+            "page_refs": len(cls._page_refs_cache),
         }
         cls._athlete_name_cache.clear()
         cls._etag_cache.clear()
         cls._last_modified_cache.clear()
+        cls._page_refs_cache.clear()
         logger.info(f"[InjuryAggregator] Cleared caches: {stats}")
         return stats
 
@@ -387,19 +392,30 @@ class InjuryAggregator:
             url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit=50&page={page}"
 
             try:
-                # Add conditional request headers for caching
+                # Add conditional request headers for caching -- only when the
+                # page's refs are cached too, since a 304 carries no body.
                 request_headers = dict(headers)
-                if url in self._etag_cache:
-                    request_headers["If-None-Match"] = self._etag_cache[url]
-                if url in self._last_modified_cache:
-                    request_headers["If-Modified-Since"] = self._last_modified_cache[url]
+                cached_page = self._page_refs_cache.get(url)
+                if cached_page is not None:
+                    if url in self._etag_cache:
+                        request_headers["If-None-Match"] = self._etag_cache[url]
+                    if url in self._last_modified_cache:
+                        request_headers["If-Modified-Since"] = self._last_modified_cache[url]
 
                 resp = await self._http_client.get(url, headers=request_headers, timeout=REQUEST_TIMEOUT)
 
-                # Handle 304 Not Modified - data unchanged
+                # Handle 304 Not Modified - data unchanged: reuse the cached
+                # refs for this page and carry on with the next one.
                 if resp.status_code == 304:
+                    if cached_page is None:
+                        break
                     logger.debug(f"[InjuryAggregator] {team} page {page}: not modified (cached)")
-                    break
+                    cached_count, cached_refs = cached_page
+                    if page == 1:
+                        page_count = cached_count
+                    all_injury_urls.extend(cached_refs)
+                    page += 1
+                    continue
 
                 if resp.status_code != 200:
                     break
@@ -415,10 +431,13 @@ class InjuryAggregator:
                     page_count = data.get("pageCount", 1)
 
                 # Collect injury URLs
-                for injury_ref in data.get("items", []):
-                    injury_url = injury_ref.get("$ref")
-                    if injury_url:
-                        all_injury_urls.append(injury_url)
+                page_refs = [
+                    injury_ref.get("$ref")
+                    for injury_ref in data.get("items", [])
+                    if injury_ref.get("$ref")
+                ]
+                all_injury_urls.extend(page_refs)
+                self._page_refs_cache[url] = (data.get("pageCount", 1), page_refs)
 
                 page += 1
 
