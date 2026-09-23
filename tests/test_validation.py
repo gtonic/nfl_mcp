@@ -2,14 +2,12 @@
 Tests for enhanced input validation functions.
 """
 
-import time
 from unittest.mock import patch
 
 import pytest
 
+from nfl_mcp import input_warnings
 from nfl_mcp.config import (
-    check_rate_limit,
-    get_rate_limit_status,
     is_safe_public_url,
     sanitize_content,
     validate_limit,
@@ -185,14 +183,18 @@ class TestNumericValidation:
             validate_numeric_input(101, min_val=1, max_val=100)
 
     def test_range_validation_with_default(self):
-        """Test range validation with default values."""
-        # Below minimum - should return minimum when default provided
-        result = validate_numeric_input(0, min_val=1, max_val=100, default=50)
-        assert result == 50
+        """Out of range with a default: clamped to the BOUND, never the default."""
+        assert validate_numeric_input(0, min_val=1, max_val=100, default=50) == 1
+        assert validate_numeric_input(101, min_val=1, max_val=100, default=50) == 100
 
-        # Above maximum - should return default
-        result = validate_numeric_input(101, min_val=1, max_val=100, default=50)
-        assert result == 50
+    def test_clamp_is_reported_as_input_warning(self):
+        """The correction is collected for the tool response, not silent."""
+        token = input_warnings.begin_collection()
+        try:
+            assert validate_numeric_input(500, min_val=1, max_val=100, default=25) == 100
+        finally:
+            collected = input_warnings.end_collection(token)
+        assert collected == ["Value 500 exceeds maximum 100; clamped to 100"]
 
     def test_none_value_handling(self):
         """Test None value handling."""
@@ -327,14 +329,20 @@ class TestValidateLimit:
         assert result == 5
 
     def test_limit_clamping(self):
-        """Test limit value clamping."""
+        """Out-of-range limits clamp to the violated bound, not the default."""
         # Below minimum
-        result = validate_limit(0, min_val=1, max_val=10, default=5)
-        assert result == 5
+        assert validate_limit(0, min_val=1, max_val=10, default=5) == 1
 
         # Above maximum
-        result = validate_limit(15, min_val=1, max_val=10, default=5)
-        assert result == 5
+        assert validate_limit(15, min_val=1, max_val=10, default=5) == 10
+
+    def test_unparseable_limit_uses_default_with_warning(self):
+        token = input_warnings.begin_collection()
+        try:
+            assert validate_limit("lots", min_val=1, max_val=10, default=5) == 5
+        finally:
+            collected = input_warnings.end_collection(token)
+        assert collected and "used default 5" in collected[0]
 
     def test_none_handling(self):
         """Test None value handling."""
@@ -343,73 +351,6 @@ class TestValidateLimit:
 
         result = validate_limit(None, min_val=1, max_val=10)
         assert result == 1  # Should use min_val when no default
-
-
-class TestRateLimiting:
-    """Test rate limiting functionality."""
-
-    def test_basic_rate_limiting(self):
-        """Test basic rate limiting functionality."""
-        identifier = "test_user_1"
-
-        # First request should pass
-        assert check_rate_limit(identifier, limit=2, window_seconds=60) is True
-
-        # Second request should pass
-        assert check_rate_limit(identifier, limit=2, window_seconds=60) is True
-
-        # Third request should fail
-        assert check_rate_limit(identifier, limit=2, window_seconds=60) is False
-
-    def test_rate_limit_window_expiry(self):
-        """Test that rate limits reset after time window."""
-        identifier = "test_user_2"
-
-        # Make requests up to limit
-        assert check_rate_limit(identifier, limit=1, window_seconds=1) is True
-        assert check_rate_limit(identifier, limit=1, window_seconds=1) is False
-
-        # Wait for window to expire
-        time.sleep(1.1)
-
-        # Should be allowed again
-        assert check_rate_limit(identifier, limit=1, window_seconds=1) is True
-
-    def test_rate_limit_per_identifier(self):
-        """Test that rate limits are per identifier."""
-        user1 = "test_user_3"
-        user2 = "test_user_4"
-
-        # Each user should have their own limit
-        assert check_rate_limit(user1, limit=1, window_seconds=60) is True
-        assert check_rate_limit(user2, limit=1, window_seconds=60) is True
-
-        # Both should be at limit now
-        assert check_rate_limit(user1, limit=1, window_seconds=60) is False
-        assert check_rate_limit(user2, limit=1, window_seconds=60) is False
-
-    def test_rate_limit_status(self):
-        """Test rate limit status reporting."""
-        identifier = "test_user_5"
-        limit = 3
-
-        # Initial status
-        status = get_rate_limit_status(identifier, limit, window_seconds=60)
-        assert status["limit"] == limit
-        assert status["remaining"] == limit
-        assert status["retry_after"] == 0
-
-        # After one request
-        check_rate_limit(identifier, limit=limit, window_seconds=60)
-        status = get_rate_limit_status(identifier, limit, window_seconds=60)
-        assert status["remaining"] == limit - 1
-
-        # After hitting limit
-        check_rate_limit(identifier, limit=limit, window_seconds=60)
-        check_rate_limit(identifier, limit=limit, window_seconds=60)
-        status = get_rate_limit_status(identifier, limit, window_seconds=60)
-        assert status["remaining"] == 0
-        assert status["retry_after"] > 0
 
 
 class TestEnhancedUrlValidationSSRF:

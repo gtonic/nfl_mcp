@@ -82,9 +82,11 @@ def _no_sleeper_second_opinion(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clear_process_caches():
     """Short-lived in-process caches must not leak one test's mocks into the next."""
-    from nfl_mcp import sleeper_tools, weather_tools
+    from nfl_mcp import nfl_tools, sleeper_tools, weather_tools
     sleeper_tools.clear_nfl_state_cache()
     weather_tools.clear_forecast_cache()
+    nfl_tools.clear_season_stats_cache()
     yield
     sleeper_tools.clear_nfl_state_cache()
     weather_tools.clear_forecast_cache()
+    nfl_tools.clear_season_stats_cache()

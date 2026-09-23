@@ -6,35 +6,45 @@ import pytest
 from nfl_mcp.web_tools import crawl_url
 
 
-def _mock_response(status_code=200, text="", headers=None):
-    """Build a minimal mock httpx response.
+def _mock_response(status_code=200, text="", headers=None, chunks=None):
+    """Build a minimal mock streamed httpx response.
 
     ``raise_for_status`` is a *sync* Mock because httpx's real method is
-    synchronous (and crawl_url calls it without ``await``).
+    synchronous (and crawl_url calls it without ``await``). The body is served
+    through ``aiter_bytes`` like a real ``send(..., stream=True)`` response.
     """
     resp = AsyncMock()
     resp.status_code = status_code
-    resp.text = text
     resp.headers = headers or {}
+    resp.charset_encoding = "utf-8"
     resp.raise_for_status = Mock()
+    body_chunks = chunks if chunks is not None else [text.encode("utf-8")]
+
+    async def _aiter_bytes():
+        for chunk in body_chunks:
+            yield chunk
+
+    resp.aiter_bytes = _aiter_bytes
+    resp.aclose = AsyncMock()
     return resp
 
 
 def _mock_client(response=None, responses=None):
     """Build a mock async http client returning one or a sequence of responses."""
     client = AsyncMock()
+    client.build_request = Mock(side_effect=lambda method, url, **kw: url)
     if responses is not None:
-        client.get = AsyncMock(side_effect=responses)
+        client.send = AsyncMock(side_effect=responses)
     else:
-        client.get.return_value = response
+        client.send = AsyncMock(return_value=response)
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=None)
     return client
 
 
 # The mocked-client tests below exercise parsing/redirect logic, not the SSRF
-# gate, so they patch is_safe_public_url to stay fully offline (no DNS).
-_ALLOW = {"return_value": (True, None)}
+# gate, so they patch resolve_safe_url to stay fully offline (no DNS).
+_ALLOW = {"new": AsyncMock(return_value=(True, None, "example.com", ["93.184.216.34"]))}
 
 
 class TestCrawlUrl:
@@ -54,7 +64,7 @@ class TestCrawlUrl:
         """
         client = _mock_client(_mock_response(200, mock_html))
 
-        with patch('nfl_mcp.web_tools.is_safe_public_url', **_ALLOW), \
+        with patch('nfl_mcp.web_tools.resolve_safe_url', **_ALLOW), \
                 patch('nfl_mcp.web_tools.create_http_client', return_value=client):
             result = await crawl_url("https://example.com")
 
@@ -77,7 +87,7 @@ class TestCrawlUrl:
         mock_html = '<html><body>' + 'x' * 200 + '</body></html>'
         client = _mock_client(_mock_response(200, mock_html))
 
-        with patch('nfl_mcp.web_tools.is_safe_public_url', **_ALLOW), \
+        with patch('nfl_mcp.web_tools.resolve_safe_url', **_ALLOW), \
                 patch('nfl_mcp.web_tools.create_http_client', return_value=client):
             result = await crawl_url("https://example.com", max_length=50)
 
@@ -91,7 +101,7 @@ class TestCrawlUrl:
         resp.raise_for_status.side_effect = Exception("404")
         client = _mock_client(resp)
 
-        with patch('nfl_mcp.web_tools.is_safe_public_url', **_ALLOW), \
+        with patch('nfl_mcp.web_tools.resolve_safe_url', **_ALLOW), \
                 patch('nfl_mcp.web_tools.create_http_client', return_value=client):
             result = await crawl_url("https://example.com")
 
@@ -103,7 +113,7 @@ class TestCrawlUrl:
         """Test crawling with no title tag."""
         client = _mock_client(_mock_response(200, '<html><body><p>Test</p></body></html>'))
 
-        with patch('nfl_mcp.web_tools.is_safe_public_url', **_ALLOW), \
+        with patch('nfl_mcp.web_tools.resolve_safe_url', **_ALLOW), \
                 patch('nfl_mcp.web_tools.create_http_client', return_value=client):
             result = await crawl_url("https://example.com")
 
@@ -136,7 +146,7 @@ class TestCrawlUrlSSRF:
     @pytest.mark.asyncio
     async def test_blocks_host_resolving_to_private_ip(self):
         """A public-looking hostname that resolves to a private IP is blocked."""
-        with patch('nfl_mcp.config.resolve_host_addresses', return_value=['10.0.0.5']):
+        with patch('nfl_mcp.config.resolve_host_addresses_async', AsyncMock(return_value=['10.0.0.5'])):
             result = await crawl_url("http://internal.example.test/")
         assert result["success"] is False
         assert "Blocked non-public address" in result["error"]

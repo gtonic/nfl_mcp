@@ -25,10 +25,29 @@ htmlcov
 .coverage
 .coverage.*
 
-# Local databases and data (must not ship in the image)
+# Secrets (API keys live in a gitignored .env; pass them at run time instead)
+.env
+.env.*
+!.env.example
+
+# Local databases and data (must not ship in the image), incl. WAL sidecars
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 *.sqlite
 *.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+
+# Agent / tool state and local tool environments
+.claude
+.claude/
+.tox
+.nox
+.uv-cache
+uv.lock
+*.log
 
 # Tests & docs (not needed at runtime)
 tests

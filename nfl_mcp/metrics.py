@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from functools import wraps
 from typing import Any
 
+from . import input_warnings
+
 
 @dataclass
 class MetricPoint:
@@ -143,12 +145,17 @@ def timing_decorator(metric_name: str, **labels):
             @wraps(func)
             async def async_wrapper(*args, **kwargs):
                 start = time.time()
+                # Every tool goes through this wrapper, so it is also where
+                # argument corrections made by the validators surface to the
+                # caller (see input_warnings).
+                token = input_warnings.begin_collection()
                 try:
                     res = await func(*args, **kwargs)
                     _metrics.increment_counter(f"{metric_name}_total", status="success", **labels)
-                    return res
+                    return input_warnings.attach_warnings(res, input_warnings.end_collection(token))
                 except Exception:
                     _metrics.increment_counter(f"{metric_name}_total", status="error", **labels)
+                    input_warnings.end_collection(token)
                     raise
                 finally:
                     dur = (time.time() - start) * 1000
@@ -158,12 +165,14 @@ def timing_decorator(metric_name: str, **labels):
             @wraps(func)
             def sync_wrapper(*args, **kwargs):
                 start = time.time()
+                token = input_warnings.begin_collection()
                 try:
                     res = func(*args, **kwargs)
                     _metrics.increment_counter(f"{metric_name}_total", status="success", **labels)
-                    return res
+                    return input_warnings.attach_warnings(res, input_warnings.end_collection(token))
                 except Exception:
                     _metrics.increment_counter(f"{metric_name}_total", status="error", **labels)
+                    input_warnings.end_collection(token)
                     raise
                 finally:
                     dur = (time.time() - start) * 1000

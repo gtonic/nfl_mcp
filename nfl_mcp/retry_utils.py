@@ -160,6 +160,33 @@ class CircuitBreakerError(Exception):
     """Exception raised when circuit breaker is open."""
 
 
+class RetryableHTTPStatus(Exception):
+    """An upstream answered, but with a server-side error (5xx) or 429.
+
+    Raised from inside a retried fetch so ``retry_with_backoff`` retries it and,
+    once retries are exhausted, records ONE circuit-breaker failure. Fetchers
+    that turn a non-200 into ``[]`` would otherwise report an outage as success.
+    Other 4xx (404 for an unpublished week etc.) are not failures of the host.
+    """
+
+    def __init__(self, status_code: int, url: str = ""):
+        self.status_code = status_code
+        self.url = url
+        super().__init__(f"HTTP {status_code}{f' from {url}' if url else ''}")
+
+
+def is_retryable_status(status_code: int) -> bool:
+    """5xx and 429 count as upstream failures; everything else does not."""
+    return status_code >= 500 or status_code == 429
+
+
+def raise_for_retryable_status(resp: Any) -> None:
+    """Raise :class:`RetryableHTTPStatus` for a 5xx/429 response."""
+    status = getattr(resp, "status_code", None)
+    if isinstance(status, int) and is_retryable_status(status):
+        raise RetryableHTTPStatus(status, str(getattr(resp, "url", "") or ""))
+
+
 # Global circuit breakers for different API endpoints
 _circuit_breakers: dict[str, CircuitBreaker] = {}
 
@@ -259,15 +286,15 @@ async def retry_with_backoff(
         except Exception as e:
             last_exception = e
 
-            # Update circuit breaker on failure
-            if circuit_breaker:
-                circuit_breaker._on_failure()
-
-            # Don't retry on last attempt
+            # Don't retry on last attempt. The breaker records ONE failure per
+            # logical call, after retries are exhausted — counting every attempt
+            # would open it after a single flaky call (4 attempts >= 5 - 1).
             if attempt >= max_retries:
                 logger.error(
                     f"[Retry] Failed after {attempt + 1} attempts: {type(e).__name__}: {e}"
                 )
+                if circuit_breaker:
+                    circuit_breaker._on_failure()
                 break
 
             # Calculate delay with exponential backoff

@@ -1331,7 +1331,7 @@ class NFLDatabase:
                     WHERE season=? AND team=?
                     ORDER BY week ASC
                     """,
-                    (season, team),
+                    (season, normalize_team(team) or team),
                 )
                 rows = cur.fetchall()
                 return [dict(row) for row in rows]
@@ -1854,7 +1854,7 @@ class NFLDatabase:
                     WHERE team_id=? AND updated_at >= ?
                     ORDER BY updated_at DESC
                     """,
-                    (team_id, cutoff),
+                    (normalize_team(team_id) or team_id, cutoff),
                 )
                 rows = cur.fetchall()
                 result = []
@@ -2676,7 +2676,7 @@ class NFLDatabase:
         async with self._get_async_connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM athletes WHERE team_id = ? ORDER BY full_name",
-                (team_id,)
+                (normalize_team(team_id) or (team_id or "").strip().upper(),)
             )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
@@ -3020,15 +3020,19 @@ class NFLDatabase:
         Get all athletes for a specific team.
 
         Args:
-            team_id: The team identifier
+            team_id: The team identifier, in any spelling (``WAS``, ``was``,
+                ``Washington Commanders``)
 
         Returns:
             List of athlete dictionaries for the team
         """
+        # Rows are stored under the canonical code (see upsert_athletes); the
+        # raw value matched nothing for WAS/JAC/LA or any lowercase input.
+        team = normalize_team(team_id) or (team_id or "").strip().upper()
         with self._get_connection() as conn:
             cursor = conn.execute(
                 "SELECT * FROM athletes WHERE team_id = ? ORDER BY full_name",
-                (team_id,)
+                (team,)
             )
             return [dict(row) for row in cursor.fetchall()]
 
