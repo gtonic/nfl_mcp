@@ -118,3 +118,18 @@ async def test_player_values_accepts_one_or_more_players():
         out = await tool_registry.get_player_values(players=["4046", "Puka Nacua", "Nobody"])
     assert [v["name"] for v in out["values"]] == ["Bijan Robinson", "Puka Nacua"]
     assert out["not_found"] == ["Nobody"]
+
+
+@pytest.mark.asyncio
+async def test_strength_of_schedule_playoff_weeks_from_league():
+    sos = AsyncMock(return_value={"success": True})
+    league = {"league": {"settings": {"playoff_week_start": 14, "playoff_teams": 4}}}
+    with patch("nfl_mcp.sos_tools.get_strength_of_schedule", sos), \
+         patch("nfl_mcp.sleeper_tools.get_league", AsyncMock(return_value=league)):
+        out = await tool_registry.get_strength_of_schedule(season=2026, playoff_weeks=True, league_id="123")
+        assert (sos.await_args.kwargs["start_week"], sos.await_args.kwargs["end_week"]) == (14, 15)
+        assert out["window"] == "playoffs"
+        await tool_registry.get_strength_of_schedule(season=2026, playoff_weeks=True)
+        assert (sos.await_args.kwargs["start_week"], sos.await_args.kwargs["end_week"]) == (15, 17)
+        await tool_registry.get_strength_of_schedule(season=2026, start_week=4, end_week=9)
+        assert (sos.await_args.kwargs["start_week"], sos.await_args.kwargs["end_week"]) == (4, 9)

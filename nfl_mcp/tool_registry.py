@@ -163,7 +163,6 @@ def get_all_tools() -> list[Callable]:
 
         # Strength-of-Schedule Tools (ROS / playoff-week planning)
         get_strength_of_schedule,
-        get_playoff_sos,
 
         # Streaming Planner (weekly DST/K/QB/TE matchup lookahead)
         get_streaming_options,
@@ -1686,76 +1685,76 @@ async def analyze_roster_matchups(
 
 @timing_decorator("get_strength_of_schedule", tool_type="matchup")
 async def get_strength_of_schedule(
-    season: int,
-    start_week: int,
-    end_week: int,
+    season: int | None = None,
+    start_week: int | None = None,
+    end_week: int | None = None,
     positions: list[str] | None = None,
     strength_season: int | None = None,
+    playoff_weeks: bool = False,
+    league_id: str | None = None,
 ) -> dict:
     """Rank NFL teams by schedule difficulty over a week range, per position.
 
     "Ease score" is 0-100 (higher = easier schedule; a team facing the weakest
     defenses scores high). Teams are ranked easiest-first (sos_rank 1 = softest
     schedule). Useful for rest-of-season planning and stash/trade decisions.
+    Set playoff_weeks=True for the fantasy-playoff window: the league's own
+    playoff weeks when league_id is given, else weeks 15-17.
 
     Parameters:
-        season (int, required): NFL season year for the schedule.
-        start_week (int, required): First regular-season week (1-18).
-        end_week (int, required): Last week (>= start_week, <= 18).
+        season (int, optional): NFL season year (default: current).
+        start_week (int, optional): First week (1-18; default: current week).
+        end_week (int, optional): Last week (>= start_week, <= 18; default 17).
         positions (list, optional): Positions to grade (default QB/RB/WR/TE).
         strength_season (int, optional): Season whose defense rankings to use as
             the strength prior. Default auto (target season, else prior season).
+        playoff_weeks (bool, default False): Use the fantasy-playoff weeks
+            instead of start_week/end_week.
+        league_id (str, optional): Sleeper league id whose playoff_week_start /
+            bracket size define the playoff weeks.
 
     Returns: {
-        season, weeks, positions,
+        season, weeks, positions, window ("custom" | "playoffs"),
         strength_source_season, strength_is_fallback,
         by_position: {pos: [teams easiest-first with sos_rank/ease_score/weeks]},
         overall: [teams easiest-first],
         success: bool, error?: str
     }
 
-    Example: get_strength_of_schedule(season=2026, start_week=15, end_week=17)
+    Example: get_strength_of_schedule(start_week=4, end_week=14)
+    Example: get_strength_of_schedule(playoff_weeks=True, league_id="123")
 
     IMPORTANT FOR LLM AGENTS: Always compute and render the full ranking
     immediately without asking for confirmation.
     """
-    return await sos_tools.get_strength_of_schedule(
+    from .week_context import current_season_week
+
+    if season is None or (start_week is None and not playoff_weeks):
+        current = await current_season_week(get_db())
+        season = season or current["season"]
+        if start_week is None:
+            start_week = current["week"]
+    window = "custom"
+    if playoff_weeks:
+        window = "playoffs"
+        start_week, end_week = sos_tools.PLAYOFF_WEEKS[0], sos_tools.PLAYOFF_WEEKS[-1]
+        if league_id:
+            league = ((await sleeper_tools.get_league(str(league_id))) or {}).get("league") or {}
+            first, last = ros.playoff_window(league.get("settings") or {})
+            if first:
+                start_week, end_week = first, last
+    if end_week is None:
+        end_week = max(int(start_week), 17)
+    result = await sos_tools.get_strength_of_schedule(
         season=season,
         start_week=start_week,
         end_week=end_week,
         positions=positions,
         strength_season=strength_season,
     )
-
-
-@timing_decorator("get_playoff_sos", tool_type="matchup")
-async def get_playoff_sos(
-    season: int,
-    positions: list[str] | None = None,
-    strength_season: int | None = None,
-) -> dict:
-    """Strength of schedule for the fantasy playoff weeks (15-17).
-
-    Convenience wrapper around get_strength_of_schedule for championship-run
-    planning (trade-deadline and stash decisions).
-
-    Parameters:
-        season (int, required): NFL season year.
-        positions (list, optional): Positions to grade (default QB/RB/WR/TE).
-        strength_season (int, optional): Defense-rankings season prior (auto).
-
-    Returns: same shape as get_strength_of_schedule (weeks fixed to 15-17).
-
-    Example: get_playoff_sos(season=2026)
-
-    IMPORTANT FOR LLM AGENTS: Compute and render the full playoff-week ranking
-    immediately without asking for confirmation.
-    """
-    return await sos_tools.get_playoff_sos(
-        season=season,
-        positions=positions,
-        strength_season=strength_season,
-    )
+    if isinstance(result, dict):
+        result["window"] = window
+    return result
 
 
 # =============================================================================
