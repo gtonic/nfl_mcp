@@ -269,8 +269,12 @@ def _per_game(proj: dict, position: str, model) -> tuple[float, str, float | Non
     return round(float(base) * usage, 2), source, None
 
 
-def _matchup(position: str, opponent: str, rankings: dict, analyzer) -> tuple[float, str]:
-    from .projections import matchup_multiplier
+def _matchup(position: str, opponent: str, rankings: dict, analyzer,
+             ppr: float = 1.0) -> tuple[float, str]:
+    """The weekly engine's matchup pricing: the continuous factor when the
+    rankings carry raw averages, else the tier."""
+    from .matchup_tools import matchup_ratio
+    from .projections import _ranking_entry, matchup_factor, matchup_multiplier
     if position not in _SKILL or not rankings or analyzer is None:
         return 1.0, "unknown"
     try:
@@ -278,6 +282,9 @@ def _matchup(position: str, opponent: str, rankings: dict, analyzer) -> tuple[fl
             "matchup_tier", "unknown")
     except Exception:
         tier = "unknown"
+    ratio = matchup_ratio(_ranking_entry(rankings, position, opponent), ppr)
+    if ratio is not None:
+        return matchup_factor(position, ratio), tier
     return matchup_multiplier(position, tier), tier
 
 
@@ -404,7 +411,7 @@ async def ros_projections(
             elif w == week and proj:
                 points = float(proj.get("projected_points") or 0.0)
             else:
-                mult, tier = _matchup(p["position"], opponent, rankings, analyzer)
+                mult, tier = _matchup(p["position"], opponent, rankings, analyzer, model.rec)
                 points = round(per_game * mult, 2)
                 if not opponent:
                     reason = "schedule unknown — counted as playing"

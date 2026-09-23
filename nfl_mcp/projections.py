@@ -30,7 +30,7 @@ import logging
 
 from . import opportunity_tools
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
-from .matchup_tools import get_defense_analyzer
+from .matchup_tools import get_defense_analyzer, matchup_ratio
 from .player_values import get_values_service
 from .scoring import ScoringModel, league_scoring, resolve_scoring
 from .teams import normalize_team
@@ -104,6 +104,29 @@ def matchup_multiplier(position: str, tier: str) -> float:
     dev = _MATCHUP_TIER_DEV.get(tier, 0.0)
     strength = _MATCHUP_POS_STRENGTH.get((position or "").upper(), _DEFAULT_POS_STRENGTH)
     return round(1.0 + strength * dev, 4)
+
+# Strength of the continuous matchup factor per position: the multiplier is
+# `1 + strength × (ratio − 1)`, with the ratio's deviation capped at ±30%.
+# From evals/backtest on the opportunity base (2023 and 2024 each out of
+# sample): RB moves most with the defense, QB and TE half, WR a little.
+_MATCHUP_RATIO_STRENGTH = {"RB": 0.75, "QB": 0.5, "TE": 0.5, "WR": 0.25}
+_MATCHUP_RATIO_CAP = 0.30
+
+
+def matchup_factor(position: str, ratio: float) -> float:
+    """Multiplier from a `matchup_tools.matchup_ratio` (1.0 = average defense)."""
+    strength = _MATCHUP_RATIO_STRENGTH.get((position or "").upper(), 0.0)
+    dev = max(-_MATCHUP_RATIO_CAP, min(_MATCHUP_RATIO_CAP, ratio - 1.0))
+    return round(1.0 + strength * dev, 4)
+
+
+def _ranking_entry(rankings: dict | None, position: str, opponent: str) -> dict | None:
+    team = normalize_team(opponent) or (opponent or "").upper()
+    for row in (rankings or {}).get(position) or []:
+        if row.get("team") == team:
+            return row
+    return None
+
 
 # Higher fantasy scoring variance = wider floor/ceiling band. floor/ceiling are
 # `mean ± volatility·mean`, i.e. a ±1σ band under the Normal the win-probability
@@ -402,6 +425,7 @@ def _bye_projection(
             "base_source": "bye",
             "position_rank": None,
             "matchup_mult": 1.0,
+            "matchup_ratio": None,
             "environment_mult": 1.0,
             "usage_mult": 1.0,
             "weather_mult": 1.0,
@@ -489,6 +513,14 @@ class ProjectionEngine:
             except Exception:
                 matchup_tier = "unknown"
         matchup_mult = matchup_multiplier(position, matchup_tier)
+        # The continuous factor replaces the tier where the rankings carry the
+        # raw averages: it is priced in this league's reception value and
+        # counts from week 2, where the tier stays neutral until week 5.
+        ratio = None
+        if position in VBD_POSITIONS and opponent:
+            ratio = matchup_ratio(_ranking_entry(rankings, position, opponent), ppr)
+            if ratio is not None:
+                matchup_mult = matchup_factor(position, ratio)
 
         # 3) Game environment (Vegas implied team total)
         implied_total = None
@@ -600,6 +632,9 @@ class ProjectionEngine:
                 "base_source": base_source,
                 "position_rank": pos_rank,
                 "matchup_mult": round(matchup_mult, 3),
+                # Opponent's points allowed to the position vs an average
+                # defense, shrunk (None: the tier alone priced the matchup).
+                "matchup_ratio": round(ratio, 3) if ratio is not None else None,
                 "environment_mult": round(env_mult, 3),
                 "usage_mult": round(usage_mult, 3),
                 "weather_mult": round(weather_mult, 3),
