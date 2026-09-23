@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from .config import create_http_client
-from .database import NFLDatabase
+from .database import NFLDatabase, get_shared_db
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .teams import CODE_TO_FULL_NAME, FULL_NAME_TO_CODE, normalize_team
 
@@ -534,7 +534,7 @@ def _build_week_index(season: int | None) -> dict[tuple[str, str], int]:
         # lines belong to last year's schedule.
         from .week_context import infer_from_calendar
         resolved = season or infer_from_calendar()[0]
-        return NFLDatabase().get_kickoff_week_index(resolved)
+        return get_shared_db().get_kickoff_week_index(resolved)
     except Exception as e:
         logger.debug(f"week index unavailable: {e}")
         return {}

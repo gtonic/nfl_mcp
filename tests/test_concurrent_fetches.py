@@ -55,7 +55,7 @@ async def test_briefing_fetches_league_rosters_matchups_and_weather_together(mon
     from nfl_mcp import briefing_tools, projections, weather_tools
 
     flight = _InFlight()
-    monkeypatch.setattr(briefing_tools, "NFLDatabase", lambda *a, **k: db)
+    monkeypatch.setattr(briefing_tools, "get_shared_db", lambda *a, **k: db)
     monkeypatch.setattr(sleeper_tools, "get_league", flight.wrap(
         {"league": {"total_rosters": 10, "scoring_settings": {"rec": 1},
                     "roster_positions": ["WR", "BN"], "settings": {}}}))

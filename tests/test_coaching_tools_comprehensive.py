@@ -61,6 +61,7 @@ class TestCoachingTools:
         result = _classify_coach_role("Special Teams Assistant")
         assert result["category"] == "assistant"
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_get_coaching_staff_functionality(self):
         """Test get_coaching_staff functionality."""
@@ -68,6 +69,7 @@ class TestCoachingTools:
         assert isinstance(result, dict)
         assert 'team_id' in result or 'success' in result or 'error' in result
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_get_all_coaching_staffs_functionality(self):
         """Test get_all_coaching_staffs functionality."""
@@ -87,6 +89,7 @@ class TestCoachingTools:
         result = await get_coaching_tree(coach_name="Unknown Coach")
         assert isinstance(result, dict)
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_get_scheme_classification_functionality(self):
         """Test get_scheme_classification functionality."""

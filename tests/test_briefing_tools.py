@@ -1,7 +1,11 @@
 """The weekly briefing joins six sources; the joins are what can go wrong."""
+from unittest.mock import AsyncMock
+
 import pytest
 
 from nfl_mcp import briefing_tools
+
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
 
 
 class TestScoringLabel:
@@ -88,6 +92,9 @@ class TestIdentifyingTheRoster:
             return {"nfl_state": {"week": 2, "season": "2026"}}
 
         monkeypatch.setattr("nfl_mcp.sleeper_tools.get_nfl_state", fake_state)
+        for name, payload in (("get_league", {"league": {}}), ("get_rosters", {"rosters": []}),
+                              ("get_matchups", {"matchups": []})):
+            monkeypatch.setattr(f"nfl_mcp.sleeper_tools.{name}", AsyncMock(return_value=payload))
         result = await briefing_tools.get_weekly_briefing(league_id="L1")
         assert result["success"] is False
         assert "roster_id" in result["error"]

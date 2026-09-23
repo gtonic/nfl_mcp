@@ -724,7 +724,7 @@ async def get_ros_projections(
 ) -> dict:
     """Rest-of-season and fantasy-playoff points in the league's scoring."""
     from . import sleeper_tools
-    from .database import NFLDatabase
+    from .database import get_shared_db
     from .opportunity_tools import norm_name
 
     started = datetime.now(UTC)
@@ -733,7 +733,7 @@ async def get_ros_projections(
             "success": False, "players": [],
             "error": "Pass roster_id, player_ids or player_names.",
         })
-    db = db if db is not None else NFLDatabase()
+    db = db if db is not None else get_shared_db()
     if week is None or season is None:
         from .week_context import current_season_week
         current = await current_season_week(db)

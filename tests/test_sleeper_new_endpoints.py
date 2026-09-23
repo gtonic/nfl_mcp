@@ -120,7 +120,9 @@ async def test_transactions_require_week():
 
 @pytest.mark.asyncio
 async def test_transactions_round_alias():
-    with patch('nfl_mcp.sleeper_transactions.create_http_client') as mock_client_factory:
+    no_state = AsyncMock(return_value={"success": False, "nfl_state": None})
+    with patch('nfl_mcp.sleeper_transactions.create_http_client') as mock_client_factory, \
+         patch('nfl_mcp.sleeper_transactions.get_nfl_state', no_state):
         mock_resp = MagicMock(); mock_resp.json.return_value = [{"type":"trade"}]; mock_resp.raise_for_status.return_value=None
         mock_client = AsyncMock(); mock_client.get.return_value = mock_resp; mock_client.__aenter__.return_value = mock_client
         mock_client_factory.return_value = mock_client

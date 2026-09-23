@@ -384,8 +384,8 @@ class LineupOptimizer:
         """Initialize dependencies if not provided."""
         if self.db is None:
             try:
-                from .database import NFLDatabase
-                self.db = NFLDatabase()
+                from .database import get_shared_db
+                self.db = get_shared_db()
             except Exception as e:
                 logger.debug(f"Database init failed: {e}")
 

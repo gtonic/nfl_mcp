@@ -79,26 +79,6 @@ class OutboundRateLimiter:
                 await asyncio.sleep(min(wait_time, 1.0))  # Cap at 1 second chunks
                 waited += min(wait_time, 1.0)
 
-    def try_acquire(self, tokens: int = 1) -> bool:
-        """
-        Try to acquire tokens without waiting.
-
-        Args:
-            tokens: Number of tokens to acquire
-
-        Returns:
-            True if acquired, False if would need to wait
-        """
-        now = time.monotonic()
-        elapsed = now - self.last_update
-        current_tokens = min(self.capacity, self.tokens + elapsed * self.rate)
-
-        if current_tokens >= tokens:
-            self.tokens = current_tokens - tokens
-            self.last_update = now
-            return True
-        return False
-
     def get_status(self) -> dict[str, Any]:
         """Get current rate limiter status."""
         now = time.monotonic()
@@ -580,11 +560,22 @@ def refresh_from_config_manager() -> None:
     _update_timeout(LONG_TIMEOUT, _get_long_timeout_config())
     SERVER_VERSION = _get_server_version()
     BASE_USER_AGENT = _get_base_user_agent()
-    USER_AGENTS.clear()
-    USER_AGENTS.update(_get_user_agents())
+    _swap_in_place(USER_AGENTS, _get_user_agents())
     ALLOWED_URL_SCHEMES[:] = _get_allowed_url_schemes()
-    LIMITS.clear()
-    LIMITS.update(_get_limits())
+    _swap_in_place(LIMITS, _get_limits())
+
+
+def _swap_in_place(target: dict, new: dict) -> None:
+    """Replace ``target``'s contents with ``new`` without an empty window.
+
+    A hot reload runs on the watchdog thread while tool calls read these dicts;
+    ``clear()`` then ``update()`` let a reader in between see no keys at all
+    (a KeyError on ``LIMITS["..."]``). One ``update()`` with the fully built
+    dict is a single step, and only keys the new config dropped are removed.
+    """
+    target.update(new)
+    for key in [k for k in target if k not in new]:
+        target.pop(key, None)
 
 # Feature flags (environment-variable driven for simplicity). Use ConfigManager later if desired.
 def is_feature_enabled(flag_name: str, default: bool = False) -> bool:
@@ -673,6 +664,10 @@ def validate_string_input(value: str, input_type: str = 'general', max_length: i
 
     if required and not value.strip():
         raise ValueError("Required string input cannot be empty")
+
+    # Team abbreviations are case-insensitive for the caller ("kc" is KC).
+    if input_type == 'team_id':
+        value = value.strip().upper()
 
     # Validate against specific patterns if input_type is specified FIRST
     if input_type in SAFE_PATTERNS and not SAFE_PATTERNS[input_type].match(value):
@@ -819,69 +814,3 @@ def sanitize_content(content: str, max_length: int | None = None) -> str:
         sanitized = sanitized[:max_length] + "..."
 
     return sanitized
-
-
-def validate_url_enhanced(url: str, allowed_schemes: list | None = None, allowed_domains: list | None = None) -> bool:
-    """
-    Enhanced URL validation with additional security checks.
-
-    Args:
-        url: URL to validate
-        allowed_schemes: List of allowed schemes (defaults to http/https)
-        allowed_domains: Optional list of allowed domains
-
-    Returns:
-        True if URL is valid and safe, False otherwise
-    """
-    if not url or not isinstance(url, str):
-        return False
-
-    # Use existing basic validation first
-    if not is_valid_url(url):
-        return False
-
-    schemes = allowed_schemes or ALLOWED_URL_SCHEMES
-
-    try:
-        parsed = urllib.parse.urlparse(url)
-
-        # Check scheme
-        if not any(url.startswith(scheme) for scheme in schemes):
-            return False
-
-        # Check for dangerous patterns
-        url_lower = url.lower()
-        for _pattern_type, patterns in DANGEROUS_PATTERNS.items():
-            for pattern in patterns:
-                if re.search(pattern, url_lower):
-                    return False
-
-        # Check domain restrictions if provided
-        if allowed_domains and parsed.netloc:
-            domain_allowed = any(
-                parsed.netloc.endswith(domain) or parsed.netloc == domain
-                for domain in allowed_domains
-            )
-            if not domain_allowed:
-                return False
-
-        # Prevent local/private network access (syntactic / offline check).
-        # This does NOT resolve DNS — callers that actually fetch user-supplied
-        # URLs must additionally gate on is_safe_public_url() at the fetch site.
-        if parsed.hostname:
-            if parsed.hostname.lower() in ('localhost', 'localhost.localdomain'):
-                return False
-            # IP literals (incl. decimal/octal/IPv6 forms) are normalized by the
-            # ipaddress module, so 169.254.169.254, ::1, ::ffff:127.0.0.1 etc.
-            # are all caught here rather than by brittle string prefixes.
-            try:
-                ip = ipaddress.ip_address(parsed.hostname)
-            except ValueError:
-                ip = None
-            if ip is not None and _ip_is_disallowed(ip):
-                return False
-
-        return True
-
-    except Exception:
-        return False

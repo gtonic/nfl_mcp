@@ -107,8 +107,8 @@ async def get_transactions(league_id: str, round: int | None = None, week: int |
     retry_delays = [0.0, 0.4, 1.0]
     attempts = 0
     last_error = None
-    from .database import NFLDatabase
-    nfl_db = NFLDatabase()
+    from .database import get_shared_db
+    nfl_db = get_shared_db()
 
     for delay in retry_delays:
         if delay:

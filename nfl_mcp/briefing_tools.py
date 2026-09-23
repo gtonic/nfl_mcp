@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from .database import NFLDatabase
+from .database import get_shared_db
 from .errors import create_success_response
 from .game_clock import progress_of, settle, week_games
 from .injury_match import (
@@ -240,7 +240,7 @@ async def get_weekly_briefing(
     from .projections import project_players
     from .win_probability import get_win_probability_lineup
 
-    db = NFLDatabase()
+    db = get_shared_db()
 
     # 1) Season / week. Never season 0: when the NFL state feed is down this
     #    falls back to the last good state, then the cached schedule, then the

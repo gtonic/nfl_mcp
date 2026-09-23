@@ -37,5 +37,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           AGENT_EVAL_MODEL: ${{ github.event.inputs.model }}
+          # Passed via env, not interpolated into the script, so the input
+          # cannot inject shell.
+          AGENT_EVAL_THRESHOLD: ${{ github.event.inputs.threshold }}
         run: |
-          python -m evals.agent.run --threshold "${{ github.event.inputs.threshold }}"
+          python -m evals.agent.run --threshold "$AGENT_EVAL_THRESHOLD"

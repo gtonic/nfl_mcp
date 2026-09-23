@@ -84,15 +84,15 @@ class TestCrawlUrl:
     @pytest.mark.asyncio
     async def test_crawl_url_max_length(self):
         """Test URL crawling with max_length parameter."""
-        mock_html = '<html><body>' + 'x' * 200 + '</body></html>'
+        mock_html = '<html><body>' + 'x' * 300 + '</body></html>'
         client = _mock_client(_mock_response(200, mock_html))
 
         with patch('nfl_mcp.web_tools.resolve_safe_url', **_ALLOW), \
                 patch('nfl_mcp.web_tools.create_http_client', return_value=client):
-            result = await crawl_url("https://example.com", max_length=50)
+            result = await crawl_url("https://example.com", max_length=100)
 
         assert result["success"] is True
-        assert result["content_length"] <= 53  # 50 + "..."
+        assert result["content_length"] <= 103  # 100 (the documented minimum) + "..."
 
     @pytest.mark.asyncio
     async def test_crawl_url_http_error(self):

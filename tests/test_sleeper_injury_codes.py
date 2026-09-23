@@ -11,6 +11,8 @@ from nfl_mcp.injury_service import status_severity, worst_status
 from nfl_mcp.lineup_optimizer_tools import INJURY_STATUS_SCORES
 from nfl_mcp.projections import _injury_mult
 
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
+
 # Verified against the live athlete cache on 2026-09-21:
 #   NA  96 players (almost all unrostered, active=False)
 #   Sus 10 players (injury_body_part literally "Suspension")

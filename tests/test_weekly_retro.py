@@ -17,6 +17,8 @@ from nfl_mcp import week_context as wc
 from nfl_mcp.database import NFLDatabase
 from nfl_mcp.projection_store import log_projections, scoring_key
 
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
+
 ROSTER_POSITIONS = ["QB", "RB", "WR", "FLEX", "BN", "BN", "BN"]
 SCORING = {"rec": 0.5}
 # The key the test league's projections are filed under.
@@ -59,7 +61,7 @@ def _matchups():
 
 @pytest.fixture
 def league(monkeypatch, db):
-    monkeypatch.setattr(retro_tools, "NFLDatabase", lambda *a, **k: db)
+    monkeypatch.setattr(retro_tools, "get_shared_db", lambda *a, **k: db)
     monkeypatch.setattr(sleeper_tools, "get_league", AsyncMock(return_value={"league": {
         "name": "Test", "total_rosters": 10, "scoring_settings": SCORING,
         "roster_positions": ROSTER_POSITIONS}}))
@@ -288,10 +290,11 @@ class TestSeasonWeekFallback:
     @pytest.mark.asyncio
     async def test_briefing_survives_an_nfl_state_outage(self, monkeypatch, db):
         from nfl_mcp import briefing_tools
-        monkeypatch.setattr(briefing_tools, "NFLDatabase", lambda *a, **k: db)
+        monkeypatch.setattr(briefing_tools, "get_shared_db", lambda *a, **k: db)
         monkeypatch.setattr(sleeper_tools, "get_nfl_state", AsyncMock(side_effect=OSError("down")))
         monkeypatch.setattr(sleeper_tools, "get_league", AsyncMock(return_value={"league": {}}))
         monkeypatch.setattr(sleeper_tools, "get_rosters", AsyncMock(return_value={"rosters": []}))
+        monkeypatch.setattr(sleeper_tools, "get_matchups", AsyncMock(return_value={"matchups": []}))
         out = await briefing_tools.get_weekly_briefing("L", roster_id=1)
         # It stops at the missing roster, but only after resolving the week.
         assert out["success"] is False

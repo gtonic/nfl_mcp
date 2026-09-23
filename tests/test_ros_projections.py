@@ -351,7 +351,7 @@ class TestTradeFinderRos:
 
         monkeypatch.setattr(sleeper_tools, "get_league", _league)
         monkeypatch.setattr(sleeper_tools, "get_rosters", _rosters)
-        monkeypatch.setattr(trade_finder_tools, "NFLDatabase", lambda *a, **k: FakeDB())
+        monkeypatch.setattr(trade_finder_tools, "get_shared_db", lambda *a, **k: FakeDB())
         out = await trade_finder_tools.find_trade_targets("L", roster_id=1, week=12,
                                                            season=2026)
         assert out["success"] is True

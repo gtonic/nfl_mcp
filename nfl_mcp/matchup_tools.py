@@ -96,8 +96,8 @@ def _get_tier_color(tier: str) -> str:
 def _init_matchup_db():
     """Initialize database connection for matchup data caching."""
     try:
-        from .database import NFLDatabase
-        return NFLDatabase()
+        from .database import get_shared_db
+        return get_shared_db()
     except Exception as e:
         logger.debug(f"Database init failed for matchup tools: {e}")
         return None

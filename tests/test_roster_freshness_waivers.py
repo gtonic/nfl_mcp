@@ -79,7 +79,7 @@ class TestSnapshotAgeLimit:
 
         monkeypatch.setattr(sleeper_tools, "_init_db", lambda: _DB(), raising=False)
         from nfl_mcp import database
-        monkeypatch.setattr(database, "NFLDatabase", lambda *a, **k: _DB())
+        monkeypatch.setattr(database, "get_shared_db", lambda *a, **k: _DB())
         monkeypatch.setattr(sleeper_tools, "create_http_client", lambda *a, **k: _Client())
         monkeypatch.setattr(sleeper_tools.asyncio, "sleep", AsyncMock())
         res = await sleeper_tools.get_rosters("L")

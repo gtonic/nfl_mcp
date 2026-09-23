@@ -127,8 +127,8 @@ class PlayerValuesService:
         self.db = db
         if self.db is None:
             try:
-                from .database import NFLDatabase
-                self.db = NFLDatabase()
+                from .database import get_shared_db
+                self.db = get_shared_db()
             except Exception as e:  # pragma: no cover - defensive
                 logger.debug(f"PlayerValuesService DB init failed: {e}")
                 self.db = None

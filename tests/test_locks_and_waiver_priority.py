@@ -263,7 +263,7 @@ class TestWinProbabilityLocks:
     async def test_started_players_are_locked_or_out(self):
         now = TNF + timedelta(hours=1)
         with patch.object(win_probability, "_now", lambda: now), \
-             patch("nfl_mcp.database.NFLDatabase", lambda *a, **k: _FakeDB()):
+             patch("nfl_mcp.database.get_shared_db", lambda *a, **k: _FakeDB()):
             res = await win_probability.get_win_probability_lineup(
                 your_players=[
                     {"name": "Thursday Starter", "position": "WR", "team": "BUF",

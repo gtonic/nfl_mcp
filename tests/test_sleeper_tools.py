@@ -9,6 +9,15 @@ import pytest
 from nfl_mcp import sleeper_tools
 
 
+@pytest.fixture(autouse=True)
+def _no_athletes_download(monkeypatch):
+    """get_trending_players backfills an empty athletes cache from Sleeper's
+    full player dump; the test DB is empty, so stub the backfill."""
+    from nfl_mcp import athlete_tools
+    monkeypatch.setattr(athlete_tools, "fetch_athletes",
+                        AsyncMock(return_value={"success": False, "athletes_count": 0}))
+
+
 class TestSleeperToolsModule:
     """Test the sleeper_tools module functionality."""
 

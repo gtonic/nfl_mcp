@@ -148,7 +148,7 @@ async def audit_ir_slots(
 ) -> dict:
     """IR audit for one roster in one league."""
     from . import sleeper_tools
-    from .database import NFLDatabase
+    from .database import get_shared_db
 
     league = ((await sleeper_tools.get_league(league_id)) or {}).get("league") or {}
     if not league:
@@ -173,7 +173,7 @@ async def audit_ir_slots(
             "error": f"No roster found in league {league_id} for the given identifier.",
         })
 
-    db = NFLDatabase()
+    db = get_shared_db()
     athletes = db.get_athletes_by_ids([str(p) for p in (mine.get("players") or [])])
     audit = audit_roster(
         mine, league.get("settings") or {}, athletes,

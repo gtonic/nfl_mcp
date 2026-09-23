@@ -58,7 +58,7 @@ def db(monkeypatch):
                 ("DET", "CAR", 1), ("CAR", "DET", 0),
             )
         ])  # LAR deliberately absent: a bye week
-        monkeypatch.setattr(waiver_target_tools, "NFLDatabase", lambda *a, **k: database)
+        monkeypatch.setattr(waiver_target_tools, "get_shared_db", lambda *a, **k: database)
         yield database
 
 

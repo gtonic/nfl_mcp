@@ -4,7 +4,6 @@ Retry and Circuit Breaker utilities for robust API calls.
 This module provides:
 - Configurable retry logic with exponential backoff
 - Circuit breaker pattern to prevent cascading failures
-- Configurable timeouts via environment variables
 - Partial data return on errors
 """
 
@@ -16,6 +15,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -48,75 +49,43 @@ class CircuitBreaker:
         self.failure_count = 0
         self.success_count = 0
         self.last_failure_time: float | None = None
+        self._probe_in_flight = False
 
         # Configuration from environment
         self.failure_threshold = int(os.getenv("NFL_MCP_CIRCUIT_FAILURE_THRESHOLD", "5"))
         self.timeout = int(os.getenv("NFL_MCP_CIRCUIT_TIMEOUT", "60"))
         self.success_threshold = int(os.getenv("NFL_MCP_CIRCUIT_SUCCESS_THRESHOLD", "2"))
 
-    def call(self, func: Callable, *args, **kwargs) -> Any:
+    def allow_request(self) -> bool:
+        """Whether a call may go out now (and, when HALF_OPEN, claim the probe).
+
+        OPEN rejects until the timeout has passed; the first caller after that
+        moves the breaker to HALF_OPEN and becomes the single probe. While the
+        probe is in flight every other caller is rejected, so a recovering host
+        gets one request rather than the whole backlog at once.
         """
-        Execute function through circuit breaker.
-
-        Args:
-            func: Function to execute
-            *args: Positional arguments
-            **kwargs: Keyword arguments
-
-        Returns:
-            Function result
-
-        Raises:
-            CircuitBreakerError: If circuit is open
-        """
+        if self.state == CircuitState.CLOSED:
+            return True
         if self.state == CircuitState.OPEN:
-            if self._should_attempt_reset():
-                logger.info(f"[Circuit Breaker {self.name}] Attempting reset (HALF_OPEN)")
-                self.state = CircuitState.HALF_OPEN
-            else:
-                raise CircuitBreakerError(f"Circuit breaker {self.name} is OPEN")
+            if not self._should_attempt_reset():
+                return False
+            logger.info(f"[Circuit Breaker {self.name}] Attempting reset (HALF_OPEN)")
+            self.state = CircuitState.HALF_OPEN
+            self.success_count = 0
+            self._probe_in_flight = False
+        if self._probe_in_flight:
+            return False
+        self._probe_in_flight = True
+        return True
 
-        try:
-            result = func(*args, **kwargs)
-            self._on_success()
-            return result
-        except Exception as e:
-            self._on_failure()
-            raise e
-
-    async def call_async(self, func: Callable, *args, **kwargs) -> Any:
-        """
-        Execute async function through circuit breaker.
-
-        Args:
-            func: Async function to execute
-            *args: Positional arguments
-            **kwargs: Keyword arguments
-
-        Returns:
-            Function result
-
-        Raises:
-            CircuitBreakerError: If circuit is open
-        """
-        if self.state == CircuitState.OPEN:
-            if self._should_attempt_reset():
-                logger.info(f"[Circuit Breaker {self.name}] Attempting reset (HALF_OPEN)")
-                self.state = CircuitState.HALF_OPEN
-            else:
-                raise CircuitBreakerError(f"Circuit breaker {self.name} is OPEN")
-
-        try:
-            result = await func(*args, **kwargs)
-            self._on_success()
-            return result
-        except Exception as e:
-            self._on_failure()
-            raise e
+    def release_probe(self) -> None:
+        """End a probe without a verdict (the call failed for a non-host reason)."""
+        self._probe_in_flight = False
 
     def _on_success(self):
         """Handle successful call."""
         self.failure_count = 0
+        self._probe_in_flight = False
 
         if self.state == CircuitState.HALF_OPEN:
             self.success_count += 1
@@ -128,6 +97,7 @@ class CircuitBreaker:
     def _on_failure(self):
         """Handle failed call."""
         self.failure_count += 1
+        self._probe_in_flight = False
         self.last_failure_time = time.time()
 
         if self.state == CircuitState.HALF_OPEN:
@@ -153,6 +123,7 @@ class CircuitBreaker:
         self.failure_count = 0
         self.success_count = 0
         self.last_failure_time = None
+        self._probe_in_flight = False
         logger.info(f"[Circuit Breaker {self.name}] Manual reset")
 
 
@@ -185,6 +156,18 @@ def raise_for_retryable_status(resp: Any) -> None:
     status = getattr(resp, "status_code", None)
     if isinstance(status, int) and is_retryable_status(status):
         raise RetryableHTTPStatus(status, str(getattr(resp, "url", "") or ""))
+
+
+def is_retryable_error(exc: BaseException) -> bool:
+    """Transport failures and 5xx/429 answers are worth retrying (and count
+    against the host's breaker); anything else — a 404, a parse error, a bug
+    in the caller — would fail the same way again and says nothing about
+    whether the host is up."""
+    if isinstance(exc, (httpx.TransportError, ConnectionError, TimeoutError, RetryableHTTPStatus)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return is_retryable_status(exc.response.status_code)
+    return False
 
 
 # Global circuit breakers for different API endpoints
@@ -248,42 +231,27 @@ async def retry_with_backoff(
     if circuit_breaker_name:
         circuit_breaker = get_circuit_breaker(circuit_breaker_name)
 
-    last_exception = None
-    delay = initial_delay
+    # The breaker is consulted once per logical call: the retries below belong
+    # to it (a HALF_OPEN probe's own retries must not be rejected as a second
+    # probe).
+    if circuit_breaker and not circuit_breaker.allow_request():
+        logger.warning(f"[Retry] Circuit breaker {circuit_breaker_name} open, skipping call")
+        raise CircuitBreakerError(f"Circuit breaker {circuit_breaker_name} is OPEN, skipping attempt")
+
+    last_exception: BaseException | None = None
 
     for attempt in range(max_retries + 1):
         try:
-            # Check circuit breaker if enabled
-            if circuit_breaker and circuit_breaker.state == CircuitState.OPEN:
-                if not circuit_breaker._should_attempt_reset():
-                    raise CircuitBreakerError(
-                        f"Circuit breaker {circuit_breaker_name} is OPEN, skipping attempt"
-                    )
-                logger.info(f"[Retry] Circuit breaker {circuit_breaker_name} attempting reset")
-                circuit_breaker.state = CircuitState.HALF_OPEN
-
-            # Execute function
             if asyncio.iscoroutinefunction(func):
                 result = await func(*args, **kwargs)
             else:
                 result = func(*args, **kwargs)
-
-            # Success - update circuit breaker
-            if circuit_breaker:
-                circuit_breaker._on_success()
-
-            # Log retry success if this wasn't first attempt
-            if attempt > 0:
-                logger.info(f"[Retry] Success on attempt {attempt + 1}/{max_retries + 1}")
-
-            return result
-
-        except CircuitBreakerError as e:
-            # Don't retry if circuit breaker is open
-            logger.warning(f"[Retry] Circuit breaker open, stopping retries: {e}")
-            raise e
-
         except Exception as e:
+            if not is_retryable_error(e):
+                # Not the host's fault: no retry, no breaker failure.
+                if circuit_breaker:
+                    circuit_breaker.release_probe()
+                raise
             last_exception = e
 
             # Don't retry on last attempt. The breaker records ONE failure per
@@ -297,44 +265,27 @@ async def retry_with_backoff(
                     circuit_breaker._on_failure()
                 break
 
-            # Calculate delay with exponential backoff
             delay = min(initial_delay * (exponential_base ** attempt), max_delay)
-
             logger.warning(
                 f"[Retry] Attempt {attempt + 1}/{max_retries + 1} failed: "
                 f"{type(e).__name__}: {e}. Retrying in {delay:.2f}s..."
             )
-
             await asyncio.sleep(delay)
+            continue
+        except BaseException:
+            # Cancelled mid-call: a claimed probe must not stay claimed forever.
+            if circuit_breaker:
+                circuit_breaker.release_probe()
+            raise
+
+        if circuit_breaker:
+            circuit_breaker._on_success()
+        if attempt > 0:
+            logger.info(f"[Retry] Success on attempt {attempt + 1}/{max_retries + 1}")
+        return result
 
     # All retries exhausted
     raise last_exception
-
-
-def get_configurable_timeout() -> float:
-    """
-    Get configurable timeout from environment.
-
-    Environment variables:
-    - NFL_MCP_API_TIMEOUT: API timeout in seconds (default: 30.0)
-
-    Returns:
-        Timeout in seconds
-    """
-    return float(os.getenv("NFL_MCP_API_TIMEOUT", "30.0"))
-
-
-def get_configurable_long_timeout() -> float:
-    """
-    Get configurable long timeout from environment.
-
-    Environment variables:
-    - NFL_MCP_API_LONG_TIMEOUT: Long API timeout in seconds (default: 60.0)
-
-    Returns:
-        Timeout in seconds
-    """
-    return float(os.getenv("NFL_MCP_API_LONG_TIMEOUT", "60.0"))
 
 
 def get_all_circuit_breaker_status() -> dict[str, dict[str, Any]]:
@@ -357,70 +308,3 @@ def get_all_circuit_breaker_status() -> dict[str, dict[str, Any]]:
         for name, breaker in _circuit_breakers.items()
     }
 
-
-async def with_circuit_breaker(
-    func: Callable,
-    breaker_name: str,
-    *args,
-    fallback: Any = None,
-    fallback_func: Callable | None = None,
-    **kwargs
-) -> Any:
-    """
-    Execute function with circuit breaker protection.
-
-    Simple wrapper that:
-    - Checks circuit breaker state before calling
-    - Updates circuit breaker on success/failure
-    - Returns fallback on circuit breaker open
-
-    Args:
-        func: Async function to execute
-        breaker_name: Name of circuit breaker to use
-        *args: Positional arguments for func
-        fallback: Value to return if circuit is open (default: None)
-        fallback_func: Async function to call for fallback (e.g., load from cache)
-        **kwargs: Keyword arguments for func
-
-    Returns:
-        Function result or fallback
-    """
-    breaker = get_circuit_breaker(breaker_name)
-
-    # If circuit is open, try fallback
-    if breaker.state == CircuitState.OPEN:
-        if not breaker._should_attempt_reset():
-            logger.warning(f"[Circuit Breaker {breaker_name}] Open, using fallback")
-            if fallback_func:
-                try:
-                    return await fallback_func(*args, **kwargs) if asyncio.iscoroutinefunction(fallback_func) else fallback_func(*args, **kwargs)
-                except Exception as e:
-                    logger.warning(f"[Circuit Breaker {breaker_name}] Fallback failed: {e}")
-            return fallback
-
-        # Attempting reset
-        logger.info(f"[Circuit Breaker {breaker_name}] Attempting reset (HALF_OPEN)")
-        breaker.state = CircuitState.HALF_OPEN
-
-    try:
-        # Execute function
-        if asyncio.iscoroutinefunction(func):
-            result = await func(*args, **kwargs)
-        else:
-            result = func(*args, **kwargs)
-
-        breaker._on_success()
-        return result
-
-    except Exception as e:
-        breaker._on_failure()
-
-        # Try fallback on failure
-        if fallback_func:
-            try:
-                logger.info(f"[Circuit Breaker {breaker_name}] Primary failed, trying fallback")
-                return await fallback_func(*args, **kwargs) if asyncio.iscoroutinefunction(fallback_func) else fallback_func(*args, **kwargs)
-            except Exception as fallback_error:
-                logger.warning(f"[Circuit Breaker {breaker_name}] Fallback also failed: {fallback_error}")
-
-        raise e

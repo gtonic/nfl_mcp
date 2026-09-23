@@ -4,6 +4,7 @@ Web crawling MCP tools for the NFL MCP Server.
 This module contains MCP tools for crawling and extracting content from web pages.
 """
 
+import asyncio
 import ipaddress
 import os
 import re
@@ -13,7 +14,13 @@ import httpcore
 import httpx
 from bs4 import BeautifulSoup
 
-from .config import allow_private_urls, create_http_client, get_http_headers, resolve_safe_url
+from .config import (
+    allow_private_urls,
+    create_http_client,
+    get_http_headers,
+    resolve_safe_url,
+    validate_limit,
+)
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 
 # Maximum number of redirect hops crawl_url will follow (each re-validated).
@@ -131,6 +138,36 @@ async def _read_capped(response, max_bytes: int) -> tuple[bytes, bool]:
     return b"".join(chunks), False
 
 
+def _extract_text(raw_text: str, media_type: str | None) -> tuple[str | None, str]:
+    """(title, cleaned text) of a fetched document; markup is parsed, text kept."""
+    title = None
+    if not media_type or media_type in _MARKUP_CONTENT_TYPES or media_type.endswith("+xml"):
+        # Parse HTML content
+        soup = BeautifulSoup(raw_text, 'lxml')
+
+        # Extract title
+        title_tag = soup.find('title')
+        title = title_tag.get_text().strip() if title_tag else None
+
+        # Remove script and style elements
+        for script in soup(["script", "style", "nav", "footer", "aside", "form"]):
+            script.extract()
+
+        # Get text content
+        text = soup.get_text()
+    else:
+        text = raw_text
+
+    # Clean up the text
+    lines = (line.strip() for line in text.splitlines())
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    text = ' '.join(chunk for chunk in chunks if chunk)
+
+    # Remove excessive whitespace and normalize
+    text = re.sub(r'\s+', ' ', text).strip()
+    return title, text
+
+
 @handle_http_errors(
     default_data={"url": None, "title": None, "content": "", "content_length": 0},
     operation_name="crawling URL"
@@ -158,6 +195,8 @@ async def crawl_url(url: str, max_length: int | None = 10000) -> dict:
         - error_type: Type of error (if any)
     """
     _error_data = {"url": url, "title": None, "content": "", "content_length": 0}
+    # Documented range 100-50000 (default 10000); out-of-range values clamp.
+    max_length = validate_limit(max_length, 100, 50000, default=10000)
 
     # SSRF protection: validate scheme + resolved IP before contacting the host
     # (resolved on the event loop's resolver, not a blocking getaddrinfo).
@@ -223,31 +262,8 @@ async def crawl_url(url: str, max_length: int | None = 10000) -> dict:
     except LookupError:
         raw_text = body.decode("utf-8", errors="replace")
 
-    title = None
-    if not media_type or media_type in _MARKUP_CONTENT_TYPES or media_type.endswith("+xml"):
-        # Parse HTML content
-        soup = BeautifulSoup(raw_text, 'lxml')
-
-        # Extract title
-        title_tag = soup.find('title')
-        title = title_tag.get_text().strip() if title_tag else None
-
-        # Remove script and style elements
-        for script in soup(["script", "style", "nav", "footer", "aside", "form"]):
-            script.extract()
-
-        # Get text content
-        text = soup.get_text()
-    else:
-        text = raw_text
-
-    # Clean up the text
-    lines = (line.strip() for line in text.splitlines())
-    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-    text = ' '.join(chunk for chunk in chunks if chunk)
-
-    # Remove excessive whitespace and normalize
-    text = re.sub(r'\s+', ' ', text).strip()
+    # Parsing a 2 MB page is CPU-bound: keep it off the event loop.
+    title, text = await asyncio.to_thread(_extract_text, raw_text, media_type)
 
     # Apply length limit if specified
     if max_length and len(text) > max_length:

@@ -13,7 +13,6 @@ from nfl_mcp.config import (
     validate_limit,
     validate_numeric_input,
     validate_string_input,
-    validate_url_enhanced,
 )
 
 
@@ -271,55 +270,6 @@ class TestContentSanitization:
         assert sanitize_content("   ") == ""
 
 
-class TestEnhancedUrlValidation:
-    """Test enhanced URL validation."""
-
-    def test_basic_valid_urls(self):
-        """Test basic valid URLs."""
-        assert validate_url_enhanced("https://example.com") is True
-        assert validate_url_enhanced("http://example.com") is True
-        assert validate_url_enhanced("https://api.sleeper.app/v1/league/123") is True
-
-    def test_invalid_schemes(self):
-        """Test invalid URL schemes."""
-        assert validate_url_enhanced("ftp://example.com") is False
-        assert validate_url_enhanced("file:///etc/passwd") is False
-        assert validate_url_enhanced("data:text/html,<script>") is False
-
-    def test_dangerous_patterns_in_urls(self):
-        """Test dangerous patterns in URLs."""
-        assert validate_url_enhanced("https://example.com/page?id=1' OR 1=1--") is False
-        assert validate_url_enhanced("https://example.com/<script>alert(1)</script>") is False
-        assert validate_url_enhanced("https://example.com/page;rm -rf /") is False
-
-    def test_local_network_blocking(self):
-        """Test blocking of local/private network URLs."""
-        assert validate_url_enhanced("http://localhost/test") is False
-        assert validate_url_enhanced("http://127.0.0.1/test") is False
-        assert validate_url_enhanced("http://0.0.0.0/test") is False
-        assert validate_url_enhanced("http://192.168.1.1/test") is False
-        assert validate_url_enhanced("http://10.0.0.1/test") is False
-        assert validate_url_enhanced("http://172.16.0.1/test") is False
-
-    def test_domain_restrictions(self):
-        """Test domain restrictions."""
-        allowed_domains = ["example.com", "api.sleeper.app"]
-
-        assert validate_url_enhanced("https://example.com/test",
-                                   allowed_domains=allowed_domains) is True
-        assert validate_url_enhanced("https://api.sleeper.app/v1/test",
-                                   allowed_domains=allowed_domains) is True
-        assert validate_url_enhanced("https://evil.com/test",
-                                   allowed_domains=allowed_domains) is False
-
-    def test_malformed_urls(self):
-        """Test malformed URLs."""
-        assert validate_url_enhanced("not_a_url") is False
-        assert validate_url_enhanced("") is False
-        assert validate_url_enhanced(None) is False
-        assert validate_url_enhanced(123) is False
-
-
 class TestValidateLimit:
     """Test the validate_limit function for backward compatibility."""
 
@@ -351,24 +301,6 @@ class TestValidateLimit:
 
         result = validate_limit(None, min_val=1, max_val=10)
         assert result == 1  # Should use min_val when no default
-
-
-class TestEnhancedUrlValidationSSRF:
-    """IP-literal SSRF ranges the offline validator must reject."""
-
-    def test_blocks_cloud_metadata_literal(self):
-        # Regression: 169.254.169.254 was NOT blocked by the old prefix checks.
-        assert validate_url_enhanced("http://169.254.169.254/latest/meta-data/") is False
-
-    def test_blocks_ipv6_loopback_literal(self):
-        assert validate_url_enhanced("http://[::1]/") is False
-
-    def test_blocks_ipv4_mapped_ipv6_literal(self):
-        assert validate_url_enhanced("http://[::ffff:127.0.0.1]/") is False
-
-    def test_public_host_still_allowed(self):
-        # Hostnames are not resolved here (offline validator), so this stays True.
-        assert validate_url_enhanced("https://example.com") is True
 
 
 class TestIsSafePublicUrl:

@@ -119,7 +119,7 @@ def db(monkeypatch):
             {"season": 2026, "week": 3, "team": "BUF", "opponent": "KC", "is_home": 1},
             {"season": 2026, "week": 3, "team": "KC", "opponent": "BUF", "is_home": 0},
         ])
-        monkeypatch.setattr(trade_finder_tools, "NFLDatabase", lambda *a, **k: database)
+        monkeypatch.setattr(trade_finder_tools, "get_shared_db", lambda *a, **k: database)
         yield database
 
 

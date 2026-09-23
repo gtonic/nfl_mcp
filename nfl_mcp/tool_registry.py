@@ -52,7 +52,7 @@ from .config import (
     validate_numeric_input,
     validate_string_input,
 )
-from .database import NFLDatabase
+from .database import NFLDatabase, set_shared_db
 from .metrics import timing_decorator
 from .teams import normalize_team
 
@@ -65,9 +65,11 @@ _db_token: ContextVar[NFLDatabase | None] = ContextVar("nfl_db", default=None)
 def initialize_shared(db: NFLDatabase) -> None:
     """Register the shared database instance for tool access.
 
-    Called once at application startup to inject the DB.
+    Called once at application startup to inject the DB. Also registers it as
+    the process-wide instance tool code reaches via ``database.get_shared_db``.
     """
     _db_token.set(db)
+    set_shared_db(db)
 
 
 def get_db() -> NFLDatabase | None:
