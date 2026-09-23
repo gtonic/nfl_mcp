@@ -8,6 +8,7 @@ of a mutable global, eliminating race conditions and making the code testable.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from contextvars import ContextVar
 
@@ -49,6 +50,8 @@ from .config import (
 )
 from .database import NFLDatabase
 from .metrics import timing_decorator
+
+logger = logging.getLogger(__name__)
 
 # Async-safe database instance via ContextVar (replaces mutable global get_db())
 _db_token: ContextVar[NFLDatabase | None] = ContextVar("nfl_db", default=None)
@@ -2259,7 +2262,8 @@ async def get_stack_opportunities(
 async def get_injury_report(
     player_ids: list[str] | None = None,
     team_ids: list[str] | None = None,
-    use_cache: bool | None = True
+    use_cache: bool | None = True,
+    include_practice: bool | None = True,
 ) -> dict:
     """Get detailed injury reports with confidence scoring.
 
@@ -2271,15 +2275,21 @@ async def get_injury_report(
         player_ids: List of player IDs to lookup
         team_ids: List of team abbreviations (e.g., ['KC', 'PHI'])
         use_cache: Whether to use cached data with adaptive TTL
+        include_practice: Attach this week's real practice report (default True)
 
     Returns: {
         injuries: [{
             player_id, player_name, team_id, position,
             injury_status, injury_type, injury_description,
             game_status, severity (1-5), confidence (0-100),
-            sources, date_reported
+            sources, date_reported,
+            practice_status (DNP/LP/FP/REST or null), practice_pattern
+            ("DNP-LP-FP"), practice_trend (improving/worsening/steady/
+            single_report), practice_days [{date, day, status, source}],
+            practice_source ("nfl.com" official report, "espn_news" dated
+            news note, or null = no report published — never inferred)
         }],
-        total_injuries, cache_used,
+        total_injuries, cache_used, practice_week,
         success, error?
     }
 
@@ -2312,10 +2322,15 @@ async def get_injury_report(
             injuries = await get_injury_reports(db=get_db(), use_cache=use_cache_val)
             results = injuries
 
+        practice_week = None
+        if include_practice is not False and results:
+            practice_week = await _attach_practice(results)
+
         return {
             "injuries": results,
             "total_injuries": len(results),
             "cache_used": use_cache_val,
+            "practice_week": practice_week,
             "success": True
         }
 
@@ -2327,6 +2342,42 @@ async def get_injury_report(
             "success": False,
             "error": str(e)
         }
+
+
+async def _current_season_week() -> tuple[int | None, int | None]:
+    """Season and week from Sleeper's NFL state, (None, None) on failure."""
+    try:
+        state = await sleeper_tools.get_nfl_state()
+        st = (state or {}).get("nfl_state") or {}
+        return int(st.get("season") or 0) or None, int(st.get("week") or 0) or None
+    except Exception:
+        return None, None
+
+
+async def _attach_practice(injuries: list[dict]) -> dict:
+    """Add this week's reported practice line to each injury row (in place).
+
+    Refreshes the stored reports at most hourly first, so the tool does not
+    depend on the prefetch loop. A player without a report gets nulls.
+    """
+    from .practice_reports import lookup_practice, practice_fields, refresh_practice_reports
+
+    db = get_db()
+    season, week = await _current_season_week()
+    try:
+        await refresh_practice_reports(db, season, week)
+    except Exception as e:
+        logger.debug(f"practice refresh failed: {e}")
+    reported = 0
+    for inj in injuries:
+        practice = lookup_practice(db, inj.get("player_name"), inj.get("team_id"),
+                                   season=season, week=week)
+        inj.update(practice_fields(practice))
+        inj["practice_days"] = (practice or {}).get("days") or []
+        if practice and practice.get("game_status"):
+            inj["practice_report_game_status"] = practice["game_status"]
+        reported += 1 if practice else 0
+    return {"season": season, "week": week, "players_with_report": reported}
 
 
 @timing_decorator("get_injury_trends", tool_type="injury")
@@ -2468,14 +2519,25 @@ async def get_high_confidence_injuries(
 @timing_decorator("get_gameday_inactives", tool_type="injury")
 async def get_gameday_inactives(
     teams: list[str] | None = None,
-    severity_threshold: int | None = 3
+    severity_threshold: int | None = 3,
+    league_id: str | None = None,
+    roster_id: int | None = None,
+    season: int | None = None,
+    week: int | None = None,
 ) -> dict:
-    """Get likely inactive players for upcoming games.
+    """Get gameday inactives: the published list once it is out, the injury
+    report's likely-outs before that.
 
-    Filters injuries by severity to identify players who are likely
-    to be inactive. Useful for last-minute lineup decisions.
+    Teams declare inactives ~90 minutes before kickoff. For games starting
+    within 2h, in progress or final, the published inactives are read
+    (ESPN gameday notes "X is inactive for Sunday's game", plus Sleeper's
+    `Inactive` status) and marked `official: true`. For every other team — or
+    a team whose list has not been published yet — the old behaviour is the
+    fallback: injuries at or above `severity_threshold`, marked
+    `official: false` with `basis: "injury_report_severity"`. That is a
+    forecast, not the inactive list.
 
-    Severity scale:
+    Severity scale (fallback only):
     - 1: Minor (day-to-day)
     - 2: Questionable (game-time decision)
     - 3: Moderate (expected to miss 1-2 weeks)
@@ -2484,33 +2546,75 @@ async def get_gameday_inactives(
 
     Parameters:
         teams: Team abbreviations to filter
-        severity_threshold: Min severity to include (3+ = likely out)
+        severity_threshold: Min severity for the fallback (3+ = likely out)
+        league_id, roster_id (optional): pass both to flag YOUR starters who
+            are inactive (or at risk before the list is out)
+        season, week (optional): default to the current NFL week
 
     Returns: {
-        inactives: [{player_name, team_id, injury_status, severity, confidence}],
+        inactives: [{player_name, team_id, injury_status, official, basis,
+                     source, note?, severity?, confidence?}],
         total_inactives, severity_threshold_used,
+        mode: "official" | "mixed" | "fallback_injury_report",
+        official_published_teams, pending_teams, games {team: {kickoff, phase}},
+        confirmed_active [{player_name, team_id, note}],
+        my_starters? {inactive, at_risk, confirmed_active, not_yet_published},
         success, error?
     }
 
     Example: get_gameday_inactives()
+    Example: get_gameday_inactives(league_id="1312017357782155264", roster_id=7)
     Example: get_gameday_inactives(teams=["KC", "SF"], severity_threshold=4)
     """
+    from .gameday_inactives import get_official_inactives
     from .injury_service import get_injury_reports
+    from .opportunity_tools import norm_name
+    from .teams import normalize_team
 
     try:
         threshold = int(severity_threshold) if severity_threshold else 3
         threshold = max(1, min(5, threshold))
 
         teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
+        if not season or not week:
+            cur_season, cur_week = await _current_season_week()
+            season, week = season or cur_season, week or cur_week
+
+        official = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": []}
+        if season and week:
+            try:
+                official = await get_official_inactives(get_db(), int(season), int(week), teams_list or None)
+            except Exception as e:
+                logger.warning(f"official inactives unavailable: {e}")
+        published = sorted({r["team_id"] for r in official["inactives"]})
+        pending = sorted(set(official.get("window_teams") or []) - set(published))
+
         injuries = await get_injury_reports(
             teams=teams_list if teams_list else None,
             db=get_db(),
             use_cache=True
         )
 
-        # Filter by severity
         inactives = []
+        for row in official["inactives"]:
+            inactives.append({
+                "player_id": row.get("player_id"),
+                "player_name": row.get("player_name"),
+                "team_id": row.get("team_id"),
+                "position": row.get("position"),
+                "injury_status": "Inactive",
+                "official": True,
+                "basis": "published_inactives",
+                "source": row.get("source"),
+                "note": row.get("note"),
+                "posted": row.get("posted"),
+            })
+
+        # Fallback: severity filter, for teams without a published list.
         for inj in injuries:
+            team = normalize_team(inj.get("team_id"))
+            if team in published:
+                continue
             severity = inj.get("severity")
             if severity and severity >= threshold:
                 inactives.append({
@@ -2522,18 +2626,48 @@ async def get_gameday_inactives(
                     "injury_type": inj.get("injury_type"),
                     "game_status": inj.get("game_status"),
                     "severity": severity,
-                    "confidence": inj.get("confidence", 50)
+                    "confidence": inj.get("confidence", 50),
+                    "official": False,
+                    "basis": "injury_report_severity",
+                    "source": "injury_report",
                 })
 
-        # Sort by severity (highest first), then confidence
-        inactives.sort(key=lambda x: (-x["severity"], -x["confidence"]))
+        # Official first, then by severity (highest first), then confidence
+        inactives.sort(key=lambda x: (not x["official"], -(x.get("severity") or 6),
+                                      -(x.get("confidence") or 100)))
 
-        return {
+        mode = ("official" if published and not any(not r["official"] for r in inactives)
+                else "mixed" if published else "fallback_injury_report")
+        result = {
             "inactives": inactives,
             "total_inactives": len(inactives),
             "severity_threshold_used": threshold,
-            "success": True
+            "mode": mode,
+            "official_published_teams": published,
+            "pending_teams": pending,
+            "games": official.get("games") or {},
+            "confirmed_active": [
+                {"player_name": r["player_name"], "team_id": r["team_id"], "note": r.get("note")}
+                for r in official.get("confirmed_active") or []
+            ],
+            "season": season,
+            "week": week,
+            "success": True,
         }
+        if mode == "fallback_injury_report":
+            result["fallback_note"] = (
+                "No inactive list is published yet (they come ~90 minutes before "
+                "kickoff). These are injury-report designations at or above the "
+                "severity threshold, not official inactives."
+            )
+
+        if league_id and roster_id is not None and week:
+            result["my_starters"] = await _flag_my_starters(
+                str(league_id), int(roster_id), int(week), inactives,
+                official.get("confirmed_active") or [], set(pending), official.get("games") or {},
+                norm_name,
+            )
+        return result
 
     except Exception as e:
         return {
@@ -2543,6 +2677,52 @@ async def get_gameday_inactives(
             "success": False,
             "error": str(e)
         }
+
+
+async def _flag_my_starters(league_id, roster_id, week, inactives, confirmed_active,
+                            pending, games, norm_name) -> dict:
+    """Which of the roster's current starters are inactive / at risk."""
+    from .teams import normalize_team
+
+    starters: list[str] = []
+    try:
+        matchups = (await sleeper_tools.get_matchups(league_id, week) or {}).get("matchups") or []
+        mine = next((m for m in matchups if m.get("roster_id") == roster_id), None)
+        starters = [str(p) for p in (mine or {}).get("starters") or [] if p and p != "0"]
+        if not starters:
+            rosters = (await sleeper_tools.get_rosters(league_id) or {}).get("rosters") or []
+            roster = next((r for r in rosters if r.get("roster_id") == roster_id), None)
+            starters = [str(p) for p in (roster or {}).get("starters") or [] if p and p != "0"]
+    except Exception as e:
+        return {"error": f"could not load starters: {e}"}
+    athletes = get_db().get_athletes_by_ids(starters) if starters else {}
+
+    def key(name, team):
+        return norm_name(name), normalize_team(team)
+
+    official = {key(r["player_name"], r["team_id"]): r for r in inactives if r["official"]}
+    at_risk = {key(r["player_name"], r["team_id"]): r for r in inactives if not r["official"]}
+    active = {key(r["player_name"], r["team_id"]): r for r in confirmed_active}
+    out = {"inactive": [], "at_risk": [], "confirmed_active": [], "not_yet_published": []}
+    for pid in starters:
+        row = athletes.get(pid) or {}
+        name, team = row.get("full_name"), normalize_team(row.get("team_id"))
+        if not name or not team:
+            continue
+        k = key(name, team)
+        entry = {"player_id": pid, "player": name, "team": team,
+                 "kickoff": (games.get(team) or {}).get("kickoff")}
+        if k in official:
+            out["inactive"].append({**entry, "source": official[k]["source"],
+                                    "note": official[k].get("note")})
+        elif k in active:
+            out["confirmed_active"].append({**entry, "note": active[k].get("note")})
+        elif k in at_risk:
+            out["at_risk"].append({**entry, "injury_status": at_risk[k]["injury_status"],
+                                   "basis": "injury_report_severity"})
+        if team in pending and k not in official and k not in active:
+            out["not_yet_published"].append(entry)
+    return out
 
 
 # =============================================================================
