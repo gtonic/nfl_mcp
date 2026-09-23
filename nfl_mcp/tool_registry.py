@@ -1476,15 +1476,17 @@ async def analyze_opponent(
     Parameters:
         league_id (str, required): The unique identifier for the fantasy league.
         opponent_roster_id (int, required): Roster ID of the opponent to analyze.
-        current_week (int, optional): Current NFL week for matchup context.
+        current_week (int, optional): NFL week for the matchup (defaults to the current week).
 
     Returns: {
         vulnerability_score: float (0-100, higher = more vulnerable),
         vulnerability_level: str (high, moderate, low),
         position_assessments: {...},
-        starter_weaknesses: [...],
+        starter_weaknesses: [...] (this week's starters from the matchup),
         exploitation_strategies: [...],
-        matchup_context: {...} (if current_week provided),
+        matchup_context: {week, points, projected_points (our projection of
+            this week's starters in league scoring), projected_starters},
+        starters_source: "matchup" | "roster",
         opponent_name: str,
         success: bool,
         error?: str
@@ -1509,7 +1511,8 @@ async def analyze_opponent(
         return await opponent_analysis_tools.analyze_opponent(
             league_id=league_id,
             opponent_roster_id=opponent_roster_id,
-            current_week=current_week
+            current_week=current_week,
+            db=get_db(),
         )
     except ValueError as e:
         return {

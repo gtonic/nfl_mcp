@@ -6,6 +6,21 @@ import pytest
 from nfl_mcp.opponent_analysis_tools import OpponentAnalyzer, analyze_opponent
 
 
+@pytest.fixture(autouse=True)
+def _offline_week(monkeypatch):
+    """analyze_opponent reads the current week and its matchup; keep both offline."""
+    from nfl_mcp import opponent_analysis_tools as oat
+
+    async def _now(db=None):
+        return {"season": 2026, "week": 3}
+
+    async def _no_matchups(league_id, week):
+        return {"success": True, "matchups": []}
+
+    monkeypatch.setattr(oat, "_season_week", _now)
+    monkeypatch.setattr(oat, "get_matchups", _no_matchups)
+
+
 class TestOpponentAnalyzer:
     """Test OpponentAnalyzer class."""
 
@@ -189,3 +204,106 @@ class TestAnalyzeOpponent:
                 assert result["success"] is True
                 assert result["opponent_name"] == "Test User"
                 assert "vulnerability_score" in result
+
+
+class TestKickerAndDefense:
+    """One K and one DEF is the whole position, not a critical weakness."""
+
+    def test_single_kicker_is_not_critical(self):
+        analyzer = OpponentAnalyzer()
+        for pos in ("K", "DEF"):
+            res = analyzer._assess_position_strength(
+                [{"full_name": "Unit", "position": pos}], pos)
+            assert res["weakness_level"] == "moderate", pos
+            assert not any("depth" in c.lower() or "snap" in c.lower() for c in res["concerns"])
+
+    def test_missing_kicker_is_still_critical(self):
+        res = OpponentAnalyzer()._assess_position_strength([], "K")
+        assert res["weakness_level"] == "critical"
+
+    def test_a_lone_rb_is_still_penalised(self):
+        res = OpponentAnalyzer()._assess_position_strength(
+            [{"full_name": "RB", "position": "RB", "snap_pct": 30}], "RB")
+        assert res["weakness_level"] == "critical"
+
+
+class _AthleteDB:
+    def get_athletes_by_ids(self, ids):
+        rows = {
+            "qb1": {"full_name": "This Week QB", "position": "QB", "team_id": "BUF"},
+            "rb1": {"full_name": "Old Starter", "position": "RB", "team_id": "SF"},
+            "SF": {"full_name": "San Francisco", "position": "DEF", "team_id": "SF"},
+        }
+        return {i: rows[i] for i in ids if i in rows}
+
+
+class TestThisWeeksMatchup:
+    ROSTER = {
+        "roster_id": 2, "owner_id": "o2",
+        "players": ["qb1", "rb1", "SF"],
+        "players_enriched": [
+            {"player_id": "qb1", "full_name": "This Week QB", "position": "QB",
+             "practice_status": "DNP"},
+            {"player_id": "rb1", "full_name": "Old Starter", "position": "RB"},
+            {"player_id": "SF", "full_name": "San Francisco", "position": "DEF"},
+        ],
+        # Last saved lineup: stale.
+        "starters_enriched": [{"player_id": "rb1", "full_name": "Old Starter",
+                               "position": "RB", "practice_status": "DNP"}],
+    }
+
+    async def _run(self, monkeypatch, matchup):
+        from nfl_mcp import opponent_analysis_tools as oat
+        from nfl_mcp import projections
+
+        seen = {}
+
+        async def _rosters(_):
+            return {"success": True, "rosters": [self.ROSTER]}
+
+        async def _users(_):
+            return {"success": True, "users": []}
+
+        async def _matchups(_, week):
+            seen["week"] = week
+            return {"success": True, "matchups": [matchup]}
+
+        async def _now(db=None):
+            return {"season": 2026, "week": 3}
+
+        async def _project(players, **kw):
+            seen["projected"] = [p["name"] for p in players]
+            seen["league_id"] = kw.get("league_id")
+            return {"success": True, "projections": [
+                {"player": p["name"], "position": p["position"],
+                 "projected_points": {"QB": 20.0, "DEF": 7.5}.get(p["position"], 10.0)}
+                for p in players]}
+
+        monkeypatch.setattr(oat, "get_rosters", _rosters)
+        monkeypatch.setattr(oat, "get_league_users", _users)
+        monkeypatch.setattr(oat, "get_matchups", _matchups)
+        monkeypatch.setattr(oat, "_season_week", _now)
+        monkeypatch.setattr(projections, "project_players", _project)
+        res = await oat.analyze_opponent("L1", 2, db=_AthleteDB())
+        return res, seen
+
+    @pytest.mark.asyncio
+    async def test_uses_matchup_starters_and_projects_them(self, monkeypatch):
+        matchup = {"roster_id": 2, "matchup_id": 4, "points": 0.0, "custom_points": None,
+                   "starters": ["qb1", "SF", "0"]}
+        res, seen = await self._run(monkeypatch, matchup)
+        assert res["success"] is True
+        assert seen["week"] == 3                      # defaulted to the current week
+        assert res["starters_source"] == "matchup"
+        flagged = {w["player_name"] for w in res["starter_weaknesses"]}
+        assert flagged == {"This Week QB"}            # not the stale roster starter
+        ctx = res["matchup_context"]
+        assert ctx["projected_points"] == 27.5        # ours, not custom_points
+        assert seen["projected"] == ["This Week QB", "SF"]
+        assert seen["league_id"] == "L1"              # league scoring
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_roster_starters_without_a_lineup(self, monkeypatch):
+        res, _ = await self._run(monkeypatch, {"roster_id": 2, "matchup_id": 4})
+        assert res["starters_source"] == "roster"
+        assert res["matchup_context"]["projected_points"] is None
