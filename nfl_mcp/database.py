@@ -219,7 +219,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
 
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 14
+    CURRENT_SCHEMA_VERSION = 15
 
     def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
@@ -265,7 +265,20 @@ class NFLDatabase:
 
     def _run_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Run database migrations from the current version to the latest."""
-        migrations = {
+        migrations = self._migrations()
+
+        for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
+            if version in migrations:
+                logger.info(f"Running migration to version {version}")
+                migrations[version](conn)
+                conn.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                    (version, datetime.now(UTC).isoformat())
+                )
+
+    def _migrations(self) -> dict:
+        """Schema version -> migration."""
+        return {
             1: self._migration_v1_initial_schema,
             2: self._migration_v2_optimized_indexes,
             3: self._migration_v3_roster_snapshots,
@@ -280,16 +293,8 @@ class NFLDatabase:
             12: self._migration_v12_player_values,
             13: self._migration_v13_defense_rankings_flags,
             14: self._migration_v14_real_practice_reports,
+            15: self._migration_v15_projection_log_and_checks,
         }
-
-        for version in range(from_version + 1, self.CURRENT_SCHEMA_VERSION + 1):
-            if version in migrations:
-                logger.info(f"Running migration to version {version}")
-                migrations[version](conn)
-                conn.execute(
-                    "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                    (version, datetime.now(UTC).isoformat())
-                )
 
     def _migration_v1_initial_schema(self, conn: sqlite3.Connection) -> None:
         """Migration v1: Create initial database schema."""
@@ -650,6 +655,56 @@ class NFLDatabase:
                 SELECT season, week, position FROM defense_rankings
                 GROUP BY season, week, position
                 HAVING MIN(rank) = MAX(rank)
+            )
+            """
+        )
+
+    def _migration_v15_projection_log_and_checks(self, conn: sqlite3.Connection) -> None:
+        """Migration v15: pre-kickoff projection log and per-league last-check times.
+
+        ``projection_log`` is append-only and written only before a player's
+        kickoff, one row per change: the first row of a week is the projection
+        the lineup was set against (what a retro grades), later rows are what
+        moved since (what "what changed" reports). Keyed by scoring (``ppr``)
+        (``scoring_key``, a fingerprint of the league's full scoring weights)
+        rather than by league, because the same player in the same week
+        projects the same in every league that scores exactly the same way —
+        and differently in two that merely share a reception value.
+
+        ``league_checks`` remembers when a roster's changes were last read.
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS projection_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                season INTEGER NOT NULL,
+                week INTEGER NOT NULL,
+                player_id TEXT NOT NULL,
+                scoring_key TEXT NOT NULL,
+                ppr REAL,
+                projected_points REAL NOT NULL,
+                floor REAL,
+                ceiling REAL,
+                player_name TEXT,
+                position TEXT,
+                team TEXT,
+                league_id TEXT,
+                source TEXT,
+                recorded_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_projection_log_key
+               ON projection_log(season, week, scoring_key, player_id, recorded_at)"""
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS league_checks (
+                league_id TEXT NOT NULL,
+                roster_id INTEGER NOT NULL,
+                last_checked_at TEXT NOT NULL,
+                PRIMARY KEY (league_id, roster_id)
             )
             """
         )
@@ -2051,6 +2106,156 @@ class NFLDatabase:
                 return [dict(row) for row in cur.fetchall()]
         except Exception as e:
             logger.debug(f"get_injury_status_changes failed: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    # Projection log (pre-kickoff projections) and league check times
+    # ------------------------------------------------------------------
+    def record_projections(
+        self, season: int, week: int, scoring_key: str, rows: list[dict],
+        league_id: str | None = None, source: str | None = None,
+        now: str | None = None, ppr: float | None = None,
+    ) -> int:
+        """Append each player's projection when it differs from his last one.
+
+        ``scoring_key`` is ``ScoringModel.fingerprint``; ``ppr`` is stored
+        alongside for reading only. ``rows``: ``{player_id, projected_points,
+        floor, ceiling, name, position, team}``. Whether a player's game has kicked off is the
+        caller's call (it holds the kickoffs); this only de-duplicates, so a
+        briefing run every fifteen minutes writes a row only when a number
+        actually moved. Returns the number of rows written.
+        """
+        if not rows or not season or not week or not scoring_key:
+            return 0
+        now = now or datetime.now(UTC).isoformat()
+        ppr = None if ppr is None else round(float(ppr), 2)
+        written = 0
+        try:
+            with self._pool.get_connection() as conn:
+                for r in rows:
+                    pid = r.get("player_id")
+                    points = r.get("projected_points")
+                    if not pid or points is None:
+                        continue
+                    last = conn.execute(
+                        """SELECT projected_points, floor, ceiling FROM projection_log
+                           WHERE season=? AND week=? AND scoring_key=? AND player_id=?
+                           ORDER BY recorded_at DESC, id DESC LIMIT 1""",
+                        (season, week, scoring_key, str(pid)),
+                    ).fetchone()
+                    new = (round(float(points), 2),
+                           None if r.get("floor") is None else round(float(r["floor"]), 2),
+                           None if r.get("ceiling") is None else round(float(r["ceiling"]), 2))
+                    if last and tuple(last) == new:
+                        continue
+                    conn.execute(
+                        """INSERT INTO projection_log
+                           (season, week, player_id, scoring_key, ppr, projected_points,
+                            floor, ceiling, player_name, position, team, league_id,
+                            source, recorded_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (season, week, str(pid), scoring_key, ppr, *new, r.get("name"),
+                         r.get("position"), r.get("team"), league_id, source, now),
+                    )
+                    written += 1
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"record_projections failed: {e}")
+        return written
+
+    def get_logged_projections(
+        self, season: int, week: int, scoring_key: str,
+        player_ids: list[str] | None = None, as_of: str | None = None,
+        which: str = "first",
+    ) -> dict[str, dict]:
+        """``{player_id: row}`` from the projection log for one week.
+
+        ``which="first"`` is the earliest row (the projection the lineup was
+        set against), ``"latest"`` the newest one — at or before ``as_of`` when
+        given, which is "what it said when you last looked".
+        """
+        order = "ASC" if which == "first" else "DESC"
+        params: list = [season, week, scoring_key]
+        where = ["season=?", "week=?", "scoring_key=?"]
+        if as_of:
+            where.append("recorded_at <= ?")
+            params.append(as_of)
+        if player_ids:
+            where.append(f"player_id IN ({','.join('?' * len(player_ids))})")
+            params.extend(str(p) for p in player_ids)
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    f"""SELECT * FROM (
+                            SELECT *, ROW_NUMBER() OVER (
+                                PARTITION BY player_id ORDER BY recorded_at {order}, id {order}
+                            ) AS rn
+                            FROM projection_log WHERE {' AND '.join(where)}
+                        ) WHERE rn = 1""",
+                    params,
+                )
+                return {row["player_id"]: dict(row) for row in cur.fetchall()}
+        except Exception as e:
+            logger.debug(f"get_logged_projections failed: {e}")
+            return {}
+
+    def get_logged_projection_weeks(self, season: int, scoring_key: str) -> list[int]:
+        """Weeks of a season with at least one logged projection, ascending."""
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT DISTINCT week FROM projection_log"
+                    " WHERE season=? AND scoring_key=? ORDER BY week",
+                    (season, scoring_key),
+                )
+                return [row[0] for row in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_logged_projection_weeks failed: {e}")
+            return []
+
+    def get_league_last_check(self, league_id: str, roster_id: int) -> str | None:
+        """When this roster's league changes were last read (ISO), or None."""
+        try:
+            with self._pool.get_connection() as conn:
+                row = conn.execute(
+                    "SELECT last_checked_at FROM league_checks WHERE league_id=? AND roster_id=?",
+                    (str(league_id), int(roster_id)),
+                ).fetchone()
+                return row[0] if row else None
+        except Exception as e:
+            logger.debug(f"get_league_last_check failed: {e}")
+            return None
+
+    def set_league_last_check(self, league_id: str, roster_id: int, checked_at: str) -> None:
+        """Advance (or set) this roster's last-check time."""
+        try:
+            with self._pool.get_connection() as conn:
+                conn.execute(
+                    """INSERT INTO league_checks (league_id, roster_id, last_checked_at)
+                       VALUES (?,?,?)
+                       ON CONFLICT(league_id, roster_id)
+                       DO UPDATE SET last_checked_at=excluded.last_checked_at""",
+                    (str(league_id), int(roster_id), checked_at),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"set_league_last_check failed: {e}")
+
+    def get_schedule_week_spans(self) -> list[dict]:
+        """``[{season, week, first_kickoff, last_kickoff, teams}]`` for every
+        cached week, newest season first — enough to tell which week is on
+        without the NFL state feed."""
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """SELECT season, week, MIN(kickoff) AS first_kickoff,
+                              MAX(kickoff) AS last_kickoff, COUNT(*) AS teams
+                       FROM schedule_games WHERE kickoff IS NOT NULL
+                       GROUP BY season, week ORDER BY season DESC, week ASC"""
+                )
+                return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_schedule_week_spans failed: {e}")
             return []
 
     # ------------------------------------------------------------------

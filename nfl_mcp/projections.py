@@ -796,6 +796,42 @@ async def _scoring_for(scoring, league_id: str | None):
     return carrier
 
 
+def _player_id_for(db, player: dict) -> str | None:
+    """The Sleeper id for a caller's player dict: given, or by name + team."""
+    pid = player.get("player_id") or player.get("id")
+    if pid:
+        return str(pid)
+    name = player.get("name") or player.get("player_name")
+    team = normalize_team(player.get("team"))
+    if not name or not team or not hasattr(db, "search_athletes_by_name"):
+        return None
+    wanted = opportunity_tools.norm_name(name)
+    for row in db.search_athletes_by_name(name, limit=5) or []:
+        if (isinstance(row, dict) and opportunity_tools.norm_name(row.get("full_name")) == wanted
+                and normalize_team(row.get("team_id")) == team):
+            return str(row.get("id"))
+    return None
+
+
+def _log_for_retro(db, players: list[dict], result: dict, season, week, scoring) -> None:
+    """Keep these pre-kickoff projections for get_weekly_retro (never raises).
+
+    ``project_many`` returns one projection per input, in input order, which
+    is how each row gets its player's id back.
+    """
+    if db is None:
+        return
+    try:
+        from .projection_store import log_projections
+        rows = [
+            {**proj, "player_id": _player_id_for(db, player)}
+            for player, proj in zip(players, result.get("projections") or [], strict=False)
+        ]
+        log_projections(db, season, week, scoring, rows, source="project_players")
+    except Exception as e:
+        logger.debug(f"projection log skipped: {e}")
+
+
 @handle_http_errors(default_data={"projections": []}, operation_name="projecting players")
 async def project_players(
     players: list[dict],
@@ -837,6 +873,9 @@ async def project_players(
         _with_injuries(players, db, season, week), scoring=scoring, superflex=superflex,
         num_teams=num_teams, season=season, week=week, db=db,
     )
+    # Filed under the scoring that priced them: the league's full settings
+    # when `league_id` resolved, the preset otherwise.
+    _log_for_retro(db, players, result, season, week, scoring)
     return create_success_response({
         **result,
         "season": season,

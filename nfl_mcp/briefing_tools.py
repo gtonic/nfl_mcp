@@ -26,9 +26,16 @@ from .injury_match import (
 from .ir_audit import audit_roster
 from .lineup_slots import starting_slot_list, starting_slots
 from .practice_reports import lookup_practice, practice_fields
+from .projection_store import log_projections
 from .scoring import league_scoring
 from .teams import normalize_team
-from .week_context import BYE, bye_check, week_opponents, week_schedule
+from .week_context import (
+    BYE,
+    bye_check,
+    current_season_week,
+    week_opponents,
+    week_schedule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +177,43 @@ def _build_player(
     return player
 
 
+def find_roster(
+    rosters: list[dict], league_id: str, roster_id: int | None, user_id: str | None,
+) -> tuple[dict | None, str | None]:
+    """``(roster, None)`` for the roster asked about, or ``(None, error)``."""
+    if roster_id is None:
+        if not user_id:
+            return None, "Pass roster_id or user_id to identify which team to use."
+        mine = next((r for r in rosters if r.get("owner_id") == user_id), None)
+    else:
+        mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
+    if not mine:
+        return None, f"No roster found in league {league_id} for the given identifier."
+    return mine, None
+
+
+async def weather_by_team(season: int, week: int) -> dict[str, dict]:
+    """``{team: weather}`` for the week's games; empty when unavailable."""
+    from . import weather_tools
+    weather: dict[str, dict] = {}
+    try:
+        forecast = await weather_tools.get_weather_forecast(season=season, week=week)
+        for game in (forecast or {}).get("games") or []:
+            entry = {
+                "wind_mph": game.get("wind_mph") or 0.0,
+                "precip_in": game.get("precip_in") or 0.0,
+                "temp_f": game.get("temp_f"),
+                "is_dome": bool(game.get("dome")),
+            }
+            for side in ("home", "away"):
+                team = normalize_team(game.get(side))
+                if team:
+                    weather[team] = entry
+    except Exception as e:  # weather is additive; never fail a caller on it
+        logger.debug(f"weather unavailable: {e}")
+    return weather
+
+
 def _with_ids(candidates: list[dict], inputs: list[dict]) -> list[dict]:
     """Re-attach player ids, which the projection output drops."""
     by_name = {(p["name"], p["team"]): p["player_id"] for p in inputs}
@@ -187,19 +231,22 @@ async def get_weekly_briefing(
     season: int | None = None,
 ) -> dict:
     """Everything needed to set a lineup for one week, in a single call."""
-    from . import sleeper_tools, weather_tools
+    from . import sleeper_tools
     from .injury_service import STATUS_SEVERITY  # noqa: F401  (severity vocabulary)
     from .projections import project_players
     from .win_probability import get_win_probability_lineup
 
     db = NFLDatabase()
 
-    # 1) Season / week
+    # 1) Season / week. Never season 0: when the NFL state feed is down this
+    #    falls back to the last good state, then the cached schedule, then the
+    #    calendar, and says which one it used.
+    week_source = "caller"
     if week is None or season is None:
-        state = await sleeper_tools.get_nfl_state()
-        nfl_state = (state or {}).get("nfl_state") or {}
-        week = week or int(nfl_state.get("week") or 1)
-        season = season or int(nfl_state.get("season") or 0)
+        current = await current_season_week(db)
+        week = week or current["week"]
+        season = season or current["season"]
+        week_source = current["source"]
 
     # 2) League settings drive scoring and slots; guessing them is how a
     #    half-PPR league silently gets full-PPR advice.
@@ -216,20 +263,9 @@ async def get_weekly_briefing(
     # 3) My roster and this week's opponent
     rosters_resp = await sleeper_tools.get_rosters(league_id)
     rosters = (rosters_resp or {}).get("rosters") or []
-    if roster_id is None:
-        if not user_id:
-            return create_success_response({
-                "success": False,
-                "error": "Pass roster_id or user_id to identify which team to brief.",
-            })
-        mine = next((r for r in rosters if r.get("owner_id") == user_id), None)
-    else:
-        mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
-    if not mine:
-        return create_success_response({
-            "success": False,
-            "error": f"No roster found in league {league_id} for the given identifier.",
-        })
+    mine, error = find_roster(rosters, league_id, roster_id, user_id)
+    if error:
+        return create_success_response({"success": False, "error": error})
     roster_id = mine["roster_id"]
 
     matchups_resp = await sleeper_tools.get_matchups(league_id, week)
@@ -251,22 +287,7 @@ async def get_weekly_briefing(
     # Complete enough to call a missing team a bye (None: cache cold/partial).
     schedule = week_schedule(db, season, week)
 
-    weather: dict[str, dict] = {}
-    try:
-        forecast = await weather_tools.get_weather_forecast(season=season, week=week)
-        for game in (forecast or {}).get("games") or []:
-            entry = {
-                "wind_mph": game.get("wind_mph") or 0.0,
-                "precip_in": game.get("precip_in") or 0.0,
-                "temp_f": game.get("temp_f"),
-                "is_dome": bool(game.get("dome")),
-            }
-            for side in ("home", "away"):
-                team = normalize_team(game.get(side))
-                if team:
-                    weather[team] = entry
-    except Exception as e:  # weather is additive; never fail the briefing on it
-        logger.debug(f"weather unavailable for the briefing: {e}")
+    weather = await weather_by_team(season, week)
 
     # Kickoffs plus ESPN's game state where cached: a final is final even
     # before the nominal game length has run out.
@@ -363,6 +384,10 @@ async def get_weekly_briefing(
 
     my_all = _with_ids(_as_candidates(my_proj), my_inputs)
     opp_all = _with_ids(_as_candidates(opp_proj), opp_inputs)
+    # Kept so the week can be graded afterwards (get_weekly_retro) and so a
+    # later check can say what moved. Only pre-kickoff numbers are written.
+    log_projections(db, season, week, scoring_exact, my_all + opp_all,
+                    league_id=league_id, source="briefing", games=games)
     # Only players actually in the lineup are locked; a bench player whose game
     # has started is simply no longer available.
     started_ids = set(current_starters)
@@ -510,6 +535,9 @@ async def get_weekly_briefing(
         },
         "week": week,
         "season": season,
+        # Where season/week came from when not passed: nfl_state, or a
+        # fallback (cached_state / schedule / calendar) during an outage.
+        "week_source": week_source,
         "roster_id": roster_id,
         "record": {
             "wins": (mine.get("settings") or {}).get("wins"),
