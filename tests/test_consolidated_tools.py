@@ -81,3 +81,29 @@ async def test_waiver_log_sections_and_player_filter():
     assert out["re_entry_players"] == {}
     out = await _waivers(sections=["bogus"])
     assert out["success"] is False
+
+
+ROSTER_CTX = {"error": None, "roster_id": 7, "season": 2026, "week": 3, "players": [
+    {"player_id": "1", "name": "QB One", "position": "QB", "team": "KC", "opponent": "LV",
+     "starter": True, "slot": "QB"},
+    {"player_id": "2", "name": "WR Bye", "position": "WR", "team": "SF", "opponent": "BYE",
+     "starter": False, "slot": "BN"},
+]}
+
+
+@pytest.mark.asyncio
+async def test_vegas_lines_team_and_roster_modes():
+    lines = AsyncMock(return_value={"success": True, "games": [], "summary": []})
+    env = AsyncMock(return_value={"success": True, "team": "KC", "implied_total": 27.5, "game": {}})
+    roster = AsyncMock(return_value={"success": True, "analysis": [{"player": "QB One"}]})
+    with patch("nfl_mcp.vegas_tools.get_vegas_lines", lines), \
+         patch("nfl_mcp.vegas_tools.get_game_environment", env), \
+         patch("nfl_mcp.vegas_tools.analyze_roster_vegas", roster), \
+         patch("nfl_mcp.roster_context.load_roster_players", AsyncMock(return_value=ROSTER_CTX)):
+        out = await tool_registry.get_vegas_lines(teams=["KC"], league_id="123456", roster_id=7)
+    assert out["team_environments"]["KC"]["implied_total"] == 27.5
+    assert "game" not in out["team_environments"]["KC"]
+    sent = roster.await_args.kwargs["players"]
+    assert [p["name"] for p in sent] == ["QB One"] and sent[0]["opponent"] == "LV"
+    assert out["roster"]["on_bye"] == ["WR Bye"]
+    assert out["roster"]["analysis"] == [{"player": "QB One"}]

@@ -16,7 +16,6 @@ from nfl_mcp.tool_registry import (
     analyze_full_lineup,
     analyze_opponent,
     analyze_roster_matchups,
-    analyze_roster_vegas,
     analyze_trade,
     compare_players_for_slot,
     crawl_url,
@@ -36,7 +35,6 @@ from nfl_mcp.tool_registry import (
     get_draft_picks,
     get_draft_traded_picks,
     get_fantasy_context,
-    get_game_environment,
     get_gameday_inactives,
     get_injury_report,
     get_league,
@@ -114,8 +112,6 @@ def test_tool_registry_functions_exist():
     assert callable(compare_players_for_slot)
     assert callable(analyze_full_lineup)
     assert callable(get_vegas_lines)
-    assert callable(get_game_environment)
-    assert callable(analyze_roster_vegas)
     assert callable(get_stack_opportunities)
     assert callable(get_injury_report)
     assert callable(get_gameday_inactives)

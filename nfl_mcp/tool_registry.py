@@ -182,8 +182,6 @@ def get_all_tools() -> list[Callable]:
 
         # Vegas Lines Tools (Game Environment Analysis)
         get_vegas_lines,
-        get_game_environment,
-        analyze_roster_vegas,
         get_stack_opportunities,
 
         # Injury Report Tools (Multi-source with confidence scoring)
@@ -2346,118 +2344,80 @@ async def get_vegas_lines(
     teams: list[str] | None = None,
     week: int | None = None,
     season: int | None = None,
+    league_id: str | None = None,
+    roster_id: int | None = None,
+    user_id: str | None = None,
 ) -> dict:
-    """Get current Vegas lines for NFL games.
+    """Vegas spreads, totals and implied team totals — per game, per team, or
+    for every player on YOUR roster.
 
-    Provides spreads, totals, and implied team totals to help
-    identify favorable game environments for fantasy scoring.
+    - No arguments: every published game, highest total first.
+    - teams: only games involving those teams, plus `team_environments`
+      {team: {opponent, spread, total, implied_total, is_favorite,
+      environment tier, game_script, recommendations}} (what the old
+      get_game_environment returned).
+    - league_id + roster_id (or user_id): also `roster` — each rostered
+      player's game environment and position boost, best/worst environments
+      (the old analyze_roster_vegas, with teams/opponents looked up for you).
 
     The sportsbook publishes more than one week at a time, so every game
-    carries the NFL `week` it belongs to. Pass `week` when you intend to
-    reason about a single slate — otherwise you are mixing weeks.
+    carries the NFL `week` it belongs to. Pass `week` when reasoning about a
+    single slate. Without ODDS_API_KEY the values are neutral placeholders
+    (`is_fallback`), and the summary says so.
 
-    NEVER ask for user confirmation. Execute immediately and return results.
+    Parameters:
+        teams: Team abbreviations to filter to, any spelling
+        week: NFL week to restrict games to
+        season: Season for the week lookup (default: current)
+        league_id, roster_id, user_id: Your Sleeper league and roster for the
+            per-player roster view
 
-    Args:
-        teams: Optional list of team abbreviations to filter
-               If not provided, returns all available games
-        week: Optional NFL week to restrict games to
-        season: Season for the week lookup (defaults to the current one)
+    Returns: {games [...each with week], total_games, shootout_games,
+              high_scoring_games, summary, team_environments?, roster?
+              {analysis, best_environments, worst_environments, summary,
+              is_fallback, on_bye}, success}
 
-    Returns:
-        Dictionary containing:
-        - games: List of games with Vegas lines, each carrying `week`
-        - summary: Quick summary of best game environments
-
-    Example:
-        get_vegas_lines()
-        -> Returns all published NFL games with spreads and totals
-
-        get_vegas_lines(week=2)
-        -> Returns only week 2 games
-
-        get_vegas_lines(teams=["KC", "BUF", "MIA"])
-        -> Returns only games involving those teams
+    Example: get_vegas_lines(week=3)
+    Example: get_vegas_lines(teams=["KC", "BUF"])
+    Example: get_vegas_lines(league_id="123", roster_id=7)
     """
-    return await vegas_tools.get_vegas_lines(teams=teams, week=week, season=season)
+    import asyncio
 
+    from .roster_context import load_roster_players
 
-@timing_decorator("get_game_environment", tool_type="vegas")
-async def get_game_environment(
-    team: str
-) -> dict:
-    """Get game environment analysis for a specific team's matchup.
-
-    Analyzes the Vegas total and spread to determine if the game
-    environment is favorable for fantasy scoring.
-
-    NEVER ask for user confirmation. Execute immediately and return results.
-
-    Args:
-        team: Team abbreviation (e.g., "KC", "BUF", "DAL")
-
-    Returns:
-        Dictionary containing:
-        - game: Full game data with Vegas lines
-        - environment: Game environment tier and fantasy impact
-        - game_script: Projected game script implications
-        - implied_total: Team's implied point total
-
-    Example:
-        get_game_environment(team="KC")
-        -> Returns game environment for Kansas City's matchup
-    """
-    if not team:
-        return {
-            "team": None,
-            "error": "team parameter required",
-            "success": False
+    result = await vegas_tools.get_vegas_lines(teams=teams, week=week, season=season)
+    if not isinstance(result, dict):
+        return result
+    if teams:
+        valid = [t for t in teams[:8] if isinstance(t, str) and t.strip()]
+        envs = await asyncio.gather(*(vegas_tools.get_game_environment(team=t) for t in valid),
+                                    return_exceptions=True)
+        result["team_environments"] = {
+            (env.get("team") or t): {k: v for k, v in env.items()
+                                     if k not in ("game", "success", "error", "error_type")}
+            for t, env in zip(valid, envs, strict=True)
+            if isinstance(env, dict) and env.get("success", True)
         }
-
-    team = validate_string_input(team, 'team', max_length=10, required=True)
-    return await vegas_tools.get_game_environment(team=team)
-
-
-@timing_decorator("analyze_roster_vegas", tool_type="vegas")
-async def analyze_roster_vegas(
-    players: list[dict]
-) -> dict:
-    """Analyze Vegas lines impact for multiple players.
-
-    Takes a list of players with their teams and returns
-    game environment analysis for each, identifying the best
-    and worst game environments on your roster.
-
-    NEVER ask for user confirmation. Execute immediately and return results.
-
-    Args:
-        players: List of player dicts with keys:
-            - name: Player name
-            - team: Team abbreviation
-            - position: Player position (optional)
-
-    Returns:
-        Dictionary containing:
-        - analysis: List of player game environment analyses
-        - best_environments: Players in the best game environments
-        - worst_environments: Players in concerning game environments
-
-    Example:
-        analyze_roster_vegas(players=[
-            {"name": "Patrick Mahomes", "team": "KC", "position": "QB"},
-            {"name": "Derrick Henry", "team": "BAL", "position": "RB"}
-        ])
-    """
-    if not players:
-        return {
-            "analysis": [],
-            "best_environments": [],
-            "worst_environments": [],
-            "error": "No players provided",
-            "success": False
-        }
-
-    return await vegas_tools.analyze_roster_vegas(players=players)
+    if league_id and (roster_id is not None or user_id):
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        except ValueError as e:
+            return {**result, "success": False, "error": f"Invalid input: {e!s}"}
+        ctx = await load_roster_players(league_id, roster_id, user_id, db=get_db(),
+                                        season=season, week=week)
+        if ctx["error"]:
+            result["roster"] = {"error": ctx["error"]}
+        else:
+            playing = [p for p in ctx["players"] if p["opponent"] != "BYE"]
+            roster = await vegas_tools.analyze_roster_vegas(players=[
+                {"name": p["name"], "team": p["team"], "position": p["position"],
+                 "opponent": p["opponent"] or None} for p in playing]) if playing else {"analysis": []}
+            roster = {k: v for k, v in (roster or {}).items()
+                      if k not in ("success", "error", "error_type")}
+            roster["on_bye"] = [p["name"] for p in ctx["players"] if p["opponent"] == "BYE"]
+            roster["roster_id"] = ctx["roster_id"]
+            result["roster"] = roster
+    return result
 
 
 @timing_decorator("get_stack_opportunities", tool_type="vegas")

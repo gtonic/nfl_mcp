@@ -11,7 +11,6 @@ import pytest
 sys.path.insert(0, '/tmp/nfl_mcp')
 
 from nfl_mcp.tool_registry import (
-    analyze_roster_vegas,
     get_all_coaching_staffs,
     get_cbs_expert_picks,
     get_cbs_player_news,
@@ -19,7 +18,6 @@ from nfl_mcp.tool_registry import (
     # Coaching tools (these were also missing)
     get_coaching_staff,
     get_coaching_tree,
-    get_game_environment,
     # Other tools that should be available
     get_nfl_news,
     get_scheme_classification,
@@ -36,8 +34,6 @@ class TestToolRegistryValidation:
     def test_all_vegas_tools_present(self):
         """Test that all the previously missing Vegas tools are present."""
         assert callable(get_vegas_lines)
-        assert callable(get_game_environment)
-        assert callable(analyze_roster_vegas)
         assert callable(get_stack_opportunities)
 
     def test_all_coaching_tools_present(self):
@@ -76,7 +72,7 @@ class TestToolRegistryValidation:
         import inspect
 
         # Test Vegas functions
-        vegas_funcs = [get_vegas_lines, get_game_environment, analyze_roster_vegas, get_stack_opportunities]
+        vegas_funcs = [get_vegas_lines, get_stack_opportunities]
         for func in vegas_funcs:
             inspect.signature(func)
             assert callable(func)
@@ -92,8 +88,6 @@ class TestToolRegistryValidation:
         # The key tools that were reported as missing in the original issue
         missing_tools = [
             "get_vegas_lines",
-            "get_game_environment",
-            "analyze_roster_vegas",
             "get_stack_opportunities",
             "get_coaching_staff",
             "get_all_coaching_staffs",

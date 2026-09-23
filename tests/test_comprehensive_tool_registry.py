@@ -16,7 +16,6 @@ from nfl_mcp.tool_registry import (
     analyze_full_lineup,
     analyze_opponent,
     analyze_roster_matchups,
-    analyze_roster_vegas,
     analyze_trade,
     compare_players_for_slot,
     crawl_url,
@@ -36,7 +35,6 @@ from nfl_mcp.tool_registry import (
     get_draft_picks,
     get_draft_traded_picks,
     get_fantasy_context,
-    get_game_environment,
     get_gameday_inactives,
     get_injury_report,
     get_league,
@@ -136,8 +134,6 @@ class TestToolRegistry:
         assert callable(compare_players_for_slot)
         assert callable(analyze_full_lineup)
         assert callable(get_vegas_lines)
-        assert callable(get_game_environment)
-        assert callable(analyze_roster_vegas)
         assert callable(get_stack_opportunities)
         assert callable(get_injury_report)
         assert callable(get_gameday_inactives)
@@ -194,13 +190,9 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         assert 'games' in result or 'success' in result or 'error' in result
 
-        result = await get_game_environment(team="KC")
+        result = await get_vegas_lines(teams=["KC"])
         assert isinstance(result, dict)
-        assert 'team' in result or 'success' in result or 'error' in result
-
-        result = await analyze_roster_vegas(players=TEST_PLAYER_DATA)
-        assert isinstance(result, dict)
-        assert 'analysis' in result or 'success' in result or 'error' in result
+        assert 'team_environments' in result or 'success' in result or 'error' in result
 
         result = await get_stack_opportunities()
         assert isinstance(result, dict)
@@ -211,7 +203,7 @@ class TestToolRegistry:
         """Test coaching tools."""
         result = await get_coaching_staff(team_id="KC")
         assert isinstance(result, dict)
-        assert 'injuries' in result or 'success' in result or 'error' in result
+        assert 'team_id' in result or 'success' in result or 'error' in result
 
         result = await get_all_coaching_staffs()
         assert isinstance(result, dict)
@@ -223,18 +215,13 @@ class TestToolRegistry:
 
         result = await get_scheme_classification(team_id="KC")
         assert isinstance(result, dict)
-        assert 'injuries' in result or 'success' in result or 'error' in result
+        assert 'team_id' in result or 'success' in result or 'error' in result
 
     @pytest.mark.asyncio
     async def test_error_handling_scenarios(self):
         """Test various error handling scenarios."""
         # Test invalid team ID for coaching tools
         result = await get_coaching_staff(team_id="")
-        assert isinstance(result, dict)
-        assert 'success' in result or 'error' in result
-
-        # Test invalid player data for Vegas analysis
-        result = await analyze_roster_vegas(players=[])
         assert isinstance(result, dict)
         assert 'success' in result or 'error' in result
 
