@@ -5,7 +5,7 @@
 [![CI](https://github.com/gtonic/nfl_mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/gtonic/nfl_mcp/actions/workflows/ci.yml)
 [![Data-source watchdog](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml/badge.svg)](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml)
 [![Docker image](https://img.shields.io/badge/image-ghcr.io%2Fgtonic%2Fnfl__mcp-2496ED?logo=docker&logoColor=white)](https://github.com/gtonic/nfl_mcp/pkgs/container/nfl_mcp)
-[![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](https://github.com/gtonic/nfl_mcp)
+[![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/gtonic/nfl_mcp)
 [![55 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-55%20in--season%20%7C%2072%20total-8A2BE2)](#-whats-inside)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -42,24 +42,26 @@ assistant** and answers the question you actually asked.
 - **Rehearse first** — run 100 mock drafts from your slot before you're on the clock.
 
 **📊 Every week**
-- **Start/sit with automatic projections** — no manual point entry. `value × matchup × Vegas game-script × usage × injury`, with floor/ceiling and a transparent breakdown. **Decided on projected points**, with a verdict scaled to the model's own error, so a half-point difference is reported as a coin flip rather than an edge.
+- **Start/sit with automatic projections** — no manual point entry. `value × matchup × Vegas game-script × usage × injury & practice`, priced in **your league's own Sleeper scoring settings** (not just PPR / half-PPR presets), with floor/ceiling and a transparent breakdown. **Decided on projected points**, with a verdict scaled to the model's own error, so a half-point difference is reported as a coin flip rather than an edge.
 - **A real matchup edge** — which defense a player actually feasts on, from real weekly results (not a stale rankings page).
 - **Streaming planner** — the best DST / K / QB / TE to stream over the next 1-3 weeks (soft defense, weak opposing offense, strong own offense).
 - **Weather / wind** — fade passing and kickers in the ugly-weather games (wind ≥ 15 mph), dome games flagged neutral.
+- **Game-day aware** — players whose game has kicked off are locked, byes are caught from the schedule, practice reports (DNP / LP / FP) and official inactives feed straight into the call.
 
 **🔄 Trades & waivers**
 - **Trade analyzer on real market values** — knows your league's exact format and flags a lopsided deal *with evidence*.
-- **FAAB bids** — exactly how much to spend on that waiver breakout (market value + league demand + your budget).
+- **FAAB bids or waiver priority** — exactly how much to spend on that waiver breakout (market value + league demand + your budget); in non-FAAB leagues, whether the add is worth burning your waiver priority.
+- **Rest-of-season aware** — waiver and trade gains are measured over the rest of the season and your fantasy-playoff weeks, not just this week.
 
 **🏆 Season strategy**
-- **Monte-Carlo playoff odds** — *"72% to make it — 84% if you win this week."* Real probabilities, not vibes.
+- **Monte-Carlo playoff odds** — *"72% to make it — 84% if you win this week."* Real probabilities, not vibes (median-game leagues included).
 - **Strength of schedule** — rest-of-season and **fantasy-playoff-week** difficulty per position, for stash and trade-deadline calls.
 - **Bye-week plan** — which upcoming week leaves a slot empty, what to add and who is free; opponent-weakness scouting.
 
 ## ✅ Why you can trust it
 
-- **Real data, zero gut-feeling heuristics** — market-consensus values ([FantasyCalc](https://fantasycalc.com)), real weekly stats ([nflverse](https://github.com/nflverse)), your live league ([Sleeper](https://sleeper.com)), news & injuries (ESPN), weather ([Open-Meteo](https://open-meteo.com)). **No paid API keys required to start.**
-- **Honest about uncertainty** — when it lacks live data it *says so* (and falls back transparently) instead of faking a confident call.
+- **Real data, zero gut-feeling heuristics** — market-consensus values ([FantasyCalc](https://fantasycalc.com)), real weekly stats ([nflverse](https://github.com/nflverse)), your live league ([Sleeper](https://sleeper.com)), news & injuries (ESPN), practice reports (NFL.com), weather ([Open-Meteo](https://open-meteo.com)), Vegas lines ([The Odds API](https://the-odds-api.com), optional `ODDS_API_KEY`). **No paid API keys required to start.**
+- **Honest about uncertainty** — when it lacks live data it *says so* (and falls back transparently) instead of faking a confident call. If Sleeper is down and only an old roster snapshot is left, availability questions (waivers, FAAB, free-agent handcuffs) are refused rather than answered on stale rosters.
 - **It grades its own accuracy.** A built-in backtest measures whether its projections actually beat a baseline on real past seasons, and a daily watchdog alerts if a data source changes. *Most fantasy tools never check whether they're right. This one does.*
 
 ## ⚡ 60-second start
@@ -88,6 +90,8 @@ claude mcp add --transport http nfl-mcp http://localhost:9000/mcp/
 
 Full setup, configuration and deployment → **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
 Draft-day walkthrough → **[docs/DRAFT_DAY.md](docs/DRAFT_DAY.md)**.
+
+Co-managers work too: pass your own Sleeper `user_id` and the roster is found via `co_owners`.
 
 ## 🧰 What's inside
 
@@ -121,7 +125,7 @@ The active profile and its tool count are logged at startup and reported by `GET
 `get_league` · `get_rosters` · `get_league_users` · `get_matchups` · `get_playoff_bracket` · `get_transactions` · `get_trending_players` · `get_fantasy_context` (aggregate) · `get_nfl_state` · `get_user` · `get_user_leagues`
 
 **🩺 Injuries & availability**
-`get_injury_report` (who is hurt: teams / players, `min_confidence`, `severity`, `since`, practice reports; ESPN source) · `get_injury_trends` (**what changed** since you last looked) · `get_gameday_inactives`
+`get_injury_report` (who is hurt: teams / players, `min_confidence`, `severity`, `since`, practice reports; healthy rows only with `include_healthy`; ESPN source) · `get_injury_trends` (**what changed** since you last looked) · `get_gameday_inactives`
 
 **📰 NFL data & news**
 `get_nfl_news` · `get_teams` · `get_depth_chart` · `get_team_player_stats` · `get_nfl_standings` · `get_team_schedule` · `get_cbs_player_news` · `get_cbs_projections` (CBS **season-long** totals, not weekly)
