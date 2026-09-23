@@ -2108,8 +2108,19 @@ async def compare_players_for_slot(
     from .week_context import resolve_season_week
     season, week, _ = await resolve_season_week(season, week)
     players = [lineup_tools.player_input(get_db(), p, season, week) for p in players[:5]]
+    # A name the athlete cache cannot place has no team/position to project
+    # from (position None used to crash the comparison); report it, as the
+    # list mode of get_start_sit_recommendation does.
+    unresolved = [p.get("name") for p in players if not (p.get("team") and p.get("position"))]
+    players = [p for p in players if p.get("team") and p.get("position")]
+    if len(players) < 2:
+        return {"winner": None, "comparison": [], "confidence_gap": 0,
+                "unresolved": unresolved, "success": False,
+                "verdict": "Need at least 2 resolvable players to compare",
+                "error": ("Could not resolve team/position for: " + ", ".join(map(str, unresolved))
+                          + " — pass team and position, or check the spelling.")}
 
-    return await lineup_optimizer_tools.compare_players_for_slot(
+    result = await lineup_optimizer_tools.compare_players_for_slot(
         players=players,
         slot=slot,
         scoring=scoring,
@@ -2117,6 +2128,9 @@ async def compare_players_for_slot(
         season=season,
         week=week,
     )
+    if isinstance(result, dict) and unresolved:
+        result["unresolved"] = unresolved
+    return result
 
 
 @timing_decorator("analyze_lineup", tool_type="lineup")

@@ -159,6 +159,80 @@ def active_enriched(roster: dict) -> list[dict]:
     ]
 
 
+# A roster snapshot older than this cannot answer "is he available" — a day of
+# adds and drops can have happened since.
+AVAILABILITY_MAX_SNAPSHOT_AGE_SECONDS = 3600
+# get_rosters never serves a fallback snapshot older than this at all.
+ROSTER_SNAPSHOT_MAX_AGE_SECONDS = 24 * 3600
+
+
+def owns_roster(roster: dict, user_id: str | None) -> bool:
+    """Whether ``user_id`` manages ``roster`` — as owner or co-owner."""
+    if not user_id or not roster:
+        return False
+    return roster.get("owner_id") == user_id or user_id in (roster.get("co_owners") or [])
+
+
+def roster_of_user(rosters: list[dict], user_id: str | None) -> dict | None:
+    """The roster ``user_id`` owns or co-owns, else None."""
+    return next((r for r in rosters or [] if owns_roster(r, user_id)), None)
+
+
+def roster_freshness(resp: dict | None) -> dict:
+    """Read a ``get_rosters`` response: the rosters plus how far to trust them.
+
+    ``{rosters, available, stale, snapshot_age_seconds, warning,
+    usable_for_availability, error}``. A failed fetch served from the snapshot
+    comes back ``success: False`` *with* rosters; callers that ignored the flag
+    either dropped the rosters or trusted a day-old league. ``available`` is
+    False when there is nothing to read; ``usable_for_availability`` is False
+    for anything older than an hour, which must not answer "who is a free agent".
+    """
+    resp = resp or {}
+    rosters = resp.get("rosters") or []
+    failed = resp.get("success") is False
+    age = resp.get("snapshot_age_seconds")
+    stale = bool(failed or resp.get("stale"))
+    warning = error = None
+    if failed and not rosters:
+        error = f"Could not load league rosters: {resp.get('error') or resp.get('failure_reason') or 'unknown error'}"
+    elif stale:
+        age_txt = f"{round(age / 60)} min old" if isinstance(age, int | float) else "of unknown age"
+        warning = (f"Rosters are a cached snapshot ({age_txt}) — the live Sleeper fetch failed"
+                   f" ({resp.get('failure_reason') or resp.get('error') or 'unknown'});"
+                   " adds and drops since then are not reflected.")
+    usable = not error and (not stale or (isinstance(age, int | float)
+                                          and age <= AVAILABILITY_MAX_SNAPSHOT_AGE_SECONDS))
+    return {
+        "rosters": rosters, "available": error is None, "stale": stale,
+        "snapshot_age_seconds": age if stale else None, "warning": warning,
+        "usable_for_availability": usable, "error": error,
+    }
+
+
+def mark_roster_staleness(response: dict, freshness: dict) -> dict:
+    """Surface ``stale``/``snapshot_age_seconds`` (and the warning) on a tool
+    response built from possibly-cached rosters. Mutates and returns it."""
+    if isinstance(response, dict):
+        response["stale"] = freshness.get("stale", False)
+        response["snapshot_age_seconds"] = freshness.get("snapshot_age_seconds")
+        if freshness.get("warning"):
+            warnings = response.get("warnings")
+            response["warnings"] = [*(warnings if isinstance(warnings, list) else []),
+                                    freshness["warning"]]
+    return response
+
+
+def availability_error(freshness: dict) -> str | None:
+    """Why rosters cannot answer an availability question, or None."""
+    if freshness.get("error"):
+        return freshness["error"] + " — cannot tell who is available."
+    if not freshness.get("usable_for_availability"):
+        return ("Rosters unavailable: the live Sleeper fetch failed and the cached snapshot is"
+                " too old (or of unknown age) to say who is still available. Try again shortly.")
+    return None
+
+
 async def get_rosters(league_id: str) -> dict:
     """
     Get all rosters in a fantasy league from Sleeper API.
@@ -374,6 +448,12 @@ async def get_rosters(league_id: str) -> dict:
 
     # Fallback: snapshot
     snap = nfl_db.load_roster_snapshot(league_id)
+    # A snapshot of unbounded age is a different league: a week-old roster
+    # served as "the rosters" put dropped players back on teams.
+    if snap and (snap.get("age_seconds") is None
+                 or snap["age_seconds"] > ROSTER_SNAPSHOT_MAX_AGE_SECONDS):
+        last_error = f"{last_error or 'unknown'} (snapshot too old to serve)"
+        snap = None
     if snap:
         return create_error_response(
             "Roster fetch failed after retries (serving snapshot)",

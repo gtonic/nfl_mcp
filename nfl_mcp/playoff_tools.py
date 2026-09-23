@@ -169,10 +169,14 @@ def league_prior_sd(scores_by_team: dict[int, list[float]]) -> float:
 def _simulate(
     teams: list[dict], schedule: list[tuple[int, int]], playoff_teams: int,
     num_sims: int, score_sd: float | dict[int, float], rng: random.Random,
+    median_weeks: list[int] | None = None,
 ) -> dict[int, dict[str, float]]:
     """Monte-Carlo the remaining schedule. teams: [{roster_id, wins, points, mean}].
 
     `score_sd` is either one spread for the whole league or a per-roster mapping.
+    `median_weeks` (the week of each game, aligned with `schedule`) turns on the
+    median game (Sleeper's ``league_average_match``): each simulated week, the
+    top half of that week's scores earns an extra win.
     """
     made = {t["roster_id"]: 0 for t in teams}
     seed_sum = {t["roster_id"]: 0 for t in teams}
@@ -186,7 +190,8 @@ def _simulate(
     for _ in range(num_sims):
         w = dict(base_w)
         p = dict(base_p)
-        for a, b in schedule:
+        week_scores: dict[int, list[tuple[float, int]]] = {}
+        for i, (a, b) in enumerate(schedule):
             sa = rng.gauss(mean[a], sd.get(a, DEFAULT_SCORE_SD))
             sb = rng.gauss(mean[b], sd.get(b, DEFAULT_SCORE_SD))
             p[a] += sa
@@ -195,6 +200,12 @@ def _simulate(
                 w[a] += 1
             else:
                 w[b] += 1
+            if median_weeks is not None:
+                week_scores.setdefault(median_weeks[i], []).extend(((sa, a), (sb, b)))
+        for scored in week_scores.values():
+            scored.sort(reverse=True)
+            for _, rid in scored[:len(scored) // 2]:
+                w[rid] += 1
         order = sorted(ids, key=lambda rid: _rank_key(w[rid], p[rid]), reverse=True)
         for seed, rid in enumerate(order[:playoff_teams], 1):
             made[rid] += 1
@@ -210,18 +221,25 @@ def _simulate(
     return out
 
 
+def _median_kw(median_weeks: list[int] | None) -> dict:
+    """``_simulate`` keyword for the median game, only when the league has one."""
+    return {} if median_weeks is None else {"median_weeks": median_weeks}
+
+
 async def _build_remaining_schedule(league_id: str, weeks: list[int]) -> list[tuple[int, int]]:
     """Reconstruct roster-vs-roster pairings for the given weeks from Sleeper matchups."""
     return [(a, b) for _, a, b in await _build_remaining_schedule_by_week(league_id, weeks)]
 
 
 async def _build_remaining_schedule_by_week(
-    league_id: str, weeks: list[int]
+    league_id: str, weeks: list[int], failed: list[int] | None = None,
 ) -> list[tuple[int, int, int]]:
     """``[(week, roster_a, roster_b), ...]`` — the pairings with their week.
 
     The week is what tells this week's game apart from a later rematch against
-    the same opponent; a bare ``(a, b)`` pair cannot.
+    the same opponent; a bare ``(a, b)`` pair cannot. Weeks whose matchups
+    could not be fetched are appended to ``failed`` (they are not simulated,
+    so the caller must say so).
     """
     schedule: list[tuple[int, int, int]] = []
     # Independent reads, one per week: fetched together.
@@ -230,8 +248,12 @@ async def _build_remaining_schedule_by_week(
     for wk, res in zip(weeks, results, strict=True):
         if isinstance(res, BaseException):
             logger.warning(f"matchups unavailable for week {wk}: {res}")
+            if failed is not None:
+                failed.append(wk)
             continue
         if not res.get("success"):
+            if failed is not None:
+                failed.append(wk)
             continue
         by_mid: dict[Any, list[int]] = {}
         for m in res.get("matchups", []):
@@ -387,11 +409,19 @@ async def get_playoff_odds(
             season = season or (int(nfl_state["season"]) if nfl_state.get("season") else None)
         except Exception:
             current_week = None
+    # A median league plays two "games" a week (the opponent and the median),
+    # so records count double against weeks.
+    median_game = bool(settings.get("league_average_match"))
+    games_per_week = 2 if median_game else 1
+    weeks_played = int(max((t["games"] for t in teams), default=0) // games_per_week)
     if not current_week or current_week < 1:
-        max_games = max((t["games"] for t in teams), default=0)
-        current_week = int(max_games) + 1
+        current_week = weeks_played + 1
+    # NFL state still reads the finished week until Sleeper rolls over; the
+    # records already include it, so simulating it again double-counted a game.
+    current_week = max(current_week, weeks_played + 1)
 
     remaining_weeks = list(range(current_week, regular_weeks + 1))
+    failed_weeks: list[int] = []
 
     async def _no_projection():
         return {"ppg": {}, "weeks": []}
@@ -403,12 +433,14 @@ async def get_playoff_odds(
     # projected best lineup for the rest of the regular season. The
     # projection and the schedule are independent reads, fetched together.
     dated_schedule, projected = await asyncio.gather(
-        _build_remaining_schedule_by_week(league_id, remaining_weeks)
+        _build_remaining_schedule_by_week(league_id, remaining_weeks, failed_weeks)
         if remaining_weeks else _no_schedule(),
         _projected_strength(league, league_id, rosters, season, current_week, db)
         if remaining_weeks else _no_projection(),
     )
     schedule = [(a, b) for _, a, b in dated_schedule]
+    median_weeks = [wk for wk, _, _ in dated_schedule] if median_game else None
+    failed_weeks.sort()
     if not schedule:
         projected = {"ppg": {}, "weeks": []}
     for t in teams:
@@ -434,6 +466,7 @@ async def get_playoff_odds(
             "current_week": current_week,
             "games_remaining": 0,
             "computable": False,
+            "failed_weeks": failed_weeks,
             "message": ("Playoff odds can't be computed yet — no remaining scheduled "
                         "games (preseason or schedule not available)."),
         })
@@ -462,7 +495,7 @@ async def get_playoff_odds(
 
     rng = random.Random(seed)
     sim = _simulate(teams, schedule, playoff_teams, max(100, min(int(num_sims), 50000)),
-                    sd_by_team, rng)
+                    sd_by_team, rng, **_median_kw(median_weeks))
 
     def _team_sd(roster_id) -> float:
         return (sd_by_team.get(roster_id, prior_sd)
@@ -511,8 +544,17 @@ async def get_playoff_odds(
             "per remaining regular-season week (ROS, byes and injuries included)"
         ),
         "projection_weeks": projected["weeks"],
+        # Median leagues: every simulated week also awards a win to the top
+        # half of scores.
+        "median_game": median_game,
+        # Weeks whose matchups could not be fetched: their games are missing
+        # from the simulation, so the odds understate the games left.
+        "failed_weeks": failed_weeks,
         "message": (f"Playoff odds over {len(schedule)} remaining games "
-                    f"({max(100, min(int(num_sims), 50000))} sims); top {playoff_teams} make it"),
+                    f"({max(100, min(int(num_sims), 50000))} sims); top {playoff_teams} make it"
+                    + (f". Matchups for week(s) {', '.join(map(str, failed_weeks))} could not "
+                       "be loaded and are not simulated — the odds are incomplete."
+                       if failed_weeks else "")),
     }
 
     # Optional: win-this-week vs lose-this-week swing for one team.
@@ -526,6 +568,8 @@ async def get_playoff_odds(
             _, a, b = dated_schedule[my_idx]
             opp = b if a == my_roster_id else a
             rest = schedule[:my_idx] + schedule[my_idx + 1:]
+            rest_weeks = (median_weeks[:my_idx] + median_weeks[my_idx + 1:]
+                          if median_weeks is not None else None)
 
             def _clone(win_rid):
                 cloned = []
@@ -537,9 +581,9 @@ async def get_playoff_odds(
                 return cloned
 
             win_sim = _simulate(_clone(my_roster_id), rest, playoff_teams, 5000,
-                                sd_by_team, random.Random(seed))
+                                sd_by_team, random.Random(seed), **_median_kw(rest_weeks))
             lose_sim = _simulate(_clone(opp), rest, playoff_teams, 5000,
-                                 sd_by_team, random.Random(seed))
+                                 sd_by_team, random.Random(seed), **_median_kw(rest_weeks))
             result["this_week_swing"] = {
                 "my_roster_id": my_roster_id,
                 "opponent_roster_id": opp,

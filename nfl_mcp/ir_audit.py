@@ -155,11 +155,14 @@ async def audit_ir_slots(
         return create_success_response({
             "success": False, "error": f"Could not load league {league_id}.",
         })
-    rosters = ((await sleeper_tools.get_rosters(league_id)) or {}).get("rosters") or []
+    roster_state = sleeper_tools.roster_freshness(await sleeper_tools.get_rosters(league_id))
+    if roster_state["error"]:
+        return create_success_response({"success": False, "error": roster_state["error"]})
+    rosters = roster_state["rosters"]
     if roster_id is not None:
         mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
     elif user_id:
-        mine = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        mine = sleeper_tools.roster_of_user(rosters, user_id)
     else:
         return create_success_response({
             "success": False, "error": "Pass roster_id or user_id to identify which team to audit.",
@@ -178,7 +181,7 @@ async def audit_ir_slots(
     )
     actions = [m for m in audit["moves"] if m["action"] in ("activate", "move_to_ir")]
     stuck = [m["player"] for m in audit["moves"] if m["action"] == "ir_full"]
-    return create_success_response({
+    return sleeper_tools.mark_roster_staleness(create_success_response({
         "league": {"league_id": league_id, "name": league.get("name")},
         "roster_id": mine.get("roster_id"),
         **audit,
@@ -190,4 +193,4 @@ async def audit_ir_slots(
              "slot(s) are full — keep, drop, or swap with the player in IR."
              if stuck else "No IR move to make.")
         ),
-    })
+    }), roster_state)

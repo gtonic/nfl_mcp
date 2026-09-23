@@ -335,6 +335,9 @@ async def get_weekly_retro(
     hits = sorted((r for r in graded if r["diff"] >= _NOTABLE_DIFF), key=lambda r: -r["diff"])
     projected_total = (round(sum(r["projected"] for r in starter_rows
                                  if r["projected"] is not None), 1) if graded else None)
+    # A starter without a projection counted as 0 made the total look like a
+    # full-lineup number when it was not; say how many are missing.
+    unprojected_starters = sum(1 for r in starter_rows if r["projected"] is None)
 
     opp_logged = [logged[pid] for pid in opp_starters if pid in logged]
     opponent = None
@@ -371,6 +374,8 @@ async def get_weekly_retro(
         "result": {"points": my_points, "opponent_points": opp_points,
                    "outcome": outcome, "margin": margin},
         "projected_total": projected_total,
+        "projected_total_partial": bool(projected_total is not None and unprojected_starters),
+        "unprojected_starters": unprojected_starters,
         "projection_source": projection_source,
         "starters": starter_rows,
         "bench": bench_rows,

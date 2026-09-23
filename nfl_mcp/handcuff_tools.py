@@ -148,7 +148,15 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
         return handle_validation_error("database unavailable", default_data)
 
     rosters_resp = await sleeper_tools.get_rosters(league_id)
-    rosters = rosters_resp.get("rosters") or []
+    # "Free agent" is an availability claim: a failed fetch or an old snapshot
+    # would call a handcuff added yesterday securable.
+    roster_state = sleeper_tools.roster_freshness(rosters_resp)
+    unavailable_reason = sleeper_tools.availability_error(roster_state)
+    if unavailable_reason and roster_state["available"]:
+        return handle_validation_error(unavailable_reason, {
+            **default_data, "stale": True,
+            "snapshot_age_seconds": roster_state["snapshot_age_seconds"]})
+    rosters = roster_state["rosters"]
     if not rosters:
         return handle_validation_error(
             rosters_resp.get("error") or "No rosters found for league", default_data
@@ -224,6 +232,9 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
             for h in free
         ],
         "count": len(handcuffs),
+        "stale": roster_state["stale"],
+        "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
+        "warnings": [roster_state["warning"]] if roster_state["warning"] else [],
         "message": (
             f"Mapped {len(handcuffs)} RB handcuff(s); "
             f"{len(free)} securable free-agent handcuff(s) — grab these to protect your backs."

@@ -392,7 +392,10 @@ async def get_league_changes(
     db = NFLDatabase()
     checked_at = datetime.now(UTC)
 
-    rosters = (await sleeper_tools.get_rosters(league_id) or {}).get("rosters") or []
+    roster_state = sleeper_tools.roster_freshness(await sleeper_tools.get_rosters(league_id))
+    if roster_state["error"]:
+        return create_success_response({"success": False, "error": roster_state["error"]})
+    rosters = roster_state["rosters"]
     mine, error = find_roster(rosters, league_id, roster_id, user_id)
     if error:
         return create_success_response({"success": False, "error": error})
@@ -421,9 +424,12 @@ async def get_league_changes(
 
     matchups = (await sleeper_tools.get_matchups(league_id, week) or {}).get("matchups") or []
     my_matchup = next((m for m in matchups if m.get("roster_id") == roster_id), None)
+    # A null matchup_id (bye / unscheduled) pairs with nobody — `None == None`
+    # used to make every such roster "the opponent".
     opp_matchup = next(
         (m for m in matchups
-         if my_matchup and m.get("matchup_id") == my_matchup.get("matchup_id")
+         if my_matchup and my_matchup.get("matchup_id") is not None
+         and m.get("matchup_id") == my_matchup.get("matchup_id")
          and m.get("roster_id") != roster_id),
         None,
     )
@@ -490,10 +496,17 @@ async def get_league_changes(
         counts[i["kind"]] = counts.get(i["kind"], 0) + 1
     shown = items[:max(1, int(limit))]
 
-    if mark_seen:
+    # The windowed sources (news, transactions, injuries) only report what
+    # happened since `since`: advancing the mark past a failed fetch loses that
+    # window for good. Hold it until they all come back.
+    windowed_failed = sorted(k for k in errors
+                             if k.startswith("transactions") or k.endswith("_news")
+                             or k == "injuries")
+    advanced = bool(mark_seen) and not windowed_failed
+    if advanced:
         db.set_league_last_check(league_id, roster_id, checked_at.isoformat())
 
-    return create_success_response({
+    return sleeper_tools.mark_roster_staleness(create_success_response({
         "league_id": league_id,
         "roster_id": roster_id,
         "opponent_roster_id": opp_rid,
@@ -503,11 +516,13 @@ async def get_league_changes(
         "since": since_iso,
         "since_source": since_source,
         "checked_at": checked_at.isoformat(),
-        "marked_seen": bool(mark_seen),
+        "marked_seen": advanced,
+        # Why the last-check mark was held back (the next call re-reads the window).
+        "not_marked_because": windowed_failed if mark_seen and windowed_failed else None,
         "changes": shown,
         "counts": counts,
         "omitted": len(items) - len(shown),
         "errors": errors,
         "message": (f"{len(items)} change(s) since {since_iso[:16]}Z"
                     if items else f"Nothing new since {since_iso[:16]}Z"),
-    })
+    }), roster_state)

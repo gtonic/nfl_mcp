@@ -171,12 +171,12 @@ def optimize_win_probability(
             elif remaining:
                 # Slot missing or renamed: drop the narrowest slot the player
                 # is eligible for (his own position before any flex) rather
-                # than optimizing a seat that is taken.
+                # than optimizing a seat that is taken. No eligible slot (an
+                # IDP starter in a list without IDP slots): remove nothing —
+                # taking remaining[0] silently deleted the QB seat.
                 eligible = [s for s in remaining if slot_accepts(s, p.get("position"))]
-                fallback = min(
-                    eligible, key=lambda s: len(SLOT_ELIGIBILITY.get(s, ())), default=remaining[0]
-                )
-                remaining.remove(fallback)
+                if eligible:
+                    remaining.remove(min(eligible, key=lambda s: len(SLOT_ELIGIBILITY.get(s, ()))))
         slot_list = remaining
 
     locked_mean, locked_var = _team_stats(locked_players, stack_correlation)

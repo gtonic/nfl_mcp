@@ -27,15 +27,23 @@ from .player_values import get_values_service
 from .roster_needs import lineup_gain, lineup_slots
 from .sleeper_tools import (
     active_enriched,
+    availability_error,
     get_league,
     get_nfl_state,
     get_rosters,
     get_transactions,
     get_trending_players,
+    roster_freshness,
 )
 from .teams import normalize_team
 from .trade_analyzer_tools import league_format_from_settings
-from .waiver_rules import horizon_worth, latest_drops, priority_strategy, trend_demand
+from .waiver_rules import (
+    horizon_worth,
+    latest_drops,
+    priority_strategy,
+    sits_out_week,
+    trend_demand,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +96,13 @@ async def _horizon_gains(league: dict, roster: dict, target_id: str, season: int
     from . import ros
     from .roster_needs import lineup_slots as whole_slots
 
-    unavailable = {str(p) for key in ("reserve", "taxi") for p in (roster.get(key) or [])}
+    # Reserve players stay in the ROS roster (their ROS models the absence and
+    # the return, as in the trade tools); they only sit out this week. Taxi
+    # players cannot be activated in-season.
+    taxi = {str(p) for p in (roster.get("taxi") or [])}
+    reserve = {str(p) for p in (roster.get("reserve") or [])}
     mine_ids = [str(p) for p in (roster.get("players") or [])
-                if p and str(p) != "0" and str(p) not in unavailable]
+                if p and str(p) != "0" and str(p) not in taxi]
     if not mine_ids or not target_id:
         return None
     try:
@@ -100,7 +112,8 @@ async def _horizon_gains(league: dict, roster: dict, target_id: str, season: int
         logger.warning(f"ROS unavailable for the FAAB horizons: {e}")
         return None
     candidate = by_id.get(target_id)
-    mine = [by_id[i] for i in mine_ids if i in by_id]
+    mine = [sits_out_week(by_id[i], week) if i in reserve else by_id[i]
+            for i in mine_ids if i in by_id]
     windows = (meta or {}).get("windows") or {}
     weeks = sorted(set(windows.get("regular") or []) | set(windows.get("playoff") or []))
     if not candidate or not mine or not weeks:
@@ -231,8 +244,15 @@ async def recommend_faab_bid(
 
     # A player someone already rosters is not a waiver target at any price —
     # reserve and taxi included, since those are owned too.
-    rosters_res = await get_rosters(league_id)
-    all_rosters = rosters_res.get("rosters", []) if rosters_res.get("success") else []
+    # A failed fetch (or the snapshot fallback, which reports success False)
+    # used to skip this check entirely and bid on rostered players.
+    freshness = roster_freshness(await get_rosters(league_id))
+    unavailable_reason = availability_error(freshness)
+    if unavailable_reason:
+        return create_error_response(unavailable_reason, ErrorType.HTTP, {
+            "recommendation": None, "stale": freshness["stale"],
+            "snapshot_age_seconds": freshness["snapshot_age_seconds"]})
+    all_rosters = freshness["rosters"]
     target_id = str(target.get("player_id") or player_id or "")
     owner = next((
         r for r in all_rosters
@@ -253,7 +273,7 @@ async def recommend_faab_bid(
         })
     max_value = max((float(v.get("value") or 0) for v in values.get("list", [])), default=target_value or 1)
 
-    warnings: list[str] = []
+    warnings: list[str] = [freshness["warning"]] if freshness["warning"] else []
 
     # --- Marginal upgrade vs your roster ---
     upgrade = target_value
@@ -323,7 +343,12 @@ async def recommend_faab_bid(
         wk = state.get("nfl_state", {}).get("week") if state.get("success") else None
         season = state.get("nfl_state", {}).get("season") if state.get("success") else None
         if wk:
-            weeks_left = max(0, _FANTASY_REGULAR_WEEKS - int(wk))
+            try:
+                regular_weeks = int(settings.get("playoff_week_start") or 0) - 1
+            except (TypeError, ValueError):
+                regular_weeks = 0
+            weeks_left = max(0, (regular_weeks if regular_weeks > 0 else _FANTASY_REGULAR_WEEKS)
+                             - int(wk))
             if weeks_left <= 3:
                 timing_mult = 1.2  # spend it before playoffs
                 warnings.append("Few weeks left — spend aggressively if contending")
@@ -440,6 +465,8 @@ async def recommend_faab_bid(
         "scoring_used": model.summary(),
         "total_budget": total_budget if is_faab else None,
         "remaining_budget": remaining_budget,
+        "stale": freshness["stale"],
+        "snapshot_age_seconds": freshness["snapshot_age_seconds"],
         "message": (
             (f"Bid ~{bid_pct}% "
              + (f"(${bid_absolute} of {total_budget}) " if bid_absolute is not None else "")

@@ -42,6 +42,7 @@ from .waiver_rules import (
     horizon_worth,
     latest_drops,
     priority_strategy,
+    sits_out_week,
     trend_demand,
     waiver_rules,
     waiver_status,
@@ -228,7 +229,7 @@ def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
 
 
 async def _attach_ros(players: list[dict], league: dict, season: int, week: int, db,
-                      sink: dict | None = None) -> bool:
+                      sink: dict | None = None, extra_ids: list[str] | None = None) -> bool:
     """Set ``ros_total`` (ROS + fantasy-playoff points) on each player, in place.
 
     Only the roster and the shortlisted targets — projecting the whole pool
@@ -238,6 +239,7 @@ async def _attach_ros(players: list[dict], league: dict, season: int, week: int,
     """
     from . import ros
     ids = [str(p["player_id"]) for p in players if p.get("player_id")]
+    ids += [i for i in dict.fromkeys(extra_ids or []) if i not in set(ids)]
     if not ids:
         return False
     try:
@@ -327,14 +329,24 @@ async def get_waiver_targets(
     # to the back of the order, so every claim has a real cost.
     rolling = not is_faab and (league.get("settings") or {}).get("waiver_type") == 0
 
-    rosters = (rosters_resp or {}).get("rosters") or []
+    # Who is a free agent is only as good as the rosters: a failed fetch left
+    # everyone "available", and a day-old snapshot offers players already added.
+    roster_state = sleeper_tools.roster_freshness(rosters_resp)
+    unavailable_reason = sleeper_tools.availability_error(roster_state)
+    if unavailable_reason:
+        return create_success_response({
+            "success": False, "error": unavailable_reason,
+            "stale": roster_state["stale"],
+            "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
+        })
+    rosters = roster_state["rosters"]
     if roster_id is None:
         if not user_id:
             return create_success_response({
                 "success": False,
                 "error": "Pass roster_id or user_id to identify which team to advise.",
             })
-        mine = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        mine = sleeper_tools.roster_of_user(rosters, user_id)
     else:
         mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
     if not mine:
@@ -571,7 +583,17 @@ async def get_waiver_targets(
     # Who you would drop: bench players only, least worth keeping first. Stashed
     # players are left out — dropping an IR spot is a different decision.
     ros_data: dict = {}
-    ros_ok = await _attach_ros([*mine_scored, *top], league, season, week, db, sink=ros_data)
+    # The ROS roster is every active roster id, not just who projects this
+    # week: a bye player (no opponent -> no projection input) vanished for the
+    # whole season and inflated every claim's ros_gain in a bye week. Reserve
+    # players count too — their ROS carries the absence and the weeks after it
+    # (as the trade tools already do) — they only sit out this week's lineup.
+    taxi_ids = {str(p) for p in (mine.get("taxi") or [])}
+    reserve_ids = {str(p) for p in (mine.get("reserve") or [])}
+    ros_roster_ids = [str(p) for p in (mine.get("players") or [])
+                      if p and str(p) != "0" and str(p) not in taxi_ids]
+    ros_ok = await _attach_ros([*mine_scored, *top], league, season, week, db, sink=ros_data,
+                               extra_ids=ros_roster_ids)
 
     # Both horizons for every target — this week's lineup gain and the
     # rest-of-season one — judged by the same rule recommend_faab_bid uses,
@@ -579,8 +601,8 @@ async def get_waiver_targets(
     ros_by_id = ros_data.get("by_id") or {}
     windows = (ros_data.get("meta") or {}).get("windows") or {}
     ros_weeks = sorted(set(windows.get("regular") or []) | set(windows.get("playoff") or []))
-    mine_ros = [ros_by_id[str(p.get("player_id"))] for p in mine_scored
-                if str(p.get("player_id")) in ros_by_id]
+    mine_ros = [sits_out_week(ros_by_id[pid], week) if pid in reserve_ids else ros_by_id[pid]
+                for pid in ros_roster_ids if pid in ros_by_id]
     for target in top:
         entry = ros_by_id.get(str(target.get("player_id")))
         ros_gain = None
@@ -657,7 +679,9 @@ async def get_waiver_targets(
         "stale_data_warnings": _staleness_warnings(freshness),
         "positions_considered": sorted(wanted),
         "vegas_active": vegas_active,
-        "warnings": ([] if values_ok else [
+        "stale": roster_state["stale"],
+        "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
+        "warnings": ([roster_state["warning"]] if roster_state["warning"] else []) + ([] if values_ok else [
             "No market values available — drops are ranked by this week's "
             "projection only."
         ]) + ([] if vegas_active or not undifferentiated else [

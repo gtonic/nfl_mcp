@@ -825,6 +825,11 @@ class LineupOptimizer:
             analysis.projected_points = projection_data.get("projected_points", 0.0)
             analysis.floor = projection_data.get("floor", 0.0)
             analysis.ceiling = projection_data.get("ceiling", 0.0)
+            # The caller's number is a projection *if he plays*. An Out player
+            # scores nothing, as on the auto-projected path (multiplier 0);
+            # used as-is it made him the winner of a slot comparison.
+            if availability(analysis.injury_status) == "out":
+                analysis.projected_points = analysis.floor = analysis.ceiling = 0.0
         elif self.auto_project:
             try:
                 from .projections import get_projection_engine
@@ -1373,10 +1378,12 @@ async def compare_players_for_slot(
     for player in players:
         analysis = await optimizer.analyze_player(
             player_name=player.get("name", "Unknown"),
-            player_id=player.get("player_id", ""),
-            position=player.get("position", ""),
-            team=player.get("team", ""),
-            opponent=player.get("opponent", ""),
+            player_id=player.get("player_id") or "",
+            # `or`, not a .get default: an unresolved name arrives with an
+            # explicit None, which crashed `.upper()`.
+            position=player.get("position") or "",
+            team=player.get("team") or "",
+            opponent=player.get("opponent") or "",
             usage_data=player.get("usage"),
             injury_data=player.get("injury"),
             projection_data=player.get("projection"),
@@ -1524,9 +1531,13 @@ async def analyze_full_lineup(
     scoring: str | None = None,
     league_id: str | None = None,
     season: int | None = None,
+    empty_slots: list[str] | None = None,
 ) -> dict:
     """
     Analyze a complete fantasy lineup with optimal lineup suggestions.
+
+    ``empty_slots`` names starting slots nobody holds (Sleeper's "0"): they
+    are open seats the optimal lineup fills and the grade counts.
 
     Takes a full lineup organized by position and provides:
     - Analysis of each starter
@@ -1592,7 +1603,8 @@ async def analyze_full_lineup(
     starter_positions = [k for k in lineup if normalize_slot(k) not in NON_STARTING_SLOTS]
 
     starters_analysis = {}
-    seats: list[tuple[str, PlayerAnalysis]] = []  # (slot key, starter) in order
+    # (slot key, starter) in order; starter None for an empty seat.
+    seats: list[tuple[str, PlayerAnalysis | None]] = []
     bench_analysis = []
     all_starter_analyses = []
     suggested_changes = []
@@ -1663,6 +1675,12 @@ async def analyze_full_lineup(
 
         starters_analysis[position] = [a.to_dict() for a in position_analyses]
 
+    # An empty starting slot is a seat like any other — just unoccupied. Left
+    # out, an empty FLEX graded A while a 12-point RB sat on the bench.
+    for slot_key in empty_slots or []:
+        if normalize_slot(slot_key) not in NON_STARTING_SLOTS:
+            seats.append((slot_key, None))
+
     # Analyze bench
     for bench_key in bench_keys:
         for player in lineup.get(bench_key) or []:
@@ -1701,9 +1719,10 @@ async def analyze_full_lineup(
     # possible total no lineup could reach.
     # A starter whose game has started keeps his seat, and a bench player
     # whose game has started cannot take one: only the rest is optimized.
-    open_seats = [i for i, (_, a) in enumerate(seats) if not a.locked]
+    open_seats = [i for i, (_, a) in enumerate(seats) if a is None or not a.locked]
     open_best = optimal_lineup(
-        [seats[i][1] for i in open_seats] + [a for a in bench_analysis if not a.locked],
+        [seats[i][1] for i in open_seats if seats[i][1] is not None]
+        + [a for a in bench_analysis if not a.locked],
         [normalize_slot(seats[i][0]) for i in open_seats],
         value=lambda a: a.projected_points, position=lambda a: a.position,
     )
@@ -1713,14 +1732,14 @@ async def analyze_full_lineup(
     locked_players = [
         {"slot": key, "player": a.player_name, "kickoff_local": a.kickoff_local,
          "game_status": a.game_status, "starting": True}
-        for key, a in seats if a.locked
+        for key, a in seats if a is not None and a.locked
     ] + [
         {"slot": "BENCH", "player": a.player_name, "kickoff_local": a.kickoff_local,
          "game_status": a.game_status, "starting": False}
         for a in bench_analysis if a.locked
     ]
     optimal_total = sum(a.projected_points for a in best if a is not None)
-    starting = {id(a) for _, a in seats}
+    starting = {id(a) for _, a in seats if a is not None}
     best_ids = {id(a) for a in best if a is not None}
     ins = sorted(
         ((key, a) for key, a in zip((k for k, _ in seats), best, strict=True)
@@ -1728,9 +1747,38 @@ async def analyze_full_lineup(
         key=lambda t: t[1].projected_points, reverse=True,
     )
     outs = sorted(
-        ((key, a) for key, a in seats if id(a) not in best_ids),
+        ((key, a) for key, a in seats if a is not None and id(a) not in best_ids),
         key=lambda t: t[1].projected_points,
     )
+    # Filling an empty seat costs nobody. A player the optimum puts straight
+    # into an empty seat fills it; any empty seat filled by shifting a starter
+    # takes one of the remaining newcomers (the others shift over for him).
+    empty_keys = [key for key, a in seats if a is None]
+    fills: list[tuple[str, PlayerAnalysis]] = []
+    for (key, a), b in zip(seats, best, strict=True):
+        if a is None and b is not None and id(b) not in starting:
+            fills.append((key, b))
+            empty_keys.remove(key)
+    filled_ids = {id(b) for _, b in fills}
+    ins = [(k, b) for k, b in ins if id(b) not in filled_ids]
+    filled_by_shift = sum(1 for (_, a), b in zip(seats, best, strict=True)
+                          if a is None and b is not None and id(b) in starting)
+    for _ in range(min(filled_by_shift, len(empty_keys), max(0, len(ins) - len(outs)))):
+        key, b = ins.pop(0)
+        fills.append((empty_keys.pop(0), b))
+    for slot_key, filler in fills:
+        suggested_changes.append({
+            "action": "fill",
+            "bench_in": filler.player_name,
+            "bench_in_points": filler.projected_points,
+            "bench_out": None,
+            "bench_out_points": 0.0,
+            "slot": slot_key,
+            "out_slot": None,
+            "gain": round(filler.projected_points, 1),
+            "reason": f"Fill empty {slot_key} with {filler.player_name} "
+                      f"({filler.projected_points} projected)",
+        })
     for (in_slot, bench_in), (out_slot, bench_out) in zip(ins, outs, strict=False):
         # Points, not confidence, and wide enough to sit outside the noise.
         gain = bench_in.projected_points - bench_out.projected_points

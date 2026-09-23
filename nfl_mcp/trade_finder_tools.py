@@ -130,14 +130,17 @@ async def find_trade_targets(
     whole_slots = lineup_slots(roster_positions)
 
     rosters_resp = await sleeper_tools.get_rosters(league_id)
-    rosters = (rosters_resp or {}).get("rosters") or []
+    roster_state = sleeper_tools.roster_freshness(rosters_resp)
+    if roster_state["error"]:
+        return create_success_response({"success": False, "error": roster_state["error"]})
+    rosters = roster_state["rosters"]
     if roster_id is None:
         if not user_id:
             return create_success_response({
                 "success": False,
                 "error": "Pass roster_id or user_id to identify which team to advise.",
             })
-        mine = next((r for r in rosters if r.get("owner_id") == user_id), None)
+        mine = sleeper_tools.roster_of_user(rosters, user_id)
     else:
         mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
     if not mine:
@@ -186,7 +189,7 @@ async def find_trade_targets(
 
     names = await _team_names(sleeper_tools, league_id, rosters)
     if horizon != "week":
-        return await _find_ros(
+        return sleeper_tools.mark_roster_staleness(await _find_ros(
             db=db, league=league, league_id=league_id, rosters=rosters,
             roster_id=roster_id, season=season, week=week, positions=positions,
             limit=limit, names=names, deadline=deadline, freshness=freshness,
@@ -197,7 +200,7 @@ async def find_trade_targets(
                 "num_teams": num_teams,
             },
             whole_slots=whole_slots, fractional_slots=fractional_slots,
-        )
+        ), roster_state)
 
     all_ids = [pid for ids in ids_by_roster.values() for pid in ids]
     athlete_rows = db.get_athletes_by_ids(all_ids)
@@ -302,7 +305,7 @@ async def find_trade_targets(
 
     levels = replacement_levels(mine_scored, fractional_slots)
 
-    return create_success_response({
+    return sleeper_tools.mark_roster_staleness(create_success_response({
         "league": {
             "league_id": league_id, "name": league.get("name"),
             "scoring": _scoring_label(league), "ppr": _scoring_ppr(league),
@@ -346,7 +349,7 @@ async def find_trade_targets(
             f"No one-for-one trade improves both your roster and a partner's in "
             f"week {week} ({evaluated} candidate swaps checked)."
         ) + (f" {deadline['message']}" if deadline["urgent"] else ""),
-    })
+    }), roster_state)
 
 
 async def _team_names(sleeper_tools, league_id: str, rosters: list[dict]) -> dict[int, str]:

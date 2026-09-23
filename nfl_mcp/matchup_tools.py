@@ -957,6 +957,17 @@ async def analyze_roster_matchups(
             })
             continue
 
+        # "BYE" is not a defense: looked up as one it came back a neutral #16.
+        from .week_context import is_bye_marker
+        if is_bye_marker(opponent):
+            analyses.append({
+                "player": name, "position": position, "opponent": "BYE",
+                "rank": None, "rank_display": None, "matchup_tier": "bye",
+                "tier_indicator": None, "on_bye": True,
+                "recommendation": "On bye — no game this week, cannot score",
+            })
+            continue
+
         matchup = analyzer.get_matchup_difficulty(position, opponent, rankings)
 
         analysis = {

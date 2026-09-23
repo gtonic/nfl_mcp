@@ -42,6 +42,17 @@ def lineup_slots(roster_positions: list[str] | None) -> dict[str, int]:
     return starting_slots(roster_positions)
 
 
+def _whole_starters(slots: dict[str, float], position: str) -> int:
+    """How many players at `position` surely start: the whole part of its
+    (fractional) slot count, at least 1 when a flex share is all it has, 0
+    when the league starts none. Rounding the flex shares up made a roster's
+    TE2 a "starter" in a two-FLEX league (1 + 2/3 -> 2)."""
+    count = float(slots.get(position, 0) or 0)
+    if count <= 0:
+        return 0
+    return max(1, int(count + 1e-9))
+
+
 def replacement_levels(
     projections: list[dict], slots: dict[str, float]
 ) -> dict[str, float]:
@@ -57,8 +68,10 @@ def replacement_levels(
             float(p.get("projected_points") or 0.0)
         )
     for position, points in by_position.items():
+        starters = _whole_starters(slots, position)
+        if not starters:
+            continue  # the league starts none (a K in a no-K league): no bar
         points.sort(reverse=True)
-        starters = max(1, round(slots.get(position, 1)))
         # Fewer players than slots means the slot is effectively empty, so
         # anything at all is an upgrade.
         levels[position] = points[starters - 1] if len(points) >= starters else 0.0
@@ -135,8 +148,10 @@ def surplus_players(
         by_position.setdefault((p.get("position") or "").upper(), []).append(p)
 
     for position, players in by_position.items():
+        starters = _whole_starters(slots, position)
+        if not starters:
+            continue  # nobody starts one here, so there is nothing to move
         players.sort(key=lambda p: float(p.get("projected_points") or 0.0), reverse=True)
-        starters = max(1, round(slots.get(position, 1)))
         for player in players[starters:]:
             if float(player.get("projected_points") or 0.0) > margin:
                 surplus.append(player)
