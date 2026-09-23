@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 DEFENSE_POSITIONS = {"QB", "RB", "WR", "TE"}
 DEFAULT_STREAM_POSITIONS = ["QB", "TE", "DST", "K"]
+# Sleeper calls a team defense "DEF"; the planner's own label is "DST".
+DEFENSE_UNIT_POSITIONS = frozenset({"DST", "DEF"})
 _WEEK_MIN, _WEEK_MAX = 1, 18
 _MAX_LOOKAHEAD = 4
 
@@ -60,7 +62,7 @@ def _score_one(
             bool(m.get("is_fallback", False)),
             {"opponent_defense_rank": m.get("rank")},
         )
-    if pos == "DST":
+    if pos in DEFENSE_UNIT_POSITIONS:
         off = offense_rankings.get(opponent.upper())
         if not off:
             return None, None, True, {"opponent_offense_rank": None}
@@ -72,6 +74,7 @@ def _score_one(
             {
                 "opponent_offense_rank": off["rank"],
                 "opponent_points_scored_avg": off.get("points_scored_avg"),
+                "opponent_points_per_game": off.get("real_points_avg"),
             },
         )
     if pos == "K":
@@ -86,6 +89,7 @@ def _score_one(
             {
                 "own_offense_rank": off["rank"],
                 "own_points_scored_avg": off.get("points_scored_avg"),
+                "own_points_per_game": off.get("real_points_avg"),
             },
         )
     return None, None, True, {}
@@ -100,10 +104,18 @@ def compute_streaming_scores(
 ) -> dict[str, dict[str, dict]]:
     """Pure per-position, per-team streaming scores over the given weeks.
 
-    Returns ``{position: {team: {stream_score, games, is_fallback, weeks[...]}}}``.
+    Returns ``{position: {team: {stream_score, games, byes, is_fallback, weeks[...]}}}``.
     Higher ``stream_score`` (0-100) = better weekly streaming matchup. Teams with
     no scorable week for a position (e.g. no offense data) are omitted.
+
+    A bye inside the window scores 0 and counts toward the average: a unit
+    that sits out one of three weeks gives you two weeks of starts, and
+    averaging the bye away ranked it level with one that plays all three.
+    A week counts as a bye only when the schedule has games that week for
+    other teams — a week with no schedule at all is unknown, not a bye.
     """
+    scheduled_weeks = {wk for opps in opponents_by_week.values()
+                       for wk, opp in opps.items() if opp}
     out: dict[str, dict[str, dict]] = {}
     for position in positions:
         pos = position.upper()
@@ -113,6 +125,11 @@ def compute_streaming_scores(
             per_week = []
             scores: list[float] = []
             fallback_any = False
+            byes = sorted(wk for wk in scheduled_weeks if not wk_opps.get(wk))
+            for wk in byes:
+                per_week.append({"week": wk, "opponent": "BYE", "on_bye": True,
+                                 "stream_score": 0.0, "matchup_tier": "bye",
+                                 "is_fallback": False})
             for wk, opp in games:
                 score, tier, is_fb, detail = _score_one(
                     pos, team, opp, def_rankings, offense_rankings, analyzer
@@ -132,9 +149,11 @@ def compute_streaming_scores(
                     scores.append(score)
                     fallback_any = fallback_any or is_fb
             if scores:
+                per_week.sort(key=lambda r: r["week"])
                 team_scores[team] = {
-                    "stream_score": round(sum(scores) / len(scores), 1),
+                    "stream_score": round(sum(scores) / (len(scores) + len(byes)), 1),
                     "games": len(scores),
+                    "byes": byes,
                     "is_fallback": fallback_any,
                     "weeks": per_week,
                 }
@@ -146,19 +165,25 @@ def unit_points(position: str, week_row: dict, model) -> float | None:
     """Expected fantasy points for a DST/K streaming week in the league's scoring.
 
     Priced like the projection engine: the default-scoring DST/K baseline from
-    the relevant scoring average (opponent's for a defense, own for a kicker),
-    rescaled by the league's points-allowed tiers / FG distance values. None
-    when the week has no scoring average to price.
+    the relevant NFL points per game (opponent's for a defense, own for a
+    kicker), rescaled by the league's points-allowed tiers / FG distance
+    values. A bye week is 0. None when the week has no scoring average to price.
+
+    It used to read `*_points_scored_avg`, which is the offense's summed
+    *fantasy* points (~70-120 a game) rather than its score, so every defense
+    fell in the 28+ tier (3.5 pts) and every kicker in the top one.
     """
     from .projections import defense_base, kicker_base
+    if week_row.get("on_bye"):
+        return 0.0
     pos = position.upper()
-    if pos in ("DST", "DEF"):
-        total = week_row.get("opponent_points_scored_avg")
+    if pos in DEFENSE_UNIT_POSITIONS:
+        total = week_row.get("opponent_points_per_game")
         if total is None:
             return None
         return round(defense_base(total) * model.defense_scale(total), 1)
     if pos == "K":
-        total = week_row.get("own_points_scored_avg")
+        total = week_row.get("own_points_per_game")
         if total is None:
             return None
         return round(kicker_base(total) * model.kicker_scale(), 1)
@@ -178,8 +203,50 @@ async def _resolve_offense(season: int, strength_season: int | None):
     return rankings, used, fell_back
 
 
+async def unit_matchup(position: str, team: str, opponent: str, season: int | None,
+                       model) -> dict | None:
+    """Matchup read for one kicker or team defense, for start/sit.
+
+    DEF keys on the *opponent's* offense (rank 32 = weakest = smash), K on his
+    own (rank 1 = strongest = smash), tiered on the same 5/12/20/27 cut-offs as
+    defense-vs-position. The tier is withheld (neutral) until the offense has
+    `matchup_tools.MIN_GAMES_FOR_TIERS` games, as the defense tiers are.
+    `projected_points` is the key-free schedule projection the streaming
+    planner uses — the start/sit fallback when there are no Vegas totals.
+    None without offense rankings or a season.
+    """
+    pos = (position or "").upper()
+    if not season or not (pos in DEFENSE_UNIT_POSITIONS or pos == "K"):
+        return None
+    rankings, used, fell_back = await _resolve_offense(season, None)
+    key = (opponent if pos in DEFENSE_UNIT_POSITIONS else team or "").upper()
+    off = rankings.get(key) if key else None
+    if not off:
+        return None
+    rank = int(off["rank"])
+    games = int(off.get("games") or 0)
+    # Past seasons are complete; only a live season can be too thin to tier.
+    thin = used == season and games < matchup_tools.MIN_GAMES_FOR_TIERS
+    tier_rank = rank if pos in DEFENSE_UNIT_POSITIONS else 33 - rank
+    tier = "neutral" if thin else matchup_tools._get_matchup_tier(tier_rank)
+    detail = ({"opponent_points_per_game": off.get("real_points_avg"), "opponent": opponent}
+              if pos in DEFENSE_UNIT_POSITIONS else
+              {"own_points_per_game": off.get("real_points_avg")})
+    return {
+        "offense_rank": rank,
+        "offense_side": "opponent" if pos in DEFENSE_UNIT_POSITIONS else "own",
+        "points_per_game": off.get("real_points_avg"),
+        "games": games,
+        "matchup_tier": tier,
+        "tier_withheld": thin,
+        "source_season": used,
+        "is_fallback": fell_back or used != season,
+        "projected_points": unit_points(pos, detail, model),
+    }
+
+
 def _needs_offense(positions: list[str]) -> bool:
-    return any(p.upper() in ("DST", "K") for p in positions)
+    return any(p.upper() in ("DST", "DEF", "K") for p in positions)
 
 
 def _needs_defense(positions: list[str]) -> bool:
@@ -203,7 +270,7 @@ def _unit_availability(position: str, team: str, rostered: set, db) -> dict:
     free_agent/rostered (a specific starter isn't singled out — a design note).
     """
     pos, team = position.upper(), (team or "").upper()
-    if pos in ("DST", "DEF"):
+    if pos in DEFENSE_UNIT_POSITIONS:
         status = "rostered" if team in rostered else "free_agent"
         return {"unit_player_id": team, "status": status, "has_free_agent": status == "free_agent"}
     players = []
@@ -309,7 +376,7 @@ async def get_streaming_options(
     streaming_options: dict[str, list[dict]] = {}
     for pos, teams in scores.items():
         rows = [{"team": team, **data} for team, data in teams.items()]
-        if pos in ("DST", "DEF", "K"):
+        if pos in DEFENSE_UNIT_POSITIONS or pos == "K":
             for r in rows:
                 pts = []
                 for w in r["weeks"]:
