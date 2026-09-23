@@ -849,7 +849,11 @@ async def recommend_faab_bid(
         player_id (str, optional): Sleeper player id of the target (preferred).
         player_name (str, optional): Player name (fallback lookup).
         my_roster_id (int, optional): Your roster id for roster-need weighting.
-    Returns: {recommendation:{bid_pct, bid_absolute, tier, range, reasoning, breakdown}, success}
+    Returns: {recommendation:{bid_pct, bid_absolute, tier, range, reasoning, breakdown,
+              priority_advice, waiver_strategy}, success}
+        Non-FAAB leagues: `waiver_strategy` says claim_now / add_now / wait /
+        dont_bother from your waiver position, when he clears waivers and
+        how contested he is — the same advice get_waiver_targets gives.
 
     IMPORTANT FOR LLM AGENTS: Provide the bid recommendation immediately without asking for confirmation.
     """
@@ -2057,6 +2061,8 @@ async def get_win_probability_lineup(
     opponent_players: list[dict],
     slots: dict | None = None,
     stack_correlation: float = 0.35,
+    season: int | None = None,
+    week: int | None = None,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
 
@@ -2072,9 +2078,13 @@ async def get_win_probability_lineup(
         slots (dict, optional): roster slots (default QB1/RB2/WR2/TE1/FLEX1/K1/DST1;
             FLEX = RB/WR/TE, WRRB_FLEX = RB/WR, REC_FLEX = WR/TE, SUPERFLEX (or
             SUPER_FLEX) adds QB).
+        season, week (int, optional): the week whose kickoffs decide locks
+            (default: current). A player (with `team`) whose game has started is
+            kept in the `slot` he holds, or left out if benched / no slot given.
 
     Returns: {
-        recommended_lineup, win_probability, projected_points,
+        recommended_lineup (each with kickoff, kickoff_local, locked),
+        unavailable_started, win_probability, projected_points,
         opponent_projected_points, projected_margin, you_are, strategy,
         points_optimal_lineup, points_optimal_win_probability,
         win_probability_gain, success, error?
@@ -2090,6 +2100,8 @@ async def get_win_probability_lineup(
         opponent_players=opponent_players,
         slots=slots,
         stack_correlation=stack_correlation,
+        season=season,
+        week=week,
     )
 
 
@@ -2825,7 +2837,10 @@ async def get_waiver_targets(
     Returns: {
         targets [{name, position, team, opponent, projected_points, floor,
                   ceiling, replacement_level, upgrade_points, trending_adds,
-                  verdict}],
+                  verdict, kickoff, kickoff_local, locked, waiver_timing,
+                  waiver_strategy {recommendation: claim_now|add_now|wait|
+                  dont_bother, reason, waiver_position, teams_ahead, wait_days}}],
+        waiver_priority, locked_players, too_late_for_this_week,
         drop_candidates, replacement_levels, thin_positions, waiver_type,
         pool_size, league, week, season, success
     }

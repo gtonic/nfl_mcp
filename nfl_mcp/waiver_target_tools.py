@@ -16,11 +16,14 @@ would displace in your lineup.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from .briefing_tools import _staleness_warnings
 from .database import NFLDatabase
 from .errors import create_success_response
+from .game_clock import game_lock, parse_kickoff, week_games
 from .injury_match import build_injury_index, injury_for_row, misses_this_week
+from .lineup_slots import starting_slot_list
 from .player_values import get_values_service
 from .roster_needs import (
     lineup_bars,
@@ -32,9 +35,54 @@ from .roster_needs import (
 )
 from .teams import normalize_team
 from .trade_analyzer_tools import league_format_from_settings
-from .waiver_rules import waiver_rules
+from .waiver_rules import (
+    latest_drops,
+    priority_strategy,
+    trend_demand,
+    waiver_rules,
+    waiver_status,
+)
 
 logger = logging.getLogger(__name__)
+
+# A lineup gain this large (well clear of the projection's ~5.8-point MAE
+# once summed over a season of such weeks) is worth spending priority on.
+_HIGH_WORTH_UPGRADE = 3.0
+
+_LOCK_FIELDS = ("kickoff", "kickoff_local", "kickoff_weekday", "locked", "game_status")
+
+
+def _now() -> datetime:
+    """The clock the lock and waiver timing read; a seam for tests."""
+    return datetime.now(UTC)
+
+
+def _claim_worth(verdict: str, upgrade: float) -> str:
+    """How much a target is worth to you, in `priority_strategy`'s terms."""
+    if verdict == "upgrade":
+        return "high" if upgrade >= _HIGH_WORTH_UPGRADE else "medium"
+    return "low"
+
+
+def _without_locked_starters(
+    players: list[dict], slots: dict[str, int], starters: list, roster_positions
+) -> tuple[list[dict], dict[str, int]]:
+    """The part of a lineup that can still change: players whose game has not
+    started, and the slots not already held by a locked starter.
+
+    A starter whose game kicked off keeps his seat whatever a waiver add
+    projects, and a benched player whose game started cannot come in, so
+    neither may set the bar a claim has to clear.
+    """
+    locked_ids = {str(p.get("player_id")) for p in players if p.get("locked")}
+    if not locked_ids:
+        return players, slots
+    open_slots = dict(slots)
+    for pid, slot in zip(starters or [], starting_slot_list(roster_positions), strict=False):
+        if str(pid) in locked_ids and open_slots.get(slot, 0) > 0:
+            open_slots[slot] -= 1
+    return [p for p in players if not p.get("locked")], open_slots
+
 
 # Positions a claim is ever made for. Kickers and defenses are included because
 # streaming them is most of what waiver claims are actually spent on.
@@ -112,8 +160,13 @@ def _outvalues(target: dict, drop: dict) -> bool:
 
 
 def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
-               set_starters: set[str], open_spots: int) -> tuple[dict | None, str]:
-    """The player to drop for `target`, or None and why not."""
+               set_starters: set[str], open_spots: int,
+               locked_ids: set[str] | None = None) -> tuple[dict | None, str]:
+    """The player to drop for `target`, or None and why not.
+
+    ``locked_ids`` are players whose game has started: Sleeper does not let
+    them be dropped, so they are never offered.
+    """
     if open_spots > 0:
         return None, "Open roster spot — no drop needed."
     # Judged on the roster *after* the add: a starter he displaces at his own
@@ -122,7 +175,7 @@ def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
     same_position = {
         str(p.get("player_id")) for p in players if p.get("position") == target.get("position")
     }
-    protected = set_starters - same_position
+    protected = (set_starters - same_position) | (locked_ids or set())
     for candidate in _droppable([*players, target], slots, protected):
         if candidate.get("player_id") == target.get("player_id"):
             continue
@@ -312,6 +365,29 @@ async def get_waiver_targets(
     mine_scored = _named(my_proj, my_inputs)
     pool_scored = _named(pool_proj, pool_inputs)
 
+    # Kickoffs decide what can still change. A player whose game has started
+    # is locked in or out of your lineup and cannot be dropped; a free agent
+    # whose claim lands after his kickoff is worth nothing this week.
+    now = _now()
+    games = week_games(db, season, week)
+    previous_games = week_games(db, season, week - 1) if week and week > 1 else {}
+    for p in (*mine_scored, *pool_scored):
+        lock = game_lock(games.get(p["team"]), now)
+        p.update({k: lock[k] for k in _LOCK_FIELDS})
+    locked_mine = {str(p.get("player_id")) for p in mine_scored if p.get("locked")}
+
+    # When each free agent was last dropped, for his clear-day window. The
+    # transaction log only carries completed moves, which is all a drop needs.
+    last_dropped: dict = {}
+    try:
+        for wk in {week, max(1, (week or 1) - 1)}:
+            txns = await sleeper_tools.get_transactions(league_id, week=wk)
+            for pid, when in latest_drops((txns or {}).get("transactions")).items():
+                if pid not in last_dropped or when > last_dropped[pid]:
+                    last_dropped[pid] = when
+    except Exception as e:  # timing degrades to game locks only
+        logger.debug(f"transactions unavailable for waiver timing: {e}")
+
     # Rest-of-season market value, so a drop weighs more than one week. The
     # answer without it is still useful, so a failed fetch only degrades.
     values_ok = False
@@ -328,17 +404,23 @@ async def get_waiver_targets(
     except Exception as e:
         logger.warning(f"player values unavailable for waiver drops: {e}")
     whole_slots = lineup_slots(league.get("roster_positions"))
-    base_total = starting_lineup_total(mine_scored, whole_slots)
+    # Scored against what can still move: with nothing locked this is the
+    # whole roster and every slot.
+    open_mine, open_slots = _without_locked_starters(
+        mine_scored, whole_slots, mine.get("starters"), league.get("roster_positions"))
+    base_total = starting_lineup_total(open_mine, open_slots)
     # The weakest player actually starting where each position could play.
-    levels = lineup_bars(mine_scored, whole_slots)
+    levels = lineup_bars(open_mine, open_slots)
 
     trending: dict[str, int] = {}
+    trend_rank: dict[str, int] = {}
     try:
         trend = await sleeper_tools.get_trending_players(trend_type="add", limit=100)
         for entry in (trend or {}).get("trending_players") or []:
             pid = entry.get("player_id")
             if pid:
                 trending[str(pid)] = int(entry.get("count") or 0)
+                trend_rank.setdefault(str(pid), len(trend_rank))
     except Exception as e:  # additive signal; never fail the answer on it
         logger.debug(f"trending adds unavailable for waiver targets: {e}")
 
@@ -352,11 +434,24 @@ async def get_waiver_targets(
     for candidate in pool_scored:
         position = candidate["position"]
         level = levels.get(position, 0.0)
+        pid = str(candidate.get("player_id"))
+        # When an add would actually land, against his kickoff.
+        timing = waiver_status(
+            league,
+            kickoff=parse_kickoff(candidate.get("kickoff")),
+            previous_kickoff=parse_kickoff(
+                (previous_games.get(candidate["team"]) or {}).get("kickoff")),
+            dropped_at=last_dropped.get(pid), now=now,
+        )
         # Scored on the whole lineup, FLEX included, rather than against the
         # per-position bar — see `lineup_gain`.
-        upgrade = round(lineup_gain(mine_scored, whole_slots, candidate, base_total), 1)
-        adds = trending.get(str(candidate.get("player_id")), 0)
-        if position in undifferentiated:
+        upgrade = round(lineup_gain(open_mine, open_slots, candidate, base_total), 1)
+        adds = trending.get(pid, 0)
+        if timing["in_time_for_kickoff"] is False:
+            # His game has started, or the claim processes after it: a
+            # one-week pickup that cannot play this week.
+            verdict = "too_late"
+        elif position in undifferentiated:
             verdict = "no_signal"
         elif upgrade >= _MEANINGFUL_UPGRADE:
             verdict = "upgrade"
@@ -376,25 +471,57 @@ async def get_waiver_targets(
             "upgrade_points": upgrade,
             "trending_adds": adds,
             "verdict": verdict,
+            "waiver_timing": timing,
         })
 
     targets.sort(key=lambda t: (t["upgrade_points"], t["trending_adds"]), reverse=True)
     top = [t for t in targets if t["verdict"] in ("upgrade", "speculative")][:limit]
+    # Would-be upgrades that cannot make it into this week's lineup, so their
+    # absence from `targets` is explained rather than silent.
+    too_late = [
+        {"name": t["name"], "position": t["position"], "team": t["team"],
+         "upgrade_points": t["upgrade_points"], "kickoff_local": t["kickoff_local"],
+         "reason": ("game already started" if t.get("locked") else
+                    f"claim processes {t['waiver_timing']['claim_processes_at_local']}, "
+                    "after his kickoff")}
+        for t in targets
+        if t["verdict"] == "too_late" and t["upgrade_points"] >= _MEANINGFUL_UPGRADE
+    ][:5]
+
+    # Non-FAAB leagues: claim now, wait for free agency, or leave him — one
+    # helper, shared with recommend_faab_bid.
+    for target in top:
+        pid = str(target.get("player_id"))
+        target["waiver_strategy"] = priority_strategy(
+            league, mine,
+            worth=_claim_worth(target["verdict"], target["upgrade_points"]),
+            demand=trend_demand(trend_rank.get(pid)),
+            kickoff=parse_kickoff(target.get("kickoff")),
+            previous_kickoff=parse_kickoff(
+                (previous_games.get(target["team"]) or {}).get("kickoff")),
+            dropped_at=last_dropped.get(pid), now=now, this_week=True,
+        )
 
     # Who you would drop: bench players only, least worth keeping first. Stashed
     # players are left out — dropping an IR spot is a different decision.
     injured_held = [p for p in mine_scored if misses_this_week(p.get("injury_status"))]
     set_starters = {str(p) for p in (mine.get("starters") or []) if p}
-    drops = _droppable(mine_scored, whole_slots, set_starters)[:_MAX_DROP_CANDIDATES]
+    # A player whose game has started cannot be dropped until it ends.
+    drops = _droppable(
+        mine_scored, whole_slots, set_starters | locked_mine)[:_MAX_DROP_CANDIDATES]
     roster_size = sum(
         1 for slot in league.get("roster_positions") or [] if slot not in _NON_ROSTER_SLOTS
     )
     active_count = sum(1 for p in (mine.get("players") or []) if str(p) not in unavailable)
     open_spots = max(0, roster_size - active_count) if roster_size else 0
     for target in top:
-        drop, note = _pair_drop(target, mine_scored, whole_slots, set_starters, open_spots)
+        drop, note = _pair_drop(target, mine_scored, whole_slots, set_starters, open_spots,
+                                locked_mine)
         target["drop"] = drop
         target["drop_note"] = note
+
+    my_position = (mine.get("settings") or {}).get("waiver_position")
+    my_position = my_position if isinstance(my_position, int) and my_position > 0 else None
 
     empty_slots = sorted(
         position for position, count in slots.items()
@@ -415,6 +542,14 @@ async def get_waiver_targets(
         # Whether you can add a player now or have to wait for the waiver run.
         # Inferring this from the raw settings is how it got got wrong before.
         "waiver_rules": rules,
+        # Where you stand in the claim order (non-FAAB). Each target carries
+        # its own `waiver_strategy`: claim now, wait for free agency, or not.
+        "waiver_priority": None if is_faab else {
+            "waiver_position": my_position,
+            "teams_ahead": my_position - 1 if my_position else None,
+            "num_teams": num_teams,
+            "rolling": rolling,
+        },
         "pool_size": len(pool_scored),
         "data_freshness": freshness,
         "stale_data_warnings": _staleness_warnings(freshness),
@@ -443,6 +578,15 @@ async def get_waiver_targets(
             for p in injured_held
         ],
         "thin_positions": empty_slots,
+        # Your players whose game has started: fixed in (or out of) the
+        # lineup, excluded from drops and from the bar a claim must clear.
+        "locked_players": [
+            {"name": p["name"], "position": p["position"], "kickoff_local": p["kickoff_local"],
+             "game_status": p["game_status"]}
+            for p in mine_scored if p.get("locked")
+        ],
+        # Would-be upgrades whose add cannot land before their kickoff.
+        "too_late_for_this_week": too_late,
         "horizon": "this_week",
         "method": (
             "free agents (nobody in the league rosters them) projected for the "
