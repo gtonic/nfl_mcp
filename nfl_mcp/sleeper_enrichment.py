@@ -15,8 +15,10 @@ from .config import (
     create_http_client,
     get_http_headers,
 )
+from .game_clock import game_progress
 from .injury_match import sleeper_injury_status
 from .injury_service import worst_status
+from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
 
@@ -716,7 +718,14 @@ def _cached_defense_rankings(analyzer, nfl_db, season: int | None) -> dict | Non
         return None
     cached = getattr(analyzer, "_rankings_cache", {}).get(f"defense_rankings_{season}")
     if cached and isinstance(cached.get("data"), dict) and cached["data"]:
-        return cached["data"]
+        # A placeholder table in memory must not shadow real rows on disk.
+        placeholder = any(
+            entry.get("is_fallback")
+            for rows in cached["data"].values()
+            for entry in (rows or [])
+        )
+        if not placeholder:
+            return cached["data"]
     if hasattr(nfl_db, "get_defense_rankings"):
         rankings = nfl_db.get_defense_rankings(int(season), max_age_hours=24 * 7)
         if isinstance(rankings, dict) and rankings:
@@ -728,6 +737,25 @@ def _cached_defense_rankings(analyzer, nfl_db, season: int | None) -> dict | Non
 # None of them contains "OUT", so a substring test alone read an IR or
 # suspended player as a full participant.
 _NOT_PRACTICING = frozenset({"IR", "SUS", "SUSPENSION", "NA", "DNR", "COV", "INACTIVE", "NFI"})
+
+
+def _team_game_final(nfl_db, season: int, week: int, team: str | None) -> bool:
+    """Whether ``team``'s game in ``week`` is over, from the cached kickoff.
+
+    Unknown (no schedule, no kickoff, bye) counts as not final: reading the
+    previous completed week is the recoverable error, a half-played game
+    reported as a full snap share is not.
+    """
+    if not team or not hasattr(nfl_db, "get_week_kickoffs"):
+        return False
+    try:
+        kickoffs = nfl_db.get_week_kickoffs(int(season), int(week))
+    except Exception:
+        return False
+    if not isinstance(kickoffs, dict):
+        return False
+    kickoff = kickoffs.get(team) or kickoffs.get(normalize_team(team) or team)
+    return isinstance(kickoff, str) and game_progress(kickoff) >= 1.0
 
 
 def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: int | None) -> dict:
@@ -742,12 +770,16 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
 
     logger.debug(f"[Enrichment] Processing {player_name} (id={player_id}, pos={position}, season={season}, week={week})")
 
-    # Snap pct (non-DEF) - try current week, fallback to previous week
+    # Snap pct (non-DEF) - the current week only once his game is final,
+    # otherwise the previous week. A Thursday game in progress or an early
+    # injury exit is not a snap share.
     if season and week and position not in (None, "DEF") and hasattr(nfl_db, 'get_player_snap_pct'):
-        row = nfl_db.get_player_snap_pct(player_id, season, week)
+        row = None
         snap_week_used = week
+        if _team_game_final(nfl_db, season, week, athlete.get("team_id") or athlete.get("team")):
+            row = nfl_db.get_player_snap_pct(player_id, season, week)
 
-        # If current week has no data, try previous week (games may not have been played yet)
+        # Current week unfinished or not ingested yet: use the previous week
         if (not row or row.get("snap_pct") is None) and week > 1:
             row = nfl_db.get_player_snap_pct(player_id, season, week - 1)
             snap_week_used = week - 1
@@ -933,6 +965,8 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
                 enriched_additions["matchup_recommendation"] = matchup.get("recommendation")
                 enriched_additions["defense_pts_allowed_avg"] = matchup.get("points_allowed_avg")
                 enriched_additions["matchup_source"] = "defense_rankings"
+                enriched_additions["matchup_is_fallback"] = False
+                enriched_additions["matchup_is_provisional"] = bool(matchup.get("is_provisional"))
                 logger.debug(
                     f"[Enrichment] {player_name}: matchup vs {opponent} = "
                     f"{matchup.get('matchup_tier')} (#{matchup.get('rank')})"
@@ -943,6 +977,7 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
                 enriched_additions["matchup_tier"] = matchup.get("matchup_tier", "neutral")
                 enriched_additions["matchup_indicator"] = matchup.get("tier_indicator", "🟡")
                 enriched_additions["matchup_source"] = "fallback"
+                enriched_additions["matchup_is_fallback"] = True
                 logger.debug(f"[Enrichment] {player_name}: matchup vs {opponent} = neutral (fallback)")
         except Exception as e:
             logger.debug(f"[Enrichment] {player_name}: matchup analysis failed: {e}")

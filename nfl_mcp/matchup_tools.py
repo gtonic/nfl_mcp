@@ -109,6 +109,9 @@ class DefenseRankingsAnalyzer:
     _fallback_rankings = None
     _cache_timestamp = None
     _cache_ttl_hours = 6
+    # How long a fallback answer (placeholder or DB copy) is served before
+    # nflverse is tried again.
+    _fallback_ttl_minutes = 10
 
     def __init__(self, db=None):
         self.db = db or _init_matchup_db()
@@ -131,14 +134,21 @@ class DefenseRankingsAnalyzer:
             if datetime.now().month < 3:
                 season -= 1
 
-        # Check cache first
+        # Check cache first. A placeholder answer is kept only briefly so the
+        # next call retries nflverse instead of serving neutral ranks for 6h.
         cache_key = f"defense_rankings_{season}"
         if cache_key in self._rankings_cache:
             cached = self._rankings_cache[cache_key]
-            if datetime.now(UTC) - cached["timestamp"] < timedelta(hours=self._cache_ttl_hours):
+            ttl = (
+                timedelta(minutes=self._fallback_ttl_minutes)
+                if cached.get("is_fallback")
+                else timedelta(hours=self._cache_ttl_hours)
+            )
+            if datetime.now(UTC) - cached["timestamp"] < ttl:
                 return cached["data"]
 
         rankings = {}
+        is_fallback = False
 
         # Primary source: nflverse weekly stats -> real fantasy points allowed
         # per game by each defense to each position. (The old ESPN/FantasyPros
@@ -153,21 +163,33 @@ class DefenseRankingsAnalyzer:
                     f"No nflverse defense data for {season} yet (preseason?); "
                     "using neutral fallback"
                 )
-                for pos in ["QB", "RB", "WR", "TE"]:
-                    rankings[pos] = self._get_fallback_rankings(pos)
+                is_fallback = True
         except Exception as e:
             logger.error(f"Failed to fetch defense rankings: {e}")
-            for pos in ["QB", "RB", "WR", "TE"]:
-                rankings[pos] = self._get_fallback_rankings(pos)
+            is_fallback = True
 
-        # Cache results
+        if is_fallback:
+            # Last real rankings beat the placeholder table: the database keeps
+            # what an earlier fetch persisted, and fallbacks are never stored.
+            persisted = self._load_rankings_from_db(season)
+            if persisted:
+                self._rankings_cache[cache_key] = {
+                    "data": persisted,
+                    "timestamp": datetime.now(UTC),
+                    "is_fallback": True,
+                }
+                return persisted
+            rankings = {pos: self._get_fallback_rankings(pos) for pos in ["QB", "RB", "WR", "TE"]}
+
         self._rankings_cache[cache_key] = {
             "data": rankings,
-            "timestamp": datetime.now(UTC)
+            "timestamp": datetime.now(UTC),
+            "is_fallback": is_fallback,
         }
 
-        # Also persist to database if available
-        if self.db:
+        # Persist real rankings only. A stored placeholder was read back by
+        # enrichment for a week as a confident neutral rank for every player.
+        if self.db and not is_fallback:
             try:
                 self._save_rankings_to_db(rankings, season)
             except Exception as e:
@@ -347,6 +369,22 @@ class DefenseRankingsAnalyzer:
             for team in sorted(teams)
         ]
 
+    def _load_rankings_from_db(self, season: int) -> dict[str, list[dict]] | None:
+        """Last persisted real rankings for the season (up to a week old), or None."""
+        if not self.db or not hasattr(self.db, "get_defense_rankings"):
+            return None
+        try:
+            rankings = self.db.get_defense_rankings(int(season), max_age_hours=24 * 7)
+        except Exception as e:
+            logger.debug(f"Failed to read rankings from DB: {e}")
+            return None
+        if not isinstance(rankings, dict) or not rankings:
+            return None
+        # Legacy placeholder rows give every team the same rank; never serve them.
+        if all(len({r.get("rank") for r in rows}) <= 1 for rows in rankings.values()):
+            return None
+        return rankings
+
     def _save_rankings_to_db(self, rankings: dict, season: int) -> None:
         """Persist rankings to database for caching."""
         if not self.db:
@@ -430,7 +468,8 @@ class DefenseRankingsAnalyzer:
                     "tier_indicator": team_rank.get("tier_indicator", _get_tier_color(tier)),
                     "points_allowed_avg": team_rank.get("points_allowed_avg", 0),
                     "recommendation": rec,
-                    "is_fallback": team_rank.get("is_fallback", False)
+                    "is_fallback": team_rank.get("is_fallback", False),
+                    "is_provisional": bool(team_rank.get("is_provisional", False)),
                 }
 
         # Opponent not found
@@ -463,7 +502,31 @@ def get_defense_analyzer() -> DefenseRankingsAnalyzer:
 # Mirror of the defense-vs-position aggregation, keyed by the *scoring* team.
 # ---------------------------------------------------------------------------
 
-_offense_rankings_cache: dict[int, dict[str, dict]] = {}
+# season -> (fetched_at, rankings)
+_offense_rankings_cache: dict[int, tuple[datetime, dict[str, dict]]] = {}
+
+# The in-progress season's nflverse file grows every week; a finished one never
+# changes again.
+CURRENT_SEASON_CACHE_TTL = timedelta(hours=3)
+
+
+def _nfl_season_now(now: datetime | None = None) -> int:
+    """The NFL season in progress (January and February belong to last year's)."""
+    now = now or datetime.now(UTC)
+    return now.year - 1 if now.month < 3 else now.year
+
+
+def season_cache_fresh(season: int, fetched_at: datetime, now: datetime | None = None) -> bool:
+    """Whether a season-keyed nflverse cache entry can still be served.
+
+    Past seasons are final and cached for the life of the process; the current
+    (or a future) season expires after ``CURRENT_SEASON_CACHE_TTL`` so a
+    long-running server picks up each new week.
+    """
+    now = now or datetime.now(UTC)
+    if season < _nfl_season_now(now):
+        return True
+    return now - fetched_at < CURRENT_SEASON_CACHE_TTL
 
 
 async def fetch_offense_rankings(season: int) -> dict[str, dict]:
@@ -473,8 +536,9 @@ async def fetch_offense_rankings(season: int) -> dict[str, dict]:
     highest-scoring (strongest) offense. Returns ``{}`` when the season's data
     isn't available yet (preseason) so callers can fall back to a prior season.
     """
-    if season in _offense_rankings_cache:
-        return _offense_rankings_cache[season]
+    cached = _offense_rankings_cache.get(season)
+    if cached and season_cache_fresh(season, cached[0]):
+        return cached[1]
 
     url = NFLVERSE_PLAYER_STATS_URL.format(season=season)
     try:
@@ -529,7 +593,7 @@ async def fetch_offense_rankings(season: int) -> dict[str, dict]:
         team: {"rank": rank, "points_scored_avg": ppg}
         for rank, (team, ppg) in enumerate(per_team, 1)
     }
-    _offense_rankings_cache[season] = rankings
+    _offense_rankings_cache[season] = (datetime.now(UTC), rankings)
     return rankings
 
 
