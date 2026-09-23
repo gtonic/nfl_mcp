@@ -299,19 +299,6 @@ class TestAthleteDatabase:
         assert last_updated is not None
         assert "T" in last_updated  # ISO format contains 'T'
 
-    def test_clear_athletes(self):
-        """Test clearing all athletes."""
-        athletes_data = {
-            "123": {"full_name": "Test 1", "team": "TB"},
-            "456": {"full_name": "Test 2", "team": "KC"}
-        }
-        self.db.upsert_athletes(athletes_data)
-        assert self.db.get_athlete_count() == 2
-
-        cleared = self.db.clear_athletes()
-        assert cleared == 2
-        assert self.db.get_athlete_count() == 0
-
     def test_athlete_raw_json_storage(self):
         """Test that raw JSON data is properly stored and retrieved."""
         athletes_data = {

@@ -36,18 +36,17 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install pinned, reproducible dependencies. requirements.lock is generated via:
-#   uv pip compile requirements.txt --python-version 3.13 --prerelease=allow --output-file requirements.lock
-# (--prerelease=allow is required while FastMCP 4 is a beta: fastmcp==4.0.0b1 pins
-#  a pre-release fastmcp-slim. The httpx<1 / pydantic<2.14 bounds in
-#  requirements.txt keep uv from resolving their dev/alpha releases under that
-#  flag. Plain `pip install -r requirements.lock` below needs no --pre — exact
-#  pins of a pre-release are always honored.)
+#   uv pip compile requirements.txt --python-version 3.13 --output-file requirements.lock
+# (FastMCP 4 is final now, so no --prerelease flag is needed.)
 COPY requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock
 
-# Install the package itself into the venv.
+# Install the package itself into the venv. --no-deps: the lock above is the
+# complete dependency set; letting pip resolve pyproject's ranges here would
+# silently upgrade past the pins. `pip check` fails the build if the lock no
+# longer satisfies pyproject.
 COPY . .
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir --no-deps -e . && pip check
 
 # ---- Runtime stage ---------------------------------------------------------
 FROM python:3.13-slim AS runtime

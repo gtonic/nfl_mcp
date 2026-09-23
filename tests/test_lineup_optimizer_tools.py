@@ -16,6 +16,8 @@ from nfl_mcp.lineup_optimizer_tools import (
     get_start_sit_recommendation,
 )
 
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
+
 
 class TestPlayerAnalysis:
     """Test PlayerAnalysis dataclass."""

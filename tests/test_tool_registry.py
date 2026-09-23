@@ -114,6 +114,7 @@ def test_tool_registry_functions_exist():
     assert callable(get_coaching_tree)
     assert callable(get_scheme_classification)
 
+@pytest.mark.live  # smoke test against the real API
 @pytest.mark.asyncio
 async def test_basic_tool_call():
     """Test that we can call some basic tools without errors."""
@@ -123,6 +124,7 @@ async def test_basic_tool_call():
     # Should have error or success field
     assert 'success' in result or 'error' in result
 
+@pytest.mark.live  # smoke test against the real API
 @pytest.mark.asyncio
 async def test_team_tools():
     """Test team-related tools."""
@@ -134,6 +136,7 @@ async def test_team_tools():
     result = await get_injury_report(teams=["KC"], include_practice=False)
     assert isinstance(result, dict)
 
+@pytest.mark.live  # smoke test against the real API
 @pytest.mark.asyncio
 async def test_cbs_tools():
     """Test CBS fantasy tools."""
@@ -159,6 +162,7 @@ async def test_vegas_tools():
     assert isinstance(result, dict)
     assert 'games' in result or 'success' in result or 'error' in result
 
+@pytest.mark.live  # smoke test against the real API
 @pytest.mark.asyncio
 async def test_coaching_tools():
     """Test coaching tools."""

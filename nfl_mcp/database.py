@@ -3,7 +3,7 @@ SQLite database management for NFL athletes and teams data.
 
 This module handles the persistence layer for athlete information fetched from
 the Sleeper API and teams information from ESPN API, providing caching and lookup functionality.
-Features connection pooling, health checks, optimized indexing, migration support, and async operations.
+Features connection pooling, health checks, optimized indexing and migration support.
 """
 
 import json
@@ -12,18 +12,11 @@ import os
 import sqlite3
 import threading
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from queue import Empty, Full, Queue
-
-try:
-    import aiosqlite
-    ASYNC_SUPPORT = True
-except ImportError:
-    aiosqlite = None
-    ASYNC_SUPPORT = False
 
 from .teams import normalize_team
 
@@ -114,6 +107,10 @@ class DatabaseConnectionPool:
                 conn.close()
                 conn = self._create_connection()
                 if not conn:
+                    # The dead connection is gone and no replacement exists:
+                    # free its slot, or the pool believes it is full forever.
+                    with self._lock:
+                        self._total_connections -= 1
                     raise Exception("Failed to create healthy database connection")
 
             yield conn
@@ -191,7 +188,6 @@ class DatabaseConnectionPool:
                     "pool_size": self._total_connections,
                     "pool_capacity": self.config.max_connections,
                     "database_size_bytes": db_size,
-                    "database_path": str(self.db_path),
                     "wal_mode": "enabled",
                     "last_check": datetime.now(UTC).isoformat()
                 }
@@ -2571,338 +2567,6 @@ class NFLDatabase:
             logger.debug(f"get_player_values_last_updated failed: {e}")
             return None
 
-    # Async Database Operations
-    # These methods provide async alternatives to the main database operations
-
-    @asynccontextmanager
-    async def _get_async_connection(self):  # Return type left un-annotated to satisfy runtime and avoid mismatched protocol
-        """Get an async database connection with proper cleanup."""
-        if not ASYNC_SUPPORT:
-            raise RuntimeError("Async operations require aiosqlite. Install with: pip install aiosqlite")
-
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            # Enable WAL mode and set timeouts
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA busy_timeout=30000")
-            conn.row_factory = aiosqlite.Row
-            yield conn
-
-    async def async_health_check(self) -> dict[str, bool | int | str]:
-        """Perform an async health check of the database."""
-        if not ASYNC_SUPPORT:
-            return {
-                "healthy": False,
-                "error": "Async operations not supported. Install aiosqlite.",
-                "last_check": datetime.now(UTC).isoformat()
-            }
-
-        try:
-            async with self._get_async_connection() as conn:
-                # Test basic connectivity
-                await conn.execute("SELECT 1")
-
-                # Get database stats
-                athlete_count = await conn.execute_fetchall("SELECT COUNT(*) FROM athletes")
-                team_count = await conn.execute_fetchall("SELECT COUNT(*) FROM teams")
-
-                last_athlete_update = await conn.execute_fetchall("SELECT MAX(updated_at) FROM athletes")
-                last_team_update = await conn.execute_fetchall("SELECT MAX(updated_at) FROM teams")
-
-                # Get database size
-                db_size = 0
-                if self.db_path.exists():
-                    db_size = self.db_path.stat().st_size
-
-                return {
-                    "healthy": True,
-                    "athlete_count": athlete_count[0][0] if athlete_count else 0,
-                    "team_count": team_count[0][0] if team_count else 0,
-                    "last_athlete_update": last_athlete_update[0][0] if last_athlete_update and last_athlete_update[0][0] else None,
-                    "last_team_update": last_team_update[0][0] if last_team_update and last_team_update[0][0] else None,
-                    "database_size_bytes": db_size,
-                    "schema_version": self.CURRENT_SCHEMA_VERSION,
-                    "async_support": True,
-                    "last_check": datetime.now(UTC).isoformat()
-                }
-        except Exception as e:
-            logger.error(f"Async database health check failed: {e}")
-            return {
-                "healthy": False,
-                "error": str(e),
-                "async_support": True,
-                "last_check": datetime.now(UTC).isoformat()
-            }
-
-    async def async_get_athlete_by_id(self, athlete_id: str) -> dict | None:
-        """
-        Async version: Get athlete by ID.
-
-        Args:
-            athlete_id: The athlete's unique identifier
-
-        Returns:
-            Athlete dictionary or None if not found
-        """
-        if not ASYNC_SUPPORT:
-            raise RuntimeError("Async operations require aiosqlite")
-
-        async with self._get_async_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT * FROM athletes WHERE id = ?",
-                (athlete_id,)
-            )
-            row = await cursor.fetchone()
-
-            if row:
-                return dict(row)
-            return None
-
-    async def async_search_athletes_by_name(self, name: str, limit: int = 10) -> list[dict]:
-        """
-        Async version: Search athletes by name (partial match).
-
-        Args:
-            name: Name to search for (partial match supported)
-            limit: Maximum number of results to return
-
-        Returns:
-            List of matching athlete dictionaries
-        """
-        if not ASYNC_SUPPORT:
-            raise RuntimeError("Async operations require aiosqlite")
-
-        search_term = f"%{name}%"
-
-        async with self._get_async_connection() as conn:
-            cursor = await conn.execute("""
-                SELECT * FROM athletes
-                WHERE full_name LIKE ? OR first_name LIKE ? OR last_name LIKE ?
-                ORDER BY full_name
-                LIMIT ?
-            """, (search_term, search_term, search_term, limit))
-
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
-
-    async def async_get_athletes_by_team(self, team_id: str) -> list[dict]:
-        """
-        Async version: Get all athletes for a specific team.
-
-        Args:
-            team_id: The team identifier
-
-        Returns:
-            List of athlete dictionaries for the team
-        """
-        if not ASYNC_SUPPORT:
-            raise RuntimeError("Async operations require aiosqlite")
-
-        async with self._get_async_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT * FROM athletes WHERE team_id = ? ORDER BY full_name",
-                (normalize_team(team_id) or (team_id or "").strip().upper(),)
-            )
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
-
-    async def async_get_team_by_id(self, team_id: str) -> dict | None:
-        """
-        Async version: Get team by ID.
-
-        Args:
-            team_id: The team's unique identifier
-
-        Returns:
-            Team dictionary or None if not found
-        """
-        if not ASYNC_SUPPORT:
-            raise RuntimeError("Async operations require aiosqlite")
-
-        async with self._get_async_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT * FROM teams WHERE id = ?",
-                (team_id,)
-            )
-            row = await cursor.fetchone()
-
-            if row:
-                return dict(row)
-            return None
-
-    async def async_get_team_by_abbreviation(self, abbreviation: str) -> dict | None:
-        """
-        Async version: Get team by abbreviation (e.g., 'KC', 'TB').
-
-        Args:
-            abbreviation: The team's abbreviation
-
-        Returns:
-            Team dictionary or None if not found
-        """
-        if not ASYNC_SUPPORT:
-            raise RuntimeError("Async operations require aiosqlite")
-
-        async with self._get_async_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT * FROM teams WHERE abbreviation = ?",
-                (abbreviation,)
-            )
-            row = await cursor.fetchone()
-
-            if row:
-                return dict(row)
-            return None
-
-    async def async_get_all_teams(self) -> list[dict]:
-        """
-        Async version: Get all teams from the database.
-
-        Returns:
-            List of all team dictionaries
-        """
-        if not ASYNC_SUPPORT:
-            raise RuntimeError("Async operations require aiosqlite")
-
-        async with self._get_async_connection() as conn:
-            cursor = await conn.execute("SELECT * FROM teams ORDER BY name")
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
-
-    async def async_upsert_athletes(self, athletes_data: list[dict]) -> int:
-        """
-        Async version: Insert or update athlete records.
-
-        Args:
-            athletes_data: List of athlete dictionaries from Sleeper API
-
-        Returns:
-            Number of athletes processed
-        """
-        if not ASYNC_SUPPORT:
-            raise RuntimeError("Async operations require aiosqlite")
-
-        if not athletes_data:
-            return 0
-
-        updated_at = datetime.now(UTC).isoformat()
-        processed_count = 0
-
-        async with self._get_async_connection() as conn:
-            try:
-                for athlete_id, athlete in athletes_data.items():
-                    # Extract key fields with safe defaults
-                    full_name = athlete.get('full_name', '') or ''
-                    first_name = athlete.get('first_name', '') or ''
-                    last_name = athlete.get('last_name', '') or ''
-                    # Canonicalize at the source: Sleeper says WAS/OAK where
-                    # every other feed says WSH/LV, and an unnormalized code
-                    # does not fail loudly — it just never joins.
-                    raw_team = athlete.get('team', '') or ''
-                    team_id = normalize_team(raw_team) or raw_team
-                    position = athlete.get('position', '') or ''
-                    status = athlete.get('status', '') or ''
-
-                    # Store the complete raw data as JSON
-                    raw_json = json.dumps(athlete)
-
-                    # Upsert the athlete record
-                    await conn.execute("""
-                        INSERT INTO athletes(
-                            id, full_name, first_name, last_name,
-                            team_id, position, status, updated_at, raw
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, json(?))
-                        ON CONFLICT(id) DO UPDATE SET
-                            full_name=excluded.full_name,
-                            first_name=excluded.first_name,
-                            last_name=excluded.last_name,
-                            team_id=excluded.team_id,
-                            position=excluded.position,
-                            status=excluded.status,
-                            updated_at=excluded.updated_at,
-                            raw=excluded.raw
-                    """, (
-                        athlete_id, full_name, first_name, last_name,
-                        team_id, position, status, updated_at, raw_json
-                    ))
-                    processed_count += 1
-
-                await conn.commit()
-                logger.info(f"Successfully processed {processed_count} athletes (async)")
-                return processed_count
-
-            except Exception as e:
-                await conn.rollback()
-                logger.error(f"Error upserting athletes (async): {e}")
-                raise
-
-    async def async_upsert_teams(self, teams_data: list[dict]) -> int:
-        """
-        Async version: Insert or update team records.
-
-        Args:
-            teams_data: List of team dictionaries from ESPN API
-
-        Returns:
-            Number of teams processed
-        """
-        if not ASYNC_SUPPORT:
-            raise RuntimeError("Async operations require aiosqlite")
-
-        if not teams_data:
-            return 0
-
-        updated_at = datetime.now(UTC).isoformat()
-        processed_count = 0
-
-        async with self._get_async_connection() as conn:
-            try:
-                for team in teams_data:
-                    # Extract key fields with safe defaults
-                    team_id = team.get('id', '') or ''
-                    abbreviation = team.get('abbreviation', '') or ''
-                    name = team.get('name', '') or ''
-                    display_name = team.get('displayName', '') or ''
-                    short_display_name = team.get('shortDisplayName', '') or ''
-                    location = team.get('location', '') or ''
-                    color = team.get('color', '') or ''
-                    alternate_color = team.get('alternateColor', '') or ''
-                    logo = team.get('logo', '') or ''
-
-                    # Store the complete raw data as JSON
-                    raw_json = json.dumps(team)
-
-                    # Upsert the team record
-                    await conn.execute("""
-                        INSERT INTO teams(
-                            id, abbreviation, name, display_name, short_display_name,
-                            location, color, alternate_color, logo, updated_at, raw
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?))
-                        ON CONFLICT(id) DO UPDATE SET
-                            abbreviation=excluded.abbreviation,
-                            name=excluded.name,
-                            display_name=excluded.display_name,
-                            short_display_name=excluded.short_display_name,
-                            location=excluded.location,
-                            color=excluded.color,
-                            alternate_color=excluded.alternate_color,
-                            logo=excluded.logo,
-                            updated_at=excluded.updated_at,
-                            raw=excluded.raw
-                    """, (
-                        team_id, abbreviation, name, display_name, short_display_name,
-                        location, color, alternate_color, logo, updated_at, raw_json
-                    ))
-                    processed_count += 1
-
-                await conn.commit()
-                logger.info(f"Successfully processed {processed_count} teams (async)")
-                return processed_count
-
-            except Exception as e:
-                await conn.rollback()
-                logger.error(f"Error upserting teams (async): {e}")
-                raise
-
     def upsert_athletes(self, athletes_data: list[dict]) -> int:
         """
         Insert or update athlete records.
@@ -3154,20 +2818,6 @@ class NFLDatabase:
             result = cursor.fetchone()[0]
             return result
 
-    def clear_athletes(self) -> int:
-        """
-        Clear all athlete data from the database.
-
-        Returns:
-            Number of records deleted
-        """
-        with self._get_connection() as conn:
-            cursor = conn.execute("DELETE FROM athletes")
-            count = cursor.rowcount
-            conn.commit()
-            logger.info(f"Cleared {count} athlete records")
-            return count
-
     # Teams-related methods
 
     def upsert_teams(self, teams_data: list[dict]) -> int:
@@ -3313,31 +2963,56 @@ class NFLDatabase:
             result = cursor.fetchone()[0]
             return result
 
-    def clear_teams(self) -> int:
-        """
-        Clear all team data from the database.
-
-        Returns:
-            Number of records deleted
-        """
-        with self._get_connection() as conn:
-            cursor = conn.execute("DELETE FROM teams")
-            count = cursor.rowcount
-            conn.commit()
-            logger.info(f"Cleared {count} team records")
-            return count
-
 
 # For backward compatibility
 AthleteDatabase = NFLDatabase
 
 
-def get_nfl_database() -> "NFLDatabase":
-    """Return an NFLDatabase instance.
+_shared_db: NFLDatabase | None = None
+_shared_db_lock = threading.Lock()
 
-    Referenced by nfl_tools' (advanced-enrichment) cache-read paths, which
-    imported this factory before it existed — calling it raised ImportError at
-    runtime (surfaced by the mypy pass). The DB is a cache, so a fresh instance
-    is fine here.
+
+def _default_db_path() -> Path:
+    return Path(os.getenv("NFL_MCP_DB_PATH", "nfl_data.db"))
+
+
+def set_shared_db(db: NFLDatabase | None) -> None:
+    """Register ``db`` as the process-wide instance returned by ``get_shared_db``."""
+    global _shared_db
+    with _shared_db_lock:
+        _shared_db = db
+
+
+def get_shared_db() -> NFLDatabase:
+    """Return the process-wide NFLDatabase, creating it on first use.
+
+    Constructing an ``NFLDatabase`` per call opens a fresh connection pool and
+    re-runs the schema check every time; tool code shares one instance instead.
+    The instance is rebuilt if ``NFL_MCP_DB_PATH`` now points elsewhere (tests
+    point it at a temp file per test).
     """
-    return NFLDatabase()
+    global _shared_db
+    path = _default_db_path()
+    with _shared_db_lock:
+        db = _shared_db
+        if db is None or Path(getattr(db, "db_path", path)) != path:
+            db = NFLDatabase(str(path))
+            _shared_db = db
+        return db
+
+
+def reset_shared_db() -> None:
+    """Close and forget the shared instance (used by the test suite)."""
+    global _shared_db
+    with _shared_db_lock:
+        db, _shared_db = _shared_db, None
+    if db is not None:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def get_nfl_database() -> "NFLDatabase":
+    """Return the shared NFLDatabase instance (see ``get_shared_db``)."""
+    return get_shared_db()

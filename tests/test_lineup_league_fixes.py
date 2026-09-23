@@ -16,6 +16,8 @@ from nfl_mcp.win_probability import optimize_win_probability
 from tests.test_league_changes import db, league  # noqa: F401
 from tests.test_start_sit_ranks_by_points import _analyzer
 
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
+
 
 def _optimizer(monkeypatch):
     monkeypatch.setattr(lo, "get_lineup_optimizer",
@@ -167,7 +169,7 @@ class TestVegasSeasonDefault:
             def get_kickoff_week_index(self, season):
                 seen.append(season)
                 return {}
-        monkeypatch.setattr(vegas_tools, "NFLDatabase", lambda *a, **k: _DB())
+        monkeypatch.setattr(vegas_tools, "get_shared_db", lambda *a, **k: _DB())
         monkeypatch.setattr(week_context, "infer_from_calendar", lambda now=None: (2025, 18))
         vegas_tools._build_week_index(None)
         assert seen == [2025]

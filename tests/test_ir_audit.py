@@ -139,8 +139,8 @@ class TestBriefingSurfacesThem:
                             ("MIN", "TB", 1), ("TB", "MIN", 0), ("NE", "JAX", 1),
                             ("JAX", "NE", 0))
         ])
-        monkeypatch.setattr(briefing_tools, "NFLDatabase", lambda *a, **k: db)
-        monkeypatch.setattr("nfl_mcp.ir_audit.NFLDatabase", lambda *a, **k: db, raising=False)
+        monkeypatch.setattr(briefing_tools, "get_shared_db", lambda *a, **k: db)
+        monkeypatch.setattr("nfl_mcp.database.get_shared_db", lambda *a, **k: db)
 
         async def _league(_):
             return {"league": {"name": "Ropeway", "total_rosters": 10,
@@ -202,7 +202,7 @@ async def test_the_message_names_a_player_stuck_behind_a_full_slot(monkeypatch, 
         "wr": {"full_name": "A.J. Brown", "position": "WR", "team": "NE", "injury_status": "IR"},
         "rb": {"full_name": "Jordan Mason", "position": "RB", "team": "MIN", "injury_status": "IR"},
     })
-    monkeypatch.setattr("nfl_mcp.database.NFLDatabase", lambda *a, **k: db)
+    monkeypatch.setattr("nfl_mcp.database.get_shared_db", lambda *a, **k: db)
 
     async def _league(_):
         return {"league": {"name": "Ropeway", "settings": ROPEWAY}}

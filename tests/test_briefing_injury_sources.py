@@ -11,6 +11,8 @@ import pytest
 from nfl_mcp.briefing_tools import build_injury_index, resolve_injury
 from nfl_mcp.injury_service import status_severity, worst_status
 
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
+
 
 def _athlete(name, injury_status=None, team="LV"):
     raw = {"injury_status": injury_status} if injury_status else {}

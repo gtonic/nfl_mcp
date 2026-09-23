@@ -4,6 +4,7 @@ Athlete-related MCP tools for the NFL MCP Server.
 This module contains MCP tools for fetching, searching, and managing NFL athlete data.
 """
 
+import asyncio
 
 from .config import LIMITS, LONG_TIMEOUT, create_http_client, get_http_headers, validate_limit
 from .errors import create_success_response, handle_database_errors, handle_http_errors
@@ -46,7 +47,7 @@ async def fetch_athletes(nfl_db) -> dict:
         athletes_data = response.json()
 
         # Store in database
-        count = nfl_db.upsert_athletes(athletes_data)
+        count = await asyncio.to_thread(nfl_db.upsert_athletes, athletes_data)
         last_updated = nfl_db.get_last_updated()
 
         return create_success_response({

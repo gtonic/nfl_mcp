@@ -17,6 +17,8 @@ import pytest
 from nfl_mcp import lineup_optimizer_tools as lo
 from nfl_mcp.lineup_optimizer_tools import MEANINGFUL_SWAP_GAIN, _good_game_thresholds
 
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
+
 
 def _analyzer(tier="neutral"):
     from nfl_mcp.matchup_tools import DefenseRankingsAnalyzer

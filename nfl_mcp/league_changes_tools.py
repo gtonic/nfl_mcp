@@ -30,7 +30,7 @@ from .briefing_tools import (
     find_roster,
     weather_by_team,
 )
-from .database import NFLDatabase
+from .database import get_shared_db
 from .errors import create_success_response
 from .game_clock import progress_of, week_games
 from .injury_match import build_injury_index, find_report, misses_this_week
@@ -389,7 +389,7 @@ async def get_league_changes(
     """Everything that moved for one roster since the last check; see module."""
     from . import sleeper_tools
 
-    db = NFLDatabase()
+    db = get_shared_db()
     checked_at = datetime.now(UTC)
 
     roster_state = sleeper_tools.roster_freshness(await sleeper_tools.get_rosters(league_id))

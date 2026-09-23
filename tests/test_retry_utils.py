@@ -2,19 +2,18 @@
 Tests for retry and circuit breaker utilities.
 """
 
-import contextlib
 import time
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from nfl_mcp.retry_utils import (
     CircuitBreaker,
     CircuitBreakerError,
     CircuitState,
+    RetryableHTTPStatus,
     get_circuit_breaker,
-    get_configurable_long_timeout,
-    get_configurable_timeout,
     retry_with_backoff,
 )
 
@@ -34,10 +33,8 @@ class TestCircuitBreaker:
         cb = CircuitBreaker("test")
         cb.failure_threshold = 3  # Lower threshold for testing
 
-        # Simulate failures
         for _i in range(3):
-            with contextlib.suppress(ZeroDivisionError):
-                cb.call(lambda: 1/0)
+            cb._on_failure()
 
         assert cb.state == CircuitState.OPEN
         assert cb.failure_count >= 3
@@ -48,8 +45,7 @@ class TestCircuitBreaker:
         cb.state = CircuitState.OPEN
         cb.last_failure_time = time.time()
 
-        with pytest.raises(CircuitBreakerError):
-            cb.call(lambda: "should fail")
+        assert cb.allow_request() is False
 
     def test_circuit_breaker_closes_after_success(self):
         """Test circuit breaker closes after successful recovery."""
@@ -57,12 +53,12 @@ class TestCircuitBreaker:
         cb.state = CircuitState.HALF_OPEN
         cb.success_threshold = 2
 
-        # First success
-        cb.call(lambda: "success")
+        assert cb.allow_request()
+        cb._on_success()
         assert cb.state == CircuitState.HALF_OPEN
 
-        # Second success should close
-        cb.call(lambda: "success")
+        assert cb.allow_request()
+        cb._on_success()
         assert cb.state == CircuitState.CLOSED
         assert cb.success_count == 0
 
@@ -71,10 +67,24 @@ class TestCircuitBreaker:
         cb = CircuitBreaker("test")
         cb.state = CircuitState.HALF_OPEN
 
-        with contextlib.suppress(ZeroDivisionError):
-            cb.call(lambda: 1/0)
+        assert cb.allow_request()
+        cb._on_failure()
 
         assert cb.state == CircuitState.OPEN
+
+    def test_half_open_admits_a_single_probe(self):
+        """After the timeout exactly one caller gets through until it reports back."""
+        cb = CircuitBreaker("test")
+        cb.state = CircuitState.OPEN
+        cb.last_failure_time = time.time() - cb.timeout - 1
+
+        assert cb.allow_request() is True        # the probe
+        assert cb.state == CircuitState.HALF_OPEN
+        assert cb.allow_request() is False       # everyone else waits
+        assert cb.allow_request() is False
+
+        cb._on_success()                         # probe reported back
+        assert cb.allow_request() is True        # next probe
 
     def test_circuit_breaker_manual_reset(self):
         """Test manual reset of circuit breaker."""
@@ -87,31 +97,6 @@ class TestCircuitBreaker:
         assert cb.state == CircuitState.CLOSED
         assert cb.failure_count == 0
         assert cb.last_failure_time is None
-
-    @pytest.mark.asyncio
-    async def test_circuit_breaker_async_call(self):
-        """Test circuit breaker works with async functions."""
-        cb = CircuitBreaker("test")
-
-        async def async_func():
-            return "success"
-
-        result = await cb.call_async(async_func)
-        assert result == "success"
-
-    @pytest.mark.asyncio
-    async def test_circuit_breaker_async_call_failure(self):
-        """Test circuit breaker handles async failures."""
-        cb = CircuitBreaker("test")
-        cb.failure_threshold = 1
-
-        async def async_func():
-            raise ValueError("test error")
-
-        with pytest.raises(ValueError):
-            await cb.call_async(async_func)
-
-        assert cb.failure_count == 1
 
 
 class TestRetryWithBackoff:
@@ -133,8 +118,8 @@ class TestRetryWithBackoff:
         mock_func = AsyncMock()
         # Fail twice, then succeed
         mock_func.side_effect = [
-            ValueError("fail 1"),
-            ValueError("fail 2"),
+            httpx.ConnectError("fail 1"),
+            httpx.ReadTimeout("fail 2"),
             "success"
         ]
 
@@ -150,9 +135,9 @@ class TestRetryWithBackoff:
     @pytest.mark.asyncio
     async def test_retry_exhausts_retries(self):
         """Test all retries are exhausted on persistent failure."""
-        mock_func = AsyncMock(side_effect=ValueError("persistent error"))
+        mock_func = AsyncMock(side_effect=httpx.ConnectError("persistent error"))
 
-        with pytest.raises(ValueError, match="persistent error"):
+        with pytest.raises(httpx.ConnectError, match="persistent error"):
             await retry_with_backoff(
                 mock_func,
                 max_retries=2,
@@ -165,7 +150,7 @@ class TestRetryWithBackoff:
     async def test_retry_exponential_backoff(self):
         """Test exponential backoff timing."""
         mock_func = AsyncMock()
-        mock_func.side_effect = [ValueError("fail"), "success"]
+        mock_func.side_effect = [httpx.ConnectError("fail"), "success"]
 
         start = time.time()
         await retry_with_backoff(
@@ -225,7 +210,7 @@ class TestRetryWithBackoff:
         def sync_func():
             call_count[0] += 1
             if call_count[0] < 2:
-                raise ValueError("fail")
+                raise httpx.ConnectError("fail")
             return "success"
 
         result = await retry_with_backoff(
@@ -236,34 +221,6 @@ class TestRetryWithBackoff:
 
         assert result == "success"
         assert call_count[0] == 2
-
-
-class TestConfigurableTimeouts:
-    """Test configurable timeout functions."""
-
-    def test_get_configurable_timeout_default(self, monkeypatch):
-        """Test default timeout value."""
-        monkeypatch.delenv("NFL_MCP_API_TIMEOUT", raising=False)
-        timeout = get_configurable_timeout()
-        assert timeout == 30.0
-
-    def test_get_configurable_timeout_custom(self, monkeypatch):
-        """Test custom timeout from environment."""
-        monkeypatch.setenv("NFL_MCP_API_TIMEOUT", "45.0")
-        timeout = get_configurable_timeout()
-        assert timeout == 45.0
-
-    def test_get_configurable_long_timeout_default(self, monkeypatch):
-        """Test default long timeout value."""
-        monkeypatch.delenv("NFL_MCP_API_LONG_TIMEOUT", raising=False)
-        timeout = get_configurable_long_timeout()
-        assert timeout == 60.0
-
-    def test_get_configurable_long_timeout_custom(self, monkeypatch):
-        """Test custom long timeout from environment."""
-        monkeypatch.setenv("NFL_MCP_API_LONG_TIMEOUT", "90.0")
-        timeout = get_configurable_long_timeout()
-        assert timeout == 90.0
 
 
 class TestCircuitBreakerRegistry:
@@ -284,3 +241,62 @@ class TestCircuitBreakerRegistry:
         cb2 = get_circuit_breaker("existing_cb")
         assert cb2 is cb1
         assert cb2.failure_count == 5
+
+
+def _status_error(code: int) -> httpx.HTTPStatusError:
+    req = httpx.Request("GET", "https://example.test/x")
+    return httpx.HTTPStatusError(f"HTTP {code}", request=req,
+                                 response=httpx.Response(code, request=req))
+
+
+class TestWhatIsRetried:
+    """Only transport failures and 5xx/429 are retried or count against the host."""
+
+    @pytest.mark.asyncio
+    async def test_a_bug_is_not_retried_or_counted(self):
+        cb = get_circuit_breaker("not_counted")
+        cb.reset()
+        mock_func = AsyncMock(side_effect=KeyError("parse bug"))
+
+        with pytest.raises(KeyError):
+            await retry_with_backoff(mock_func, max_retries=3, initial_delay=0.01,
+                                     circuit_breaker_name="not_counted")
+
+        assert mock_func.call_count == 1
+        assert cb.failure_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_404_is_not_retried(self):
+        mock_func = AsyncMock(side_effect=_status_error(404))
+        with pytest.raises(httpx.HTTPStatusError):
+            await retry_with_backoff(mock_func, max_retries=3, initial_delay=0.01)
+        assert mock_func.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code", [500, 503, 429])
+    async def test_server_errors_are_retried(self, code):
+        mock_func = AsyncMock(side_effect=[_status_error(code), "ok"])
+        assert await retry_with_backoff(mock_func, max_retries=2, initial_delay=0.01) == "ok"
+        assert mock_func.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retryable_http_status_counts_once(self):
+        cb = get_circuit_breaker("counted_once")
+        cb.reset()
+        mock_func = AsyncMock(side_effect=RetryableHTTPStatus(502))
+        with pytest.raises(RetryableHTTPStatus):
+            await retry_with_backoff(mock_func, max_retries=2, initial_delay=0.01,
+                                     circuit_breaker_name="counted_once")
+        assert mock_func.call_count == 3
+        assert cb.failure_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_non_host_failure_releases_the_probe(self):
+        cb = get_circuit_breaker("probe_release")
+        cb.reset()
+        cb.state = CircuitState.HALF_OPEN
+        with pytest.raises(KeyError):
+            await retry_with_backoff(AsyncMock(side_effect=KeyError("x")), max_retries=0,
+                                     circuit_breaker_name="probe_release")
+        # The probe slot is free again for the next caller.
+        assert cb.allow_request() is True

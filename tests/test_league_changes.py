@@ -67,7 +67,7 @@ def db():
 
 @pytest.fixture
 def league(monkeypatch, db):
-    monkeypatch.setattr(league_changes_tools, "NFLDatabase", lambda *a, **k: db)
+    monkeypatch.setattr(league_changes_tools, "get_shared_db", lambda *a, **k: db)
     monkeypatch.setattr(league_changes_tools, "current_season_week", AsyncMock(
         return_value={"season": 2026, "week": 3, "source": "nfl_state"}))
     monkeypatch.setattr(sleeper_tools, "get_league", AsyncMock(return_value={"league": {

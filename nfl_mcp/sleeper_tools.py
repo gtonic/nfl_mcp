@@ -55,8 +55,8 @@ from .sleeper_enrichment import (  # noqa: F401
 # ---------------------------------------------------------------------------
 def _init_db():
     try:
-        from .database import NFLDatabase
-        return NFLDatabase()
+        from .database import get_shared_db
+        return get_shared_db()
     except Exception as e:
         logger.debug(f"NFLDatabase init failed (enrichment disabled): {e}")
         return None
@@ -261,8 +261,8 @@ async def get_rosters(league_id: str) -> dict:
     retry_delays = [0.0, 0.4, 1.2]
     attempts = 0
     last_error = None
-    from .database import NFLDatabase
-    nfl_db = NFLDatabase()
+    from .database import get_shared_db
+    nfl_db = get_shared_db()
 
     for delay in retry_delays:
         if delay:
@@ -542,8 +542,8 @@ async def get_matchups(league_id: str, week: int) -> dict:
     retry_delays = [0.0, 0.4, 1.0]
     attempts = 0
     last_error = None
-    from .database import NFLDatabase
-    nfl_db = NFLDatabase()
+    from .database import get_shared_db
+    nfl_db = get_shared_db()
 
     for delay in retry_delays:
         if delay:
@@ -893,8 +893,8 @@ async def get_trending_players(nfl_db=None, trend_type: str = "add", lookback_ho
             })
 
         if nfl_db is None:
-            from .database import NFLDatabase
-            nfl_db = NFLDatabase()
+            from .database import get_shared_db
+            nfl_db = get_shared_db()
 
         try:
             sample_athletes = nfl_db.search_athletes_by_name("", limit=1)
@@ -999,8 +999,8 @@ async def get_draft_picks(draft_id: str) -> dict:
         response.raise_for_status()
         picks = response.json()
         try:
-            from .database import NFLDatabase
-            nfl_db = NFLDatabase()
+            from .database import get_shared_db
+            nfl_db = get_shared_db()
             for p in picks:
                 if isinstance(p, dict) and p.get("player_id"):
                     athlete = nfl_db.get_athlete_by_id(p["player_id"]) or {}

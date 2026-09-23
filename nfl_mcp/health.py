@@ -57,16 +57,33 @@ def _overall_status(db_health: dict[str, Any], circuit_breakers: dict[str, Any])
     return "healthy", 200
 
 
+def env_int(name: str, default: int) -> int:
+    """``int(os.getenv(name))``, falling back to ``default`` when unset or not an int.
+
+    A typo in an interval variable must not take down ``/health`` (or the
+    server's startup settings) with a ValueError.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Ignoring non-integer {name}={raw!r}; using {default}"
+        )
+        return default
+
+
 def _get_prefetch_config() -> dict[str, Any]:
     """Return current prefetch configuration."""
     return {
         "enabled": os.getenv("NFL_MCP_PREFETCH") == "1",
-        "interval_seconds": int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900")),
+        "interval_seconds": env_int("NFL_MCP_PREFETCH_INTERVAL", 900),
         "advanced_enrich_enabled": os.getenv("NFL_MCP_ADVANCED_ENRICH") == "1",
         "athletes_refresh_enabled": os.getenv("NFL_MCP_PREFETCH_ATHLETES", "1") == "1",
-        "athletes_refresh_interval_seconds": int(
-            os.getenv("NFL_MCP_PREFETCH_ATHLETES_INTERVAL", "86400")
-        ),
+        "athletes_refresh_interval_seconds": env_int("NFL_MCP_PREFETCH_ATHLETES_INTERVAL", 86400),
     }
 
 

@@ -283,12 +283,12 @@ async def _split_by_kickoff(
     unavailable: he can no longer be moved in. Everyone else stays a
     candidate. Only players carrying a ``team`` can be checked.
     """
-    from .database import NFLDatabase
+    from .database import get_shared_db
     from .week_context import resolve_season_week
 
     season, week, _ = await resolve_season_week(season, week)
     try:
-        games = week_games(db or NFLDatabase(), season, week)
+        games = week_games(db or get_shared_db(), season, week)
     except Exception:
         games = {}
     now = _now()

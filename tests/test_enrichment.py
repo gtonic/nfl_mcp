@@ -235,29 +235,6 @@ class TestOutboundRateLimiter:
         assert status["capacity"] == 60
         assert status["available_tokens"] >= 59  # Allow for small time drift
 
-    def test_try_acquire_success(self):
-        """Test successful token acquisition."""
-        from nfl_mcp.config import OutboundRateLimiter
-
-        limiter = OutboundRateLimiter(calls_per_minute=60)
-        result = limiter.try_acquire(1)
-
-        assert result is True, "Should successfully acquire token"
-
-    def test_try_acquire_exhausted(self):
-        """Test token acquisition when exhausted."""
-        from nfl_mcp.config import OutboundRateLimiter
-
-        limiter = OutboundRateLimiter(calls_per_minute=5, burst_capacity=5)
-
-        # Exhaust all tokens
-        for _ in range(5):
-            limiter.try_acquire(1)
-
-        # Should fail to acquire
-        result = limiter.try_acquire(1)
-        assert result is False, "Should fail when tokens exhausted"
-
     @pytest.mark.asyncio
     async def test_acquire_waits_for_tokens(self):
         """Test that acquire waits for tokens to replenish."""
@@ -268,7 +245,7 @@ class TestOutboundRateLimiter:
         limiter = OutboundRateLimiter(calls_per_minute=60, burst_capacity=2)
 
         # Exhaust tokens
-        limiter.try_acquire(2)
+        limiter.tokens = 0
 
         # Acquire should wait and return
         wait_time = await asyncio.wait_for(limiter.acquire(1), timeout=2.0)

@@ -33,6 +33,7 @@ from fastmcp import FastMCP
 from . import tool_registry
 from .config_manager import get_config_manager
 from .database import NFLDatabase
+from .health import env_int as _env_int
 from .health import health_check as _health_check
 
 
@@ -97,18 +98,18 @@ def _load_runtime_settings() -> None:
 
     # Prefetch config from environment (prefetch is separate from general config)
     PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
-    PREFETCH_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_INTERVAL", "900"))
-    PREFETCH_SNAPS_TTL_SECONDS = int(os.getenv("NFL_MCP_PREFETCH_SNAPS_TTL", "900"))
-    PREFETCH_SCHEDULE_WEEKS = int(os.getenv("NFL_MCP_PREFETCH_SCHEDULE_WEEKS", "4"))
+    PREFETCH_INTERVAL_SECONDS = _env_int("NFL_MCP_PREFETCH_INTERVAL", 900)
+    PREFETCH_SNAPS_TTL_SECONDS = _env_int("NFL_MCP_PREFETCH_SNAPS_TTL", 900)
+    PREFETCH_SCHEDULE_WEEKS = _env_int("NFL_MCP_PREFETCH_SCHEDULE_WEEKS", 4)
     # Athletes cache refresh (player names/teams/positions). Enabled by default when
     # prefetch runs; refreshed once at startup and then every ATHLETES_INTERVAL.
     PREFETCH_ATHLETES = os.getenv("NFL_MCP_PREFETCH_ATHLETES", "1") == "1"
-    PREFETCH_ATHLETES_INTERVAL_SECONDS = int(
-        os.getenv("NFL_MCP_PREFETCH_ATHLETES_INTERVAL", "86400")  # daily
+    PREFETCH_ATHLETES_INTERVAL_SECONDS = _env_int(
+        "NFL_MCP_PREFETCH_ATHLETES_INTERVAL", 86400  # daily
     )
     # DB pruning cadence. Wall-clock rather than a cycle count, which reset on every
     # restart and so never reached its threshold on a server restarted daily.
-    DB_PRUNE_INTERVAL_SECONDS = int(os.getenv("NFL_MCP_DB_PRUNE_INTERVAL", "86400"))  # daily
+    DB_PRUNE_INTERVAL_SECONDS = _env_int("NFL_MCP_DB_PRUNE_INTERVAL", 86400)  # daily
 
 
 PREFETCH_ENABLED: bool
@@ -275,7 +276,7 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                             )
                             sched_rows = await _fetch_week_schedule(season, schedule_week)
                             if sched_rows:
-                                inserted = nfl_db.upsert_schedule_games(sched_rows)
+                                inserted = await asyncio.to_thread(nfl_db.upsert_schedule_games, sched_rows)
                                 total_schedule_rows_inserted += inserted
                                 logger.info(
                                     f"[Prefetch Cycle #{cycle_count}] Schedule (week {schedule_week}): "
@@ -320,7 +321,7 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                             # 2351-row week, including starters (Jayden Daniels
                             # sat at index 2173 and lost his snap share).
                             if snap_rows:
-                                inserted = nfl_db.upsert_player_week_stats(snap_rows)
+                                inserted = await asyncio.to_thread(nfl_db.upsert_player_week_stats, snap_rows)
                                 total_snap_rows_inserted += inserted
                                 logger.info(
                                     f"[Prefetch Cycle #{cycle_count}] Snaps (week {snap_week}): "
@@ -356,8 +357,10 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                         if injuries or complete_teams:
                             # Reports a team's complete crawl no longer lists
                             # are cleared; partially crawled teams are left alone.
-                            inserted = nfl_db.upsert_injuries(
-                                injuries, prune_missing=True, complete_teams=complete_teams)
+                            inserted = await asyncio.to_thread(
+                                nfl_db.upsert_injuries,
+                                injuries, prune_missing=True, complete_teams=complete_teams,
+                            )
                             stats["injuries_inserted"] = inserted
                             logger.info(
                                 f"[Prefetch Cycle #{cycle_count}] Injuries: "
@@ -386,7 +389,9 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                             )
                             practice_reports = await _fetch_practice_reports(season, week, db=nfl_db)
                             if practice_reports:
-                                inserted = nfl_db.upsert_practice_status(practice_reports)
+                                inserted = await asyncio.to_thread(
+                                    nfl_db.upsert_practice_status, practice_reports
+                                )
                                 stats["practice_inserted"] = inserted
                                 logger.info(
                                     f"[Prefetch Cycle #{cycle_count}] Practice: "
@@ -416,7 +421,7 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                             )
                             usage_stats = await _fetch_weekly_usage_stats(season, week - 1)
                             if usage_stats:
-                                inserted = nfl_db.upsert_usage_stats(usage_stats)
+                                inserted = await asyncio.to_thread(nfl_db.upsert_usage_stats, usage_stats)
                                 stats["usage_inserted"] = inserted
                                 logger.info(
                                     f"[Prefetch Cycle #{cycle_count}] Usage: "
@@ -631,7 +636,7 @@ async def _startup_warmup(nfl_db: NFLDatabase, shutdown_event: asyncio.Event) ->
         schedules = await _fetch_all_team_schedules(season)
 
         if schedules:
-            inserted = nfl_db.upsert_schedule_games(schedules)
+            inserted = await asyncio.to_thread(nfl_db.upsert_schedule_games, schedules)
             logger.info(
                 f"[Startup Prefetch] Inserted {inserted} schedule records "
                 f"for {season} season"

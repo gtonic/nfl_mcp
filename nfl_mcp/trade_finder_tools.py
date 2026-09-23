@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 
 from .briefing_tools import _staleness_warnings
-from .database import NFLDatabase
+from .database import get_shared_db
 from .errors import create_success_response
 from .injury_match import build_injury_index, injury_for_row, misses_this_week
 from .roster_needs import lineup_slots, replacement_levels, slot_counts, starting_lineup_total
@@ -113,7 +113,7 @@ async def find_trade_targets(
     from .projections import project_players
     from .scoring import league_scoring
 
-    db = NFLDatabase()
+    db = get_shared_db()
 
     if week is None or season is None:
         state = await sleeper_tools.get_nfl_state()

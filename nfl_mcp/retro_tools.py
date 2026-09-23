@@ -19,7 +19,7 @@ import asyncio
 import logging
 
 from .briefing_tools import _build_player, _scoring_ppr, find_roster
-from .database import NFLDatabase
+from .database import get_shared_db
 from .errors import create_success_response
 from .lineup_slots import normalize_position, optimal_lineup, starting_slot_list
 from .projection_store import scoring_key
@@ -213,7 +213,7 @@ async def get_weekly_retro(
     """Grade one finished week for one roster; see the module docstring."""
     from . import sleeper_tools
 
-    db = NFLDatabase()
+    db = get_shared_db()
     week_source = "caller"
     if week is None or season is None:
         done = await last_completed_week(db)

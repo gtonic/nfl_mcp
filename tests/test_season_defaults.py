@@ -5,9 +5,12 @@ This module verifies that the NFL MCP Server correctly uses 2026 as the
 default season across all tools and properly handles season detection.
 """
 import inspect
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+
+# What Sleeper's /state/nfl returns (string season, as the live feed does).
+_LIVE_STATE = {"success": True, "nfl_state": {"season": "2026", "week": 3}}
 
 
 class TestSeasonDefaults:
@@ -79,7 +82,8 @@ class TestSeasonDefaults:
     async def test_get_current_season_and_week_returns_tuple(self):
         """Verify get_current_season_and_week returns (season, week) tuple."""
         from nfl_mcp.nfl_tools import get_current_season_and_week
-        result = await get_current_season_and_week()
+        with patch("nfl_mcp.sleeper_tools.get_nfl_state", AsyncMock(return_value=_LIVE_STATE)):
+            result = await get_current_season_and_week()
         assert isinstance(result, tuple), f"Expected tuple, got {type(result)}"
         assert len(result) == 2, f"Expected 2 elements, got {len(result)}"
         season, week = result
@@ -90,7 +94,8 @@ class TestSeasonDefaults:
     async def test_get_current_season_and_week_returns_2026(self):
         """Verify get_current_season_and_week returns 2026 as current season."""
         from nfl_mcp.nfl_tools import get_current_season_and_week
-        result = await get_current_season_and_week()
+        with patch("nfl_mcp.sleeper_tools.get_nfl_state", AsyncMock(return_value=_LIVE_STATE)):
+            result = await get_current_season_and_week()
         season, _ = result
         assert season == 2026, f"Expected season 2026, got {season}"
 

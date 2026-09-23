@@ -246,7 +246,9 @@ class TestStreamingAvailability:
         rosters = {"rosters": [{"roster_id": 1, "players": ["BUF"]}]}  # BUF DST taken, MIA free
         with patch("nfl_mcp.matchup_tools.get_defense_analyzer", return_value=analyzer), \
                 patch("nfl_mcp.matchup_tools.fetch_offense_rankings", side_effect=fake_offense), \
-                patch("nfl_mcp.sleeper_tools.get_rosters", new=AsyncMock(return_value=rosters)):
+                patch("nfl_mcp.sleeper_tools.get_rosters", new=AsyncMock(return_value=rosters)), \
+                patch("nfl_mcp.sleeper_tools.get_league",
+                      new=AsyncMock(return_value={"success": False, "league": None})):
             annotated = await get_streaming_options(
                 season=2026, start_week=10, weeks_ahead=1, positions=["DST"], league_id="123"
             )

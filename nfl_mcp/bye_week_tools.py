@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from .database import NFLDatabase
+from .database import get_shared_db
 from .errors import create_success_response
 from .lineup_slots import SLOT_ELIGIBILITY, normalize_slot, optimal_lineup, starting_slot_list
 
@@ -159,7 +159,7 @@ async def get_bye_week_plan(
     from .briefing_tools import find_roster
     from .week_context import current_season_week
 
-    db = db if db is not None else NFLDatabase()
+    db = db if db is not None else get_shared_db()
     weeks_ahead = max(1, min(int(weeks_ahead or 6), 18))
     if week is None or season is None:
         current = await current_season_week(db)

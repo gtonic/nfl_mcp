@@ -137,6 +137,7 @@ class TestToolRegistry:
         assert callable(get_scheme_classification)
         assert callable(get_league_leaders)
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_basic_tool_call_error_handling(self):
         """Test that basic tools return proper error handling for invalid inputs."""
@@ -146,6 +147,7 @@ class TestToolRegistry:
         # Should have error or success field
         assert 'success' in result or 'error' in result
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_team_tools_functionality(self):
         """Test team-related tools."""
@@ -158,6 +160,7 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         assert 'injuries' in result or 'success' in result or 'error' in result
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_cbs_tools_functionality(self):
         """Test CBS fantasy tools."""
@@ -192,6 +195,7 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         assert 'stacks' in result or 'success' in result or 'error' in result
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_coaching_tools_functionality(self):
         """Test coaching tools."""
@@ -224,6 +228,7 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         assert 'success' in result or 'error' in result
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_data_structure_validation(self):
         """Test that all tools return consistent data structures."""
@@ -258,6 +263,7 @@ class TestToolRegistry:
                     # Tools that might fail (like network calls) should still return dict
                     pass
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_parameter_validation(self):
         """Test that tools handle parameter validation correctly."""
@@ -281,6 +287,7 @@ class TestToolRegistry:
                 # Some tools may not validate parameters strictly
                 pass
 
+    @pytest.mark.live  # smoke test against the real API
     @pytest.mark.asyncio
     async def test_comprehensive_tool_coverage(self):
         """Test that we have coverage for all major tool categories."""

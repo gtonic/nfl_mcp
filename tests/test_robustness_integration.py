@@ -7,13 +7,13 @@ Tests the retry, circuit breaker, and validation features working together.
 import contextlib
 import time
 
+import httpx
 import pytest
 
 from nfl_mcp.response_validation import (
     validate_snap_count_response,
 )
 from nfl_mcp.retry_utils import (
-    CircuitBreaker,
     CircuitBreakerError,
     CircuitState,
     get_circuit_breaker,
@@ -50,7 +50,7 @@ class TestRetryAndValidationIntegration:
         async def mock_fetch():
             call_count[0] += 1
             if call_count[0] < 2:
-                raise ValueError("Temporary error")
+                raise httpx.ConnectError("Temporary error")
             return {
                 "123": {"snaps": 50, "snap_pct": 75.0},
             }
@@ -108,23 +108,18 @@ class TestCircuitBreakerIntegration:
     @pytest.mark.asyncio
     async def test_circuit_breaker_opens_after_failures(self):
         """Test circuit breaker opens after threshold failures."""
-        cb = CircuitBreaker("test_integration")
+        cb = get_circuit_breaker("test_integration")
+        cb.reset()
         cb.failure_threshold = 3
 
-        # Failing function
         async def failing_fetch():
-            raise ValueError("API error")
+            raise httpx.ConnectError("API down")
 
-        # Execute multiple times until circuit opens
-        # Need to catch the exception from retry_with_backoff
         for _i in range(3):
-            try:
-                # Use circuit breaker directly, not retry_with_backoff
-                await cb.call_async(failing_fetch)
-            except ValueError:
-                pass
+            with contextlib.suppress(httpx.ConnectError):
+                await retry_with_backoff(failing_fetch, max_retries=0,
+                                         circuit_breaker_name="test_integration")
 
-        # Circuit should be open now
         assert cb.state == CircuitState.OPEN
 
     @pytest.mark.asyncio
@@ -154,15 +149,15 @@ class TestCircuitBreakerIntegration:
     @pytest.mark.asyncio
     async def test_circuit_breaker_recovers_after_success(self):
         """Test circuit breaker recovers after successful calls."""
-        cb = CircuitBreaker("test_recover")
+        cb = get_circuit_breaker("test_recover")
+        cb.reset()
         cb.state = CircuitState.HALF_OPEN
         cb.success_threshold = 1  # Only need 1 success to close
 
         async def mock_fetch():
             return "success"
 
-        # Success should close circuit
-        result = await cb.call_async(mock_fetch)
+        result = await retry_with_backoff(mock_fetch, circuit_breaker_name="test_recover")
         assert result == "success"
         assert cb.state == CircuitState.CLOSED
 

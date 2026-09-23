@@ -342,15 +342,6 @@ class ConfigManager:
             "trending_limit_max": limits.trending_limit_max,
         }
 
-    def get_rate_limits_dict(self) -> dict[str, int]:
-        """Get rate limits as a dictionary for backward compatibility."""
-        rate_limits = self.config.rate_limits
-        return {
-            "default_requests_per_minute": rate_limits.default_requests_per_minute,
-            "heavy_requests_per_minute": rate_limits.heavy_requests_per_minute,
-            "burst_limit": rate_limits.burst_limit,
-        }
-
     def stop(self):
         """Stop the configuration manager and clean up resources."""
         if self._observer:
@@ -405,7 +396,12 @@ def get_config_manager() -> ConfigManager:
                 config_file = path
                 break
 
-        _config_manager = ConfigManager(config_file)
+        # Hot reload is opt-in here too (it used to be on whenever a config
+        # file happened to sit in the cwd, but off for an explicit path).
+        _config_manager = ConfigManager(
+            config_file,
+            enable_hot_reload=os.getenv("NFL_MCP_CONFIG_HOT_RELOAD", "0") == "1",
+        )
 
     return _config_manager
 

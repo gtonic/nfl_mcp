@@ -435,7 +435,7 @@ async def test_briefing_names_byes_separately(monkeypatch, db):
         "bye": {"full_name": "Bye WR", "position": "WR", "team": "KC"},
         "on": {"full_name": "Playing WR", "position": "WR", "team": "BUF"},
     })
-    monkeypatch.setattr(briefing_tools, "NFLDatabase", lambda *a, **k: db)
+    monkeypatch.setattr(briefing_tools, "get_shared_db", lambda *a, **k: db)
 
     async def _league(_):
         return {"league": {"total_rosters": 10, "scoring_settings": {"rec": 1},

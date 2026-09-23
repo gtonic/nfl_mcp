@@ -13,6 +13,8 @@ import pytest
 from nfl_mcp import lineup_optimizer_tools as lo
 from nfl_mcp.lineup_optimizer_tools import PlayerAnalysis, _good_game_thresholds
 
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
+
 
 def _defense():
     from nfl_mcp.matchup_tools import DefenseRankingsAnalyzer

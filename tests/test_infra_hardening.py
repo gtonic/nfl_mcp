@@ -40,8 +40,8 @@ class TestCircuitBreakerAccounting:
 
     @pytest.mark.asyncio
     async def test_exhausted_retries_count_one_failure(self):
-        func = AsyncMock(side_effect=ValueError("boom"))
-        with pytest.raises(ValueError):
+        func = AsyncMock(side_effect=httpx.ConnectError("boom"))
+        with pytest.raises(httpx.ConnectError):
             await retry_with_backoff(func, max_retries=3, initial_delay=0, circuit_breaker_name="cb_one")
         assert func.await_count == 4
         cb = get_circuit_breaker("cb_one")
@@ -50,19 +50,19 @@ class TestCircuitBreakerAccounting:
 
     @pytest.mark.asyncio
     async def test_flaky_then_success_records_no_failure(self):
-        func = AsyncMock(side_effect=[ValueError("x"), ValueError("y"), "ok"])
+        func = AsyncMock(side_effect=[httpx.ConnectError("x"), httpx.ConnectError("y"), "ok"])
         assert await retry_with_backoff(func, max_retries=3, initial_delay=0, circuit_breaker_name="cb_flaky") == "ok"
         assert get_circuit_breaker("cb_flaky").failure_count == 0
 
     @pytest.mark.asyncio
     async def test_opens_after_threshold_logical_calls(self):
-        func = AsyncMock(side_effect=ValueError("down"))
+        func = AsyncMock(side_effect=httpx.ConnectError("down"))
         cb = get_circuit_breaker("cb_threshold")
         for _ in range(cb.failure_threshold - 1):
-            with pytest.raises(ValueError):
+            with pytest.raises(httpx.ConnectError):
                 await retry_with_backoff(func, max_retries=2, initial_delay=0, circuit_breaker_name="cb_threshold")
         assert cb.state == CircuitState.CLOSED
-        with pytest.raises(ValueError):
+        with pytest.raises(httpx.ConnectError):
             await retry_with_backoff(func, max_retries=2, initial_delay=0, circuit_breaker_name="cb_threshold")
         assert cb.state == CircuitState.OPEN
 

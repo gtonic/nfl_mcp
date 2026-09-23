@@ -26,6 +26,8 @@ from nfl_mcp.lineup_slots import (
 from nfl_mcp.roster_needs import lineup_bars, lineup_gain, lineup_slots, starting_lineup_total
 from nfl_mcp.win_probability import mean_optimal_lineup, optimize_win_probability
 
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
+
 
 def _p(name, position, points, sd=None):
     p = {"name": name, "position": position, "team": name, "projected_points": points}

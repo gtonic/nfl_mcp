@@ -289,10 +289,6 @@ class TestConfigManager:
         assert isinstance(limits_dict, dict)
         assert limits_dict["nfl_news_max"] == 50
 
-        rate_limits_dict = manager.get_rate_limits_dict()
-        assert isinstance(rate_limits_dict, dict)
-        assert rate_limits_dict["default_requests_per_minute"] == 60
-
 
 class TestConfigReloading:
     """Test configuration hot-reloading functionality."""

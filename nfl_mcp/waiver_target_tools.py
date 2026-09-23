@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 
 from . import ros
 from .briefing_tools import _staleness_warnings
-from .database import NFLDatabase
+from .database import get_shared_db
 from .errors import create_success_response
 from .game_clock import game_lock, parse_kickoff, week_games
 from .injury_match import build_injury_index, injury_for_row, misses_this_week
@@ -308,7 +308,7 @@ async def get_waiver_targets(
     from .projections import project_players
     from .scoring import league_scoring
 
-    db = NFLDatabase()
+    db = get_shared_db()
 
     if week is None or season is None:
         state = await sleeper_tools.get_nfl_state()

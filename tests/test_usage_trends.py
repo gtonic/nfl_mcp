@@ -6,6 +6,8 @@ import pytest
 from nfl_mcp import opportunity_tools, usage_trends
 from nfl_mcp.usage_trends import metric_trends, team_week_carries, teams_with_games, week_row
 
+pytestmark = pytest.mark.usefixtures("offline_sources")  # no ambient network reads
+
 
 def _game(week, team="BUF", targets=6.0, carries=0.0, ts=0.2, ays=0.25, wopr=0.475, opp="MIA"):
     return {"week": week, "team": team, "opponent": opp, "targets": targets,

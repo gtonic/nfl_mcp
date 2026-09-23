@@ -10,6 +10,16 @@ from nfl_mcp import trade_analyzer_tools
 from nfl_mcp.trade_analyzer_tools import ESTIMATED_REPLACEMENT_VALUE
 
 
+@pytest.fixture(autouse=True)
+def _league_offline(monkeypatch):
+    """The league-format lookup answers as if Sleeper were unreachable
+    (the analyzer then uses its default format)."""
+    async def _no_league(*_a, **_k):
+        return {"success": False, "error": "offline", "league": None}
+
+    monkeypatch.setattr(trade_analyzer_tools, "get_league", _no_league)
+
+
 class _FakeService:
     """Minimal PlayerValuesService stand-in (id-based lookup)."""
 
