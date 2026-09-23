@@ -126,7 +126,18 @@ def _simulate(
 
 async def _build_remaining_schedule(league_id: str, weeks: list[int]) -> list[tuple[int, int]]:
     """Reconstruct roster-vs-roster pairings for the given weeks from Sleeper matchups."""
-    schedule: list[tuple[int, int]] = []
+    return [(a, b) for _, a, b in await _build_remaining_schedule_by_week(league_id, weeks)]
+
+
+async def _build_remaining_schedule_by_week(
+    league_id: str, weeks: list[int]
+) -> list[tuple[int, int, int]]:
+    """``[(week, roster_a, roster_b), ...]`` — the pairings with their week.
+
+    The week is what tells this week's game apart from a later rematch against
+    the same opponent; a bare ``(a, b)`` pair cannot.
+    """
+    schedule: list[tuple[int, int, int]] = []
     for wk in weeks:
         res = await get_matchups(league_id, wk)
         if not res.get("success"):
@@ -140,7 +151,7 @@ async def _build_remaining_schedule(league_id: str, weeks: list[int]) -> list[tu
             by_mid.setdefault(mid, []).append(rid)
         for rids in by_mid.values():
             if len(rids) == 2:
-                schedule.append((rids[0], rids[1]))
+                schedule.append((wk, rids[0], rids[1]))
     return schedule
 
 
@@ -281,7 +292,11 @@ async def get_playoff_odds(
         current_week = int(max_games) + 1
 
     remaining_weeks = list(range(current_week, regular_weeks + 1))
-    schedule = await _build_remaining_schedule(league_id, remaining_weeks) if remaining_weeks else []
+    dated_schedule = (
+        await _build_remaining_schedule_by_week(league_id, remaining_weeks)
+        if remaining_weeks else []
+    )
+    schedule = [(a, b) for _, a, b in dated_schedule]
 
     # No remaining games (e.g. preseason / schedule not published) -> the sim
     # would otherwise emit a deterministic 100/0 split by roster id. Flag it.
@@ -359,10 +374,15 @@ async def get_playoff_odds(
 
     # Optional: win-this-week vs lose-this-week swing for one team.
     if my_roster_id is not None and schedule:
-        my_game = next(((a, b) for (a, b) in schedule if my_roster_id in (a, b)), None)
-        if my_game:
-            opp = my_game[1] if my_game[0] == my_roster_id else my_game[0]
-            rest = [g for g in schedule if g != my_game]
+        # This week's game only. Matching by pairing alone also removed every
+        # later rematch against the same opponent from the simulated rest of
+        # the season, as if those games had already been decided.
+        my_idx = next((i for i, (wk, a, b) in enumerate(dated_schedule)
+                       if wk == current_week and my_roster_id in (a, b)), None)
+        if my_idx is not None:
+            _, a, b = dated_schedule[my_idx]
+            opp = b if a == my_roster_id else a
+            rest = schedule[:my_idx] + schedule[my_idx + 1:]
 
             def _clone(win_rid):
                 cloned = []
