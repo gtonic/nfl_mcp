@@ -248,24 +248,80 @@ class TestVegasFallbacks:
             await an.fetch_current_lines()
         assert client.get.call_count == 1
 
-    @pytest.mark.asyncio
-    async def test_missing_totals_flagged_fallback(self):
+    @staticmethod
+    def _game(markets):
         kickoff = (datetime.now(UTC) + timedelta(days=2)).isoformat().replace("+00:00", "Z")
-        game = {
+        return {
             "home_team": "Kansas City Chiefs", "away_team": "Buffalo Bills",
-            "commence_time": kickoff,
-            "bookmakers": [{"markets": [{"key": "spreads", "outcomes": [
-                {"name": "Kansas City Chiefs", "point": -3.0},
-                {"name": "Buffalo Bills", "point": 3.0},
-            ]}]}],
+            "commence_time": kickoff, "bookmakers": [{"markets": markets}],
         }
+
+    _SPREADS = {"key": "spreads", "outcomes": [
+        {"name": "Kansas City Chiefs", "point": -3.0},
+        {"name": "Buffalo Bills", "point": 3.0},
+    ]}
+    _TOTALS = {"key": "totals", "outcomes": [{"name": "Over", "point": 48.5},
+                                             {"name": "Under", "point": 48.5}]}
+
+    @pytest.mark.asyncio
+    async def test_missing_total_keeps_the_real_spread(self):
+        """Only the total is a fallback; the spread is the book's."""
         an = VegasLinesAnalyzer(api_key="k")
-        with patch("nfl_mcp.vegas_tools.httpx.AsyncClient", return_value=_odds_client([game])):
+        with patch("nfl_mcp.vegas_tools.httpx.AsyncClient",
+                   return_value=_odds_client([self._game([self._SPREADS])])):
             lines = await an.fetch_current_lines()
         line = lines["KC"]
-        assert line["total"] == 45.0
-        assert line["is_fallback"] is True
+        assert line["home_spread"] == -3.0 and line["away_spread"] == 3.0
+        assert line["home_is_favorite"] is True
+        assert not line.get("is_fallback")
         assert line["total_is_fallback"] is True
+        assert "spread_is_fallback" not in line
+        # No invented 45.0 and no implied totals split from it.
+        assert line["total"] is None
+        assert line["home_implied_total"] is None and line["away_implied_total"] is None
+        assert line["game_environment"]["tier"] == "unknown"
+        assert line["home_game_script"]["projection"] == "slight_favorite"
+
+    @pytest.mark.asyncio
+    async def test_missing_spread_flags_only_the_spread(self):
+        an = VegasLinesAnalyzer(api_key="k")
+        with patch("nfl_mcp.vegas_tools.httpx.AsyncClient",
+                   return_value=_odds_client([self._game([self._TOTALS])])):
+            lines = await an.fetch_current_lines()
+        line = lines["KC"]
+        assert line["total"] == 48.5 and line["home_implied_total"] == 24.2
+        assert line["spread_is_fallback"] is True
+        assert not line.get("is_fallback") and "total_is_fallback" not in line
+
+    @pytest.mark.asyncio
+    async def test_no_markets_is_a_full_fallback(self):
+        an = VegasLinesAnalyzer(api_key="k")
+        with patch("nfl_mcp.vegas_tools.httpx.AsyncClient",
+                   return_value=_odds_client([self._game([])])):
+            lines = await an.fetch_current_lines()
+        assert lines["KC"]["is_fallback"] is True
+
+    @pytest.mark.asyncio
+    async def test_spread_only_game_is_safe_for_consumers(self):
+        from nfl_mcp import vegas_tools
+        an = VegasLinesAnalyzer(api_key="k")
+        with patch("nfl_mcp.vegas_tools.httpx.AsyncClient",
+                   return_value=_odds_client([self._game([self._SPREADS])])):
+            await an.fetch_current_lines()
+        with patch.object(vegas_tools, "get_vegas_analyzer", return_value=an):
+            env = await vegas_tools.get_game_environment("KC")
+            stacks = await vegas_tools.get_stack_opportunities()
+            listing = await vegas_tools.get_vegas_lines()
+        assert env["success"] is True
+        assert env["spread"] == -3.0 and env["total_is_fallback"] is True
+        assert env["is_fallback"] is False
+        assert stacks["total_opportunities"] == 0
+        assert listing["success"] is True and listing["total_games"] == 1
+
+    def test_spread_only_game_projects_with_a_neutral_environment(self):
+        from nfl_mcp.projections import _environment_mult
+        # implied None, not a fallback: neutral, same as no line at all.
+        assert _environment_mult(None, False) == _environment_mult(None, True)
 
 
 # ---------------------------------------------------------------------------
