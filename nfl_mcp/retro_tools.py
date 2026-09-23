@@ -15,6 +15,7 @@ the model loosely, not the decision that was made.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from .briefing_tools import _build_player, _scoring_ppr, find_roster
@@ -174,10 +175,12 @@ async def league_calibration(
     matchups_by_week = dict(matchups_by_week or {})
     weeks = [w for w in db.get_logged_projection_weeks(season, key) if w <= through_week]
     pairs: list[dict] = []
+    missing = [wk for wk in weeks if wk not in matchups_by_week]
+    for wk, resp in zip(missing, await asyncio.gather(
+        *(sleeper_tools.get_matchups(league_id, wk) for wk in missing)
+    ), strict=True):
+        matchups_by_week[wk] = (resp or {}).get("matchups") or []
     for wk in weeks:
-        if wk not in matchups_by_week:
-            resp = await sleeper_tools.get_matchups(league_id, wk)
-            matchups_by_week[wk] = (resp or {}).get("matchups") or []
         points = {}
         for m in matchups_by_week[wk]:
             points.update(m.get("players_points") or {})
@@ -223,17 +226,23 @@ async def get_weekly_retro(
             "error": "No completed week yet this season.",
         })
 
-    league = (await sleeper_tools.get_league(league_id) or {}).get("league") or {}
+    # Independent reads, fetched together.
+    league_resp, rosters_resp, matchups_resp = await asyncio.gather(
+        sleeper_tools.get_league(league_id),
+        sleeper_tools.get_rosters(league_id),
+        sleeper_tools.get_matchups(league_id, week),
+    )
+    league = (league_resp or {}).get("league") or {}
     ppr = _scoring_ppr(league)
     # Only projections made under this league's own scoring are graded.
     key = scoring_key(league_scoring(league))
-    rosters = (await sleeper_tools.get_rosters(league_id) or {}).get("rosters") or []
+    rosters = (rosters_resp or {}).get("rosters") or []
     mine_roster, error = find_roster(rosters, league_id, roster_id, user_id)
     if error:
         return create_success_response({"success": False, "error": error})
     roster_id = mine_roster["roster_id"]
 
-    matchups = (await sleeper_tools.get_matchups(league_id, week) or {}).get("matchups") or []
+    matchups = (matchups_resp or {}).get("matchups") or []
     mine = next((m for m in matchups if m.get("roster_id") == roster_id), None)
     if not mine or not mine.get("players_points"):
         return create_success_response({

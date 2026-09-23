@@ -3,13 +3,26 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from nfl_mcp import weather_tools
 from nfl_mcp.weather_tools import (
     _fetch_open_meteo,
+    _fetch_open_meteo_batch,
     _game_date,
     get_weather_forecast,
     weather_impact,
     weather_multiplier,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_batch_network(request):
+    """Keep the forecast tests offline: the batched request answers nothing,
+    so they exercise the per-stadium path they mock. Batch tests opt out."""
+    if request.cls is not None and request.cls.__name__ == "TestBatchedForecasts":
+        yield
+        return
+    with patch("nfl_mcp.weather_tools._fetch_open_meteo_batch", new=AsyncMock(return_value={})):
+        yield
 
 
 class TestWeatherMultiplier:
@@ -155,3 +168,78 @@ class TestForecastUnavailable:
         assert res["forecast_unavailable"] == 1        # out-of-range -> unknown
         assert res["games"][0]["impact"]["severity"] == "unknown"
         assert "no forecast" in res["message"]
+
+
+def _daily(wind, precip, temp, date="2026-12-20"):
+    return {"daily": {"time": [date], "wind_speed_10m_max": [wind],
+                      "precipitation_sum": [precip], "temperature_2m_max": [temp]}}
+
+
+class TestBatchedForecasts:
+    """One request per game date for every outdoor stadium, then cached."""
+
+    @pytest.mark.asyncio
+    async def test_batch_parses_one_result_per_location_in_order(self):
+        payload = [_daily(22.4, 0.41, 28.6), _daily(5.0, 0.0, 70.2)]
+        client = _meteo_client(payload)
+        with patch("nfl_mcp.weather_tools.create_http_client", return_value=client):
+            out = await _fetch_open_meteo_batch([(42.0, -78.0), (25.9, -80.2)], "2026-12-20")
+        assert out == {
+            (42.0, -78.0): {"wind_mph": 22.4, "precip_in": 0.41, "temp_f": 29.0},
+            (25.9, -80.2): {"wind_mph": 5.0, "precip_in": 0.0, "temp_f": 70.0},
+        }
+        params = client.get.await_args.kwargs["params"]
+        assert params["latitude"] == "42.0,25.9"
+        assert params["start_date"] == params["end_date"] == "2026-12-20"
+
+    @pytest.mark.asyncio
+    async def test_batch_failure_is_empty(self):
+        with patch("nfl_mcp.weather_tools.create_http_client",
+                   return_value=_meteo_client(status=400)):
+            assert await _fetch_open_meteo_batch([(42.0, -78.0)], "2026-12-20") == {}
+
+    @pytest.mark.asyncio
+    async def test_week_is_one_request_per_date_and_cached(self):
+        rows = [
+            {"team": "BUF", "opponent": "MIA", "is_home": 1, "kickoff": "2026-12-20T18:00Z"},
+            {"team": "CHI", "opponent": "GB", "is_home": 1, "kickoff": "2026-12-20T18:00Z"},
+            {"team": "GB", "opponent": "DET", "is_home": 1, "kickoff": "2026-12-21T18:00Z"},
+            {"team": "DET", "opponent": "NYG", "is_home": 1, "kickoff": "2026-12-20T18:00Z"},
+        ]
+
+        async def batch(points, date):
+            return {pt: {"wind_mph": 10.0, "precip_in": 0.0, "temp_f": 40.0} for pt in points}
+
+        batch_mock = AsyncMock(side_effect=batch)
+        single = AsyncMock(return_value=None)
+        with patch("nfl_mcp.sleeper_tools._fetch_week_schedule",
+                   new=AsyncMock(return_value=rows)), \
+             patch("nfl_mcp.weather_tools._fetch_open_meteo_batch", new=batch_mock), \
+             patch("nfl_mcp.weather_tools._fetch_open_meteo", new=single):
+            first = await get_weather_forecast(season=2026, week=16)
+            second = await get_weather_forecast(season=2026, week=16)
+
+        # Two game dates among the outdoor stadiums -> two requests, no
+        # per-stadium fallback, and the dome is never asked about.
+        assert batch_mock.await_count == 2
+        assert sorted(len(c.args[0]) for c in batch_mock.await_args_list) == [1, 2]
+        assert single.await_count == 0
+        # The repeat call inside the TTL is served from the cache.
+        assert first["games"] == second["games"]
+        assert first["forecast_unavailable"] == 0
+
+    @pytest.mark.asyncio
+    async def test_batch_miss_falls_back_to_single_requests(self):
+        rows = [{"team": "BUF", "opponent": "MIA", "is_home": 1, "kickoff": "2026-12-20T18:00Z"}]
+        windy = {"wind_mph": 26.0, "precip_in": 0.1, "temp_f": 30.0}
+        with patch("nfl_mcp.sleeper_tools._fetch_week_schedule",
+                   new=AsyncMock(return_value=rows)), \
+             patch("nfl_mcp.weather_tools._fetch_open_meteo_batch",
+                   new=AsyncMock(return_value={})), \
+             patch("nfl_mcp.weather_tools._fetch_open_meteo",
+                   new=AsyncMock(return_value=windy)) as single:
+            res = await get_weather_forecast(season=2026, week=16)
+        assert single.await_count == 1
+        assert res["games"][0]["wind_mph"] == 26.0
+        # Only successes are cached; a failed forecast is asked for again.
+        assert weather_tools._forecast_cache

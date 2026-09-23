@@ -26,6 +26,7 @@ distance and points-allowed tiers. Reported as `scoring_used`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from . import opportunity_tools
@@ -711,25 +712,33 @@ class ProjectionEngine:
         # in which case nobody is assumed to be on bye.
         schedule = week_schedule(db if db is not None else getattr(self, "db", None),
                                  season, week)
-        values_index = await self.values.get_values(
-            ppr, 2 if superflex else 1, num_teams, False
-        )
-        try:
-            rankings = await self.defense.fetch_defense_rankings()
-        except Exception:
-            rankings = {}
-        try:
-            lines = await self.vegas.fetch_current_lines()
-        except Exception:
-            lines = {}
-
-        # Opportunity baseline: fetch this season's trailing volume once and index
-        # by name. Requires season + week (>1); otherwise the rank-bucket baseline
+        # Values, defense rankings, Vegas lines and the opportunity game logs
+        # are independent (mostly network) reads: fetched together. Opportunity
+        # baseline needs season + week (>1); otherwise the rank-bucket baseline
         # is used (backward compatible).
+        async def _read(fetch, *args):
+            # Resolved inside the coroutine so a failure of any kind (even a
+            # non-awaitable stub) lands in its own slot, as it did sequentially.
+            return await fetch(*args)
+
+        async def _no_logs():
+            return {}
+
+        use_logs = bool(season and week and week > 1)
+        values_index, rankings, lines, logs = await asyncio.gather(
+            _read(lambda: self.values.get_values(ppr, 2 if superflex else 1, num_teams, False)),
+            _read(lambda: self.defense.fetch_defense_rankings()),
+            _read(lambda: self.vegas.fetch_current_lines()),
+            _read(opportunity_tools._fetch_game_logs, season) if use_logs else _no_logs(),
+            return_exceptions=True,
+        )
+        if isinstance(values_index, BaseException):
+            raise values_index
+        rankings = {} if isinstance(rankings, BaseException) else rankings
+        lines = {} if isinstance(lines, BaseException) else lines
         opp_index: dict = {}
-        if season and week and week > 1:
+        if use_logs and not isinstance(logs, BaseException):
             try:
-                logs = await opportunity_tools._fetch_game_logs(season)
                 opp_index = opportunity_tools.build_name_index(logs)
             except Exception:
                 opp_index = {}

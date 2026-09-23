@@ -14,7 +14,9 @@ earn its place in ``environment_multiplier`` via a backtest first.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from .config import create_http_client
 from .errors import create_success_response, handle_http_errors, handle_validation_error
@@ -169,6 +171,11 @@ async def _fetch_open_meteo(lat: float, lon: float, date: str) -> dict | None:
         logger.debug(f"Open-Meteo fetch failed for ({lat},{lon},{date}): {e}")
         return None
 
+    return _parse_daily(daily)
+
+
+def _parse_daily(daily: dict) -> dict | None:
+    """One day's ``{wind_mph, precip_in, temp_f}`` from an Open-Meteo ``daily`` block."""
     def _first(key):
         vals = daily.get(key) or []
         return vals[0] if vals else None
@@ -182,6 +189,102 @@ async def _fetch_open_meteo(lat: float, lon: float, date: str) -> dict | None:
         "temp_f": (round(float(_first("temperature_2m_max")), 0)
                    if _first("temperature_2m_max") is not None else None),
     }
+
+
+# Forecasts per (lat, lon, date). The daily routine asks for the same week
+# several times in a row (briefing, league changes, ...); Open-Meteo refreshes
+# its models hourly at best, so re-asking within half an hour buys nothing but
+# latency. Only successful forecasts are kept — a miss is retried next call.
+_FORECAST_TTL_SECONDS = 1800.0
+_forecast_cache: dict[tuple[float, float, str], tuple[float, dict]] = {}
+
+
+def clear_forecast_cache() -> None:
+    """Drop every cached forecast (tests, or to force a refetch)."""
+    _forecast_cache.clear()
+
+
+async def _fetch_open_meteo_batch(
+    points: list[tuple[float, float]], date: str,
+) -> dict[tuple[float, float], dict | None]:
+    """Forecasts for several stadiums on one date, in a single request.
+
+    Open-Meteo takes comma-separated coordinate lists and answers with one
+    result per location, in order — the same numbers as one request per
+    stadium, without a dozen sequential round trips (each of which could stall
+    for the full client timeout). Empty on any failure; the caller falls back
+    to per-stadium requests.
+    """
+    if not points:
+        return {}
+    params = {
+        "latitude": ",".join(str(lat) for lat, _ in points),
+        "longitude": ",".join(str(lon) for _, lon in points),
+        "daily": "wind_speed_10m_max,precipitation_sum,temperature_2m_max",
+        "wind_speed_unit": "mph",
+        "precipitation_unit": "inch",
+        "temperature_unit": "fahrenheit",
+        "timezone": "auto",
+        "start_date": date,
+        "end_date": date,
+    }
+    try:
+        async with create_http_client() as client:
+            resp = await client.get(OPEN_METEO_URL, params=params)
+            if resp.status_code != 200:
+                return {}
+            body = resp.json()
+    except Exception as e:
+        logger.debug(f"Open-Meteo batch fetch failed for {date}: {e}")
+        return {}
+    results = body if isinstance(body, list) else [body]
+    if len(results) != len(points):
+        return {}
+    return {
+        point: _parse_daily((res or {}).get("daily") or {})
+        for point, res in zip(points, results, strict=True)
+    }
+
+
+async def _forecasts_for(
+    keys: list[tuple[float, float, str]],
+) -> dict[tuple[float, float, str], dict | None]:
+    """Forecast per ``(lat, lon, date)``: cache, then one request per date, then per stadium."""
+    now = time.monotonic()
+    out: dict[tuple[float, float, str], dict | None] = {}
+    missing: list[tuple[float, float, str]] = []
+    for key in dict.fromkeys(keys):
+        hit = _forecast_cache.get(key)
+        if hit and now - hit[0] < _FORECAST_TTL_SECONDS:
+            out[key] = hit[1]
+        else:
+            missing.append(key)
+    if not missing:
+        return out
+
+    by_date: dict[str, list[tuple[float, float]]] = {}
+    for lat, lon, date in missing:
+        by_date.setdefault(date, []).append((lat, lon))
+    dates = list(by_date)
+    batches = await asyncio.gather(
+        *(_fetch_open_meteo_batch(by_date[d], d) for d in dates)
+    )
+    for date, batch in zip(dates, batches, strict=True):
+        for (lat, lon), wx in batch.items():
+            out[(lat, lon, date)] = wx
+
+    # Whatever the batch could not answer, one stadium at a time — concurrently.
+    retry = [k for k in missing if out.get(k) is None]
+    if retry:
+        singles = await asyncio.gather(*(_fetch_open_meteo(*k) for k in retry))
+        for key, wx in zip(retry, singles, strict=True):
+            out[key] = wx
+
+    stamp = time.monotonic()
+    for key in missing:
+        if out.get(key):
+            _forecast_cache[key] = (stamp, out[key])
+    return out
 
 
 def _game_date(kickoff: str | None) -> str | None:
@@ -233,10 +336,25 @@ async def get_weather_forecast(
     home_rows = [g for g in rows if g.get("is_home") in (1, True)]
 
     severity_order = {"high": 0, "moderate": 1, "low": 2, "none": 3}
+
+    def _wanted(g) -> bool:
+        home, away = g.get("team"), g.get("opponent")
+        return not (teams_filter and home not in teams_filter and away not in teams_filter)
+
+    # Every outdoor forecast is fetched up front, together, rather than one
+    # awaited request per game.
+    wanted_keys = []
+    for g in home_rows:
+        stadium = STADIUMS.get((g.get("team") or "").upper())
+        date = _game_date(g.get("kickoff"))
+        if _wanted(g) and stadium and not stadium["dome"] and date:
+            wanted_keys.append((stadium["lat"], stadium["lon"], date))
+    forecasts = await _forecasts_for(wanted_keys)
+
     games = []
     for g in home_rows:
         home, away = g.get("team"), g.get("opponent")
-        if teams_filter and home not in teams_filter and away not in teams_filter:
+        if not _wanted(g):
             continue
         stadium = STADIUMS.get((home or "").upper())
         date = _game_date(g.get("kickoff"))
@@ -253,7 +371,7 @@ async def get_weather_forecast(
         if stadium and stadium["dome"]:
             entry["impact"] = weather_impact(0.0, 0.0, None, is_dome=True)
         elif stadium and date:
-            wx = await _fetch_open_meteo(stadium["lat"], stadium["lon"], date)
+            wx = forecasts.get((stadium["lat"], stadium["lon"], date))
             if wx:
                 entry.update(wx)
                 entry["impact"] = weather_impact(

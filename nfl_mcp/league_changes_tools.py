@@ -19,6 +19,7 @@ and touches this roster or this week's opponent:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -156,16 +157,20 @@ async def news_items(since_dt: datetime, roles: dict[str, str], athletes: dict,
     patterns = _name_patterns(roles, athletes)
     if not patterns:
         return []
+    sources = (
+        ("ESPN", nfl_tools.get_nfl_news, "articles"),
+        ("CBS", cbs_fantasy_tools.get_cbs_player_news, "news"),
+    )
+    # Both feeds at once; the order they are read in below is unchanged.
+    responses = await asyncio.gather(
+        *(fetch(limit=50) for _, fetch, _ in sources), return_exceptions=True
+    )
     feeds = []
-    for label, fetch, key in (
-        ("ESPN", lambda: nfl_tools.get_nfl_news(limit=50), "articles"),
-        ("CBS", lambda: cbs_fantasy_tools.get_cbs_player_news(limit=50), "news"),
-    ):
-        try:
-            resp = await fetch() or {}
-        except Exception as e:
-            errors[f"{label.lower()}_news"] = str(e)
+    for (label, _, key), resp in zip(sources, responses, strict=True):
+        if isinstance(resp, BaseException):
+            errors[f"{label.lower()}_news"] = str(resp)
             continue
+        resp = resp or {}
         if resp.get("success") is False:
             errors[f"{label.lower()}_news"] = resp.get("error") or "unavailable"
         feeds += [(label, a) for a in resp.get(key) or []]
@@ -201,14 +206,20 @@ async def transaction_items(league_id: str, weeks: list[int], since_dt: datetime
     """Processed adds, drops and trades since ``since_dt``."""
     from . import sleeper_tools
     txs = []
-    for wk in weeks:
-        try:
-            resp = await sleeper_tools.get_transactions(league_id, week=wk) or {}
-            if resp.get("success") is False:
-                errors[f"transactions_week_{wk}"] = resp.get("error") or "unavailable"
-            txs += resp.get("transactions") or []
-        except Exception as e:
-            errors[f"transactions_week_{wk}"] = str(e)
+    # Every week at once: an empty week is retried with a back-off inside
+    # get_transactions, which should not hold up the other week.
+    responses = await asyncio.gather(
+        *(sleeper_tools.get_transactions(league_id, week=wk) for wk in weeks),
+        return_exceptions=True,
+    )
+    for wk, resp in zip(weeks, responses, strict=True):
+        if isinstance(resp, BaseException):
+            errors[f"transactions_week_{wk}"] = str(resp)
+            continue
+        resp = resp or {}
+        if resp.get("success") is False:
+            errors[f"transactions_week_{wk}"] = resp.get("error") or "unavailable"
+        txs += resp.get("transactions") or []
     fresh = []
     seen = set()
     for t in txs:
@@ -402,8 +413,10 @@ async def get_league_changes(
         since_dt = since_dt or checked_at - timedelta(hours=DEFAULT_LOOKBACK_HOURS)
     since_iso = since_dt.isoformat()
 
-    league = (await sleeper_tools.get_league(league_id) or {}).get("league") or {}
-    current = await current_season_week(db)
+    league_resp, current = await asyncio.gather(
+        sleeper_tools.get_league(league_id), current_season_week(db)
+    )
+    league = (league_resp or {}).get("league") or {}
     season, week = current["season"], current["week"]
 
     matchups = (await sleeper_tools.get_matchups(league_id, week) or {}).get("matchups") or []
@@ -446,17 +459,28 @@ async def get_league_changes(
         items += injury_items(db, since_iso, roles, athletes)
     except Exception as e:
         errors["injuries"] = str(e)
-    items += await news_items(since_dt, roles, athletes, errors)
     weeks = sorted({w for w in (week - 1, week) if 1 <= w <= 18})
-    items += await transaction_items(league_id, weeks, since_dt, roster_id, opp_rid,
-                                     owners, db, errors)
-    items += await trending_backup_items(db, since_dt, starters, athletes, rostered,
-                                         roster_id, errors)
-    try:
-        items += await projection_items(db, league, league_id, season, week, starters,
-                                        athletes, since_iso, projection_threshold)
-    except Exception as e:
-        errors["projections"] = str(e)
+
+    async def _projections() -> list[dict]:
+        try:
+            return await projection_items(db, league, league_id, season, week, starters,
+                                          athletes, since_iso, projection_threshold)
+        except Exception as e:
+            errors["projections"] = str(e)
+            return []
+
+    # The four sources are independent network reads; fetched together and
+    # appended in the same order as before.
+    groups = await asyncio.gather(
+        news_items(since_dt, roles, athletes, errors),
+        transaction_items(league_id, weeks, since_dt, roster_id, opp_rid,
+                          owners, db, errors),
+        trending_backup_items(db, since_dt, starters, athletes, rostered,
+                              roster_id, errors),
+        _projections(),
+    )
+    for group in groups:
+        items += group
 
     # Most important first; among equals, the newest.
     items.sort(key=lambda i: i.get("at") or "", reverse=True)

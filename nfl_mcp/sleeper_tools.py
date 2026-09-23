@@ -7,8 +7,10 @@ matchups, transactions, and more.
 """
 
 import asyncio
+import copy
 import json
 import logging
+import time
 
 import httpx
 
@@ -664,6 +666,18 @@ async def get_playoff_bracket(league_id: str, bracket_type: str = "winners") -> 
 
 
 
+# The NFL state (season/week) moves once a week, yet a single briefing or
+# waiver call asked Sleeper for it three to six times over. A successful answer
+# is reused for a minute; failures are never cached.
+_NFL_STATE_TTL_SECONDS = 60.0
+_nfl_state_cache: dict[str, tuple[float, dict]] = {}
+
+
+def clear_nfl_state_cache() -> None:
+    """Forget the cached NFL state (tests, or to force a refetch)."""
+    _nfl_state_cache.clear()
+
+
 @handle_http_errors(
     default_data={"nfl_state": None},
     operation_name="fetching NFL state"
@@ -682,6 +696,10 @@ async def get_nfl_state() -> dict:
         - error: Error message (if any)
         - error_type: Type of error (if any)
     """
+    hit = _nfl_state_cache.get("state")
+    if hit and time.monotonic() - hit[0] < _NFL_STATE_TTL_SECONDS:
+        return create_success_response({"nfl_state": copy.deepcopy(hit[1])})
+
     headers = get_http_headers("sleeper_nfl_state")
 
     # Sleeper API endpoint for NFL state
@@ -693,6 +711,8 @@ async def get_nfl_state() -> dict:
 
         # Parse JSON response
         nfl_state_data = response.json()
+        if isinstance(nfl_state_data, dict) and nfl_state_data:
+            _nfl_state_cache["state"] = (time.monotonic(), copy.deepcopy(nfl_state_data))
 
         return create_success_response({
             "nfl_state": nfl_state_data
