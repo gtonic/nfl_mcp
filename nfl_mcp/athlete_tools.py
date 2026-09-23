@@ -7,6 +7,7 @@ This module contains MCP tools for fetching, searching, and managing NFL athlete
 
 from .config import LIMITS, LONG_TIMEOUT, create_http_client, get_http_headers, validate_limit
 from .errors import create_success_response, handle_database_errors, handle_http_errors
+from .teams import normalize_team
 
 
 @handle_http_errors(
@@ -159,5 +160,5 @@ def get_athletes_by_team(nfl_db, team_id: str) -> dict:
     return create_success_response({
         "athletes": athletes,
         "count": len(athletes),
-        "team_id": team_id
+        "team_id": normalize_team(team_id) or team_id
     })

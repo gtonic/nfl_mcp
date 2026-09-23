@@ -54,6 +54,7 @@ from .config import (
 )
 from .database import NFLDatabase
 from .metrics import timing_decorator
+from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
 
@@ -280,14 +281,17 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
 
 @timing_decorator("get_team_player_stats", tool_type="nfl")
 async def get_team_player_stats(team_id: str, season: int | None = 2026, season_type: int | None = 2, limit: int | None = 50) -> dict:
-    """Fetch current season player summary stats for a team.
+    """Season-to-date per-player stats for a team (Sleeper season totals).
 
     Parameters:
-        team_id (str, required): Team abbreviation or ESPN id.
+        team_id (str, required): Team abbreviation, any spelling (KC, WAS, LA).
         season (int, default 2026): Season year.
         season_type (int, default 2): 1=Pre,2=Regular,3=Post.
         limit (int, default 50, range 1-100): Max players.
-    Returns: {team_id, season, season_type, player_stats:[...], count, success, error?}
+    Returns: {team_id, team_name, season, season_type, player_stats:[{player_id,
+        player_name, position, games_played, fantasy_points{std,half_ppr,ppr},
+        passing?, rushing?, receiving?, kicking?, defense?, snaps?}], count,
+        source, success, error?}
     Example: get_team_player_stats(team_id="KC", season=2024, limit=25)
     """
     try:
@@ -336,7 +340,7 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
     """Fetch a team's schedule (Site API) including matchup context.
 
     Parameters:
-        team_id (str, required): Team abbreviation or ESPN id.
+        team_id (str, required): Team abbreviation, any spelling (KC, WAS, LA).
         season (int, default 2026): Season year.
     Returns: {team_id, team_name, season, schedule:[...], count, success, error?}
     Example: get_team_schedule(team_id="KC", season=2024)
@@ -2477,7 +2481,7 @@ async def get_injury_report(
         # If team_ids provided, get team injuries
         elif team_ids:
             # Validate team IDs
-            valid_teams = [t.upper() for t in team_ids[:10] if isinstance(t, str) and len(t) <= 5]
+            valid_teams = [normalize_team(t) or t.upper() for t in team_ids[:10] if isinstance(t, str) and len(t) <= 5]
             if valid_teams:
                 injuries = await get_injury_reports(teams=valid_teams, db=get_db(), use_cache=use_cache_val)
                 results = injuries
@@ -2579,7 +2583,7 @@ async def get_injury_trends(
     try:
         hours = max(1, min(int(lookback_hours or 168), 24 * 30))
         since = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
-        teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
+        teams_list = [normalize_team(t) or t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
         max_rows = max(1, min(int(limit or 50), 500))
 
         # The direction filter runs in SQL: applying it to an already-truncated
@@ -2653,7 +2657,7 @@ async def get_high_confidence_injuries(
         min_conf = int(min_confidence) if min_confidence else 70
         min_conf = max(0, min(100, min_conf))
 
-        teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
+        teams_list = [normalize_team(t) or t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
         injuries = await get_injury_reports(
             teams=teams_list if teams_list else None,
             db=get_db(),
@@ -2739,7 +2743,7 @@ async def get_gameday_inactives(
         threshold = int(severity_threshold) if severity_threshold else 3
         threshold = max(1, min(5, threshold))
 
-        teams_list = [t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
+        teams_list = [normalize_team(t) or t.upper() for t in (teams or [])[:10] if isinstance(t, str)]
         if not season or not week:
             cur_season, cur_week = await _current_season_week()
             season, week = season or cur_season, week or cur_week
@@ -3225,9 +3229,9 @@ async def audit_ir_slots(
     """IR audit: who to move into the IR slot, who must come out, who is stuck.
 
     Reads the league's own IR rules (reserve_slots, reserve_allow_out/doubtful/
-    sus/na/dnr/cov) against Sleeper's injury status, which is what Sleeper
-    enforces. Use for "can I put X on IR", "why can't I add anyone", or as part
-    of a weekly roster check (get_weekly_briefing includes the same moves).
+    sus/na/dnr/cov; IR and PUP are always allowed) against Sleeper's injury
+    status, which is what Sleeper enforces. Use for "can I put X on IR", "why
+    can't I add anyone", or as part of a weekly roster check (get_weekly_briefing includes the same moves).
 
     Parameters:
         league_id: Sleeper league id
