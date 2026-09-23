@@ -351,30 +351,29 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                             exc_info=True,
                         )
 
-                    # Practice reports (Thu-Sat only to capture weekly injury reports)
-                    weekday = datetime.now(UTC).weekday()
-                    logger.debug(
-                        f"[Prefetch Cycle #{cycle_count}] Current weekday: "
-                        f"{weekday} ({'Thu' if weekday == 3 else 'Fri' if weekday == 4 else 'Sat' if weekday == 5 else 'Other'})"
-                    )
-                    if weekday in [3, 4, 5]:  # Thu=3, Fri=4, Sat=5
+                    # Practice reports: every day but Sunday (US Eastern). Sunday
+                    # teams report Wed-Fri, Thursday teams Mon-Wed and Monday
+                    # teams Thu-Sat; the old Thu-Sat (UTC) window never saw a
+                    # Wednesday report.
+                    from .practice_reports import to_eastern
+                    weekday = to_eastern(datetime.now(UTC)).weekday()
+                    if weekday != 6:
                         try:
                             logger.debug(
                                 f"[Prefetch Cycle #{cycle_count}] Fetching practice reports "
                                 f"for season={season}, week={week}"
                             )
-                            practice_reports = await _fetch_practice_reports(season, week)
+                            practice_reports = await _fetch_practice_reports(season, week, db=nfl_db)
                             if practice_reports:
                                 inserted = nfl_db.upsert_practice_status(practice_reports)
                                 stats["practice_inserted"] = inserted
                                 logger.info(
                                     f"[Prefetch Cycle #{cycle_count}] Practice: "
-                                    f"{inserted} rows inserted"
+                                    f"{inserted} rows written from {len(practice_reports)} reported"
                                 )
                             else:
                                 logger.info(
-                                    f"[Prefetch Cycle #{cycle_count}] Practice: No rows returned "
-                                    f"(implementation pending)"
+                                    f"[Prefetch Cycle #{cycle_count}] Practice: no reports published yet"
                                 )
                         except Exception as e:
                             stats["practice_error"] = str(e)
@@ -384,7 +383,7 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                             )
                     else:
                         logger.debug(
-                            f"[Prefetch Cycle #{cycle_count}] Practice: Skipped (only runs Thu-Sat)"
+                            f"[Prefetch Cycle #{cycle_count}] Practice: Skipped (no reports on Sunday)"
                         )
 
                     # Usage stats (fetch previous week for rolling averages)

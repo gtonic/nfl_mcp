@@ -237,6 +237,32 @@ def availability(status: str | None) -> str:
     return "unrecognised"
 
 
+# How a questionable tag plays out depends on the week's practice: a player
+# limited or better on the latest report usually suits up, one who has not
+# practised usually does not. Applied only to a *reported* practice line on top
+# of a questionable designation; with no report the flat 0.9 stands. Heuristic
+# weights (not backtested — the calibration set has no practice data), kept
+# mild on the upside and firm on the downside.
+QUESTIONABLE_BY_PRACTICE = {"FP": 0.97, "REST": 0.97, "LP": 0.9, "DNP": 0.65}
+
+
+def practice_adjusted_mult(status: str | None, practice_status: str | None) -> float:
+    """``_injury_mult`` refined by the latest reported practice.
+
+    Only a questionable designation moves: Out stays 0, a healthy player with
+    a DNP (often rest before the designations are set) stays 1.0.
+    """
+    base = _injury_mult(status)
+    practice = (practice_status or "").strip().upper()
+    if practice and practice not in QUESTIONABLE_BY_PRACTICE:
+        # A caller's spelling ("limited", "Did Not Participate In Practice").
+        from .practice_reports import normalize_practice
+        practice = normalize_practice(practice) or ""
+    if practice and availability(status) == "questionable" and practice in QUESTIONABLE_BY_PRACTICE:
+        return QUESTIONABLE_BY_PRACTICE[practice]
+    return base
+
+
 def _injury_mult(status: str | None) -> float:
     """Availability multiplier for a status string.
 
@@ -516,7 +542,7 @@ class ProjectionEngine:
             1.0 if base_source == "opportunity"
             else _usage_mult(usage.get("snap_percentage"), usage.get("usage_trend"))
         )
-        inj_mult = _injury_mult(injury.get("status"))
+        inj_mult = practice_adjusted_mult(injury.get("status"), injury.get("practice_status"))
 
         # 6) Weather (opt-in): only applied when the caller supplies wind/roof
         #    (e.g. from get_weather_forecast). The backtest shows the effect is
@@ -594,6 +620,10 @@ class ProjectionEngine:
             ),
             "injury_status": injury.get("status"),
             "injury_source": injury.get("source"),
+            # The reported practice line priced into injury_mult, if any.
+            "practice_status": injury.get("practice_status"),
+            "practice_pattern": injury.get("practice_pattern"),
+            "practice_source": injury.get("practice_source"),
             "on_bye": False,
             # "unknown" when there was neither an opponent nor a cached
             # schedule to check against: projected as playing, but unverified.
@@ -713,7 +743,8 @@ def get_projection_engine(db=None) -> ProjectionEngine:
 # MCP Tool Functions
 # ==========================================================================
 
-def _with_injuries(players: list[dict], db) -> list[dict]:
+def _with_injuries(players: list[dict], db, season: int | None = None,
+                   week: int | None = None) -> list[dict]:
     """Fill in each player's injury from the database when none was given.
 
     Start/sit already did this (`injury_match.lookup_injury`); the projection
@@ -723,15 +754,25 @@ def _with_injuries(players: list[dict], db) -> list[dict]:
     if db is None:
         return players
     from .injury_match import lookup_injury
+    from .practice_reports import lookup_practice
     out = []
     for p in players:
-        if (p.get("injury") or {}).get("status"):
-            out.append(p)
-            continue
-        found = lookup_injury(db, p.get("name") or p.get("player_name"), p.get("team"))
-        if found:
-            p = {**p, "injury": {**(p.get("injury") or {}),
-                                 "status": found["status"], "source": found["source"]}}
+        name = p.get("name") or p.get("player_name")
+        injury = p.get("injury") or {}
+        if not injury.get("status"):
+            found = lookup_injury(db, name, p.get("team"))
+            if found:
+                injury = {**injury, "status": found["status"], "source": found["source"]}
+        # The week's real practice report, only for a designated player: that
+        # is the only case it prices (see `practice_adjusted_mult`).
+        if injury.get("status") and not injury.get("practice_status"):
+            practice = lookup_practice(db, name, p.get("team"), season=season, week=week)
+            if practice:
+                injury = {**injury, "practice_status": practice["latest"],
+                          "practice_pattern": practice["pattern"],
+                          "practice_source": practice["source"]}
+        if injury != (p.get("injury") or {}):
+            p = {**p, "injury": injury}
         out.append(p)
     return out
 
@@ -793,7 +834,7 @@ async def project_players(
     engine = get_projection_engine(db)
     scoring = await _scoring_for(scoring, league_id)
     result = await engine.project_many(
-        _with_injuries(players, db), scoring=scoring, superflex=superflex,
+        _with_injuries(players, db, season, week), scoring=scoring, superflex=superflex,
         num_teams=num_teams, season=season, week=week, db=db,
     )
     return create_success_response({
@@ -848,7 +889,7 @@ async def project_player(
     season, week, week_inferred = await resolve_season_week(season, week)
     engine = get_projection_engine(db)
     scoring = await _scoring_for(scoring, league_id)
-    result = await engine.project_many(_with_injuries([player], db), scoring=scoring,
+    result = await engine.project_many(_with_injuries([player], db, season, week), scoring=scoring,
                                        superflex=superflex, season=season, week=week, db=db)
     proj = result["projections"][0] if result["projections"] else None
     if proj and proj.get("on_bye"):

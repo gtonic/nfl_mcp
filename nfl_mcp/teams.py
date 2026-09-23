@@ -25,6 +25,7 @@ TEAM_ALIASES: dict[str, str] = {
     "WAS": "WSH", "WASHINGTON": "WSH",
     "JAC": "JAX", "JACKSONVILLE": "JAX",
     "LA": "LAR", "RAMS": "LAR", "STL": "LAR",
+    "AZ": "ARI",  # NFL.com's injury report
     "OAK": "LV", "RAIDERS": "LV",
     "SD": "LAC", "CHARGERS": "LAC",
     "TAM": "TB", "GNB": "GB", "KAN": "KC", "NWE": "NE",
