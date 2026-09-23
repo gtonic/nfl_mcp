@@ -96,6 +96,11 @@ def _stub_sleeper(monkeypatch, points, roster_positions=None, mine=None,
     monkeypatch.setattr(sleeper_tools, "get_league", _league)
     monkeypatch.setattr(sleeper_tools, "get_rosters", _rosters)
     monkeypatch.setattr(sleeper_tools, "get_trending_players", _trending)
+
+    async def _transactions(_league, week=None):
+        return {"transactions": []}
+
+    monkeypatch.setattr(sleeper_tools, "get_transactions", _transactions)
     monkeypatch.setattr(waiver_target_tools, "get_values_service",
                         lambda db=None: _FakeValues(values or {}))
 
@@ -402,3 +407,40 @@ class TestDropCandidates:
     async def test_rolling_waivers_say_a_claim_costs_priority(self, db, monkeypatch):
         out = await self._run(monkeypatch)
         assert "back of the order" in out["message"]
+
+
+class TestKickoffsAndPriority:
+    """Locks and rolling-waiver advice, with kickoffs in the schedule."""
+
+    @pytest.mark.asyncio
+    async def test_started_games_and_priority_strategy(self, db, monkeypatch):
+        from datetime import UTC, datetime
+
+        # DET/CAR kicked off (Thursday), BUF/KC and NYJ/SF on Sunday.
+        db.upsert_schedule_games([
+            {"season": 2026, "week": 3, "team": t, "opponent": o, "is_home": h, "kickoff": k}
+            for t, o, h, k in (
+                ("DET", "CAR", 1, "2026-09-25T00:15Z"), ("CAR", "DET", 0, "2026-09-25T00:15Z"),
+                ("BUF", "KC", 1, "2026-09-27T17:00Z"), ("KC", "BUF", 0, "2026-09-27T17:00Z"),
+                ("NYJ", "SF", 1, "2026-09-27T17:00Z"), ("SF", "NYJ", 0, "2026-09-27T17:00Z"),
+            )
+        ])
+        db.upsert_athletes(dict([_athlete("f5", "Sunday RB", "RB", "SF")]))
+        _stub_sleeper(monkeypatch, {
+            "My Starter WR": 14.0, "My Second WR": 9.0, "My Weak RB": 3.0,
+            "Free Good RB": 12.0, "Sunday RB": 10.0,
+        })
+        monkeypatch.setattr(waiver_target_tools, "_now",
+                            lambda: datetime(2026, 9, 25, 2, tzinfo=UTC))
+        out = await get_waiver_targets(LEAGUE, roster_id=7)
+
+        names = [t["name"] for t in out["targets"]]
+        # Free Good RB (DET) is already playing: not a target this week.
+        assert "Free Good RB" not in names
+        assert [t["name"] for t in out["too_late_for_this_week"]] == ["Free Good RB"]
+        sunday = next(t for t in out["targets"] if t["name"] == "Sunday RB")
+        assert sunday["locked"] is False
+        assert sunday["kickoff_local"] == "2026-09-27T19:00:00+02:00"
+        # Free agent after Wednesday's run: add him, no priority needed.
+        assert sunday["waiver_strategy"]["recommendation"] == "add_now"
+        assert out["waiver_priority"]["rolling"] is True

@@ -16,7 +16,7 @@ import logging
 
 from .database import NFLDatabase
 from .errors import create_success_response
-from .game_clock import game_progress, settle
+from .game_clock import progress_of, settle, week_games
 from .injury_match import (
     build_injury_index,
     misses_this_week,
@@ -256,7 +256,9 @@ async def get_weekly_briefing(
     except Exception as e:  # weather is additive; never fail the briefing on it
         logger.debug(f"weather unavailable for the briefing: {e}")
 
-    kickoffs = db.get_week_kickoffs(season, week)
+    # Kickoffs plus ESPN's game state where cached: a final is final even
+    # before the nominal game length has run out.
+    games = week_games(db, season, week)
     usage = {
         row["player_id"]: row
         for row in db.get_usage_for_week(season, max(1, week - 1))
@@ -331,7 +333,7 @@ async def get_weekly_briefing(
         locked, open_ = [], []
         for cand in candidates:
             pid = cand.get("player_id")
-            progress = game_progress(kickoffs.get(cand.get("team")))
+            progress = progress_of(games.get(normalize_team(cand.get("team")) or ""))
             if progress <= 0.0:
                 open_.append(cand)
                 continue
@@ -356,7 +358,7 @@ async def get_weekly_briefing(
     my_open += [
         c for c in my_all
         if c.get("player_id") not in started_ids
-        and game_progress(kickoffs.get(c.get("team"))) <= 0.0
+        and progress_of(games.get(normalize_team(c.get("team")) or "")) <= 0.0
     ]
     opp_locked, opp_open = _settled(opp_all, opp_points)
 

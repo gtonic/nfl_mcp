@@ -19,8 +19,10 @@ a transparent breakdown.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
+from .game_clock import game_lock, parse_kickoff, week_games
 from .player_values import get_values_service
 from .roster_needs import lineup_gain, lineup_slots
 from .sleeper_tools import (
@@ -28,9 +30,12 @@ from .sleeper_tools import (
     get_league,
     get_nfl_state,
     get_rosters,
+    get_transactions,
     get_trending_players,
 )
+from .teams import normalize_team
 from .trade_analyzer_tools import league_format_from_settings
+from .waiver_rules import latest_drops, priority_strategy, trend_demand
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +43,41 @@ logger = logging.getLogger(__name__)
 _FANTASY_REGULAR_WEEKS = 14
 # Never recommend blowing more than this share of budget on a single player.
 _MAX_BID_PCT = 75.0
+
+
+def _now() -> datetime:
+    """The clock the waiver timing reads; a seam for tests."""
+    return datetime.now(UTC)
+
+
+async def _waiver_timing_inputs(db, league_id: str, target: dict, season, week) -> dict:
+    """Kickoffs (this week, last week) and last drop for one player — what
+    `priority_strategy` needs to say when he clears. Every piece is optional:
+    missing ones only make the timing coarser."""
+    pid = str(target.get("player_id") or "")
+    team = normalize_team(target.get("team"))
+    if not team and db is not None and pid and hasattr(db, "get_athlete_by_id"):
+        try:
+            team = normalize_team((db.get_athlete_by_id(pid) or {}).get("team_id"))
+        except Exception as e:
+            logger.debug(f"athlete lookup failed for {pid}: {e}")
+    games = week_games(db, season, week) if team else {}
+    previous = week_games(db, season, week - 1) if team and week and week > 1 else {}
+    dropped_at = None
+    try:
+        for wk in {week, max(1, (week or 1) - 1)} if week else set():
+            txns = await get_transactions(league_id, week=wk)
+            when = latest_drops((txns or {}).get("transactions")).get(pid)
+            if when and (dropped_at is None or when > dropped_at):
+                dropped_at = when
+    except Exception as e:
+        logger.debug(f"transactions unavailable for waiver timing: {e}")
+    return {
+        "game": games.get(team) if team else None,
+        "kickoff": parse_kickoff((games.get(team) or {}).get("kickoff")) if team else None,
+        "previous_kickoff": parse_kickoff((previous.get(team) or {}).get("kickoff")) if team else None,
+        "dropped_at": dropped_at,
+    }
 
 
 def _slot_takes(slot: str, position: str) -> bool:
@@ -65,22 +105,29 @@ def _priority_advice(tier: str, upgrade_score: float | None) -> str:
 
 
 def _priority_message(advice: str, name: str, tier: str, value: float, upgrade: float,
-                      has_roster: bool, rolling: bool, clear_days) -> str:
+                      has_roster: bool, rolling: bool, clear_days,
+                      strategy: dict | None = None) -> str:
     cost = (" Rolling waivers: a successful claim sends you to the back of the order."
             if rolling else "")
+    # With timing known, the shared strategy says what to do and when, so this
+    # message and get_waiver_targets never give two different answers.
+    if strategy:
+        cost += f" {strategy['recommendation'].upper()}: {strategy['reason']}"
+    free = bool(strategy) and strategy["recommendation"] == "add_now"
     gain = f"+{int(upgrade)} to your best lineup" if has_roster else "no roster context"
     if advice == "high":
-        return (f"Non-FAAB league — worth a high waiver-priority claim on {name} "
-                f"[{tier}] (value {int(value)}, {gain}).{cost}")
+        return (f"Non-FAAB league — {'a must-have add' if free else 'worth a high waiver-priority claim'}"
+                f" on {name} [{tier}] (value {int(value)}, {gain}).{cost}")
     if advice == "medium":
         return (f"Non-FAAB league — low-to-middle priority on {name} [{tier}] "
-                f"(value {int(value)}, {gain}): claim him only if nobody better is "
-                f"on your list.{cost}")
+                f"(value {int(value)}, {gain})"
+                + ("." if free else ": claim him only if nobody better is on your list.")
+                + cost)
     wait = (f"wait the {clear_days} clear day(s) and add him as a free agent"
             if clear_days else "wait until he clears waivers and add him as a free agent")
     return (f"Non-FAAB league — don't burn waiver priority on {name} [{tier}] "
-            f"(value {int(value)}, {gain}): {wait}.{cost} Season-long view; "
-            "get_waiver_targets answers a one-week need.")
+            f"(value {int(value)}, {gain})" + ("." if strategy else f": {wait}.")
+            + f"{cost} Season-long view; get_waiver_targets answers a one-week need.")
 
 
 def _tier(pct: float) -> str:
@@ -214,6 +261,7 @@ async def recommend_faab_bid(
     # --- Demand (how contested is he) ---
     demand_mult = 1.0
     demand_label = "low"
+    trend_rank = None
     try:
         trend = await get_trending_players(db, "add", 48, 100)
         if trend.get("success"):
@@ -221,6 +269,7 @@ async def recommend_faab_bid(
             pid = str(target.get("player_id"))
             if pid in order:
                 idx = order.index(pid)
+                trend_rank = idx
                 if idx < 10:
                     demand_mult, demand_label = 1.30, "high"
                 elif idx < 30:
@@ -233,9 +282,11 @@ async def recommend_faab_bid(
     # --- Timing (weeks left) ---
     timing_mult = 1.0
     weeks_left = None
+    wk = season = None
     try:
         state = await get_nfl_state()
         wk = state.get("nfl_state", {}).get("week") if state.get("success") else None
+        season = state.get("nfl_state", {}).get("season") if state.get("success") else None
         if wk:
             weeks_left = max(0, _FANTASY_REGULAR_WEEKS - int(wk))
             if weeks_left <= 3:
@@ -273,6 +324,26 @@ async def recommend_faab_bid(
         tier, upgrade_score if has_roster else None)
     rolling = not is_faab and settings.get("waiver_type") == 0
 
+    # Non-FAAB: when he clears, whether he is contested, and so whether to
+    # claim now, wait for free agency or leave him — the same helper
+    # get_waiver_targets uses, judged rest-of-season here.
+    waiver_strategy = None
+    lock = None
+    if not is_faab:
+        try:
+            wk_int = int(wk) if wk else None
+            season_int = int(season) if season else None
+        except (TypeError, ValueError):
+            wk_int = season_int = None
+        timing = await _waiver_timing_inputs(db, league_id, target, season_int, wk_int)
+        now = _now()
+        lock = game_lock(timing["game"], now)
+        waiver_strategy = priority_strategy(
+            league, my_roster, worth=priority_advice, demand=trend_demand(trend_rank),
+            kickoff=timing["kickoff"], previous_kickoff=timing["previous_kickoff"],
+            dropped_at=timing["dropped_at"], now=now, this_week=False,
+        )
+
     reasoning = [
         f"Market value {int(target_value)} ({position} #{target.get('position_rank')})",
         (f"Marginal upgrade for you: +{int(upgrade)} to your best starting lineup "
@@ -294,6 +365,12 @@ async def recommend_faab_bid(
             "tier": tier,
             # Non-FAAB only: how hard to spend a priority claim on him.
             "priority_advice": priority_advice,
+            # Non-FAAB only: claim now / wait / add now / don't bother, with
+            # your waiver position and when he clears.
+            "waiver_strategy": waiver_strategy,
+            "kickoff": (lock or {}).get("kickoff"),
+            "kickoff_local": (lock or {}).get("kickoff_local"),
+            "locked": (lock or {}).get("locked"),
             "reasoning": reasoning,
             "warnings": warnings,
             "breakdown": {
@@ -317,6 +394,7 @@ async def recommend_faab_bid(
              + f"on {target.get('name')} [{tier}]")
             if is_faab else
             _priority_message(priority_advice, target.get("name"), tier, target_value,
-                              upgrade, has_roster, rolling, settings.get("waiver_clear_days"))
+                              upgrade, has_roster, rolling, settings.get("waiver_clear_days"),
+                              waiver_strategy)
         ),
     })
