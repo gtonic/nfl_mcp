@@ -15,8 +15,13 @@ from __future__ import annotations
 from .errors import create_success_response
 from .injury_match import build_injury_index, find_report, misses_this_week, sleeper_injury_status
 
-# Sleeper status -> the league setting that permits it in an IR slot. IR itself
-# is always allowed; that is what the slot is.
+# Statuses every Sleeper IR slot takes, whatever the league's settings. PUP has
+# no `reserve_allow_*` switch: Sleeper treats it as IR. Leaving it out told
+# the owner of a PUP player sitting in IR (Charbonnet, VLBG, whose league
+# allows neither Out nor Doubtful) that Sleeper was blocking his claims.
+_ALWAYS_ELIGIBLE = ("IR", "PUP")
+
+# Sleeper status -> the league setting that permits it in an IR slot.
 _ALLOW_SETTING = {
     "Out": "reserve_allow_out",
     "Doubtful": "reserve_allow_doubtful",
@@ -28,8 +33,10 @@ _ALLOW_SETTING = {
 
 
 def eligible_statuses(settings: dict) -> list[str]:
-    """Sleeper statuses this league lets into an IR slot."""
-    return ["IR"] + [s for s, key in _ALLOW_SETTING.items() if (settings or {}).get(key)]
+    """Sleeper statuses this league lets into an IR slot, from its settings."""
+    return list(_ALWAYS_ELIGIBLE) + [
+        s for s, key in _ALLOW_SETTING.items() if (settings or {}).get(key)
+    ]
 
 
 def is_ir_eligible(status: str | None, settings: dict) -> bool:
