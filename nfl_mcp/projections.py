@@ -31,6 +31,7 @@ from .player_values import get_values_service, scoring_to_ppr
 from .teams import normalize_team
 from .vegas_tools import get_vegas_analyzer
 from .weather_tools import weather_multiplier
+from .week_context import BYE, bye_check, resolve_season_week, week_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -185,11 +186,40 @@ def _usage_mult(snap_pct: float | None, usage_trend: str | None) -> float:
 # Verified against the live cache: 110 players carried one of those four and
 # every one of them was projected at full points and never auto-benched.
 UNAVAILABLE_STATUSES = frozenset({
-    "out", "ir", "injured reserve", "suspended", "sus", "pup", "nfi",
-    "na", "dnr", "cov", "doubtful_out",
+    "out", "ir", "injured reserve", "injured_reserve", "suspended", "sus", "pup",
+    "nfi", "na", "dnr", "cov", "doubtful_out", "inactive", "reserve",
 })
+# Prefixes of the long list designations ("Reserve/PUP", "PUP-R",
+# "Reserve-Suspended", "Inactive (injury)"): all of them mean no game this week.
+_UNAVAILABLE_PREFIXES = ("reserve", "pup", "suspend", "injured reserve", "inactive", "nfi")
 DOUBTFUL_STATUSES = frozenset({"doubtful"})
 QUESTIONABLE_STATUSES = frozenset({"questionable", "q", "dnp", "lp"})
+# A designation that says "we do not know" rather than "something is wrong".
+# Priced as mild uncertainty: not a questionable tag, and not healthy either.
+UNCERTAIN_STATUSES = frozenset({"unknown"})
+UNCERTAIN_MULT = 0.95
+
+
+def availability(status: str | None) -> str:
+    """Classify a status: healthy, out, doubtful, questionable, uncertain or
+    unrecognised.
+
+    One vocabulary for both the projection multiplier and the start/sit health
+    score, so the two cannot disagree about whether a player plays — they did:
+    `Inactive` and `Reserve` projected at 0.9 and scored a perfect health 100.
+    """
+    s = (status or "").strip().lower()
+    if not s or s in ("active", "healthy", "probable", "fp"):
+        return "healthy"
+    if s in UNAVAILABLE_STATUSES or s.startswith(_UNAVAILABLE_PREFIXES):
+        return "out"
+    if s in DOUBTFUL_STATUSES:
+        return "doubtful"
+    if s in QUESTIONABLE_STATUSES:
+        return "questionable"
+    if s in UNCERTAIN_STATUSES:
+        return "uncertain"
+    return "unrecognised"
 
 
 def _injury_mult(status: str | None) -> float:
@@ -202,15 +232,17 @@ def _injury_mult(status: str | None) -> float:
     project at full points. New upstream codes now degrade safely and noisily
     instead of silently.
     """
-    s = (status or "").strip().lower()
-    if not s or s in ("active", "healthy", "probable", "fp"):
+    kind = availability(status)
+    if kind == "healthy":
         return 1.0
-    if s in UNAVAILABLE_STATUSES:
+    if kind == "out":
         return 0.0
-    if s in DOUBTFUL_STATUSES:
+    if kind == "doubtful":
         return 0.35
-    if s in QUESTIONABLE_STATUSES:
+    if kind == "questionable":
         return 0.9
+    if kind == "uncertain":
+        return UNCERTAIN_MULT
     logger.warning(
         f"unrecognised injury status {status!r} — treating as questionable (0.9). "
         "Add it to the status tables in projections.py / injury_service.py."
@@ -300,6 +332,52 @@ def projection_confidence(
     return max(0, min(100, conf))
 
 
+def _bye_projection(
+    name: str | None, position: str, team: str, bye: dict, injury: dict,
+) -> dict:
+    """A zero projection for a player whose team has no game.
+
+    Same shape as a priced projection so every consumer can read it, with
+    `on_bye` set and the reason stated: a zero with no explanation reads as a
+    bust, which is a different thing from a bye.
+    """
+    return {
+        "player": name,
+        "position": position,
+        "team": team,
+        "opponent": "BYE",
+        "projected_points": 0.0,
+        "floor": 0.0,
+        "ceiling": 0.0,
+        # Certain: a team without a game scores nothing.
+        "confidence": 100,
+        "confidence_level": "high",
+        "matchup_tier": "bye",
+        "implied_total": None,
+        "opponent_implied_total": None,
+        "vegas_active": False,
+        "breakdown": {
+            "base_ppg": 0.0,
+            "base_source": "bye",
+            "position_rank": None,
+            "matchup_mult": 1.0,
+            "environment_mult": 1.0,
+            "usage_mult": 1.0,
+            "weather_mult": 1.0,
+            "injury_mult": round(_injury_mult(injury.get("status")), 3),
+            "starters_out_ahead": [],
+            "vacated_volume": {},
+        },
+        "value_source": "bye",
+        "injury_status": injury.get("status"),
+        "injury_source": injury.get("source"),
+        "on_bye": True,
+        "bye_status": BYE,
+        "bye_source": bye.get("source"),
+        "bye_reason": bye.get("reason"),
+    }
+
+
 class ProjectionEngine:
     """Projects fantasy points by combining value, matchup, environment, usage."""
 
@@ -314,15 +392,21 @@ class ProjectionEngine:
     def _project_one(
         self, player: dict, values_index: dict, rankings: dict, lines: dict,
         opp_index: dict | None = None, week: int | None = None, ppr: float = 1.0,
-        depth: dict | None = None, status_of=None,
+        depth: dict | None = None, status_of=None, schedule: dict | None = None,
     ) -> dict:
         name = player.get("name") or player.get("player_name")
         position = (player.get("position") or "").upper()
         team = (player.get("team") or "").upper()
-        opponent = (player.get("opponent") or "").upper()
         player_id = player.get("player_id")
         usage = player.get("usage") or {}
         injury = player.get("injury") or {}
+
+        # 0) Does he have a game at all? A bye used to fall through every
+        #    factor to neutral and project the full baseline.
+        bye = bye_check(team, player.get("opponent"), schedule, week)
+        if bye["status"] == BYE:
+            return _bye_projection(name, position, team, bye, injury)
+        opponent = bye["opponent"] or ""
 
         # 1) Baseline. Prefer the opportunity-based projection (backtested to beat
         #    rank-bucket PPG) when we have this player's trailing nflverse volume;
@@ -485,6 +569,13 @@ class ProjectionEngine:
                 "opportunity" if base_source == "opportunity"
                 else "fantasycalc" if market else "baseline"
             ),
+            "injury_status": injury.get("status"),
+            "injury_source": injury.get("source"),
+            "on_bye": False,
+            # "unknown" when there was neither an opponent nor a cached
+            # schedule to check against: projected as playing, but unverified.
+            "bye_status": bye["status"],
+            "bye_reason": bye["reason"],
         }
 
     def _status_lookup(self):
@@ -522,8 +613,13 @@ class ProjectionEngine:
     async def project_many(
         self, players: list[dict], scoring: str = "ppr", superflex: bool = False,
         num_teams: int = 12, season: int | None = None, week: int | None = None,
+        db=None,
     ) -> dict:
         ppr = scoring_to_ppr(scoring)
+        # The cached schedule decides byes. None when the week is not cached,
+        # in which case nobody is assumed to be on bye.
+        schedule = week_schedule(db if db is not None else getattr(self, "db", None),
+                                 season, week)
         values_index = await self.values.get_values(
             ppr, 2 if superflex else 1, num_teams, False
         )
@@ -554,7 +650,7 @@ class ProjectionEngine:
 
         projections = [
             self._project_one(p, values_index, rankings, lines, opp_index, week, ppr,
-                              depth, status_of)
+                              depth, status_of, schedule)
             for p in players
         ]
         return {
@@ -562,6 +658,8 @@ class ProjectionEngine:
             "values_source": values_index.get("source"),
             "vegas_active": bool(lines),
             "opportunity_active": bool(opp_index),
+            "schedule_known": schedule is not None,
+            "on_bye": [p["player"] for p in projections if p.get("on_bye")],
             # Stated rather than assumed: the same roster is worth visibly
             # different points in full vs half PPR, and the FLEX order changes.
             "scoring": scoring,
@@ -588,6 +686,29 @@ def get_projection_engine(db=None) -> ProjectionEngine:
 # MCP Tool Functions
 # ==========================================================================
 
+def _with_injuries(players: list[dict], db) -> list[dict]:
+    """Fill in each player's injury from the database when none was given.
+
+    Start/sit already did this (`injury_match.lookup_injury`); the projection
+    tools did not, so the same Out player projected full points here and zero
+    there. An explicit status from the caller always wins.
+    """
+    if db is None:
+        return players
+    from .injury_match import lookup_injury
+    out = []
+    for p in players:
+        if (p.get("injury") or {}).get("status"):
+            out.append(p)
+            continue
+        found = lookup_injury(db, p.get("name") or p.get("player_name"), p.get("team"))
+        if found:
+            p = {**p, "injury": {**(p.get("injury") or {}),
+                                 "status": found["status"], "source": found["source"]}}
+        out.append(p)
+    return out
+
+
 @handle_http_errors(default_data={"projections": []}, operation_name="projecting players")
 async def project_players(
     players: list[dict],
@@ -602,23 +723,33 @@ async def project_players(
 
     Args:
         players: list of dicts with name, position, team, opponent, and optional
-            usage {snap_percentage, usage_trend} and injury {status}.
+            usage {snap_percentage, usage_trend} and injury {status}. An
+            opponent of "BYE" projects zero; a blank one is filled from the
+            cached schedule. A player without an injury status is looked up in
+            the injury tables, as start/sit does.
         scoring/superflex/num_teams: league format for the value baseline.
-        season, week: pass both to use the opportunity-based baseline (trailing
-            nflverse volume, backtested to beat rank-bucket PPG); week must be >1.
-            Omit either to use the positional-rank baseline.
+        season, week: the week being projected. Inferred from the NFL state
+            when omitted (reported as `week_inferred`). With week > 1 the
+            opportunity-based baseline is used (trailing nflverse volume,
+            backtested to beat rank-bucket PPG), and the week's cached schedule
+            decides byes.
 
-    Returns: {projections:[{projected_points, floor, ceiling, confidence, breakdown, ...}]}
+    Returns: {projections:[{projected_points, floor, ceiling, confidence, on_bye,
+              bye_status, breakdown, ...}], on_bye:[names], schedule_known, ...}
     """
     if not players:
         return create_error_response("No players provided", ErrorType.VALIDATION, {"projections": []})
+    season, week, week_inferred = await resolve_season_week(season, week)
     engine = get_projection_engine(db)
     result = await engine.project_many(
-        players, scoring=scoring, superflex=superflex, num_teams=num_teams,
-        season=season, week=week,
+        _with_injuries(players, db), scoring=scoring, superflex=superflex,
+        num_teams=num_teams, season=season, week=week, db=db,
     )
     return create_success_response({
         **result,
+        "season": season,
+        "week": week,
+        "week_inferred": week_inferred,
         "total": len(result["projections"]),
         "message": f"Projected {len(result['projections'])} players ({result.get('values_source')})",
     })
@@ -629,7 +760,7 @@ async def project_player(
     player_name: str,
     position: str,
     team: str,
-    opponent: str,
+    opponent: str = "",
     snap_percentage: float | None = None,
     usage_trend: str | None = None,
     injury_status: str | None = None,
@@ -643,29 +774,41 @@ async def project_player(
 ) -> dict:
     """Project weekly fantasy points for a single player.
 
-    Pass season + week (week > 1) to use the opportunity-based baseline (trailing
-    nflverse volume, backtested to beat rank-bucket PPG); omit either to use the
-    positional-rank baseline. Optionally pass wind_mph / is_dome (e.g. from
-    get_weather_forecast) to apply the weather factor — small but real in windy
-    games; neutral otherwise.
+    season/week are inferred from the NFL state when omitted; with week > 1
+    the opportunity-based baseline is used (trailing nflverse volume,
+    backtested to beat rank-bucket PPG). An opponent of "BYE" — or a team the
+    cached schedule has no game for — projects zero with `on_bye` set; a blank
+    opponent is filled from the schedule. Without `injury_status` the player's
+    status is looked up in the injury tables. Optionally pass wind_mph /
+    is_dome (e.g. from get_weather_forecast) to apply the weather factor —
+    small but real in windy games; neutral otherwise.
 
-    Returns: {projection: {projected_points, floor, ceiling, confidence, breakdown, ...}}
+    Returns: {projection: {projected_points, floor, ceiling, confidence, on_bye, breakdown, ...}}
     """
     player = {
         "name": player_name, "position": position, "team": team, "opponent": opponent,
         "usage": {"snap_percentage": snap_percentage, "usage_trend": usage_trend},
-        "injury": {"status": injury_status},
+        "injury": {"status": injury_status, "source": "caller" if injury_status else None},
     }
     if wind_mph is not None or is_dome:
         player["weather"] = {"wind_mph": wind_mph, "is_dome": is_dome}
+    season, week, week_inferred = await resolve_season_week(season, week)
     engine = get_projection_engine(db)
-    result = await engine.project_many([player], scoring=scoring, superflex=superflex,
-                                       season=season, week=week)
+    result = await engine.project_many(_with_injuries([player], db), scoring=scoring,
+                                       superflex=superflex, season=season, week=week, db=db)
     proj = result["projections"][0] if result["projections"] else None
+    if proj and proj.get("on_bye"):
+        message = f"{player_name}: 0 pts — {proj.get('bye_reason')}"
+    elif proj:
+        message = (f"{player_name}: {proj['projected_points']} pts "
+                   f"(floor {proj['floor']}, ceiling {proj['ceiling']}, {proj['confidence_level']} conf)")
+    else:
+        message = "No projection"
     return create_success_response({
         "projection": proj,
         "values_source": result.get("values_source"),
-        "message": (f"{player_name}: {proj['projected_points']} pts "
-                    f"(floor {proj['floor']}, ceiling {proj['ceiling']}, {proj['confidence_level']} conf)"
-                    if proj else "No projection"),
+        "season": season,
+        "week": week,
+        "week_inferred": week_inferred,
+        "message": message,
     })
