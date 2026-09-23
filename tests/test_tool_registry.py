@@ -13,7 +13,6 @@ import pytest
 sys.path.insert(0, '/tmp/nfl_mcp')
 
 from nfl_mcp.tool_registry import (
-    analyze_full_lineup,
     analyze_opponent,
     analyze_roster_matchups,
     analyze_trade,
@@ -46,7 +45,6 @@ from nfl_mcp.tool_registry import (
     get_nfl_standings,
     get_nfl_state,
     get_playoff_bracket,
-    get_roster_recommendations,
     get_rosters,
     get_scheme_classification,
     get_stack_opportunities,
@@ -108,9 +106,7 @@ def test_tool_registry_functions_exist():
     assert callable(get_matchup_difficulty)
     assert callable(analyze_roster_matchups)
     assert callable(get_start_sit_recommendation)
-    assert callable(get_roster_recommendations)
     assert callable(compare_players_for_slot)
-    assert callable(analyze_full_lineup)
     assert callable(get_vegas_lines)
     assert callable(get_stack_opportunities)
     assert callable(get_injury_report)

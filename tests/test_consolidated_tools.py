@@ -133,3 +133,63 @@ async def test_strength_of_schedule_playoff_weeks_from_league():
         assert (sos.await_args.kwargs["start_week"], sos.await_args.kwargs["end_week"]) == (15, 17)
         await tool_registry.get_strength_of_schedule(season=2026, start_week=4, end_week=9)
         assert (sos.await_args.kwargs["start_week"], sos.await_args.kwargs["end_week"]) == (4, 9)
+
+
+class _FakeDB:
+    def search_athletes_by_name(self, name, limit=10):
+        return [{"id": "4046", "full_name": "Bijan Robinson", "team_id": "ATL", "position": "RB"},
+                {"id": "999", "full_name": "Bijan Robinson Sr", "team_id": None, "position": "RB"}]
+
+    def get_athletes_by_ids(self, ids):
+        return {}
+
+    def get_usage_for_week(self, season, week):
+        return [{"player_id": "4046", "snap_share": 71.5}] if week == 2 else []
+
+
+@pytest.mark.asyncio
+async def test_start_sit_looks_up_team_position_and_snaps():
+    mock = AsyncMock(return_value={"success": True, "recommendation": {}})
+    with patch("nfl_mcp.tool_registry.get_db", return_value=_FakeDB()), \
+         patch("nfl_mcp.lineup_optimizer_tools.get_start_sit_recommendation", mock):
+        out = await tool_registry.get_start_sit_recommendation(
+            player_name="Bijan Robinson", season=2026, week=3)
+    kw = mock.await_args.kwargs
+    assert (kw["team"], kw["position"], kw["player_id"], kw["snap_percentage"]) == ("ATL", "RB", "4046", 71.5)
+    assert out["resolved"]["team"] == "ATL"
+
+
+@pytest.mark.asyncio
+async def test_start_sit_list_mode_replaces_roster_recommendations():
+    mock = AsyncMock(return_value={"success": True, "recommendations": []})
+    with patch("nfl_mcp.tool_registry.get_db", return_value=_FakeDB()), \
+         patch("nfl_mcp.lineup_optimizer_tools.get_roster_recommendations", mock):
+        await tool_registry.get_start_sit_recommendation(
+            players=["Bijan Robinson", {"name": "KC", "position": "DEF"}], season=2026, week=3)
+    sent = mock.await_args.kwargs["players"]
+    assert sent[0]["team"] == "ATL" and sent[0]["usage"] == {"snap_percentage": 71.5}
+    assert (sent[1]["team"], sent[1]["position"]) == ("KC", "DEF")
+
+
+@pytest.mark.asyncio
+async def test_analyze_lineup_reads_the_set_lineup_from_the_league():
+    from nfl_mcp import lineup_tools
+    ctx = {"error": None, "roster_id": 7, "season": 2026, "week": 3,
+           "league": {"name": "L", "roster_positions": ["QB", "RB", "FLEX", "BN", "BN"]},
+           "roster": {"reserve": []}, "starters": ["1", "2", "0"],
+           "players": [
+               {"player_id": "1", "name": "Q", "position": "QB", "team": "KC", "opponent": "LV"},
+               {"player_id": "2", "name": "R", "position": "RB", "team": "ATL", "opponent": "NO"},
+               {"player_id": "3", "name": "W", "position": "WR", "team": "SF", "opponent": "BYE"},
+           ]}
+    grade = AsyncMock(return_value={"success": True, "lineup_grade": "B"})
+    with patch("nfl_mcp.roster_context.load_roster_players", AsyncMock(return_value=ctx)), \
+         patch("nfl_mcp.sleeper_tools.get_matchups", AsyncMock(return_value={"matchups": []})), \
+         patch("nfl_mcp.lineup_optimizer_tools.analyze_full_lineup", grade):
+        out = await lineup_tools.analyze_lineup("123", roster_id=7, db=None)
+    lineup = grade.await_args.kwargs["lineup"]
+    assert [p["name"] for p in lineup["QB"]] == ["Q"]
+    assert [p["name"] for p in lineup["RB"]] == ["R"]
+    assert [p["name"] for p in lineup["BENCH"]] == ["W"]
+    assert out["empty_slots"] == ["FLEX"]
+    assert out["lineup_grade"] == "B"

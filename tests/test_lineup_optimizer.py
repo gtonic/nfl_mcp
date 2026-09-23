@@ -325,12 +325,12 @@ class TestGetRosterRecommendations:
     @pytest.mark.asyncio
     async def test_roster_recommendations_empty_list(self):
         """Test error handling for empty player list."""
-        from nfl_mcp.tool_registry import get_roster_recommendations as wrapper_func
+        from nfl_mcp.tool_registry import get_start_sit_recommendation as wrapper_func
 
         result = await wrapper_func(players=[])
 
         assert result["success"] is False
-        assert "No players provided" in result.get("error", "")
+        assert "player_name" in result.get("error", "")
 
 
 class TestComparePlayersForSlot:
@@ -397,12 +397,12 @@ class TestAnalyzeFullLineup:
     @pytest.mark.asyncio
     async def test_analyze_full_lineup_empty(self):
         """Test error handling for empty lineup."""
-        from nfl_mcp.tool_registry import analyze_full_lineup as wrapper_func
+        from nfl_mcp.tool_registry import analyze_lineup as wrapper_func
 
         result = await wrapper_func(lineup={})
 
         assert result["success"] is False
-        assert "No lineup provided" in result.get("error", "")
+        assert "league_id" in result.get("error", "")
 
 
 class TestToolRegistryIntegration:
@@ -416,9 +416,10 @@ class TestToolRegistryIntegration:
         tool_names = [t.__name__ for t in tools]
 
         assert "get_start_sit_recommendation" in tool_names
-        assert "get_roster_recommendations" in tool_names
         assert "compare_players_for_slot" in tool_names
-        assert "analyze_full_lineup" in tool_names
+        assert "analyze_lineup" in tool_names
+        assert "get_roster_recommendations" not in tool_names
+        assert "analyze_full_lineup" not in tool_names
 
     def test_lineup_tools_import(self):
         """Test lineup_optimizer_tools module imports cleanly."""

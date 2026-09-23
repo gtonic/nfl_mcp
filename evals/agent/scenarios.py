@@ -54,13 +54,14 @@ SCENARIOS = [
     },
     {
         "id": "lineup",
-        "prompt": "Here's my week-6 roster with players, teams and opponents — set my optimal starting lineup.",
-        "expect": ["analyze_full_lineup", "get_roster_recommendations"],
+        "prompt": "I'm roster 7 in league 555 — grade the lineup I have set this week and tell me what to change.",
+        "expect": ["analyze_lineup", "get_weekly_briefing"],
+        "args": {"league_id": "555"},
     },
     {
         "id": "start_sit_compare",
         "prompt": "Should I start Player A (WR, MIA vs NE) or Player B (RB, SF vs ARI) in my flex this week?",
-        "expect": ["compare_players_for_slot", "get_start_sit_recommendation", "get_roster_recommendations"],
+        "expect": ["compare_players_for_slot", "get_start_sit_recommendation"],
     },
     {
         "id": "matchup",
@@ -77,6 +78,12 @@ SCENARIOS = [
         "prompt": "Show me the waiver-wire dashboard for league 555.",
         "expect": ["get_waiver_log"],
         "args": {"league_id": "555"},
+    },
+    {
+        "id": "bye_weeks",
+        "prompt": "Which upcoming weeks will byes wreck my lineup? League 555, roster 7.",
+        "expect": ["get_bye_week_plan"],
+        "args": {"league_id": "555", "roster_id": 7},
     },
     {
         "id": "trending",

@@ -172,9 +172,8 @@ def get_all_tools() -> list[Callable]:
 
         # Lineup Optimizer Tools (Start/Sit Recommendations)
         get_start_sit_recommendation,
-        get_roster_recommendations,
         compare_players_for_slot,
-        analyze_full_lineup,
+        analyze_lineup,
         get_win_probability_lineup,
 
         # Vegas Lines Tools (Game Environment Analysis)
@@ -1872,202 +1871,126 @@ async def get_weather_forecast(
 
 @timing_decorator("get_start_sit_recommendation", tool_type="lineup")
 async def get_start_sit_recommendation(
-    player_name: str,
-    position: str,
-    team: str,
+    player_name: str | None = None,
+    players: list | None = None,
+    position: str | None = None,
+    team: str | None = None,
     opponent: str = "",
     player_id: str | None = None,
-    target_share: float | None = None,
-    snap_percentage: float | None = None,
     injury_status: str | None = None,
-    practice_status: str | None = None,
-    projected_points: float | None = None,
-    scoring: str | None = None,
     league_id: str | None = None,
+    scoring: str | None = None,
     season: int | None = None,
     week: int | None = None,
+    include_reasoning: bool = True,
 ) -> dict:
-    """Get a start/sit recommendation for a single player.
+    """Start or sit? For one player (player_name) or several (players).
 
-    Analyzes matchup difficulty, usage trends, health status, and projections
-    to provide a confidence-weighted recommendation.
+    Name the player; team, position, Sleeper id, opponent (cached schedule),
+    last week's snap share, injury designation and this week's practice report
+    are looked up server-side — do not guess them. Decided on projected points
+    (matchup, Vegas, usage, injury), with a confidence-weighted verdict. For
+    the whole lineup of a league roster use analyze_lineup; for one slot
+    between 2-5 candidates compare_players_for_slot; for a full weekly plan
+    get_weekly_briefing.
+
+    K and DEF are priced off Vegas totals (own for K, opponent's for DEF) or,
+    without live lines, the season's scoring; their matchup is an offense rank.
 
     Parameters:
-        player_name (str, required): Player's full name
-        position (str, required): Fantasy position (QB, RB, WR, TE, K, DEF).
-            K and DEF are priced off Vegas totals (own for K, opponent's for
-            DEF) or, without live lines, the season's scoring; their matchup
-            is an offense rank (DEF: the opponent's, K: his own) and the
-            good-week marks are rebased to the league's K/DEF scoring.
-        team (str, required): Player's team abbreviation (for a DEF: the team
-            itself — Sleeper's DEF id is the team code)
-        opponent (str, optional): Opponent team abbreviation, or "BYE". Omit to
-            fill it from the cached schedule. A team with no game that week is
-            must_sit with `on_bye: true`, whatever else is passed.
-        player_id (str, optional): Sleeper player id (sharpens the Sleeper
-            projection match; names + team are used otherwise)
-        target_share (float, optional): Target share percentage (0-100)
-        snap_percentage (float, optional): Snap count percentage (0-100)
-        injury_status (str, optional): Injury status (healthy, questionable, doubtful, out)
-        practice_status (str, optional): Practice status (full, limited, dnp)
-        projected_points (float, optional): Projected fantasy points
-        league_id (str, optional): Sleeper league id. Supplies the league's real
-            scoring and size when `scoring` is not passed — prefer it.
-        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
-            'standard', or a raw per-reception value like '0.5'. Pass the real
-            setting: it changes the points AND what counts as a good week.
-        season (int, optional), week (int, optional): pass both (week > 1) to
-            project off trailing volume instead of the positional-rank baseline
+        player_name (str): One player's name (single mode).
+        players (list): Several players, as names or dicts {name, position?,
+            team?, opponent?, player_id?} (list mode — replaces the old
+            get_roster_recommendations).
+        position, team, player_id (optional): Disambiguate a common name.
+        opponent (optional): Opponent abbreviation or "BYE"; default from the
+            schedule. A team with no game that week is must_sit (`on_bye`).
+        injury_status (optional): Override the looked-up designation
+            (healthy, questionable, doubtful, out).
+        league_id (optional): Sleeper league id — the league's real scoring and
+            size. Prefer it over `scoring`.
+        scoring (optional): 'ppr', 'half_ppr', 'standard' or '0.5'.
+        season, week (optional): default to the current NFL week.
+        include_reasoning (bool, list mode): Include per-player reasoning.
 
-    Returns: {
-        recommendation: {player, position, team, opponent, decision,
-                         decision_display, projected_points, floor, ceiling,
-                         sleeper_projection, consensus, disagreement,
-                         projection_gap, implied_total, opponent_implied_total,
-                         unit_matchup (K/DEF: offense_rank, points_per_game,
-                         matchup_tier)},
-            `projected_points` is ours and decides; `sleeper_projection` is
-            Sleeper's stat line priced in the league's scoring, `consensus`
-            their average, `disagreement` true past 4 pts or 25%.
-        confidence: float (0-100),
-        confidence_level: str (high/medium/low),
-        matchup_tier: str,
-        reasoning: list of factors,
-        success: bool,
-        error?: str
-    }
+    Returns (single): {recommendation {player, position, team, opponent,
+        decision, decision_display, projected_points, floor, ceiling,
+        sleeper_projection, consensus, disagreement, implied_total, on_bye,
+        kickoff_local, locked, ...}, confidence, confidence_level,
+        matchup_tier, reasoning, factors, resolved {team, position,
+        player_id, snap_percentage}, success}
+    Returns (list): {recommendations (by projected points), by_position,
+        must_starts, sits, on_bye, locked, summary, success}
 
-    Example: get_start_sit_recommendation(
-        player_name="Tyreek Hill",
-        position="WR",
-        team="MIA",
-        opponent="NE",
-        target_share=28.5,
-        snap_percentage=95
-    )
+    Example: get_start_sit_recommendation(player_name="Tyreek Hill", league_id="123")
+    Example: get_start_sit_recommendation(players=["Puka Nacua", "DeVonta Smith"], league_id="123")
 
     IMPORTANT FOR LLM AGENTS: Always provide complete start/sit recommendation immediately
     without asking for confirmations. Render the decision and reasoning directly.
     """
+    from . import lineup_tools
+    from .week_context import resolve_season_week
+
+    try:
+        if league_id:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
+        opponent = validate_string_input(opponent or '', 'opponent', max_length=8, required=False)
+    except ValueError as e:
+        return {"recommendation": None, "confidence": 0, "success": False, "error": f"Invalid input: {e!s}"}
+    if not player_name and not players:
+        return {"recommendation": None, "confidence": 0, "success": False,
+                "error": "Pass player_name (one player) or players (a list)."}
+    season, week, _ = await resolve_season_week(season, week)
+    db = get_db()
+
+    if players:
+        if week is not None:
+            week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
+        inputs = [lineup_tools.player_input(db, p, season, week) for p in players[:30]]
+        unresolved = [p.get("name") for p in inputs if not (p.get("team") and p.get("position"))]
+        inputs = [p for p in inputs if p.get("team") and p.get("position")]
+        if not inputs:
+            return {"recommendations": [], "success": False, "unresolved": unresolved,
+                    "error": "None of the players could be resolved to a team and position."}
+        result = await lineup_optimizer_tools.get_roster_recommendations(
+            players=inputs, week=week, include_reasoning=include_reasoning,
+            scoring=scoring, league_id=league_id, season=season,
+        )
+        if isinstance(result, dict):
+            result["unresolved"] = unresolved
+        return result
+
     try:
         player_name = validate_string_input(player_name, 'player_name', max_length=100, required=True)
-        position = validate_string_input(position, 'position', max_length=5, required=True)
-        team = validate_string_input(team, 'team', max_length=5, required=True)
-        opponent = validate_string_input(opponent or '', 'opponent', max_length=8, required=False)
-
-        if league_id:
-
-            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
-
-        return await lineup_optimizer_tools.get_start_sit_recommendation(
-            player_name=player_name,
-            position=position.upper(),
-            team=team.upper(),
-            opponent=opponent.upper(),
-            player_id=player_id,
-            target_share=target_share,
-            snap_percentage=snap_percentage,
-            injury_status=injury_status,
-            practice_status=practice_status,
-            projected_points=projected_points,
-            scoring=scoring,
-            league_id=league_id,
-            season=season,
-            week=week,
-        )
     except ValueError as e:
-        return {
-            "recommendation": None,
-            "confidence": 0,
-            "success": False,
-            "error": f"Invalid input: {e!s}"
-        }
-
-
-@timing_decorator("get_roster_recommendations", tool_type="lineup")
-async def get_roster_recommendations(
-    players: list[dict],
-    week: int | None = None,
-    include_reasoning: bool = True,
-    scoring: str | None = None,
-    league_id: str | None = None,
-    season: int | None = None,
-) -> dict:
-    """Get start/sit recommendations for multiple players.
-
-    Analyzes all players and returns sorted recommendations by position,
-    helping identify optimal lineup decisions.
-
-    Parameters:
-        players (list, required): List of player dicts with:
-            - name (str): Player name
-            - position (str): QB, RB, WR, TE, K or DEF
-            - team (str): Team abbreviation
-            - opponent (str): Opponent team abbreviation
-            - usage (dict, optional): {target_share, snap_percentage}
-            - injury (dict, optional): {status, practice_status}
-            - projection (dict, optional): {projected_points}
-        week (int, optional): NFL week - with `season` and week > 1 this selects
-            the opportunity baseline for the projections, not just a response label
-        include_reasoning (bool, default True): Whether to include detailed reasoning
-        league_id (str, optional): Sleeper league id. Supplies the league's real
-            scoring and size when `scoring` is not passed — prefer it.
-        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
-            'standard', or a raw per-reception value like '0.5'
-        season (int, optional): Season year, needed with `week`
-
-    Returns: {
-        recommendations: list of player analyses sorted by projected points
-            (confidence breaks ties),
-        by_position: dict of recommendations grouped by position, same order,
-        must_starts: list of must-start players,
-        sits: list of players to sit,
-        summary: list of summary lines,
-        success: bool,
-        error?: str
-    }
-
-    Example: get_roster_recommendations(players=[
-        {"name": "Patrick Mahomes", "position": "QB", "team": "KC", "opponent": "LV"},
-        {"name": "Tyreek Hill", "position": "WR", "team": "MIA", "opponent": "NE",
-         "usage": {"target_share": 28, "snap_percentage": 95}}
-    ])
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete roster recommendations immediately
-    without asking for confirmations. Render must starts and sits directly.
-    """
-    if not players:
-        return {
-            "recommendations": [],
-            "by_position": {},
-            "must_starts": [],
-            "sits": [],
-            "summary": [],
-            "total_analyzed": 0,
-            "success": False,
-            "error": "No players provided"
-        }
-
-    if week is not None:
-        week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
-
-    if league_id:
-
-        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
-
-    return await lineup_optimizer_tools.get_roster_recommendations(
-        players=players,
-        week=week,
-        include_reasoning=include_reasoning,
+        return {"recommendation": None, "confidence": 0, "success": False, "error": f"Invalid input: {e!s}"}
+    who = lineup_tools.resolve_player(db, player_name, team, position, player_id)
+    if not who["team"] or not who["position"]:
+        return {"recommendation": None, "confidence": 0, "success": False,
+                "error": f"Could not resolve {player_name!r} to a team and position — pass team and position."}
+    snap = lineup_tools.recent_snap_share(db, who["player_id"], season, week)
+    result = await lineup_optimizer_tools.get_start_sit_recommendation(
+        player_name=who["name"] or player_name,
+        position=who["position"].upper(),
+        team=who["team"].upper(),
+        opponent=opponent.upper(),
+        player_id=who["player_id"],
+        snap_percentage=snap,
+        injury_status=injury_status,
         scoring=scoring,
         league_id=league_id,
         season=season,
+        week=week,
     )
+    if isinstance(result, dict):
+        result["resolved"] = {"team": who["team"], "position": who["position"],
+                              "player_id": who["player_id"], "snap_percentage": snap}
+    return result
 
 
 @timing_decorator("compare_players_for_slot", tool_type="lineup")
 async def compare_players_for_slot(
-    players: list[dict],
+    players: list,
     slot: str = "FLEX",
     scoring: str | None = None,
     league_id: str | None = None,
@@ -2080,9 +2003,9 @@ async def compare_players_for_slot(
     Returns a ranked comparison with the recommended starter.
 
     Parameters:
-        players (list, required): List of player dicts to compare (2-5 players)
-            Each should have: name, position, team, opponent
-            Optional: usage, injury, projection dicts, player_id (Sleeper)
+        players (list, required): 2-5 players, as names or dicts {name,
+            position?, team?, opponent?, player_id?}. Team, position, opponent,
+            snap share, injury and practice are looked up when omitted.
             Kickers and defenses compare too (slot "K" / "DEF"): a DEF is
             its team code, matched on the opponent's offense; a K on his own.
         slot (str, default "FLEX"): The roster slot being filled (e.g., "WR2",
@@ -2109,10 +2032,9 @@ async def compare_players_for_slot(
 
     Example: compare_players_for_slot(
         players=[
-            {"name": "Player A", "position": "WR", "team": "KC", "opponent": "LV"},
-            {"name": "Player B", "position": "RB", "team": "SF", "opponent": "ARI"}
+            "Puka Nacua", {"name": "Christian McCaffrey", "team": "SF"}
         ],
-        slot="FLEX"
+        slot="FLEX", league_id="123"
     )
 
     IMPORTANT FOR LLM AGENTS: Always provide complete player comparison immediately
@@ -2134,6 +2056,11 @@ async def compare_players_for_slot(
 
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
 
+    from . import lineup_tools
+    from .week_context import resolve_season_week
+    season, week, _ = await resolve_season_week(season, week)
+    players = [lineup_tools.player_input(get_db(), p, season, week) for p in players[:5]]
+
     return await lineup_optimizer_tools.compare_players_for_slot(
         players=players,
         slot=slot,
@@ -2144,91 +2071,58 @@ async def compare_players_for_slot(
     )
 
 
-@timing_decorator("analyze_full_lineup", tool_type="lineup")
-async def analyze_full_lineup(
-    lineup: dict,
-    week: int | None = None,
-    scoring: str | None = None,
+@timing_decorator("analyze_lineup", tool_type="lineup")
+async def analyze_lineup(
     league_id: str | None = None,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    week: int | None = None,
     season: int | None = None,
+    lineup: dict | None = None,
 ) -> dict:
-    """Analyze a complete fantasy lineup with optimal lineup suggestions.
+    """Grade the lineup YOU have set this week and name the swaps worth making.
 
-    Takes a full lineup organized by position and provides analysis of each starter,
-    identification of weak spots, bench players who should start, and overall lineup grade.
+    Reads your roster and this week's set starters straight from the league:
+    every starter and bench player is projected in the league's scoring (with
+    injury, practice, matchup, usage), the best legal lineup is computed with
+    the league's slots, and the grade is the share of those optimal points you
+    are actually starting. Players whose game has started stay locked. For a
+    full weekly plan with win probability use get_weekly_briefing.
 
     Parameters:
-        lineup (dict, required): Dict with position keys containing player lists
-            Example: {
-                "QB": [{"name": "...", "team": "...", "opponent": "..."}],
-                "RB": [{"name": "...", ...}, {"name": "...", ...}],
-                "WR": [...],
-                "TE": [...],
-                "FLEX": [...],
-                "K": [...], "DEF": [{"name": "KC", "team": "KC", "position": "DEF"}],
-                "BENCH": [...]
-            }
-            K and DEF starters are analysed like everyone else (offense-rank
-            matchup, league-scored projection, Sleeper second opinion).
-        week (int, optional): NFL week - with `season` and week > 1 this selects
-            the opportunity baseline for the projections, not just a label
-        league_id (str, optional): Sleeper league id. Supplies the league's real
-            scoring and size when `scoring` is not passed — prefer it.
-        scoring (str, optional): League scoring - 'ppr', 'half_ppr',
-            'standard', or a raw per-reception value like '0.5'
-        season (int, optional): Season year, needed with `week`
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        week, season: default to the current NFL week
+        lineup (dict, optional): grade a hypothetical lineup instead, keyed by
+            slot ({"QB": [{name, team, position, opponent}], ..., "BENCH": [...]});
+            league_id then only supplies the scoring
 
     Returns: {
-        starters: dict of starter analyses by position,
-        bench: list of bench player analyses,
-        suggested_changes: list of recommended lineup changes,
-        weak_spots: list of positions with low confidence,
-        lineup_grade: str (A-F),
-        average_confidence: float,
-        total_projected: float,
-        success: bool,
-        error?: str
+        lineup_grade (A-F), lineup_efficiency_pct, total_projected,
+        optimal_projected, optimal_lineup [{slot, player, position,
+        projected_points}], suggested_changes [{bench_in, bench_out, slot,
+        gain, reason}], locked_players, weak_spots, starters {slot: [...]},
+        bench [...], empty_slots, roster_id, success
     }
 
-    Example: analyze_full_lineup(lineup={
-        "QB": [{"name": "Patrick Mahomes", "team": "KC", "opponent": "LV"}],
-        "RB": [
-            {"name": "Derrick Henry", "team": "BAL", "opponent": "CIN"},
-            {"name": "Bijan Robinson", "team": "ATL", "opponent": "NO"}
-        ],
-        "WR": [...],
-        "BENCH": [...]
-    })
+    Example: analyze_lineup(league_id="123", roster_id=7)
 
     IMPORTANT FOR LLM AGENTS: Always provide complete lineup analysis immediately
     without asking for confirmations. Render the grade, weak spots, and suggested changes directly.
     """
-    if not lineup:
-        return {
-            "starters": {},
-            "bench": [],
-            "suggested_changes": [],
-            "weak_spots": [],
-            "lineup_grade": "N/A",
-            "average_confidence": 0,
-            "total_projected": 0,
-            "success": False,
-            "error": "No lineup provided"
-        }
+    from . import lineup_tools
 
-    if week is not None:
-        week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
-
-    if league_id:
-
-        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
-
-    return await lineup_optimizer_tools.analyze_full_lineup(
-        lineup=lineup,
-        week=week,
-        scoring=scoring,
-        league_id=league_id,
-        season=season,
+    try:
+        if league_id:
+            league_id = validate_string_input(league_id, 'league_id', max_length=20, required=False)
+        if week is not None:
+            week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
+    except ValueError as e:
+        return {"lineup_grade": "N/A", "success": False, "error": f"Invalid input: {e!s}"}
+    return await lineup_tools.analyze_lineup(
+        league_id=league_id, roster_id=roster_id, user_id=user_id,
+        week=week, season=season, lineup=lineup, db=get_db(),
     )
 
 
