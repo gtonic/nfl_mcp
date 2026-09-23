@@ -15,7 +15,7 @@ from .config import (
     create_http_client,
     get_http_headers,
 )
-from .game_clock import game_progress
+from .game_clock import progress_of, week_games
 from .injury_match import sleeper_injury_status
 from .injury_service import worst_status
 from .teams import normalize_team
@@ -708,7 +708,8 @@ def _cached_defense_rankings(analyzer, nfl_db, season: int | None) -> dict | Non
 
 
 def _team_game_final(nfl_db, season: int, week: int, team: str | None) -> bool:
-    """Whether ``team``'s game in ``week`` is over, from the cached kickoff.
+    """Whether ``team``'s game in ``week`` is over, from the cached kickoff
+    and — where the stored event has it — ESPN's own game state.
 
     Unknown (no schedule, no kickoff, bye) counts as not final: reading the
     previous completed week is the recoverable error, a half-played game
@@ -717,13 +718,10 @@ def _team_game_final(nfl_db, season: int, week: int, team: str | None) -> bool:
     if not team or not hasattr(nfl_db, "get_week_kickoffs"):
         return False
     try:
-        kickoffs = nfl_db.get_week_kickoffs(int(season), int(week))
+        games = week_games(nfl_db, int(season), int(week))
     except Exception:
         return False
-    if not isinstance(kickoffs, dict):
-        return False
-    kickoff = kickoffs.get(team) or kickoffs.get(normalize_team(team) or team)
-    return isinstance(kickoff, str) and game_progress(kickoff) >= 1.0
+    return progress_of(games.get(normalize_team(team) or team)) >= 1.0
 
 
 def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: int | None) -> dict:

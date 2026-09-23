@@ -45,7 +45,9 @@ def _patches(league, rosters, trending_ids, week=10):
     async def R(l): return rosters
     async def T(db, a, b, c): return {"success": True, "trending_players": [{"player_id": p, "count": 999} for p in trending_ids]}
     async def S(): return {"success": True, "nfl_state": {"week": week}}
+    async def X(l, week=None): return {"success": True, "transactions": []}
     return [
+        patch.object(ft, "get_transactions", X),
         patch.object(ft, "get_league", L),
         patch.object(ft, "get_rosters", R),
         patch.object(ft, "get_trending_players", T),

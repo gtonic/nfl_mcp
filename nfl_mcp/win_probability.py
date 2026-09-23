@@ -18,8 +18,10 @@ swaps, so the objective itself decides floor vs ceiling.
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
 
 from .errors import create_success_response, handle_http_errors, handle_validation_error
+from .game_clock import game_lock, week_games
 from .lineup_slots import (
     SLOT_ELIGIBILITY,
     assign_to_slots,
@@ -29,6 +31,7 @@ from .lineup_slots import (
 )
 from .lineup_slots import expand_slots as expand_slots
 from .projections import _VOLATILITY
+from .teams import normalize_team
 
 FLEX_ELIGIBLE = set(SLOT_ELIGIBILITY["FLEX"])
 SUPERFLEX_ELIGIBLE = set(SLOT_ELIGIBILITY["SUPERFLEX"])
@@ -262,6 +265,59 @@ def optimize_win_probability(
     }
 
 
+_BENCH_SLOTS = {"BN", "BENCH", "IR", "TAXI", ""}
+
+
+def _now() -> datetime:
+    """The clock kickoff locks are read against; a seam for tests."""
+    return datetime.now(UTC)
+
+
+async def _split_by_kickoff(
+    players: list[dict], season: int | None, week: int | None, db=None
+) -> tuple[list[dict], list[dict], list[dict], dict[str, dict], int | None, int | None]:
+    """``(movable, locked, unavailable, lock_by_name, season, week)``.
+
+    A player whose game has started is either locked in the slot he holds
+    (his ``slot`` names a starting seat) or, benched or with no slot given,
+    unavailable: he can no longer be moved in. Everyone else stays a
+    candidate. Only players carrying a ``team`` can be checked.
+    """
+    from .database import NFLDatabase
+    from .week_context import resolve_season_week
+
+    season, week, _ = await resolve_season_week(season, week)
+    try:
+        games = week_games(db or NFLDatabase(), season, week)
+    except Exception:
+        games = {}
+    now = _now()
+    movable, locked, unavailable = [], [], []
+    lock_by_name: dict[str, dict] = {}
+    for p in players:
+        lock = game_lock(games.get(normalize_team(p.get("team")) or ""), now)
+        lock_by_name[p.get("name") or p.get("player") or ""] = lock
+        if not lock["locked"]:
+            movable.append(p)
+        elif (p.get("slot") or "").upper() not in _BENCH_SLOTS:
+            locked.append(p)
+        else:
+            unavailable.append(p)
+    return movable, locked, unavailable, lock_by_name, season, week
+
+
+def _with_kickoffs(entries: list[dict], lock_by_name: dict[str, dict]) -> list[dict]:
+    """Lineup entries with their player's kickoff and lock fields."""
+    out = []
+    for entry in entries:
+        lock = lock_by_name.get(entry.get("player") or "")
+        if lock:
+            entry = {**entry, "kickoff": lock["kickoff"], "kickoff_local": lock["kickoff_local"],
+                     "kickoff_weekday": lock["kickoff_weekday"], "locked": lock["locked"]}
+        out.append(entry)
+    return out
+
+
 @handle_http_errors(
     default_data={"recommended_lineup": [], "win_probability": None},
     operation_name="optimizing win-probability lineup",
@@ -272,6 +328,8 @@ async def get_win_probability_lineup(
     slots: dict[str, int] | None = None,
     stack_correlation: float = STACK_CORRELATION,
     locked_players: list[dict] | None = None,
+    season: int | None = None,
+    week: int | None = None,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
 
@@ -292,7 +350,11 @@ async def get_win_probability_lineup(
             0 disables the stacking effect).
         locked_players: players already committed — mid-week, anyone whose game
             has kicked off. Each needs its `slot`; they count toward the total
-            and their slots leave the optimization.
+            and their slots leave the optimization. Omit it to have kickoffs
+            read from the cached schedule: a player (with `team`) whose game
+            has started is locked in his current `slot`, or — benched or with
+            no slot given — left out, since he can no longer be moved in.
+        season, week: the week those kickoffs are read for (default: current).
 
     Returns the recommended lineup, its win probability, any QB stacks, the
     points-optimal lineup for comparison, and a floor/ceiling strategy label.
@@ -303,13 +365,36 @@ async def get_win_probability_lineup(
     if not opponent_players:
         return handle_validation_error("opponent_players is required", default_data)
 
+    unavailable: list[dict] = []
+    lock_by_name: dict[str, dict] = {}
+    if locked_players is None and any(p.get("team") for p in your_players):
+        your_players, locked_players, unavailable, lock_by_name, season, week = (
+            await _split_by_kickoff(your_players, season, week))
+        if not your_players and not locked_players:
+            return handle_validation_error(
+                "every one of your_players has already kicked off from the bench — "
+                "nothing left to optimize", default_data)
+
     result = optimize_win_probability(
         your_players, opponent_players, slots,
         stack_correlation=stack_correlation, locked_players=locked_players,
     )
+    if lock_by_name:
+        for key in ("recommended_lineup", "locked_players", "points_optimal_lineup"):
+            result[key] = _with_kickoffs(result[key], lock_by_name)
     rec = result["you_are"]
     return create_success_response({
         **result,
+        # Benched (or slot-less) players whose game has started: out of reach.
+        "unavailable_started": [
+            {"player": p.get("name") or p.get("player"),
+             "kickoff_local": (lock_by_name.get(p.get("name") or p.get("player") or "")
+                               or {}).get("kickoff_local")}
+            for p in unavailable
+        ],
+        "kickoffs_checked": bool(lock_by_name),
+        "season": season,
+        "week": week,
         "message": (
             f"Win probability {result['win_probability']}% "
             f"({rec}; {result['strategy']}). "

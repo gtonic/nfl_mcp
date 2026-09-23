@@ -1196,6 +1196,40 @@ class NFLDatabase:
             logger.debug(f"get_week_kickoffs failed: {e}")
             return {}
 
+    def get_week_game_states(self, season: int, week: int) -> dict[str, dict]:
+        """``{team: {kickoff, state, completed}}`` for one week.
+
+        ``state`` is ESPN's ``pre``/``in``/``post`` as of the last schedule
+        fetch, read out of the stored event rather than a column of its own:
+        the scoreboard (``status``) and the team-schedule feed
+        (``competitions[0].status``) both put it in the raw payload already.
+        None when neither does.
+        """
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    SELECT team, kickoff,
+                        COALESCE(json_extract(raw, '$.status.type.state'),
+                                 json_extract(raw, '$.competitions[0].status.type.state')) AS state,
+                        COALESCE(json_extract(raw, '$.status.type.completed'),
+                                 json_extract(raw, '$.competitions[0].status.type.completed')) AS completed
+                    FROM schedule_games WHERE season=? AND week=?
+                    """,
+                    (season, week),
+                )
+                return {
+                    row["team"]: {
+                        "kickoff": row["kickoff"],
+                        "state": row["state"],
+                        "completed": None if row["completed"] is None else bool(row["completed"]),
+                    }
+                    for row in cur.fetchall()
+                }
+        except Exception as e:
+            logger.debug(f"get_week_game_states failed: {e}")
+            return {}
+
     def get_usage_for_week(self, season: int, week: int) -> list[dict]:
         """All recorded usage rows for one week (empty before it is ingested)."""
         try:
