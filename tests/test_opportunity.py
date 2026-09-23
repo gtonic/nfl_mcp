@@ -36,10 +36,10 @@ class TestWeightedMean:
 class TestProjectOpportunity:
     def test_wr_projection_matches_model(self):
         games = [_wr_game(w, targets=8, rec=6, rec_yds=80) for w in range(1, 5)]
-        # rec_pts/gm = 6 + 8 = 14; ppt = (56 + 20*1.55)/(32+20) = 87/52 = 1.673
-        # exp_targets = 8 -> 8 * 1.673 = 13.38
+        # rec_pts/gm = 6 + 8 = 14; ppt = (56 + 20*1.65)/(32+20) = 89/52 = 1.712
+        # exp_targets = 8 -> 8 * 1.712 = 13.69
         proj = project_opportunity(games, "WR")
-        assert proj == pytest.approx(13.38, abs=0.1)
+        assert proj == pytest.approx(13.69, abs=0.1)
 
     def test_shrinkage_pulls_small_sample_toward_prior(self):
         # One monster game (huge efficiency) should be shrunk toward the prior,

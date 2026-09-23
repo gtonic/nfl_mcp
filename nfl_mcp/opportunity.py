@@ -37,16 +37,29 @@ FULL_PPR = 1.0
 
 # Position priors: **full-PPR** points per opportunity (per target / carry /
 # pass attempt). `_prior_ppt` rebases the per-target prior for other formats.
+#
+# League-wide 2023-24 rates per target (nflverse weekly):
+#   WR  catch 0.633 · 7.95 yds/target · 0.050 TD/target  -> 1.72 per target
+#   TE  catch 0.719 · 7.27 yds/target · 0.046 TD/target  -> 1.72 per target
+#   RB  catch 0.786 · 5.77 yds/target · 0.028 TD/target  -> 1.53 per target
+# and ~0.8 per WR/TE carry. The TE prior used to be 1.35: a TE's short-area
+# targets were priced a fifth below a WR's, when the higher catch rate makes up
+# for the shorter yards per catch. Shrunk 20 targets deep, that pulled every
+# TE's per-target rate down and left the TE opportunity base ~1 point/game low
+# next week and ~2 points/game low over the rest of the season. TE now sits at
+# the league rate; WR (was 1.55) and RB sit where the weekly backtest's bias is
+# ~0 (evals/backtest/backtest.py, 2023-24) — for those two the league rate
+# over-projects the players the shrinkage matters for.
 _PRIORS: dict[str, dict[str, float]] = {
-    "WR": {"ppt": 1.55, "ppc": 0.50},
-    "TE": {"ppt": 1.35, "ppc": 0.50},
+    "WR": {"ppt": 1.65, "ppc": 0.80},
+    "TE": {"ppt": 1.72, "ppc": 0.80},
     "RB": {"ppt": 1.45, "ppc": 0.62},
     "QB": {"ppa": 0.45, "ppc": 0.75},
 }
-# League-average catch rate per target, by position. A target is worth one
-# reception this often, so lowering the per-reception value removes exactly
+# League-average catch rate per target, by position (2023-24). A target is worth
+# one reception this often, so lowering the per-reception value removes exactly
 # `(1 - ppr) × catch_rate` from the per-target prior.
-_CATCH_RATE: dict[str, float] = {"WR": 0.62, "TE": 0.68, "RB": 0.75, "QB": 0.0}
+_CATCH_RATE: dict[str, float] = {"WR": 0.63, "TE": 0.72, "RB": 0.79, "QB": 0.0}
 # Shrinkage strength, in opportunity units: a player needs ~this many targets/
 # carries/attempts before their own efficiency outweighs the position prior.
 _K_TARGETS, _K_CARRIES, _K_ATTEMPTS = 20.0, 25.0, 60.0
