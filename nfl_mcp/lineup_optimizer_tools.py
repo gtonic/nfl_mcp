@@ -15,9 +15,11 @@ actionable recommendations for fantasy lineup decisions.
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import Enum
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
+from .game_clock import game_lock, week_games
 
 # Slot eligibility lives in `lineup_slots`, shared with every other lineup
 # builder; `SLOT_ELIGIBILITY` and `slot_accepts` are re-exported for callers.
@@ -32,6 +34,7 @@ from .lineup_slots import SLOT_ELIGIBILITY as SLOT_ELIGIBILITY
 from .player_values import scoring_to_ppr
 from .projections import _RECEPTION_SHARE, availability
 from .scoring import league_scoring, scoring_used
+from .teams import normalize_team
 from .week_context import BYE, bye_check, resolve_season_week, week_schedule
 
 logger = logging.getLogger(__name__)
@@ -48,6 +51,13 @@ _GOOD_GAME_PPR = {
     "DEF": (6, 10),
 }
 _GOOD_GAME_DEFAULT = (10, 16)
+
+
+
+def _now() -> datetime:
+    """The clock kickoff locks are read against; a seam for tests."""
+    return datetime.now(UTC)
+
 
 # A suggested swap has to beat the projection's own error to be worth making.
 # The backtest puts weekly MAE at ~5.8 points; below a couple of points a
@@ -126,6 +136,14 @@ class PlayerAnalysis:
     # letting a generic number pass for a projection.
     base_source: str | None = None
 
+    # This week's kickoff (UTC and Europe/Vienna) and whether it has passed:
+    # a locked player can no longer be moved into or out of a lineup.
+    kickoff: str | None = None
+    kickoff_local: str | None = None
+    kickoff_weekday: str | None = None
+    locked: bool = False
+    game_status: str = "unknown"
+
     # Analysis results
     decision: str = "start"
     confidence: float = 50.0
@@ -155,6 +173,11 @@ class PlayerAnalysis:
             "floor": self.floor,
             "ceiling": self.ceiling,
             "base_source": self.base_source,
+            "kickoff": self.kickoff,
+            "kickoff_local": self.kickoff_local,
+            "kickoff_weekday": self.kickoff_weekday,
+            "locked": self.locked,
+            "game_status": self.game_status,
             "decision": self.decision,
             "confidence": self.confidence,
             "confidence_level": self.confidence_level,
@@ -583,6 +606,16 @@ class LineupOptimizer:
         opponent = bye["opponent"] or opponent
         analysis.opponent = opponent.upper()
 
+        # Kickoff and lock. Informational for the player himself — his
+        # projection still stands — but it decides what the lineup tools may
+        # move: a locked player stays where he is.
+        lock = game_lock(week_games(self.db, season, week).get(normalize_team(team) or ""), _now())
+        analysis.kickoff = lock["kickoff"]
+        analysis.kickoff_local = lock["kickoff_local"]
+        analysis.kickoff_weekday = lock["kickoff_weekday"]
+        analysis.locked = lock["locked"]
+        analysis.game_status = lock["game_status"]
+
         # Get matchup data
         if self.defense_analyzer and position.upper() in ["QB", "RB", "WR", "TE"]:
             try:
@@ -660,6 +693,11 @@ class LineupOptimizer:
         analysis.confidence = round(confidence, 1)
         analysis.confidence_level = confidence_level
         analysis.reasoning = reasoning
+        if analysis.locked:
+            analysis.reasoning.insert(0, (
+                f"🔒 Game {'over' if analysis.game_status == 'final' else 'under way'} "
+                f"(kickoff {analysis.kickoff_local}) — locked, he can no longer be "
+                "moved into or out of the lineup"))
 
         # Determine decision. Health is read through the same vocabulary as the
         # projection's multiplier: an unlisted status used to score 100 here.
@@ -886,6 +924,13 @@ async def get_start_sit_recommendation(
             "base_source": analysis.base_source,
             "on_bye": analysis.on_bye,
             "bye_status": analysis.bye_status,
+            "kickoff": analysis.kickoff,
+            "kickoff_local": analysis.kickoff_local,
+            "kickoff_weekday": analysis.kickoff_weekday,
+            # His game has started: whatever the decision, it can no longer
+            # be acted on.
+            "locked": analysis.locked,
+            "game_status": analysis.game_status,
         },
         "confidence": analysis.confidence,
         "confidence_level": analysis.confidence_level,
@@ -908,7 +953,9 @@ async def get_start_sit_recommendation(
             "schedule": "on bye" if analysis.on_bye else analysis.bye_status,
             "projection": f"{analysis.projected_points} pts" if analysis.projected_points > 0 else "N/A",
         },
-        "message": f"{analysis.player_name}: {decision_display} (Confidence: {analysis.confidence:.0f}%)"
+        "message": (f"{analysis.player_name}: {decision_display} (Confidence: {analysis.confidence:.0f}%)"
+                    + (f" — locked, his game kicked off {analysis.kickoff_local}"
+                       if analysis.locked else ""))
     })
 
 
@@ -984,6 +1031,7 @@ async def get_roster_recommendations(
     must_starts = []
     sits = []
     on_bye = []
+    locked = []
 
     for _position, analyses in analyses_by_position.items():
         for analysis in analyses:
@@ -998,6 +1046,8 @@ async def get_roster_recommendations(
                 sits.append(f"{analysis.player_name} ({analysis.position})")
             if analysis.on_bye:
                 on_bye.append(f"{analysis.player_name} ({analysis.position})")
+            if analysis.locked:
+                locked.append(f"{analysis.player_name} ({analysis.position})")
 
     # Ranked by expected points. `confidence` breaks ties only: it measures how
     # much we know about a player, which is not the same question as who scores
@@ -1020,6 +1070,8 @@ async def get_roster_recommendations(
         summary_lines.append(f"🔴 CONSIDER SITTING: {', '.join(sits)}")
     if on_bye:
         summary_lines.append(f"🚫 ON BYE: {', '.join(on_bye)}")
+    if locked:
+        summary_lines.append(f"🔒 LOCKED (game started, cannot be moved): {', '.join(locked)}")
 
     return create_success_response({
         "recommendations": all_recommendations,
@@ -1027,6 +1079,8 @@ async def get_roster_recommendations(
         "must_starts": must_starts,
         "sits": sits,
         "on_bye": on_bye,
+        # Players whose game has started: their start/sit is already decided.
+        "locked": locked,
         "summary": summary_lines,
         "total_analyzed": len(all_recommendations),
         "week": week,
@@ -1123,6 +1177,7 @@ async def compare_players_for_slot(
 
     # Analyze all players
     analyses = []
+    starting_ids: set[int] = set()
     for player in players:
         analysis = await optimizer.analyze_player(
             player_name=player.get("name", "Unknown"),
@@ -1139,14 +1194,25 @@ async def compare_players_for_slot(
             week=week,
         )
         analyses.append(analysis)
+        if player.get("starting"):
+            starting_ids.add(id(analysis))
 
     # Points decide the slot, confidence only breaks a tie. A player on bye
-    # sorts last whatever the caller claimed he projects.
-    analyses.sort(key=lambda x: (not x.on_bye, x.projected_points, x.confidence), reverse=True)
+    # sorts last whatever the caller claimed he projects, and a player whose
+    # game has started sorts behind everyone still movable: he cannot be put
+    # into the slot any more.
+    analyses.sort(key=lambda x: (not x.locked, not x.on_bye, x.projected_points, x.confidence),
+                  reverse=True)
+    locked = [a for a in analyses if a.locked]
+    # The one case no ranking can change: the slot's current occupant (the
+    # caller marks him `starting`) is already playing.
+    locked_starter = next((a for a in locked if id(a) in starting_ids), None)
 
     # Get winner and runner up
-    winner = analyses[0]
-    runner_up = analyses[1] if len(analyses) > 1 else None
+    # Winner and runner-up among the players who can still be moved.
+    movable = [a for a in analyses if not a.locked] or analyses
+    winner = movable[0]
+    runner_up = movable[1] if len(movable) > 1 else None
 
     confidence_gap = winner.confidence - runner_up.confidence if runner_up else 100
     # The gap that matters for a slot decision is in points, not in how much we
@@ -1175,6 +1241,16 @@ async def compare_players_for_slot(
         verdict = (f"Coin flip: {winner.player_name} and {runner_up.player_name} are "
                    f"{points_gap} points apart, inside the model's error")
 
+    if locked_starter:
+        winner = locked_starter
+        verdict = (f"Slot locked: {locked_starter.player_name}'s game kicked off "
+                   f"{locked_starter.kickoff_local} — he stays in the {slot}, nothing to change")
+    elif locked and len(locked) == len(analyses):
+        verdict = "Every player compared has already kicked off — the slot can no longer change"
+    elif locked:
+        verdict += (" (locked, game started: "
+                    + ", ".join(a.player_name for a in locked) + ")")
+
     # Decision emoji for display
     decision_emoji = {
         "must_start": "🟢🟢",
@@ -1200,6 +1276,10 @@ async def compare_players_for_slot(
             "decision_display": f"{decision_emoji.get(analysis.decision, '⚪')} {analysis.decision.upper().replace('_', ' ')}",
             "matchup_tier": analysis.matchup_tier,
             "on_bye": analysis.on_bye,
+            "kickoff": analysis.kickoff,
+            "kickoff_local": analysis.kickoff_local,
+            "kickoff_weekday": analysis.kickoff_weekday,
+            "locked": analysis.locked,
             "reasoning": analysis.reasoning[:3] if analysis.reasoning else [],  # Top 3 reasons
         })
 
@@ -1214,6 +1294,9 @@ async def compare_players_for_slot(
             "confidence": winner.confidence,
             "decision": winner.decision,
             "on_bye": winner.on_bye,
+            "kickoff": winner.kickoff,
+            "kickoff_local": winner.kickoff_local,
+            "locked": winner.locked,
             "reasoning": winner.reasoning,
         },
         "comparison": comparison_list,
@@ -1229,7 +1312,8 @@ async def compare_players_for_slot(
         "confidence_gap": round(confidence_gap, 1),
         "verdict": verdict,
         "total_compared": len(analyses),
-        "message": (f"For {slot}: every player compared is on bye" if winner.on_bye
+        "message": (f"For {slot}: {verdict}" if locked_starter or winner.locked
+                    else f"For {slot}: every player compared is on bye" if winner.on_bye
                     else f"For {slot}: Start {winner.player_name} "
                          f"({winner.projected_points} projected, {winner.confidence:.0f}% confidence)")
     })
@@ -1419,11 +1503,26 @@ async def analyze_full_lineup(
     # 25-point bench WR behind a 10-point starter, offered one bench player for
     # every weak spot at once, and summed those overlapping gains into a best
     # possible total no lineup could reach.
-    slot_list = [normalize_slot(key) for key, _ in seats]
-    best = optimal_lineup(
-        [a for _, a in seats] + bench_analysis, slot_list,
+    # A starter whose game has started keeps his seat, and a bench player
+    # whose game has started cannot take one: only the rest is optimized.
+    open_seats = [i for i, (_, a) in enumerate(seats) if not a.locked]
+    open_best = optimal_lineup(
+        [seats[i][1] for i in open_seats] + [a for a in bench_analysis if not a.locked],
+        [normalize_slot(seats[i][0]) for i in open_seats],
         value=lambda a: a.projected_points, position=lambda a: a.position,
     )
+    best = [a for _, a in seats]
+    for i, a in zip(open_seats, open_best, strict=True):
+        best[i] = a
+    locked_players = [
+        {"slot": key, "player": a.player_name, "kickoff_local": a.kickoff_local,
+         "game_status": a.game_status, "starting": True}
+        for key, a in seats if a.locked
+    ] + [
+        {"slot": "BENCH", "player": a.player_name, "kickoff_local": a.kickoff_local,
+         "game_status": a.game_status, "starting": False}
+        for a in bench_analysis if a.locked
+    ]
     optimal_total = sum(a.projected_points for a in best if a is not None)
     starting = {id(a) for _, a in seats}
     best_ids = {id(a) for a in best if a is not None}
@@ -1495,6 +1594,9 @@ async def analyze_full_lineup(
         "suggested_changes": suggested_changes[:5],  # Top 5 changes
         "optimal_lineup": optimal_lineup_out,
         "optimal_projected": round(optimal_total, 1),
+        # Whose game has started: fixed where they are, never part of a
+        # suggested change.
+        "locked_players": locked_players,
         "weak_spots": weak_spots,
         "lineup_grade": grade,
         # Share of the points available from starters+bench that you actually
@@ -1510,5 +1612,6 @@ async def analyze_full_lineup(
         "scoring_used": scoring_used(scoring),
         "scoring": scoring,
         "message": (f"Lineup Grade: {grade} | {efficiency:.0f}% of available points started "
-                    f"| {len(suggested_changes)} change(s) suggested")
+                    f"| {len(suggested_changes)} change(s) suggested"
+                    + (f" | {len(locked_players)} locked (game started)" if locked_players else ""))
     })
