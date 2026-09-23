@@ -91,6 +91,10 @@ def parse_game_logs(csv_text: str) -> dict[str, dict]:
         for f in _STAT_FIELDS:
             cols = _COLUMN_ALIASES.get(f, (f,))
             game[f] = _to_float(next((row[c] for c in cols if row.get(c) not in (None, "")), None))
+        # The player's current team is his latest week's: a traded player
+        # kept the team of whichever row came first.
+        if game["team"] and game["week"] >= max((g["week"] for g in entry["games"]), default=0):
+            entry["team"] = game["team"]
         entry["games"].append(game)
     return logs
 
@@ -210,10 +214,15 @@ def vacated_volume(
     name_index: dict[str, dict],
     out_players: list[str],
     week: int,
-    share: float = VACATED_VOLUME_SHARE,
+    share: float | dict[str, float] = VACATED_VOLUME_SHARE,
     lookback: int = opportunity.DEFAULT_LOOKBACK,
 ) -> dict[str, float]:
     """Volume freed up by unavailable teammates, scaled by the inherited share.
+
+    `share` is one fraction for every out player, or ``{name: fraction}`` —
+    this player's slice of each starter's volume (see
+    ``projections._inherited_shares``), so the teammates below a starter split
+    his volume instead of each inheriting all of it.
 
     Empty when none of them has recent volume — a starter who has been out all
     season vacates nothing, because the backup's own trailing numbers already
@@ -221,11 +230,12 @@ def vacated_volume(
     """
     total = {"targets": 0.0, "carries": 0.0, "attempts": 0.0}
     for name in out_players:
+        fraction = share.get(name, 0.0) if isinstance(share, dict) else share
         volume = trailing_volume(name_index, name, week, lookback)
-        if not volume:
+        if not volume or fraction <= 0:
             continue
         for field, value in volume.items():
-            total[field] += value * share
+            total[field] += value * fraction
     return {k: round(v, 2) for k, v in total.items() if v > 0}
 
 

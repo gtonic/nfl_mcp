@@ -396,17 +396,26 @@ async def get_usage_trends(
         return handle_validation_error(
             "Pass player_names, or league_id together with roster_id", default_data
         )
-    season, current_week, inferred = await resolve_season_week(season, None)
+    live_season, current_week, inferred = await resolve_season_week(None, None)
+    season = season if season is not None else live_season
     if season is None:
         return handle_validation_error("Could not determine the season", default_data)
-    last = through_week if through_week is not None else max(1, (current_week or 2) - 1)
-    window = list(range(max(1, last - weeks + 1), last + 1))
 
     logs = await opportunity_tools._fetch_game_logs(season)
     if not logs:
         return handle_validation_error(
             f"No nflverse weekly stats available for season {season}", default_data
         )
+    if through_week is not None:
+        last = through_week
+    elif live_season is not None and season < live_season:
+        # A past season is over: its window ends at its last logged week, not
+        # at this season's current week.
+        last = max((g["week"] for e in logs.values() for g in e.get("games") or []),
+                   default=18)
+    else:
+        last = max(1, (current_week or 2) - 1)
+    window = list(range(max(1, last - weeks + 1), last + 1))
     name_index = opportunity_tools.build_name_index(logs)
 
     if player_names:
