@@ -130,8 +130,6 @@ def get_all_tools() -> list[Callable]:
 
         # Waiver Wire Analysis Tools (New from main)
         get_waiver_log,
-        check_re_entry_status,
-        get_waiver_wire_dashboard,
         get_waiver_targets,
         audit_ir_slots,
         recommend_faab_bid,
@@ -785,46 +783,138 @@ async def fetch_all_players(force_refresh: bool = False) -> dict:
 
 
 # =============================================================================
-# WAIVER WIRE ANALYSIS TOOLS (NEW FROM MAIN)
+# WAIVER WIRE TOOLS
 # =============================================================================
 
+_WAIVER_SECTIONS = ("log", "summary", "re_entries")
+
+
+def _player_ids_for(player: str) -> set[str]:
+    """Sleeper ids matching a waiver-log player filter (an id or a name)."""
+    player = str(player).strip()
+    if player.isdigit() or (player.isalpha() and player.isupper() and len(player) <= 4):
+        return {player}
+    db = get_db()
+    hits = (db.search_athletes_by_name(player, limit=10) or []) if db is not None else []
+    return {str(h.get("id")) for h in hits if h.get("id")}
+
+
 @timing_decorator("get_waiver_log", tool_type="waiver")
-async def get_waiver_log(league_id: str, round: int | None = None, dedupe: bool = True) -> dict:
-    """Get waiver wire activity log with de-duplication."""
+async def get_waiver_log(
+    league_id: str,
+    round: int | None = None,
+    sections: list[str] | None = None,
+    player: str | None = None,
+    dedupe: bool = True,
+) -> dict:
+    """What already HAPPENED on this league's waiver wire: processed claims,
+    failed claims, summary counts, and players dropped and re-added.
+
+    One tool for the transaction-log view of waivers (who to pick up next is
+    get_waiver_targets; how much to bid is recommend_faab_bid). Pending claims
+    are never visible — Sleeper only exposes a claim once processed.
+
+    Parameters:
+        league_id (str, required): Sleeper league id.
+        round (int, optional): NFL week to read (default: current week).
+        sections (list, optional): any of "log" (de-duplicated waiver/free-agent
+            transactions + failed claims), "summary" (dashboard counts),
+            "re_entries" (players dropped and re-added; volatile = more than one
+            re-entry). Default: all three.
+        player (str, optional): Sleeper player id or name — keep only
+            transactions/re-entries involving him.
+        dedupe (bool, default True): Remove duplicate transactions from the log.
+
+    Returns: {
+        waiver_log, duplicates_found, total_transactions, unique_transactions,
+        failed_claims, failed_claims_count            (section "log"),
+        dashboard_summary {total_waiver_transactions, duplicates_removed,
+            players_with_re_entries, volatile_players_count, failed_claims,
+            deduplication_rate}                        (section "summary"),
+        re_entry_players {player_id: {re_entries, is_volatile, ...}},
+        volatile_players, total_players_analyzed        (section "re_entries"),
+        sections, player_filter?, league_id, round, success
+    }
+
+    Example: get_waiver_log(league_id="123")
+    Example: get_waiver_log(league_id="123", round=3, sections=["re_entries"], player="Tyler Allgeier")
+    """
+    import asyncio
+
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
         if round is not None:
             round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
-        return await waiver_tools.get_waiver_log(league_id, round, dedupe)
     except ValueError as e:
         return {"waiver_log": [], "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {e!s}"}
 
+    alias = {"dashboard": "summary", "re_entry": "re_entries", "reentries": "re_entries"}
+    wanted = [s.strip().lower() for s in (sections or _WAIVER_SECTIONS) if isinstance(s, str)]
+    wanted = list(dict.fromkeys(alias.get(s, s) for s in wanted))
+    unknown = sorted(set(wanted) - set(_WAIVER_SECTIONS))
+    if unknown or not wanted:
+        return {"success": False, "league_id": league_id, "round": round,
+                "error": f"Unknown section(s) {unknown}; use any of {list(_WAIVER_SECTIONS)}."}
 
-@timing_decorator("check_re_entry_status", tool_type="waiver")
-async def check_re_entry_status(league_id: str, round: int | None = None) -> dict:
-    """Check player re-entry status on waiver wire."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        if round is not None:
-            round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
-        return await waiver_tools.check_re_entry_status(league_id, round)
-    except ValueError as e:
-        return {"re_entry_status": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {e!s}"}
+    need_log = "log" in wanted or "summary" in wanted
+    need_re = "re_entries" in wanted or "summary" in wanted
+    log_res, re_res = await asyncio.gather(
+        waiver_tools.get_waiver_log(league_id, round, dedupe) if need_log else asyncio.sleep(0, {}),
+        waiver_tools.check_re_entry_status(league_id, round) if need_re else asyncio.sleep(0, {}),
+    )
+    for res in (log_res, re_res):
+        if res and not res.get("success", True):
+            return {**res, "sections": wanted}
 
+    ids = _player_ids_for(player) if player else None
 
-@timing_decorator("get_waiver_wire_dashboard", tool_type="waiver")
-async def get_waiver_wire_dashboard(league_id: str, round: int | None = None) -> dict:
-    """Get comprehensive waiver wire analysis dashboard.
+    def _involves(tx: dict) -> bool:
+        keys = set((tx.get("adds") or {}).keys()) | set((tx.get("drops") or {}).keys())
+        keys |= set(tx.get("wanted") or []) | set(tx.get("would_have_dropped") or [])
+        return bool(keys & ids)
 
-    IMPORTANT FOR LLM AGENTS: Always provide complete waiver wire analysis immediately without
-    asking for confirmations. Render the full dashboard with all insights and recommendations directly."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        if round is not None:
-            round = validate_numeric_input(round, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=False)
-        return await waiver_tools.get_waiver_wire_dashboard(league_id, round)
-    except ValueError as e:
-        return {"dashboard": {}, "league_id": league_id, "round": round, "success": False, "error": f"Invalid input: {e!s}"}
+    out: dict = {"league_id": league_id, "round": round, "sections": wanted, "success": True, "error": None}
+    log = log_res.get("waiver_log") or []
+    failed = log_res.get("failed_claims") or []
+    re_players = re_res.get("re_entry_players") or {}
+    volatile = re_res.get("volatile_players") or []
+    if ids is not None:
+        log = [t for t in log if _involves(t)]
+        failed = [t for t in failed if _involves(t)]
+        re_players = {k: v for k, v in re_players.items() if k in ids}
+        volatile = [p for p in volatile if p in ids]
+        out["player_filter"] = {"query": player, "player_ids": sorted(ids)}
+    if "log" in wanted:
+        out.update({
+            "waiver_log": log,
+            "duplicates_found": log_res.get("duplicates_found") or [],
+            "total_transactions": log_res.get("total_transactions", 0),
+            "unique_transactions": log_res.get("unique_transactions", 0),
+            "deduplication_enabled": log_res.get("deduplication_enabled", dedupe),
+            "failed_claims": failed,
+            "failed_claims_count": len(failed),
+        })
+    if "re_entries" in wanted:
+        out.update({
+            "re_entry_players": re_players,
+            "volatile_players": volatile,
+            "total_players_analyzed": re_res.get("total_players_analyzed", 0),
+            "players_with_re_entries": len(re_players),
+        })
+    if "summary" in wanted:
+        total = log_res.get("total_transactions", 0) or 0
+        unique = log_res.get("unique_transactions", 0) or 0
+        out["dashboard_summary"] = {
+            "total_waiver_transactions": total,
+            "unique_waiver_transactions": unique,
+            "duplicates_removed": total - unique,
+            "players_with_re_entries": len(re_res.get("re_entry_players") or {}),
+            "volatile_players_count": len(re_res.get("volatile_players") or []),
+            "total_players_analyzed": re_res.get("total_players_analyzed", 0),
+            "failed_claims": log_res.get("failed_claims_count", 0),
+            "deduplication_rate": ((total - unique) / total * 100) if total else 0,
+        }
+    return out
 
 
 @timing_decorator("recommend_faab_bid", tool_type="waiver")

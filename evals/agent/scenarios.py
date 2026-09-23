@@ -75,7 +75,7 @@ SCENARIOS = [
     {
         "id": "waiver_dashboard",
         "prompt": "Show me the waiver-wire dashboard for league 555.",
-        "expect": ["get_waiver_wire_dashboard", "get_waiver_log"],
+        "expect": ["get_waiver_log"],
         "args": {"league_id": "555"},
     },
     {

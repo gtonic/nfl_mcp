@@ -18,7 +18,6 @@ from nfl_mcp.tool_registry import (
     analyze_roster_matchups,
     analyze_roster_vegas,
     analyze_trade,
-    check_re_entry_status,
     compare_players_for_slot,
     crawl_url,
     fetch_all_players,
@@ -65,7 +64,6 @@ from nfl_mcp.tool_registry import (
     get_user_leagues,
     get_vegas_lines,
     get_waiver_log,
-    get_waiver_wire_dashboard,
     lookup_athlete,
     search_athletes,
 )
@@ -128,8 +126,6 @@ class TestToolRegistry:
         assert callable(get_draft_traded_picks)
         assert callable(fetch_all_players)
         assert callable(get_waiver_log)
-        assert callable(check_re_entry_status)
-        assert callable(get_waiver_wire_dashboard)
         assert callable(analyze_trade)
         assert callable(analyze_opponent)
         assert callable(get_defense_rankings)

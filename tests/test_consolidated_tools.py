@@ -43,3 +43,41 @@ async def test_injury_report_teams_replace_team_injuries_tool():
     # The deprecated alias still works.
     out, m = await _report(team_ids=["PHI"])
     assert m.await_args.kwargs["teams"] == ["PHI"]
+
+
+LOG = {"success": True, "waiver_log": [
+    {"transaction_id": "1", "adds": {"111": 3}, "drops": None},
+    {"transaction_id": "2", "adds": {"222": 4}, "drops": {"111": 3}},
+], "duplicates_found": [], "total_transactions": 3, "unique_transactions": 2,
+    "deduplication_enabled": True, "failed_claims": [{"wanted": ["222"]}], "failed_claims_count": 1}
+REENTRY = {"success": True, "re_entry_players": {"111": {"is_volatile": True}},
+           "volatile_players": ["111"], "total_players_analyzed": 2}
+
+
+async def _waivers(**kw):
+    with patch("nfl_mcp.waiver_tools.get_waiver_log", AsyncMock(return_value=LOG)), \
+         patch("nfl_mcp.waiver_tools.check_re_entry_status", AsyncMock(return_value=REENTRY)):
+        return await tool_registry.get_waiver_log("123456", round=3, **kw)
+
+
+@pytest.mark.asyncio
+async def test_waiver_log_default_has_log_summary_and_re_entries():
+    out = await _waivers()
+    assert out["success"] is True
+    assert len(out["waiver_log"]) == 2
+    assert out["dashboard_summary"]["duplicates_removed"] == 1
+    assert out["dashboard_summary"]["failed_claims"] == 1
+    assert out["volatile_players"] == ["111"]
+
+
+@pytest.mark.asyncio
+async def test_waiver_log_sections_and_player_filter():
+    out = await _waivers(sections=["re_entries"])
+    assert "waiver_log" not in out and "dashboard_summary" not in out
+    assert out["players_with_re_entries"] == 1
+    out = await _waivers(player="222")
+    assert [t["transaction_id"] for t in out["waiver_log"]] == ["2"]
+    assert out["failed_claims_count"] == 1
+    assert out["re_entry_players"] == {}
+    out = await _waivers(sections=["bogus"])
+    assert out["success"] is False
