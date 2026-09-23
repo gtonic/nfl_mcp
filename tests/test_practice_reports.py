@@ -157,7 +157,7 @@ class TestSummarize:
 
 class TestStorage:
     def test_migration_is_v14_and_week_round_trips(self, db):
-        assert NFLDatabase.CURRENT_SCHEMA_VERSION == 14
+        assert NFLDatabase.CURRENT_SCHEMA_VERSION >= 14
         rows = [
             {"player_name": "Michael Penix Jr.", "team": "ATL", "date": d, "status": s,
              "season": 2026, "week": 3, "source": "nfl.com"}
@@ -200,7 +200,8 @@ class TestStorage:
             path = str(Path(tmp) / "old.db")
             NFLDatabase(path).close()
             with sqlite3.connect(path) as conn:
-                conn.execute("DELETE FROM schema_version WHERE version = 14")
+                # Back to a v13 database: every later version un-applied.
+                conn.execute("DELETE FROM schema_version WHERE version >= 14")
                 conn.execute("DROP TABLE player_practice_status")
                 conn.execute("CREATE TABLE player_practice_status (player_id TEXT NOT NULL, "
                              "date TEXT NOT NULL, status TEXT NOT NULL, source TEXT, "

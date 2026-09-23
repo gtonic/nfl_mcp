@@ -27,6 +27,7 @@ on the other side.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -420,6 +421,23 @@ class ScoringModel:
         return max(0.0, self.expected_defense_points(opponent_total) / default)
 
     # ----- reporting ---------------------------------------------------------
+    @property
+    def fingerprint(self) -> str:
+        """A short, stable id for these weights: equal scoring, equal id.
+
+        Built from the non-zero weights only, so a league block that spells
+        out a zero and one that omits the key (which also scores zero) agree.
+        Stored projections are keyed by it: two leagues with the same
+        reception value but different pass-yard or sack weights project
+        differently and must not read each other's numbers.
+        """
+        if "fingerprint" not in self._cache:
+            items = sorted((k, round(float(v), 4)) for k, v in self.weights.items()
+                           if abs(float(v or 0.0)) > 1e-9)
+            text = ";".join(f"{k}={v:g}" for k, v in items)
+            self._cache["fingerprint"] = hashlib.sha1(text.encode()).hexdigest()[:12]
+        return self._cache["fingerprint"]
+
     def non_default(self) -> dict[str, dict[str, float]]:
         """Keys whose weight differs from Sleeper's default (reception value
         excluded — it is reported on its own)."""
@@ -518,6 +536,11 @@ def league_scoring(league: Mapping | None) -> LeagueScoring:
     league = league or {}
     return LeagueScoring(ScoringModel.from_settings(league.get("scoring_settings"),
                                                     league.get("name")))
+
+
+def scoring_fingerprint(scoring) -> str:
+    """`ScoringModel.fingerprint` for any scoring argument."""
+    return resolve_scoring(scoring).fingerprint
 
 
 def scoring_used(scoring) -> dict:

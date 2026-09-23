@@ -15,7 +15,9 @@ that is not cached says nothing, and nothing is assumed from it.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, date, datetime, timedelta
 
+from .game_clock import GAME_LENGTH, game_progress, parse_kickoff
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -133,3 +135,125 @@ async def resolve_season_week(
     resolved_season = season if season is not None else got_season
     resolved_week = week if week is not None else got_week
     return resolved_season, resolved_week, True
+
+
+# The last NFL state that came back intact, for when the feed is unreachable.
+# Process-local: after a restart the cached schedule answers instead.
+_last_state: dict | None = None
+
+
+def _usable_state(nfl_state: dict | None) -> tuple[int, int] | None:
+    """``(season, week)`` from a Sleeper NFL state, or None when unusable."""
+    if not isinstance(nfl_state, dict):
+        return None
+    try:
+        season = int(nfl_state.get("season") or nfl_state.get("league_season") or 0)
+        week = int(nfl_state.get("week") or nfl_state.get("display_week") or 0)
+    except (TypeError, ValueError):
+        return None
+    if season < 2000:
+        return None
+    # Sleeper reports week 0 in the offseason; the first week is the one a
+    # lineup question can be about.
+    return season, max(1, week)
+
+
+def infer_from_schedule(db, now: datetime | None = None) -> tuple[int, int] | None:
+    """``(season, week)`` read off the cached schedule's kickoffs.
+
+    The current week is the first week of the newest cached season that still
+    has a game to finish; past the last one, the last one. None without a
+    usable schedule.
+    """
+    if db is None or not hasattr(db, "get_schedule_week_spans"):
+        return None
+    try:
+        spans = db.get_schedule_week_spans()
+    except Exception as e:
+        logger.debug(f"schedule spans unavailable: {e}")
+        return None
+    if not spans:
+        return None
+    now = now or datetime.now(UTC)
+    season = max(int(s["season"]) for s in spans)
+    weeks = sorted(
+        (s for s in spans if int(s["season"]) == season), key=lambda s: int(s["week"])
+    )
+    for span in weeks:
+        last = parse_kickoff(span.get("last_kickoff"))
+        if last is not None and last + GAME_LENGTH > now:
+            return season, int(span["week"])
+    return season, int(weeks[-1]["week"])
+
+
+def infer_from_calendar(now: datetime | None = None) -> tuple[int, int]:
+    """A last-resort ``(season, week)`` from the date alone.
+
+    The regular season opens the week after Labor Day (the first Monday of
+    September). Weeks are counted from that Wednesday, the day Sleeper moves on
+    to the next week once Monday night is over. Before that it is week 1 of
+    the coming season, and Jan/Feb belong to the previous one.
+    """
+    today = (now or datetime.now(UTC)).date()
+    season = today.year if today.month >= 3 else today.year - 1
+    sept1 = date(season, 9, 1)
+    labor_day = sept1 + timedelta(days=(7 - sept1.weekday()) % 7)
+    opener = labor_day + timedelta(days=2)
+    if today < opener:
+        return season, 1
+    return season, min(18, (today - opener).days // 7 + 1)
+
+
+async def current_season_week(db=None) -> dict:
+    """The current ``{season, week, source}``, never season 0.
+
+    Order: the live NFL state, the last good state this process saw, the
+    cached schedule's kickoffs, the calendar. An outage used to leave the
+    briefing on season 0 / week 1 ("No schedule available for season 0,
+    week 1"), which priced every player off an empty week.
+    """
+    global _last_state
+    try:
+        from . import sleeper_tools
+        state = await sleeper_tools.get_nfl_state()
+        got = _usable_state((state or {}).get("nfl_state"))
+    except Exception as e:
+        logger.debug(f"NFL state unavailable: {e}")
+        got = None
+    if got:
+        _last_state = {"season": got[0], "week": got[1]}
+        return {"season": got[0], "week": got[1], "source": "nfl_state"}
+    if _last_state:
+        return {**_last_state, "source": "cached_state"}
+    inferred = infer_from_schedule(db)
+    if inferred:
+        return {"season": inferred[0], "week": inferred[1], "source": "schedule"}
+    season, week = infer_from_calendar()
+    return {"season": season, "week": week, "source": "calendar"}
+
+
+def week_is_final(db, season: int, week: int, now: datetime | None = None) -> bool | None:
+    """Whether every cached game of a week is over; None when not cached."""
+    if db is None or not hasattr(db, "get_week_kickoffs"):
+        return None
+    try:
+        kickoffs = db.get_week_kickoffs(season, week)
+    except Exception:
+        return None
+    if not kickoffs:
+        return None
+    return all(game_progress(k, now) >= 1.0 for k in kickoffs.values())
+
+
+async def last_completed_week(db=None) -> dict:
+    """``{season, week, source}`` of the most recent fully played week.
+
+    Sleeper moves its ``week`` on to the next one early in the week, so the
+    current week counts as completed only once the schedule says every game
+    is over. ``week`` is 0 before the first week has finished.
+    """
+    current = await current_season_week(db)
+    season, week = current["season"], current["week"]
+    final = week_is_final(db, season, week)
+    return {"season": season, "week": week if final else week - 1,
+            "source": current["source"]}

@@ -304,6 +304,14 @@ covers the real outcome ~68% of the time, measured in
   - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional)
   - Returns: league, week, record, win_probability, projected_points, opponent_projected_points, recommended_lineup, changes, bench, injury_changes, not_projected
 
+- **`get_weekly_retro`**: Post-game review of a finished week (default: the last completed one). Each starter's actual points against the projection logged before kickoff, points left on the bench (exact hindsight lineup under the league's slot rules), result vs the opponent and whether the hindsight lineup would have flipped it, biggest misses/hits, and projection calibration over every logged week. A week with no logged projection is re-projected and labelled `projection_source: "recomputed"`.
+  - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional), `include_calibration` (optional, default True)
+  - Returns: result, projected_total, projection_source, starters, bench, hindsight, biggest_misses, biggest_hits, opponent, calibration
+
+- **`get_league_changes`**: The daily delta for one roster since its last check (remembered per league and roster): injury moves on your roster and the opponent's starters, news naming them, league transactions, trending backups of your starters, and projection moves on your starters. Ranked by importance.
+  - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `since` (optional ISO-8601), `mark_seen` (optional, default True), `projection_threshold` (optional, default 2.0), `limit` (optional, default 25)
+  - Returns: changes [{kind, importance, summary, ...}], counts, omitted, since, since_source, checked_at, errors
+
 - **`project_player`**: Project weekly fantasy points for one player (transparent, no scraping).
   - Parameters: `player_name` (required), `position` (required), `team` (required), `opponent` (required), `snap_percentage` (optional), `usage_trend` (optional), `injury_status` (optional), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `season` (optional), `week` (optional), `wind_mph` (optional), `is_dome` (optional, default False)
   - Returns: projection, projected_points, floor, ceiling, confidence, breakdown

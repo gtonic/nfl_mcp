@@ -21,6 +21,7 @@ from . import (
     faab_tools,
     handcuff_tools,
     ir_audit,
+    league_changes_tools,
     lineup_optimizer_tools,
     matchup_tools,
     nfl_tools,
@@ -29,6 +30,7 @@ from . import (
     player_values,
     playoff_tools,
     projections,
+    retro_tools,
     sleeper_tools,
     sos_tools,
     streaming_tools,
@@ -108,6 +110,8 @@ def get_all_tools() -> list[Callable]:
         get_trending_players,
     get_fantasy_context,
         get_weekly_briefing,
+        get_weekly_retro,
+        get_league_changes,
 
         # Sleeper API Tools - Strategic Planning (New from main)
         get_strategic_matchup_preview,
@@ -2903,6 +2907,110 @@ async def get_weekly_briefing(
     return await briefing_tools.get_weekly_briefing(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
         week=week, season=season,
+    )
+
+
+@timing_decorator("get_weekly_retro", tool_type="fantasy")
+async def get_weekly_retro(
+    league_id: str,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    week: int | None = None,
+    season: int | None = None,
+    include_calibration: bool = True,
+) -> dict:
+    """Post-game review of a FINISHED week: "how did last week go / what did I
+    leave on the bench / were the projections any good".
+
+    Use this after the games, not before them - for setting a lineup use
+    get_weekly_briefing. Grades each of your starters' actual points against
+    the projection logged BEFORE kickoff (by get_weekly_briefing /
+    project_players), computes the best legal lineup in hindsight from your
+    whole roster with the league's own slot rules, and says whether it would
+    have flipped the result against your opponent.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        week: Week to review (default: the last fully completed week)
+        season: Season (default: current)
+        include_calibration: Also return projection accuracy over every logged
+            week of the season (default True)
+
+    Returns: {
+        result {points, opponent_points, outcome, margin}, projected_total,
+        projection_source: "stored" (pre-kickoff log) | "recomputed" (no log
+            for that week: best-effort, after the fact) | "mixed" | "none",
+        starters [{slot, player, position, actual, projected, floor, ceiling,
+                   diff, within_range, projection_source}],
+        bench [...same...],
+        hindsight {optimal_points, points_left_on_bench, should_have_started,
+                   should_have_sat, optimal_outcome, would_have_flipped},
+        biggest_misses, biggest_hits (starters, |diff| >= 3),
+        opponent {roster_id, points, projected, top_scorer},
+        calibration {weeks, n, mean_error (actual - projected), mean_abs_error,
+                     within_range_share, by_position},
+        week_source, notes, success
+    }
+
+    Example: get_weekly_retro(league_id="123", roster_id=7)
+    Example: get_weekly_retro(league_id="123", user_id="456", week=2)
+    """
+    league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+    return await retro_tools.get_weekly_retro(
+        league_id=league_id, roster_id=roster_id, user_id=user_id,
+        week=week, season=season, include_calibration=include_calibration,
+    )
+
+
+@timing_decorator("get_league_changes", tool_type="fantasy")
+async def get_league_changes(
+    league_id: str,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    since: str | None = None,
+    mark_seen: bool = True,
+    projection_threshold: float = 2.0,
+    limit: int = 25,
+) -> dict:
+    """START HERE for a daily check-in: "what changed in my league since I last
+    looked" - one ranked delta for YOUR roster, not full reports.
+
+    Remembers when this roster was last checked and returns only what is new
+    since then, most important first: injury status moves on your roster and
+    your current opponent's starters, ESPN/CBS news naming those players,
+    league adds/drops/trades, trending pickups who back up one of your
+    starters (same team and position), and your starters' projection moves
+    larger than `projection_threshold`. Use get_injury_trends for a
+    league-agnostic injury feed, get_weekly_briefing to set the lineup.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        since: ISO-8601 timestamp to diff from (default: the last check of this
+            roster; 24h back on the very first check)
+        mark_seen: Advance the last-check time to now (default True). Pass
+            False to peek without consuming the changes.
+        projection_threshold: Minimum projection move in points (default 2.0)
+        limit: Max changes returned (default 25; `omitted` says how many more)
+
+    Returns: {
+        changes [{kind: injury|news|transaction|trending_backup|projection,
+                  importance, summary, ...}] sorted by importance,
+        counts {kind: n}, omitted, since, since_source, checked_at,
+        marked_seen, week, opponent_roster_id, errors {source: message},
+        success
+    }
+
+    Example: get_league_changes(league_id="123", roster_id=7)
+    Example: get_league_changes(league_id="123", roster_id=7, mark_seen=False)
+    """
+    league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+    return await league_changes_tools.get_league_changes(
+        league_id=league_id, roster_id=roster_id, user_id=user_id, since=since,
+        mark_seen=mark_seen, projection_threshold=projection_threshold, limit=limit,
     )
 
 
