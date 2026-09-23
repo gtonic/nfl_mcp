@@ -63,11 +63,12 @@ class TestSeasonDefaults:
         assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
 
     def test_cbs_fantasy_projections_default_season(self):
-        """Verify cbs_fantasy get_cbs_projections defaults to season=2026."""
+        """get_cbs_projections derives its default season from the calendar
+        (see tests/test_projection_ros_volume.py) instead of a hardcoded year."""
         from nfl_mcp.cbs_fantasy_tools import get_cbs_projections
         sig = inspect.signature(get_cbs_projections)
         season_param = sig.parameters['season']
-        assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
+        assert season_param.default is None,             f"Expected no hardcoded season, got {season_param.default}"
 
     def test_get_current_season_and_week_exists(self):
         """Verify get_current_season_and_week function exists."""

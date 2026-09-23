@@ -30,8 +30,9 @@ from .teams import normalize_team
 logger = logging.getLogger(__name__)
 
 # Severity for a status the caller's map does not know, matching what the injury
-# service assumes for an unrecognised designation (MODERATE).
-_DEFAULT_SEVERITY = 3
+# service assumes for an unrecognised designation (injury_service.DEFAULT_SEVERITY,
+# QUESTIONABLE).
+_DEFAULT_SEVERITY = 2
 
 
 @dataclass
@@ -1417,11 +1418,17 @@ class NFLDatabase:
     ) -> list[dict]:
         """One player's stored report days, oldest first.
 
-        With ``season``/``week``: that week's report. Without: days since this
-        practice week's Tuesday (US Eastern), so last week's Friday never
+        With ``season``/``week``: that week's report, read together with
+        ``week + 1`` — a short-week team's NFL.com report is stored under the
+        next week while Sleeper's counter still shows this one on Monday and
+        Tuesday (its ESPN notes land under this one). Without: days since this
+        practice week's Monday (the previous Tuesday on a Monday, so a Monday
+        night team keeps its Thu-Sat report). Either way only the latest
+        practice week among the rows is returned, so last week's Friday never
         passes for this week's Wednesday.
         """
         from .opportunity_tools import norm_name
+        from .practice_reports import latest_practice_week
 
         name_key = norm_name(player_name)
         team = normalize_team(team)
@@ -1433,14 +1440,16 @@ class NFLDatabase:
                     cur = conn.execute(
                         """
                         SELECT * FROM player_practice_status
-                        WHERE name_key=? AND team=? AND season=? AND week=?
+                        WHERE name_key=? AND team=? AND season=? AND week IN (?, ?)
                         ORDER BY date ASC
                         """,
-                        (name_key, team, int(season), int(week)),
+                        (name_key, team, int(season), int(week), int(week) + 1),
                     )
                 else:
                     from .practice_reports import practice_week_start, to_eastern
-                    cutoff = practice_week_start(to_eastern(datetime.now(UTC)).date()).isoformat()
+                    today = to_eastern(datetime.now(UTC)).date()
+                    cutoff = min(practice_week_start(today),
+                                 practice_week_start(today, include_monday=True)).isoformat()
                     cur = conn.execute(
                         """
                         SELECT * FROM player_practice_status
@@ -1449,7 +1458,7 @@ class NFLDatabase:
                         """,
                         (name_key, team, cutoff),
                     )
-                return [dict(row) for row in cur.fetchall()]
+                return latest_practice_week([dict(row) for row in cur.fetchall()])
         except Exception as e:
             logger.debug(f"get_practice_reports failed: {e}")
             return []
@@ -1627,7 +1636,8 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     # Injury reports helpers
     # ------------------------------------------------------------------
-    def upsert_injuries(self, injuries: list[dict], prune_missing: bool = False) -> int:
+    def upsert_injuries(self, injuries: list[dict], prune_missing: bool = False,
+                        complete_teams: set[str] | None = None) -> int:
         """Insert or update player injury reports.
 
         Args:
@@ -1649,11 +1659,20 @@ class NFLDatabase:
                 he is marked ``Active`` (with a history row) instead of keeping
                 his last designation forever. Teams missing from the batch are
                 left alone, so a team whose fetch failed keeps its reports.
+            complete_teams: With ``prune_missing``, the teams the crawl covered
+                completely (every page listed, every report resolved). Only
+                these are pruned — a team in the batch whose crawl was partial
+                is not, and one absent from the batch (no reports left) is.
+                ``None`` falls back to the teams present in the batch.
+
+        A report whose ``player_name`` is empty or ``"Unknown"`` (a failed name
+        fetch) keeps the name already stored for that player.
 
         Returns:
             Number of rows inserted/updated
         """
-        if not injuries:
+        injuries = injuries or []
+        if not injuries and not (prune_missing and complete_teams):
             return 0
 
         try:
@@ -1706,7 +1725,8 @@ class NFLDatabase:
                             date_reported, updated_at
                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(player_id, team_id) DO UPDATE SET
-                            player_name=excluded.player_name,
+                            player_name=CASE WHEN excluded.player_name IN ('', 'Unknown')
+                                THEN player_name ELSE excluded.player_name END,
                             position=excluded.position,
                             injury_status=excluded.injury_status,
                             injury_type=excluded.injury_type,
@@ -1737,7 +1757,8 @@ class NFLDatabase:
                     processed += 1
 
                 if prune_missing:
-                    history_rows.extend(self._clear_missing_injuries(conn, injuries, prior, now))
+                    history_rows.extend(self._clear_missing_injuries(
+                        conn, injuries, prior, now, complete_teams=complete_teams))
 
                 if history_rows:
                     conn.executemany(
@@ -1759,17 +1780,20 @@ class NFLDatabase:
 
     @staticmethod
     def _clear_missing_injuries(
-        conn: sqlite3.Connection, injuries: list[dict], prior: dict, now: str
+        conn: sqlite3.Connection, injuries: list[dict], prior: dict, now: str,
+        complete_teams: set[str] | None = None,
     ) -> list[tuple]:
         """Mark reports that a complete crawl no longer lists as ``Active``.
 
         Without this a recovered player keeps his last designation indefinitely:
         ESPN drops him from the feed rather than reporting him healthy, and the
         briefing's worst-status-wins merge then benches him on a stale "Out".
+        Only ``complete_teams`` are touched (default: the teams in the batch).
         Returns the history rows for the transitions.
         """
         seen = {(inj.get("player_id"), inj.get("team_id", "")) for inj in injuries}
-        crawled_teams = {team for _, team in seen if team}
+        crawled_teams = (set(complete_teams) if complete_teams is not None
+                         else {team for _, team in seen if team})
         history = []
         for (player_id, team_id), (status, _) in prior.items():
             if team_id not in crawled_teams or (player_id, team_id) in seen:

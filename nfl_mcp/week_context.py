@@ -146,8 +146,11 @@ async def resolve_season_week(
 
 
 # The last NFL state that came back intact, for when the feed is unreachable.
-# Process-local: after a restart the cached schedule answers instead.
+# Process-local: after a restart the cached schedule answers instead. Kept
+# with the time it was seen: past `LAST_STATE_MAX_AGE` a long outage would
+# otherwise pin the server to that week forever, so the schedule answers.
 _last_state: dict | None = None
+LAST_STATE_MAX_AGE = timedelta(hours=12)
 
 
 def _usable_state(nfl_state: dict | None) -> tuple[int, int] | None:
@@ -229,10 +232,12 @@ async def current_season_week(db=None) -> dict:
         logger.debug(f"NFL state unavailable: {e}")
         got = None
     if got:
-        _last_state = {"season": got[0], "week": got[1]}
+        _last_state = {"season": got[0], "week": got[1], "at": datetime.now(UTC)}
         return {"season": got[0], "week": got[1], "source": "nfl_state"}
-    if _last_state:
-        return {**_last_state, "source": "cached_state"}
+    seen = (_last_state or {}).get("at")
+    if _last_state and (seen is None or datetime.now(UTC) - seen <= LAST_STATE_MAX_AGE):
+        return {"season": _last_state["season"], "week": _last_state["week"],
+                "source": "cached_state"}
     inferred = infer_from_schedule(db)
     if inferred:
         return {"season": inferred[0], "week": inferred[1], "source": "schedule"}

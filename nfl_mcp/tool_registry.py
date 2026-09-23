@@ -398,7 +398,7 @@ async def get_cbs_player_news(limit: int | None = 50) -> dict:
 @timing_decorator("get_cbs_projections", tool_type="cbs_fantasy")
 async def get_cbs_projections(
     position: str = "QB",
-    season: int | None = 2026,
+    season: int | None = None,
     scoring: str = "ppr",
 ) -> dict:
     """CBS Sports SEASON-LONG fantasy projections for one position (not weekly).
@@ -411,16 +411,16 @@ async def get_cbs_projections(
 
     Parameters:
         position (str, default "QB"): QB, RB, WR, TE, K or DST.
-        season (int, default 2026): Season year.
+        season (int, default: the current NFL season): Season year.
         scoring (str, default "ppr"): ppr, half-ppr or standard.
     Returns: {projections: [...], total_projections, period: "season",
         week_honoured: false, position, success, error?}
     Example: get_cbs_projections(position="RB", scoring="half-ppr")
     """
     try:
-        season_i = int(season) if season is not None else 2026
+        season_i = int(season) if season is not None else None
     except Exception:
-        season_i = 2026
+        season_i = None
     # The source URL carries a week segment CBS ignores; any valid week works.
     result = await cbs_fantasy_tools.get_cbs_projections(
         position=position, week=1, season=season_i, scoring=scoring,
@@ -2373,6 +2373,7 @@ async def get_injury_report(
     limit: int | None = None,
     use_cache: bool | None = True,
     team_ids: list[str] | None = None,
+    include_healthy: bool | None = False,
 ) -> dict:
     """Current injury report ("who is hurt"): all teams, some teams, or players.
 
@@ -2395,6 +2396,10 @@ async def get_injury_report(
         limit: Max rows (default all)
         use_cache: Use cached reports (default True)
         team_ids: Deprecated alias of `teams`
+        include_healthy: Also return healthy rows (Active/Probable/FP,
+            severity 1). ESPN's list is every player's latest report, so it is
+            ~2600 rows league-wide, most of them recovered; default False.
+            Ignored for player_ids lookups, which always return the row.
 
     Returns: {
         injuries: [{
@@ -2409,7 +2414,7 @@ async def get_injury_report(
             news note, or null = no report published — never inferred)
         }],
         total_injuries, filters, cache_used, practice_week,
-        success, error?
+        healthy_excluded (rows dropped as healthy), success, error?
     }
 
     Example: get_injury_report(teams=["KC", "PHI"])
@@ -2436,6 +2441,12 @@ async def get_injury_report(
                 results = await get_injury_reports(teams=valid_teams, db=get_db(), use_cache=use_cache_val)
         else:
             results = await get_injury_reports(db=get_db(), use_cache=use_cache_val)
+
+        healthy_excluded = 0
+        if not include_healthy and not player_ids:
+            before = len(results)
+            results = [r for r in results if not _is_healthy_report(r)]
+            healthy_excluded = before - len(results)
 
         filters = {}
         if min_confidence is not None:
@@ -2464,6 +2475,7 @@ async def get_injury_report(
             "filters": filters,
             "cache_used": use_cache_val,
             "practice_week": practice_week,
+            "healthy_excluded": healthy_excluded,
             "success": True
         }
 
@@ -2475,6 +2487,23 @@ async def get_injury_report(
             "success": False,
             "error": str(e)
         }
+
+
+_HEALTHY_REPORT_STATUSES = frozenset({"active", "healthy", "probable", "fp"})
+
+
+def _is_healthy_report(row: dict) -> bool:
+    """An injury-report row that says the player is healthy (severity 1).
+
+    "Unknown" (ESPN sent no status) is kept: it is not a clean bill of health.
+    """
+    status = str(row.get("injury_status") or "").strip().lower()
+    if status == "unknown":
+        return False
+    if status in _HEALTHY_REPORT_STATUSES:
+        return True
+    sev = row.get("severity")
+    return isinstance(sev, int | float) and sev <= 1
 
 
 async def _current_season_week() -> tuple[int | None, int | None]:
@@ -2543,7 +2572,7 @@ async def get_injury_trends(
     """
     from datetime import UTC, datetime, timedelta
 
-    from .injury_service import STATUS_SEVERITY
+    from .injury_service import DEFAULT_SEVERITY, STATUS_SEVERITY
 
     try:
         hours = max(1, min(int(lookback_hours or 168), 24 * 30))
@@ -2561,11 +2590,11 @@ async def get_injury_trends(
         changes = []
         for row in rows:
             prev = row.get("previous_status")
-            new_sev = int(STATUS_SEVERITY.get(row.get("injury_status"), 3))
+            new_sev = int(STATUS_SEVERITY.get(row.get("injury_status"), DEFAULT_SEVERITY))
             if prev is None:
                 row_direction, delta = "new", None
             else:
-                old_sev = int(STATUS_SEVERITY.get(prev, 3))
+                old_sev = int(STATUS_SEVERITY.get(prev, DEFAULT_SEVERITY))
                 delta = new_sev - old_sev
                 # Same severity bucket with a different label (e.g. a changed
                 # body part) is a re-report, not a move in either direction.

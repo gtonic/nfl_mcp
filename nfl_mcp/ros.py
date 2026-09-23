@@ -31,7 +31,14 @@ fantasy-playoff window (``playoff_points``, from the league's
   The feeds carry no return date for most players, so the window is read from
   the report text when it states one ("season-ending", "2-4 weeks", "3-game
   suspension") and is otherwise conservative: one week for Out, four for any
-  reserve list (the NFL minimum IR stint).
+  reserve list (the NFL minimum IR stint, counted from the placement recorded
+  in ``injury_history`` when there is one). Windows other than a stated return
+  date count games, so a bye inside one does not shorten it.
+- Inherited volume: a backup's weekly base can include a share of an absent
+  starter's volume; later weeks carry it only for that starter's expected
+  absence and are otherwise priced on the backup's own volume.
+- K / DEF: later weeks are priced per opponent off the offense read the weekly
+  engine falls back to (``streaming_tools.unit_matchup``).
 """
 from __future__ import annotations
 
@@ -43,7 +50,7 @@ from datetime import UTC, date, datetime
 
 from .errors import create_success_response
 from .teams import normalize_team
-from .week_context import week_schedule
+from .week_context import MIN_TEAMS_FOR_KNOWN_WEEK, week_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +76,10 @@ _SKILL = {"QB", "RB", "WR", "TE"}
 _DEFENSE = {"DEF", "DST"}
 
 _SEASON_ENDING_RE = re.compile(
-    r"season[- ]ending|(?:rest|remainder) of the (?:\d{4} )?season|"
-    r"out for the (?:\d{4} )?season|for the season|miss the (?:\d{4} )?season",
+    r"(?:season[- ]ending|(?:rest|remainder) of the (?:\d{4} )?season|"
+    r"out for the (?:\d{4} )?season|for the season|miss the (?:\d{4} )?season)"
+    # "questionable for the season opener" is one game, not the year.
+    r"(?![- ]?(?:opener|debut|finale))",
     re.I,
 )
 _WEEKS_RE = re.compile(r"(\d{1,2})\s*(?:-|to|or)?\s*(\d{1,2})?\s*weeks?\b", re.I)
@@ -159,9 +168,17 @@ def _weeks_from_return_date(return_date: str | None, today: date) -> int | None:
     return max(0, math.ceil((when - today).days / 7))
 
 
+def is_reserve(status: str | None) -> bool:
+    """True for an IR / PUP / NFI / other reserve-list designation."""
+    s = (status or "").strip().lower()
+    return (s in ("ir", "injured reserve", "injured_reserve", "pup", "nfi", "reserve")
+            or s.startswith(("reserve", "pup", "injured reserve", "nfi")))
+
+
 def expected_absence(
     status: str | None, description: str | None = None,
     return_date: str | None = None, today: date | None = None,
+    placed_on: date | None = None,
 ) -> tuple[int, str | None]:
     """``(weeks_missed_from_this_week, reason)`` for an injury designation.
 
@@ -170,6 +187,10 @@ def expected_absence(
     ("season-ending", "2-4 weeks", "3-game suspension"); otherwise one week for
     Out and ``IR_MIN_WEEKS`` for any reserve list. The longer reading is taken,
     because a trade or a drop made on an optimistic return is the costly error.
+
+    `placed_on` is when the reserve designation was first seen (see
+    `reserve_since`): the minimum stint counts from then rather than from
+    today, so a player three weeks into IR is not stashed for four more.
     """
     from .projections import availability  # deferred: projections is heavy
 
@@ -177,11 +198,16 @@ def expected_absence(
         return 0, None
     s = (status or "").strip().lower()
     text = description or ""
-    reserve = (s in ("ir", "injured reserve", "injured_reserve", "pup", "nfi", "reserve")
-               or s.startswith(("reserve", "pup", "injured reserve", "nfi")))
+    reserve = is_reserve(status)
     base = IR_MIN_WEEKS if reserve else 1
     reason = (f"{status}: at least {IR_MIN_WEEKS} weeks (NFL minimum reserve stint)"
               if reserve else f"{status}: this week")
+    if reserve and placed_on is not None:
+        served = max(0, ((today or datetime.now(UTC).date()) - placed_on).days // 7)
+        if served:
+            base = max(1, IR_MIN_WEEKS - served)
+            reason = (f"{status}: {base} more week(s) of the {IR_MIN_WEEKS}-week minimum "
+                      f"(on the list since {placed_on.isoformat()})")
 
     stated = _weeks_from_return_date(return_date, today or datetime.now(UTC).date())
     if stated is not None:
@@ -200,6 +226,27 @@ def expected_absence(
     return base, reason
 
 
+def reserve_since(history: list[dict] | None) -> date | None:
+    """When the current reserve-list stint was first seen, from
+    ``injury_history`` rows (newest first, as ``get_injury_history`` returns).
+
+    The oldest row of the unbroken reserve run at the top. It is when this
+    server first *recorded* the designation, never earlier than the real
+    placement, so the remaining minimum it implies errs long rather than short.
+    None when the latest row is not a reserve designation or has no date.
+    """
+    since = None
+    for row in history or []:
+        if not is_reserve(row.get("injury_status")):
+            break
+        try:
+            since = datetime.fromisoformat(
+                str(row.get("recorded_at")).replace("Z", "+00:00")).date()
+        except ValueError:
+            break
+    return since
+
+
 # --------------------------------------------------------------------------
 # Network seams (patched in tests)
 # --------------------------------------------------------------------------
@@ -215,12 +262,17 @@ async def _defense_rankings() -> dict:
 
 
 def _rows_to_schedule(rows: list[dict]) -> dict[str, str] | None:
+    """``{team: opponent}`` from fetched rows; None when too few teams to prove
+    a bye — a partial response would otherwise turn every missing team into
+    one (the same guard as ``week_context.week_schedule``)."""
     out: dict[str, str] = {}
     for g in rows or []:
         team, opp = normalize_team(g.get("team")), normalize_team(g.get("opponent"))
         if team and opp:
+            # Both sides: a game listed once still has two teams playing.
             out[team] = opp
-    return out or None
+            out.setdefault(opp, team)
+    return out if len(out) >= MIN_TEAMS_FOR_KNOWN_WEEK else None
 
 
 async def schedules_for(db, season: int, weeks: list[int]) -> dict[int, dict[str, str] | None]:
@@ -277,12 +329,34 @@ def _per_game(proj: dict, position: str, model) -> tuple[float, str, float | Non
         return round(float(proj.get("projected_points") or 0.0) / inj, 2), "weekly", None
     usage = float(bd.get("usage_mult") or 1.0)
     if source == "opportunity":
+        # His own volume: what he inherits from an absent starter is added
+        # back only for the weeks that starter is out (`_inherited`).
+        if bd.get("own_base_ppg") is not None:
+            base = bd["own_base_ppg"]
         games = int(bd.get("usage_games") or 0)
         prior = base_ppg(position, bd.get("position_rank"), scoring=model)
         weight = PRIOR_GAMES / (games + PRIOR_GAMES)
         rate = regressed_rate(float(base), prior, games)
         return round(rate * usage, 2), "opportunity_regressed", round(weight, 2)
     return round(float(base) * usage, 2), source, None
+
+
+def _inherited(proj: dict) -> tuple[float, int]:
+    """``(points_per_game, team_games)`` inherited from absent starters.
+
+    The weekly base includes a share of an out teammate's volume; ROS used to
+    apply it to every remaining week. It lasts as long as the teammate's own
+    expected absence — the longest one when several are out — counted in
+    games from this week. ``(0.0, 0)`` when nothing was inherited.
+    """
+    bd = proj.get("breakdown") or {}
+    own, base = bd.get("own_base_ppg"), bd.get("base_ppg")
+    if own is None or base is None or bd.get("base_source") != "opportunity":
+        return 0.0, 0
+    bump = max(0.0, float(base) - float(own)) * float(bd.get("usage_mult") or 1.0)
+    games = max((expected_absence(s)[0] for s in (bd.get("inherited_from") or {}).values()),
+                default=1)
+    return round(bump, 2), games
 
 
 def _matchup(position: str, opponent: str, rankings: dict, analyzer,
@@ -399,6 +473,26 @@ async def ros_projections(
     next_week = next((w for w in weeks if w > week), None)
     rate_proj = await _project(next_week, on_bye_now) if next_week and on_bye_now else {}
 
+    # Kickers and defenses are priced week by week off the offense read the
+    # weekly engine falls back to (`projections._unit_matchup`): a constant
+    # rate made every K and every DEF identical ROS apart from byes. One
+    # lookup per (position, team, opponent).
+    units: dict[tuple[str, str, str], dict | None] = {}
+    for p in clean:
+        if p["position"] not in _DEFENSE and p["position"] != "K":
+            continue
+        for w in weeks:
+            opponent = _opponent(p["team"], w)
+            key = (p["position"], p["team"], opponent)
+            if w == week or not opponent or opponent == "BYE" or key in units:
+                continue
+            try:
+                units[key] = await projections._unit_matchup(
+                    p["position"], p["team"], opponent, season, model)
+            except Exception as e:
+                logger.debug(f"K/DEF offense read failed for {key}: {e}")
+                units[key] = None
+
     today = today or datetime.now(UTC).date()
     out = []
     for p in clean:
@@ -406,29 +500,47 @@ async def ros_projections(
         proj = now_proj.get(key) or {}
         rate_src = rate_proj.get(key) or proj
         per_game, source, prior_weight = _per_game(rate_src, p["position"], model)
+        inherited, inherited_games = _inherited(rate_src)
         injury = p.get("injury") or {}
         absent, absence_reason = expected_absence(
-            injury.get("status"), injury.get("description"), injury.get("return_date"), today)
+            injury.get("status"), injury.get("description"), injury.get("return_date"), today,
+            placed_on=injury.get("placed_on"))
+        # A stated return date is a calendar date; every other window (the
+        # reserve minimum, a suspension, "out 2 weeks") is games missed, so a
+        # bye inside it does not use one up.
+        by_calendar = _weeks_from_return_date(injury.get("return_date"), today) is not None
 
         ros = playoff = 0.0
         weekly = []
         byes, injured, counted = [], [], 0
+        game_no = 0  # his team's games from this week on, before this one
         for w in weeks:
             opponent = _opponent(p["team"], w)
             reason = None
+            is_bye = opponent == "BYE" or (w == week and proj.get("on_bye"))
+            missed = (w - week) if by_calendar else game_no
+            if not is_bye:
+                game_no += 1
             if w == week and p["team"] in played:
                 points, reason = 0.0, "already played"
-            elif opponent == "BYE" or (w == week and proj.get("on_bye")):
+            elif is_bye:
                 points, reason = 0.0, "bye"
                 byes.append(w)
-            elif w - week < absent:
+            elif missed < absent:
                 points, reason = 0.0, absence_reason
                 injured.append(w)
             elif w == week and proj:
                 points = float(proj.get("projected_points") or 0.0)
+            elif (unit := units.get((p["position"], p["team"], opponent))) \
+                    and unit.get("projected_points") is not None:
+                points = round(float(unit["projected_points"]), 2)
+                tier = unit.get("matchup_tier") or "unknown"
+                if tier not in ("unknown", "neutral"):
+                    reason = f"{tier} matchup"
             else:
                 mult, tier = _matchup(p["position"], opponent, rankings, analyzer, model.rec)
-                points = round(per_game * mult, 2)
+                rate = per_game + (inherited if game_no - 1 < inherited_games else 0.0)
+                points = round(rate * mult, 2)
                 if not opponent:
                     reason = "schedule unknown — counted as playing"
                 elif tier not in ("unknown", "neutral"):
@@ -503,8 +615,27 @@ def ros_input(row: dict, injury_index: dict) -> dict | None:
                 str(x) for x in (report.get("injury_description"), report.get("game_status"))
                 if x),
             "return_date": report.get("return_date"),
+            # The ESPN id `injury_history` is keyed by (see `reserve_since`).
+            "report_id": report.get("player_id"),
         },
     }
+
+
+def _with_reserve_dates(inputs: list[dict], db) -> list[dict]:
+    """Attach ``injury.placed_on`` to reserve-list players from the recorded
+    injury timeline, so the minimum stint counts from the placement."""
+    if db is None or not hasattr(db, "get_injury_history"):
+        return inputs
+    for p in inputs:
+        injury = p.get("injury") or {}
+        if not is_reserve(injury.get("status")) or not injury.get("report_id"):
+            continue
+        try:
+            injury["placed_on"] = reserve_since(
+                db.get_injury_history(str(injury["report_id"]), limit=50))
+        except Exception as e:
+            logger.debug(f"injury history unavailable for {p.get('name')}: {e}")
+    return inputs
 
 
 async def ros_for_ids(
@@ -522,6 +653,7 @@ async def ros_for_ids(
     except Exception:
         injury_index = {}
     inputs = [x for pid in ids if (row := rows.get(str(pid))) and (x := ros_input(row, injury_index))]
+    inputs = _with_reserve_dates(inputs, db)
     fmt = league_format_from_settings(league)
     result = await ros_projections(
         inputs, season=season, week=week, settings=league.get("settings") or {},

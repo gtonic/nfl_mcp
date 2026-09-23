@@ -352,10 +352,12 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
                         logger.debug(
                             f"[Prefetch Cycle #{cycle_count}] Fetching injury reports for all teams"
                         )
-                        injuries = await _fetch_injuries()
-                        if injuries:
-                            # A full crawl: reports it no longer lists are cleared.
-                            inserted = nfl_db.upsert_injuries(injuries, prune_missing=True)
+                        injuries, complete_teams = await _fetch_injuries(with_complete_teams=True)
+                        if injuries or complete_teams:
+                            # Reports a team's complete crawl no longer lists
+                            # are cleared; partially crawled teams are left alone.
+                            inserted = nfl_db.upsert_injuries(
+                                injuries, prune_missing=True, complete_teams=complete_teams)
                             stats["injuries_inserted"] = inserted
                             logger.info(
                                 f"[Prefetch Cycle #{cycle_count}] Injuries: "

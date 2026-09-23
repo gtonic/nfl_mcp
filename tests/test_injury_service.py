@@ -148,9 +148,10 @@ class TestSeverityCalculation:
         assert InjuryAggregator.get_severity("NFI") == InjurySeverity.SEVERE
         assert InjuryAggregator.get_severity("Suspended") == InjurySeverity.SEVERE
 
-    def test_unknown_status_defaults_to_moderate(self):
-        """Test that unknown statuses default to MODERATE."""
-        assert InjuryAggregator.get_severity("Unknown Status") == InjurySeverity.MODERATE
+    def test_unknown_status_defaults_to_questionable(self):
+        """Unrecognised statuses rank with Questionable; a missing one is minor."""
+        assert InjuryAggregator.get_severity("Unknown Status") == InjurySeverity.QUESTIONABLE
+        assert InjuryAggregator.get_severity("Unknown") == InjurySeverity.MINOR
 
 
 class TestConfidenceCalculation:
@@ -492,7 +493,7 @@ class TestCacheManagement:
         stats = InjuryAggregator.get_cache_stats()
 
         assert stats["athlete_name_cache_size"] == 2
-        assert stats["athlete_name_cache_max"] == 500  # ATHLETE_CACHE_SIZE
+        assert stats["athlete_name_cache_max"] == 4000  # ATHLETE_CACHE_SIZE
         assert stats["etag_cache_size"] == 0
         assert stats["last_modified_cache_size"] == 0
         assert len(stats["sample_athletes"]) == 2

@@ -81,6 +81,26 @@ def _current_injuries(injuries: list[dict]) -> list[dict]:
     ]
 
 
+def _severity_label(status: str | None) -> str:
+    """High/Medium/Low/Unknown for an injury status, from the same vocabulary
+    the projections use (``projections.availability``) after the injury
+    service's normalization, so Suspension, PUP, NFI and Reserve lists read
+    as High. A substring test for "ir" used to match any status containing it.
+    """
+    from .injury_service import InjuryAggregator
+    from .projections import availability
+
+    raw = (status or "").strip().lower()
+    kind = availability(InjuryAggregator.normalize_status(status or ""))
+    if kind == "out" or "physically unable" in raw or "non-football" in raw:
+        return "High"
+    if kind in ("doubtful", "questionable"):
+        return "Medium"
+    if raw == "probable" or "limited" in raw:
+        return "Low"
+    return "Unknown"
+
+
 def _bye_week(schedule: list[dict]) -> int | None:
     """The regular-season week (1-18) with no game, from a team's schedule.
 
@@ -433,17 +453,8 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
                         'description': inj.get('injury_description') or 'No description',
                         'type': inj.get('injury_type') or 'Unknown',
                         'date': inj.get('date_reported') or 'Unknown',
-                        'severity': 'Unknown'
+                        'severity': _severity_label(inj.get('injury_status')),
                     }
-
-                    # Calculate severity
-                    status_lower = injury['status'].lower()
-                    if 'out' in status_lower or 'ir' in status_lower:
-                        injury['severity'] = 'High'
-                    elif 'doubtful' in status_lower or 'questionable' in status_lower:
-                        injury['severity'] = 'Medium'
-                    elif 'probable' in status_lower or 'limited' in status_lower or 'dnp' in status_lower:
-                        injury['severity'] = 'Low'
 
                     processed_injuries.append(injury)
 
@@ -553,14 +564,7 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
                 or 'No description available'
             )
 
-            severity = 'Unknown'
-            status_lower = status.lower()
-            if 'out' in status_lower or 'reserve' in status_lower or status_lower == 'ir':
-                severity = 'High'
-            elif 'doubtful' in status_lower or 'questionable' in status_lower:
-                severity = 'Medium'
-            elif 'probable' in status_lower or 'limited' in status_lower:
-                severity = 'Low'
+            severity = _severity_label(status)
 
             return {
                 'player_id': player_id,

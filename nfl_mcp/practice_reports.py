@@ -117,7 +117,9 @@ def report_day(now: datetime, game_date: date | None) -> date | None:
 # ---------------------------------------------------------------------------
 # Status vocabulary
 # ---------------------------------------------------------------------------
-_REST_RE = re.compile(r"not injury related|\brest\b|resting|personal", re.I)
+# Only rest or personal wording is a healthy day off. "Not Injury Related -
+# Illness" is a sick player and stays a DNP.
+_REST_RE = re.compile(r"\brest\b|\bresting\b|\bpersonal\b|\bveteran\b", re.I)
 
 
 def normalize_practice(text: str | None, injury: str | None = None) -> str | None:
@@ -261,12 +263,25 @@ _DNP_RE = re.compile(
     r"\bwas held out of (?:\w+'s )?practice\b|\bdid not take part\b",
     re.I,
 )
-# Forward-looking or hedged lines describe no practice that happened.
-_NOT_A_REPORT_RE = re.compile(
-    r"\bwill (?:practice|be|not)\b|\bexpect|\banticipate|\bhopes?\b|\bplans? to\b|"
-    r"\bpractice squad\b|\blast week\b",
+# Lines that are never a practice report.
+_NOT_A_REPORT_RE = re.compile(r"\bpractice squad\b|\blast week\b", re.I)
+# Forward-looking or hedged wording describes no practice that happened. A
+# blurb often pairs it with one that did ("was a full participant in
+# Wednesday's practice and will be ready for Sunday"), so it only rules out
+# participation phrases that are not themselves in the past tense.
+_FORWARD_RE = re.compile(
+    r"\bwill (?:practice|be|not)\b|\bexpect|\banticipate|\bhopes?\b|\bplans? to\b",
     re.I,
 )
+_PAST_PREFIX_RE = re.compile(r"\b(?:was|were)\s+(?:a\s+|an\s+)?$", re.I)
+_PAST_PHRASES = ("was ", "practiced ", "did not ", "didn't ", "sat out ")
+
+
+def _is_past_tense(text: str, m: re.Match) -> bool:
+    """Whether a participation phrase reports a practice that already happened."""
+    if m.group(0).lower().startswith(_PAST_PHRASES):
+        return True
+    return bool(_PAST_PREFIX_RE.search(text[max(0, m.start() - 12):m.start()]))
 
 
 def parse_espn_practice_note(comment: str | None, posted: str | None) -> dict | None:
@@ -274,35 +289,44 @@ def parse_espn_practice_note(comment: str | None, posted: str | None) -> dict | 
 
     Needs a participation phrase, the word practice (or injury report) and a
     named day; the date is the most recent such weekday on or before the post
-    date, in Eastern time. Anything else — "will practice Wednesday", practice
-    squad moves — returns None.
+    date, in Eastern time. Each phrase belongs to its nearest named day and the
+    latest day wins: "full participant in Thursday's practice after he was
+    limited Wednesday" is FP on Thursday. Anything else — "will practice
+    Wednesday", practice squad moves, two statuses for one day — returns None.
     """
     text = (comment or "").strip()
     if not text or not posted:
         return None
     if not re.search(r"practice|injury report", text, re.I) or _NOT_A_REPORT_RE.search(text):
         return None
-    if _DNP_RE.search(text):
-        status = "DNP"
-    elif _LP_RE.search(text):
-        status = "LP"
-    elif _FP_RE.search(text):
-        status = "FP"
-    else:
-        return None
-    day_m = _DAY_RE.search(text)
-    if not day_m:
+    phrases = [(status, m) for status, rx in (("DNP", _DNP_RE), ("LP", _LP_RE), ("FP", _FP_RE))
+               for m in rx.finditer(text)]
+    if _FORWARD_RE.search(text):
+        phrases = [(status, m) for status, m in phrases if _is_past_tense(text, m)]
+    days = list(_DAY_RE.finditer(text))
+    if not phrases or not days:
         return None
     try:
         posted_at = datetime.fromisoformat(posted.replace("Z", "+00:00"))
     except ValueError:
         return None
     posted_day = to_eastern(posted_at).date()
-    target = _WEEKDAYS.index(day_m.group(1).lower())
-    delta = (posted_day.weekday() - target) % 7
+
+    def _gap(m: re.Match, d: re.Match) -> int:
+        return max(d.start() - m.end(), m.start() - d.end(), 0)
+
+    by_date: dict[date, set[str]] = {}
+    for status, m in phrases:
+        day_m = min(days, key=lambda d: _gap(m, d))
+        target = _WEEKDAYS.index(day_m.group(1).lower())
+        on = posted_day - timedelta(days=(posted_day.weekday() - target) % 7)
+        by_date.setdefault(on, set()).add(status)
+    latest = max(by_date)
+    if len(by_date[latest]) != 1:
+        return None  # two statuses for the same day: ambiguous
     return {
-        "status": status,
-        "date": (posted_day - timedelta(days=delta)).isoformat(),
+        "status": next(iter(by_date[latest])),
+        "date": latest.isoformat(),
         "estimated": "estimated" in text.lower(),
     }
 
@@ -386,6 +410,21 @@ def summarize(rows: list[dict] | None) -> dict | None:
         "source": sources[0] if len(sources) == 1 else "+".join(sources) if sources else None,
         "updated_at": max((d.get("updated_at") or "") for d in days) or None,
     }
+
+
+def latest_practice_week(rows: list[dict] | None) -> list[dict]:
+    """The rows of the most recent practice week among ``rows``.
+
+    Every team's report week runs Monday (short-week estimate) to Saturday of
+    one calendar week, so the latest row's Monday separates it from the
+    previous week's days.
+    """
+    dated = [r for r in rows or [] if r.get("date")]
+    if not dated:
+        return []
+    latest = date.fromisoformat(max(r["date"] for r in dated))
+    floor = (latest - timedelta(days=latest.weekday())).isoformat()
+    return sorted((r for r in dated if r["date"] >= floor), key=lambda r: r["date"])
 
 
 def lookup_practice(db, player_name: str | None, team: str | None,
