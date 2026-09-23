@@ -36,25 +36,99 @@ def sleeper_injury_status(row: dict | None) -> str | None:
     return (raw or {}).get("injury_status") if isinstance(raw, dict) else None
 
 
+# Short first names the two feeds use for the same player that are not a
+# prefix of the formal one (ESPN "Robert", Sleeper "Bobby"). Prefix pairs such
+# as "Zach"/"Zachary" or "Rob"/"Robert" are also caught by the fallback in
+# find_report. Used for matching only, never displayed.
+_FIRST_NAME_ALIASES = {
+    "zach": "zachary", "zack": "zachary", "zak": "zachary",
+    "rob": "robert", "bob": "robert", "bobby": "robert", "robbie": "robert",
+    "will": "william", "bill": "william", "billy": "william", "willie": "william",
+    "josh": "joshua", "mike": "michael", "chris": "christopher", "matt": "matthew",
+    "nick": "nicholas", "dan": "daniel", "danny": "daniel", "jon": "jonathan",
+    "johnny": "jonathan", "ben": "benjamin", "alex": "alexander", "cam": "cameron",
+    "ken": "kenneth", "kenny": "kenneth", "sam": "samuel", "sammy": "samuel",
+    "tony": "anthony", "joe": "joseph", "joey": "joseph", "jake": "jacob",
+    "dave": "david", "jim": "james", "jimmy": "james", "tom": "thomas",
+    "tommy": "thomas", "tim": "timothy", "andy": "andrew", "drew": "andrew",
+    "ed": "edward", "eddie": "edward", "rich": "richard", "rick": "richard",
+    "ricky": "richard", "greg": "gregory", "pat": "patrick", "steve": "steven",
+    "stephen": "steven", "jeff": "jeffrey", "nate": "nathaniel", "fred": "frederick",
+    "doug": "douglas", "gabe": "gabriel",
+}
+
+
+def _alias_key(name: str) -> str:
+    """``norm_name`` output with the first name mapped onto its canonical form."""
+    first, _, rest = name.partition(" ")
+    return f"{_FIRST_NAME_ALIASES.get(first, first)} {rest}".strip()
+
+
+class _InjuryIndex(dict):
+    """``{(normalized name, team): report}`` plus the fallback lookups.
+
+    A plain dict to every caller; ``find_report`` also consults ``aliases``
+    (canonical first name) and ``by_last`` (last name + team).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.aliases: dict[tuple[str, str], list[dict]] = {}
+        self.by_last: dict[tuple[str, str], list[tuple[str, dict]]] = {}
+
+
 def build_injury_index(injuries: list[dict]) -> dict[tuple[str, str], dict]:
     """Index the stored (ESPN) injury reports by (normalized name, team)."""
-    index: dict[tuple[str, str], dict] = {}
+    index = _InjuryIndex()
     for row in injuries:
         name = norm_name(row.get("player_name"))
         team = normalize_team(row.get("team_id")) or ""
         if name:
             index[(name, team)] = row
+            index.aliases.setdefault((_alias_key(name), team), []).append(row)
+            parts = name.split()
+            if len(parts) >= 2:
+                index.by_last.setdefault((parts[-1], team), []).append((parts[0], row))
     return index
+
+
+def _same_position(athlete_row: dict | None, report: dict) -> bool:
+    mine = ((athlete_row or {}).get("position") or "").upper()
+    theirs = (report.get("position") or "").upper()
+    return not (mine and theirs and mine != theirs)
 
 
 def find_report(
     athlete_row: dict | None, injury_index: dict[tuple[str, str], dict], team: str | None
 ) -> dict | None:
-    """The injury report row for a Sleeper athlete, or None."""
+    """The injury report row for a Sleeper athlete, or None.
+
+    Exact normalized name first. Then, on the same team and only when exactly
+    one report qualifies (and the positions do not contradict): the same
+    canonical first name ("Bobby" = "Robert"), or the same last name with one
+    first name a prefix of the other ("Zach Carter" = "Zachary Carter", "Rob
+    Beal" = "Robert Beal Jr."). Never a guess between two teammates.
+    """
     name = norm_name((athlete_row or {}).get("full_name"))
     if not name:
         return None
-    return injury_index.get((name, normalize_team(team) or ""))
+    team_key = normalize_team(team) or ""
+    hit = injury_index.get((name, team_key))
+    if hit is not None or not isinstance(injury_index, _InjuryIndex) or not team_key:
+        return hit
+    rows = [r for r in injury_index.aliases.get((_alias_key(name), team_key), [])
+            if _same_position(athlete_row, r)]
+    if len(rows) == 1:
+        return rows[0]
+    parts = name.split()
+    if len(parts) < 2:
+        return None
+    first = parts[0]
+    rows = [r for their_first, r in injury_index.by_last.get((parts[-1], team_key), [])
+            if min(len(first), len(their_first)) >= 3
+            and (their_first.startswith(first) or first.startswith(their_first))
+            and _same_position(athlete_row, r)]
+    return rows[0] if len(rows) == 1 else None
 
 
 def report_ids_for(athlete_rows: list[dict], injury_index: dict[tuple[str, str], dict]) -> list[str]:

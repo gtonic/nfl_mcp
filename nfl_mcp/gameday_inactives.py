@@ -14,7 +14,8 @@ What the feeds carry, checked on 2026-09-23 against week 2:
   Commanders", "Seumalo (shoulder) is active for Sunday's game". Dated, per
   player, and covering every fantasy-relevant question mark. Primary.
 - Sleeper's player feed: ``injury_status == "Inactive"`` when Sleeper sets it.
-  Read too, but it was not seen in any live payload so far.
+  Read too (from the stored athletes, else a once-a-day download of the
+  dump), but it was not seen in any live payload so far.
 
 A note only counts for the game it was posted around (from three hours before
 kickoff to the end of the game); anything older is last week's.
@@ -138,6 +139,65 @@ def parse_sleeper_inactives(players: dict, teams: set[str]) -> list[dict]:
     return out
 
 
+# Process cache of the full Sleeper player dump (~5 MB), for when the stored
+# athletes cannot answer: (fetched_at, players).
+_SLEEPER_DUMP_TTL = timedelta(days=1)
+_sleeper_dump: tuple[datetime, dict] | None = None
+
+
+def _stored_sleeper_players(db, teams: set[str]) -> dict:
+    """``{id: raw Sleeper player}`` for the teams, from the stored athletes.
+
+    The athletes table holds Sleeper's player payload in ``raw``, refreshed by
+    the prefetch; reading it replaces downloading the whole dump on every call
+    inside an inactives window.
+    """
+    import json
+
+    if db is None or not hasattr(db, "get_athletes_by_team"):
+        return {}
+    players: dict = {}
+    for team in teams:
+        try:
+            rows = db.get_athletes_by_team(team)
+        except Exception:
+            continue
+        for row in rows if isinstance(rows, list) else []:
+            raw = row.get("raw") if isinstance(row, dict) else None
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (ValueError, TypeError):
+                    raw = None
+            if isinstance(raw, dict) and row.get("id"):
+                # The stored team is canonical; the raw one can be WAS/OAK.
+                players[str(row["id"])] = {**raw, "team": row.get("team_id") or raw.get("team")}
+    return players
+
+
+async def _sleeper_players(db, teams: set[str], client, now: datetime) -> dict | None:
+    """Sleeper players for the window teams: stored athletes first, else the
+    full dump, fetched at most once a day per process. None when neither is
+    available."""
+    global _sleeper_dump
+    stored = _stored_sleeper_players(db, teams)
+    if stored:
+        return stored
+    if _sleeper_dump and timedelta(0) <= now - _sleeper_dump[0] < _SLEEPER_DUMP_TTL:
+        return _sleeper_dump[1]
+    from .config import get_http_headers
+    resp = await client.get(SLEEPER_PLAYERS_URL, headers=get_http_headers("sleeper_players"),
+                            timeout=30.0)
+    if resp.status_code != 200:
+        return None
+    players = resp.json()
+    if not isinstance(players, dict):
+        return None
+    if players:
+        _sleeper_dump = (now, players)
+    return players
+
+
 async def _week_kickoffs(db, season: int, week: int, client) -> dict[str, str]:
     """``{team: kickoff}`` from the cached schedule, else ESPN's scoreboard."""
     kickoffs: dict[str, str] = {}
@@ -202,11 +262,10 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
         except Exception as e:
             logger.warning(f"[Inactives] ESPN notes failed: {e}")
         try:
-            resp = await client.get(SLEEPER_PLAYERS_URL, headers=get_http_headers("sleeper_players"),
-                                    timeout=30.0)
-            if resp.status_code == 200:
+            players = await _sleeper_players(db, window, client, now)
+            if players is not None:
                 seen = {(norm_name(r["player_name"]), r["team_id"]) for r in result["inactives"]}
-                for row in parse_sleeper_inactives(resp.json(), window):
+                for row in parse_sleeper_inactives(players, window):
                     if (norm_name(row["player_name"]), row["team_id"]) not in seen:
                         result["inactives"].append(row)
                 result["sources_checked"].append(SOURCE_SLEEPER)
