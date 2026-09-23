@@ -32,13 +32,23 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server provides **86 MCP tools** organized into logical categories — 85
-always on, plus `get_league_leaders` behind the `league_leaders` feature flag
-(enabled by default). Every tool also ships its own parameter schema over MCP,
-so an agent can introspect the authoritative signature at runtime; this list is
-the map.
+The server has **72 MCP tools** (including `get_league_leaders`, behind the
+`league_leaders` feature flag, enabled by default). Which of them are registered
+depends on the tool profile, `NFL_MCP_TOOL_PROFILE`:
 
-### 1. NFL Information Tools (9 tools)
+| Profile | Tools | Registered |
+|---|---|---|
+| `season` (default) | 55 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
+| `offseason` | 43 | draft and coaching; not the in-season-only tools (briefing, retro, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder, usage/opportunity), admin or `get_cbs_expert_picks` |
+| `full` | 72 | everything |
+
+The profile and count are logged at startup and returned by `GET /health`
+under `tools`. Every tool also ships its own parameter schema over MCP, so an
+agent can introspect the authoritative signature at runtime; this list is the
+map. Each tool answers one distinct question — earlier overlapping tools are
+now parameters of the one kept (see the CHANGELOG for the old → new mapping).
+
+### 1. NFL Information Tools (8 tools)
 
 Core NFL data access for teams, news, standings, and schedules:
 
@@ -61,11 +71,6 @@ Core NFL data access for teams, news, standings, and schedules:
   - Parameters: `team_id` (required, e.g., "KC", "NE")
   - Use case: Analyze team composition and player depth
   - Returns: Positions with players in depth order
-
-- **`get_team_injuries`**: Injury reports by team
-  - Parameters: `team_id` (required), `limit` (optional, default 50)
-  - Use case: Start/sit decisions based on injury status
-  - Returns: Players with injury status and fantasy severity
 
 - **`get_team_player_stats`**: Team player statistics
   - Parameters: `team_id` (required), `season`, `season_type`, `limit`
@@ -192,31 +197,22 @@ Comprehensive fantasy football league management:
 - **`get_trending_players`**: Players trending in add/drop activity
 - **`fetch_all_players`**: Complete player dataset (cached)
 
-### 6. Strategic Planning Tools (4 tools)
+### 6. Bye-Week Planning (1 tool)
 
-Advanced multi-week fantasy football planning:
+- **`get_bye_week_plan`**: which upcoming weeks YOUR lineup runs short, and what to add
+  - Parameters: `league_id` (required), `roster_id` or `user_id`, `weeks_ahead`
+    (optional, default 6), `include_free_agents` (optional, default True), `week`, `season`
+  - For each week: starters/bench on bye or injured out, the best legal lineup
+    total in the league's slots and scoring (ROS weekly projections), empty
+    slots, the bye cost against full strength, status ok/thin/crunch; crunch
+    weeks get a suggestion ("Week 7: only 1 RB available for 2 RB slot(s) — add
+    a RB before week 7") and free agents for the two worst weeks
+    (`get_waiver_targets` for that week, 25 s timeout). Includes trade-deadline
+    status; trade proposals are `find_trade_targets`.
+  - Returns: weeks, crunch_weeks, thin_weeks, suggestions, free_agent_options,
+    core_starters, trade_deadline, method
 
-- **`get_strategic_matchup_preview`**: Multi-week matchup analysis
-  - Parameters: `league_id`, `current_week`, `weeks_ahead` (optional, default 4)
-  - Use case: Plan 4-8 weeks ahead for bye weeks and trades
-  - Returns: Strategic analysis with opportunity windows
-
-- **`get_season_bye_week_coordination`**: Season-long bye week planning
-  - Parameters: `league_id`, `season` (optional)
-  - Use case: Coordinate roster around NFL bye week calendar
-  - Returns: Bye week calendar with strategic recommendations
-
-- **`get_trade_deadline_analysis`**: Trade deadline timing strategy
-  - Parameters: `league_id`, `current_week`
-  - Use case: Optimize trade timing before deadline
-  - Returns: Timing windows and urgency analysis
-
-- **`get_playoff_preparation_plan`**: Comprehensive playoff preparation
-  - Parameters: `league_id`, `current_week`
-  - Use case: Prepare roster for fantasy playoffs
-  - Returns: Preparation plan with readiness score (0-100)
-
-### 7. Waiver Wire Analysis Tools (4 tools)
+### 7. Waiver Wire Analysis Tools (2 tools)
 
 Advanced waiver wire intelligence:
 
@@ -231,20 +227,13 @@ Advanced waiver wire intelligence:
     upgrade_points, trending_adds, verdict), drop_candidates,
     replacement_levels, thin_positions, waiver_type, pool_size
 
-- **`get_waiver_log`**: Waiver transactions with de-duplication
-  - Parameters: `league_id`, `round` (optional), `dedupe` (optional, default true)
-  - Use case: Track waiver activity and identify patterns
-  - Returns: Transaction log with duplicate detection
-
-- **`check_re_entry_status`**: Players dropped then re-added
-  - Parameters: `league_id`, `round` (optional)
-  - Use case: Identify volatile players and waiver patterns
-  - Returns: Re-entry analysis with volatile player list
-
-- **`get_waiver_wire_dashboard`**: Comprehensive waiver analytics
-  - Parameters: `league_id`, `round` (optional)
-  - Use case: Complete waiver wire intelligence in one call
-  - Returns: Combined analysis from waiver log and re-entry tools
+- **`get_waiver_log`**: what already happened on the league's waiver wire
+  - Parameters: `league_id`, `round` (optional, default current week),
+    `sections` (optional: any of "log", "summary", "re_entries"; default all),
+    `player` (optional Sleeper id or name filter), `dedupe` (optional, default true)
+  - Returns: waiver_log + failed_claims (log), dashboard_summary (summary),
+    re_entry_players + volatile_players (re_entries). Pending claims are never
+    visible — Sleeper exposes a claim only once processed.
 
 ### 8. Trade Analysis Tools (2 tools)
 
@@ -281,7 +270,7 @@ Trade evaluation and discovery:
   - Use case: Assess fairness and market value of a deal already on the table
   - Returns: Trade analysis with recommendations
 
-### 9. Draft & Player Values (5 tools)
+### 9. Draft & Player Values (4 tools)
 
 - **`get_draft_board`**: Build a tiered, VBD-ranked draft board (the ordering that wins drafts).
   - Parameters: `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `num_teams` (optional, default 12), `dynasty` (optional, default False), `position` (optional), `limit` (optional, default 60)
@@ -292,14 +281,11 @@ Trade evaluation and discovery:
 - **`simulate_draft`**: Rehearse a full snake draft offline (solo, repeatable).
   - Parameters: `my_slot` (required), `num_teams` (optional, default 12), `rounds` (optional, default 15), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `dynasty` (optional, default False), `randomness` (optional, default 0.35), `num_sims` (optional, default 1), `seed` (optional)
   - Returns: sample, my_team, standings, grade
-- **`get_player_values`**: Get consensus player market values (real values, not heuristics), best-first.
-  - Parameters: `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `num_teams` (optional, default 12), `dynasty` (optional, default False), `position` (optional), `limit` (optional, default 100)
-  - Returns: values, total, format, source, stale, updated_at
-- **`get_player_value`**: Get the consensus market value for one player (by Sleeper id or name).
-  - Parameters: `player_id` (optional), `name` (optional), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `num_teams` (optional, default 12), `dynasty` (optional, default False)
-  - Returns: value
+- **`get_player_values`**: Consensus player market values (real values, not heuristics): the best-first list, or specific players.
+  - Parameters: `players` (optional list of Sleeper ids or names — one works), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `num_teams` (optional, default 12), `dynasty` (optional, default False), `position` (optional), `limit` (optional, default 100)
+  - Returns: values, total, not_found (lookups), format, source, stale, updated_at
 
-### 10. Weekly Projections (4 tools)
+### 10. Weekly Projections (7 tools)
 
 **Scoring matters and is honoured.** `scoring` sets the points scale, not just
 which market values are consulted: both baselines are rebased to the league's
@@ -325,11 +311,8 @@ covers the real outcome ~68% of the time, measured in
   - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `since` (optional ISO-8601), `mark_seen` (optional, default True), `projection_threshold` (optional, default 2.0), `limit` (optional, default 25)
   - Returns: changes [{kind, importance, summary, ...}], counts, omitted, since, since_source, checked_at, errors
 
-- **`project_player`**: Project weekly fantasy points for one player (transparent, no scraping).
-  - Parameters: `player_name` (required), `position` (required), `team` (required), `opponent` (required), `snap_percentage` (optional), `usage_trend` (optional), `injury_status` (optional), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `season` (optional), `week` (optional), `wind_mph` (optional), `is_dome` (optional, default False)
-  - Returns: projection, projected_points, floor, ceiling, confidence, breakdown
-- **`project_players`**: Project weekly fantasy points for multiple players at once.
-  - Parameters: `players` (required), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `num_teams` (optional, default 12), `season` (optional), `week` (optional)
+- **`project_players`**: This week's fantasy points for one or more players (a one-element list for one).
+  - Parameters: `players` (required; dicts with name, position, team, optional opponent, player_id, usage, injury, weather {wind_mph, is_dome}), `league_id` (optional), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `num_teams` (optional, default 12), `season` (optional), `week` (optional)
   - Returns: projections, total
 - **`get_opportunity_projections`**: Opportunity-based projections from trailing volume (beats trailing-PPG).
   - Parameters: `season` (required), `week` (required), `players` (optional), `lookback` (optional, default 6), `min_games` (optional, default 2), `top_n` (optional, default 50), `scoring` (optional, default 'ppr')
@@ -338,42 +321,34 @@ covers the real outcome ~68% of the time, measured in
   - Parameters: `league_id` + `roster_id` (optional), `player_names` (optional), `weeks` (optional, default 4), `season` (optional), `through_week` (optional)
   - Returns: season, window, players (weeks, trends, flags), sources, trend_method, notes
 
-`project_player` / `project_players` also carry Sleeper's own weekly projection, priced in the league's scoring, as a second opinion: `sleeper_projection`, `consensus` (plain average) and `disagreement` (> 4 pts, or > 25% and >= 2 pts). Our `projected_points` stays the number decisions are made on.
+`project_players` also carries Sleeper's own weekly projection, priced in the league's scoring, as a second opinion: `sleeper_projection`, `consensus` (plain average) and `disagreement` (> 4 pts, or > 25% and >= 2 pts). Our `projected_points` stays the number decisions are made on.
 
-### 11. Start/Sit & Lineup Optimization (5 tools)
+### 11. Start/Sit & Lineup Optimization (4 tools)
 
-- **`get_start_sit_recommendation`**: Get a start/sit recommendation for a single player (QB/RB/WR/TE, and K/DEF: matched on the opponent's offense for a DEF and his own for a K, projected off Vegas totals or, without live lines, the season's scoring).
-  - Parameters: `player_name` (required), `position` (required), `team` (required), `opponent` (required), `player_id` (optional), `target_share` (optional), `snap_percentage` (optional), `injury_status` (optional), `practice_status` (optional), `projected_points` (optional)
-  - Returns: recommendation, player, position, team, opponent, decision
-- **`get_roster_recommendations`**: Get start/sit recommendations for multiple players.
-  - Parameters: `players` (required), `week` (optional), `include_reasoning` (optional, default True)
-  - Returns: recommendations, confidence, by_position, position, must_starts, players, sits, sit
-- **`compare_players_for_slot`**: Compare multiple players competing for the same roster slot.
-  - Parameters: `players` (required), `slot` (optional, default 'FLEX')
-  - Returns: winner, details, comparison, analysis, confidence_gap, verdict, decision, success
-- **`analyze_full_lineup`**: Analyze a complete fantasy lineup with optimal lineup suggestions.
-  - Parameters: `lineup` (required), `week` (optional)
-  - Returns: starters, position, bench, analyses, suggested_changes, changes, weak_spots, confidence
+- **`get_start_sit_recommendation`**: Start or sit? One player (`player_name`) or several (`players`, names or partial dicts). Team, position, Sleeper id, opponent, last week's snap share, injury designation and practice report are looked up server-side (QB/RB/WR/TE and K/DEF).
+  - Parameters: `player_name` or `players`, `position`/`team`/`player_id` (optional, to disambiguate), `opponent` (optional), `injury_status` (optional override), `league_id` (preferred, league scoring), `scoring`, `season`, `week`, `include_reasoning`
+  - Returns (single): recommendation, confidence, matchup_tier, reasoning, factors, resolved; (list): recommendations, by_position, must_starts, sits, on_bye, locked
+- **`compare_players_for_slot`**: Compare 2-5 players competing for the same roster slot (names or dicts; details looked up).
+  - Parameters: `players` (required), `slot` (optional, default 'FLEX'), `league_id` (optional)
+  - Returns: winner, comparison, confidence_gap, verdict
+- **`analyze_lineup`**: Grade the lineup you have set this week, read from the league.
+  - Parameters: `league_id` + `roster_id` or `user_id`, `week`, `season`; or `lineup` (dict keyed by slot) for a hypothetical
+  - Returns: lineup_grade, lineup_efficiency_pct, total_projected, optimal_projected, optimal_lineup, suggested_changes, locked_players, weak_spots, starters, bench, empty_slots
 - **`get_win_probability_lineup`**: Pick the lineup that maximizes P(beating this specific opponent).
   - Parameters: `your_players` (required), `opponent_players` (required), `slots` (optional), `stack_correlation` (optional, default 0.35)
   - Returns: recommended_lineup, win_probability, projected_points, opponent_projected_points, projected_margin, you_are, strategy, points_optimal_lineup
 
-### 12. Matchup, Schedule & Weather (7 tools)
+### 12. Matchup, Schedule & Weather (5 tools)
 
-- **`get_defense_rankings`**: Get NFL defense rankings against fantasy positions for matchup analysis.
-  - Parameters: `positions` (optional), `season` (optional)
-  - Returns: rankings, positions, included, season, int, tiers_explained, tiers, success
-- **`get_matchup_difficulty`**: Get matchup difficulty for a specific position vs opponent defense.
-  - Parameters: `position` (required), `opponent_team` (required), `include_rankings` (optional, default False)
-  - Returns: matchup, rank, rank_display, matchup_tier, tier_indicator
-- **`analyze_roster_matchups`**: Analyze matchup difficulty for multiple players on a roster.
-  - Parameters: `players` (required), `week` (optional)
-  - Returns: analysis, player, smash_spots, matchups, avoid_spots, summary, lines, total_analyzed
+- **`get_defense_rankings`**: NFL defenses ranked by fantasy points allowed per position, or one defense via `opponent_team`.
+  - Parameters: `positions` (optional), `season` (optional), `opponent_team` (optional)
+  - Returns: rankings, matchups {position: {rank, matchup_tier, recommendation}} (with opponent_team), positions, season, is_fallback, tiers_explained
+- **`analyze_roster_matchups`**: This week's defensive matchup for every player on your roster.
+  - Parameters: `league_id` + `roster_id` or `user_id` (roster and opponents loaded), or `players` [{name, position, opponent}]; `week`, `season`
+  - Returns: analysis, smash_spots, avoid_spots, summary, on_bye, total_analyzed
 - **`get_strength_of_schedule`**: Rank NFL teams by schedule difficulty over a week range, per position.
-  - Parameters: `season` (required), `start_week` (required), `end_week` (required), `positions` (optional), `strength_season` (optional)
-  - Returns: season, weeks, positions, strength_source_season, strength_is_fallback, by_position, pos
-- **`get_playoff_sos`**: Strength of schedule for the fantasy playoff weeks (15-17).
-  - Parameters: `season` (required), `positions` (optional), `strength_season` (optional)
+  - Parameters: `season`, `start_week`, `end_week` (all optional: current season/week to 17), `positions` (optional), `strength_season` (optional), `playoff_weeks` (optional bool), `league_id` (optional; its playoff window with playoff_weeks, else weeks 15-17)
+  - Returns: season, weeks, window, positions, strength_source_season, strength_is_fallback, by_position, overall
 - **`get_streaming_options`**: Rank weekly streaming options per position over the next 1-4 weeks.
   - Parameters: `season` (required), `start_week` (required), `weeks_ahead` (optional, default 3), `positions` (optional), `strength_season` (optional), `top_n` (optional, default 8), `league_id` (optional), `only_available` (optional, default False)
   - Returns: season, weeks, positions, defense_source_season, defense_is_fallback, offense_source_season, offense_is_fallback, availability_active
@@ -381,25 +356,20 @@ covers the real outcome ~68% of the time, measured in
   - Parameters: `season` (required), `week` (required), `teams` (optional)
   - Returns: season, week, count, games, home, away, kickoff, stadium
 
-### 13. Vegas Lines & Game Environment (4 tools)
+### 13. Vegas Lines & Game Environment (2 tools)
 
-- **`get_vegas_lines`**: Get current Vegas lines for NFL games.
-  - Parameters: `teams` (optional)
-- **`get_game_environment`**: Get game environment analysis for a specific team's matchup.
-  - Parameters: `team` (required)
-- **`analyze_roster_vegas`**: Analyze Vegas lines impact for multiple players.
-  - Parameters: `players` (required)
+- **`get_vegas_lines`**: Spreads, totals, implied team totals — per game, per team, or for your roster.
+  - Parameters: `teams` (optional; adds team_environments), `week`, `season`, `league_id` + `roster_id`/`user_id` (optional; adds the per-player roster view)
+  - Returns: games, summary, team_environments?, roster? {analysis, best_environments, worst_environments, on_bye}
 - **`get_stack_opportunities`**: Identify high-total games for stacking opportunities.
   - Parameters: `min_total` (optional, default 48.0)
 
-### 14. Injury Intelligence (4 tools)
+### 14. Injury Intelligence (3 tools)
 
-- **`get_injury_report`**: Get detailed injury reports with confidence scoring.
-  - Parameters: `player_ids` (optional), `team_ids` (optional), `use_cache` (optional, default True)
-  - Returns: injuries, player_id, player_name, team_id, position, injury_status, injury_type, injury_description
-- **`get_high_confidence_injuries`**: Get injuries with high confidence scores (multi-source verified).
-  - Parameters: `min_confidence` (optional, default 70), `teams` (optional)
-  - Returns: injuries, total_injuries, min_confidence_filter, success
+- **`get_injury_report`**: Who is hurt now (ESPN reports, cached), with this week's practice line.
+  - Parameters: `teams` (optional), `player_ids` (optional), `min_confidence`, `severity` (min 1-5), `since` (ISO), `include_practice` (default True), `limit`, `use_cache`; `team_ids` is a deprecated alias of `teams`
+  - Only ESPN is wired in (the CBS injury source is not implemented), so `confidence` is uniform today.
+  - Returns: injuries, total_injuries, filters, practice_week
 - **`get_injury_trends`**: Get injury status CHANGES over a window - who got worse or recovered.
   - Parameters: `lookback_hours` (optional, default 168), `teams` (optional), `direction` (optional), `limit` (optional, default 50)
   - Returns: changes, player_name, team_id, position, previous_status, injury_status, direction, severity_delta
@@ -430,11 +400,11 @@ covers the real outcome ~68% of the time, measured in
 - **`get_cbs_player_news`**: Fetch latest fantasy football player news from CBS Sports.
   - Parameters: `limit` (optional, default 50)
   - Returns: news, total_news, success
-- **`get_cbs_projections`**: Fetch SEASON-LONG fantasy football projections from CBS Sports for a position.
-  - Parameters: `position` (optional, default 'QB'), `week` (optional), `season` (optional, default 2026), `scoring` (optional, default 'ppr')
-  - Returns: projections, total_projections, week, period, week_honoured, position, success
-- **`get_cbs_expert_picks`**: Fetch NFL expert picks against the spread from CBS Sports for a specific week.
-  - Parameters: `week` (optional)
+- **`get_cbs_projections`**: CBS SEASON-LONG projections for a position (CBS ignores weeks, so there is no week parameter).
+  - Parameters: `position` (optional, default 'QB'), `season` (optional, default 2026), `scoring` (optional, default 'ppr')
+  - Returns: projections, total_projections, period "season", week_honoured false, position, success
+- **`get_cbs_expert_picks`** (`full` profile): CBS experts' NFL picks against the spread — betting picks, not fantasy advice.
+  - Parameters: `week` (optional, default current)
   - Returns: picks, total_picks, week, success
 
 ## Advanced Features
@@ -614,8 +584,8 @@ The server implements comprehensive security measures:
 2. **Use Aggregators**: `get_fantasy_context` reduces API calls for common data
 3. **Cache Awareness**: `fetch_teams` and `fetch_athletes` are expensive; call once
 4. **Enrichment Trade-offs**: Advanced enrichment provides better insights but uses more resources
-5. **Strategic Tools**: Use strategic planning tools for multi-week analysis
-6. **Waiver Intelligence**: Combine `get_waiver_log` and `check_re_entry_status` for comprehensive analysis
+5. **Multi-week planning**: `get_bye_week_plan` for bye crunches, `get_ros_projections` / `find_trade_targets` for trades
+6. **Waiver Intelligence**: `get_waiver_targets` for who to add; `get_waiver_log` for what already happened
 
 ### Performance Optimization
 
@@ -636,31 +606,24 @@ The server implements comprehensive security measures:
 ### Workflow Patterns
 
 #### Start/Sit Decision Workflow
-1. `get_nfl_state` → Get current week
-2. `get_team_injuries` → Check injury status
-3. `get_matchups` → See weekly matchup (with enrichment)
-4. `get_team_schedule` → Analyze opponent difficulty
-5. Evaluate based on snap%, usage trends, practice status
+1. `get_weekly_briefing` → the recommended lineup, changes, injuries and IR moves in one call
+2. `analyze_lineup` → grade what is currently set
+3. `get_start_sit_recommendation` / `compare_players_for_slot` → the close calls, by name
 
 #### Waiver Wire Research Workflow
-1. `get_trending_players` → Identify popular adds/drops
-2. `get_waiver_log` → Check league-specific activity
-3. `check_re_entry_status` → Identify volatile players
-4. `search_athletes` → Get detailed player info
-5. `get_team_player_stats` → Verify fantasy relevance
+1. `get_waiver_targets` → league-specific upgrades for your lineup
+2. `recommend_faab_bid` → bid or claim timing
+3. `get_waiver_log` → what the league already did (failed claims, re-entries)
 
 #### Trade Evaluation Workflow
-1. `get_rosters` → Understand team compositions
-2. `get_matchups` → See current matchup context
-3. `get_season_bye_week_coordination` → Check bye week impact
-4. `analyze_trade` → Evaluate trade proposal
-5. `get_strategic_matchup_preview` → Consider future schedule
+1. `find_trade_targets` → trades both lineups gain from (reads the trade deadline)
+2. `analyze_trade` → evaluate the chosen proposal
+3. `get_bye_week_plan` → check the bye weeks after the trade
 
 #### Playoff Preparation Workflow
-1. `get_playoff_preparation_plan` → Get comprehensive plan
-2. `get_strategic_matchup_preview` → Analyze playoff weeks
-3. `get_trade_deadline_analysis` → Time final moves
-4. `get_waiver_wire_dashboard` → Monitor waiver opportunities
+1. `get_playoff_odds` → where you stand
+2. `get_strength_of_schedule(playoff_weeks=True, league_id=...)` → playoff-week matchups
+3. `get_ros_projections` → playoff_points per player for stash/trade calls
 
 ## Response Format
 
@@ -725,15 +688,15 @@ async with Client("http://localhost:9000/mcp/") as client:
         "week": current_week
     })
     
-    # Analyze waiver activity
-    waiver_dashboard = await client.call_tool("get_waiver_wire_dashboard", {
+    # Analyze waiver activity (log, summary, re-entries)
+    waivers = await client.call_tool("get_waiver_log", {
         "league_id": "123456789"
     })
     
-    # Get strategic preview
-    preview = await client.call_tool("get_strategic_matchup_preview", {
+    # Bye-week plan for the next six weeks
+    plan = await client.call_tool("get_bye_week_plan", {
         "league_id": "123456789",
-        "current_week": current_week,
+        "roster_id": 7,
         "weeks_ahead": 6
     })
 ```

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — MCP tool surface consolidated (86 → 72 tools; 55 in the default profile)
+
+Overlapping tools made tool routing worse. Each remaining tool answers one
+question; the removed tools' behaviour is a parameter or section of the kept
+one. Underlying Python functions are unchanged.
+
+| Removed tool | Now |
+|---|---|
+| `get_strategic_matchup_preview`, `get_season_bye_week_coordination`, `get_trade_deadline_analysis`, `get_playoff_preparation_plan` (canned stubs) | `get_bye_week_plan` (new, real); trade deadline in `find_trade_targets` / `get_bye_week_plan` |
+| `get_team_injuries`, `get_high_confidence_injuries` | `get_injury_report(teams, min_confidence, severity, since, limit)` |
+| `get_waiver_wire_dashboard`, `check_re_entry_status` | `get_waiver_log(sections=[log, summary, re_entries], player)` |
+| `get_game_environment`, `analyze_roster_vegas` | `get_vegas_lines(teams)` → `team_environments`; `get_vegas_lines(league_id, roster_id)` → `roster` |
+| `project_player` | `project_players` with a one-element list |
+| `get_player_value` | `get_player_values(players=[...])` |
+| `get_playoff_sos` | `get_strength_of_schedule(playoff_weeks=True, league_id)` |
+| `get_roster_recommendations` | `get_start_sit_recommendation(players=[...])` |
+| `analyze_full_lineup` | `analyze_lineup(league_id, roster_id)` (or `lineup=` for a hypothetical) |
+| `get_matchup_difficulty` | `get_defense_rankings(opponent_team=...)` |
+
+- `NFL_MCP_TOOL_PROFILE` = `season` (default, 55) | `offseason` (43) | `full` (72); logged at startup, reported in `/health`.
+- Start/sit, compare and matchup/Vegas roster views look up team, position, opponent and snap share server-side; `target_share`, `snap_percentage`, `practice_status` and `projected_points` are no longer caller inputs.
+- `get_cbs_projections` drops the week parameter CBS ignores; `get_cbs_expert_picks` is described as ATS picks (`full` only). The CBS injury source is labelled not implemented.
+
 ## [0.8.5] - 2026-09-22
 
 0.8.2 fixed the numbers. This release fixes what the code did with them.
