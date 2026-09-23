@@ -387,7 +387,14 @@ class TestDropCandidates:
 
     @pytest.mark.asyncio
     async def test_a_claim_is_paired_only_with_a_player_worth_less(self, db, monkeypatch):
+        # Market-value pairing (no rest-of-season projection available).
+        from nfl_mcp import waiver_target_tools
+
+        async def _no_ros(*_a, **_k):
+            return False
+        monkeypatch.setattr(waiver_target_tools, "_attach_ros", _no_ros)
         out = await self._run(monkeypatch)
+        assert out["drop_ranking"] == "market_value"
         by_name = {t["name"]: t for t in out["targets"]}
         # 900 beats the 100 scrub: a real pairing.
         assert by_name["Free Good RB"]["drop"]["name"] == "Bench Scrub RB"
@@ -402,6 +409,22 @@ class TestDropCandidates:
         assert out["open_roster_spots"] == 1
         assert out["targets"]
         assert all(t["drop"] is None for t in out["targets"])
+
+    @pytest.mark.asyncio
+    async def test_rest_of_season_points_are_the_main_drop_term(self, db, monkeypatch):
+        """A stash whose season is effectively over goes before a scrub who
+        will keep scoring, whatever the market still says about the stash."""
+        from nfl_mcp import ros
+        totals = {"m1": 200.0, "m2": 150.0, "m3": 120.0, "b1": 0.0, "b2": 150.0,
+                  "b3": 60.0, "f1": 170.0, "f2": 20.0}
+
+        async def _ros(ids, **_k):
+            return {i: {"total_points": totals.get(i, 0.0)} for i in ids}, {}
+        monkeypatch.setattr(ros, "ros_for_ids", _ros)
+        out = await self._run(monkeypatch)
+        assert out["drop_ranking"] == "ros"
+        names = [d["name"] for d in out["drop_candidates"]]
+        assert names[0] == "Bench Stud WR"
 
     @pytest.mark.asyncio
     async def test_rolling_waivers_say_a_claim_costs_priority(self, db, monkeypatch):

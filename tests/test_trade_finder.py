@@ -245,3 +245,41 @@ class TestFindTradeTargets:
         out = await find_trade_targets(LEAGUE, roster_id=7, week=17)
         assert out["success"] is False
         assert "schedule" in out["error"]
+
+
+class TestRestOfSeasonHorizon:
+    @pytest.mark.asyncio
+    async def test_candidates_considered_counts_every_swap_scored(self, db, monkeypatch):
+        _stub(monkeypatch)
+        out = await find_trade_targets(LEAGUE, roster_id=7)
+        # 8 of mine x 9 of theirs, whether or not the swap survived.
+        assert out["candidates_considered"] == 72
+        assert out["proposals_found"] >= len(out["proposals"])
+
+    @pytest.mark.asyncio
+    async def test_a_player_on_bye_is_still_tradeable(self, db, monkeypatch):
+        from nfl_mcp import ros
+        _stub(monkeypatch)
+        real = ros.ros_for_ids
+
+        async def _with_bye(ids, **kw):
+            by_id, meta = await real(ids, **kw)
+            rb1 = by_id["t_rb1"]
+            rb1["weekly_points"][3] = 0.0
+            rb1["bye_weeks"] = [3]
+            rb1["total_points"] = round(sum(rb1["weekly_points"].values()), 1)
+            return by_id, meta
+
+        monkeypatch.setattr(ros, "ros_for_ids", _with_bye)
+        out = await find_trade_targets(LEAGUE, roster_id=7)
+        assert out["horizon"] == "ros"
+        best = out["proposals"][0]
+        assert best["you_get"]["name"] == "Their RB1"
+        assert best["you_get"]["bye_weeks"] == [3]
+
+    @pytest.mark.asyncio
+    async def test_week_horizon_is_still_available(self, db, monkeypatch):
+        _stub(monkeypatch)
+        out = await find_trade_targets(LEAGUE, roster_id=7, horizon="week")
+        assert out["horizon"] == "week"
+        assert out["proposals"]

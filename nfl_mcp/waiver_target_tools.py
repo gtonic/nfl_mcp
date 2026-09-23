@@ -99,6 +99,10 @@ _MEANINGFUL_UPGRADE = 1.5
 # by this week's projection. One bad week says little; a low market value says
 # the league agrees he is replaceable.
 _DROP_VALUE_WEIGHT = 0.6
+# With rest-of-season projections (ros.py) they are the main term: the points
+# he is expected to score from here on, byes and injury absences included, in
+# this league's scoring. Market value and this week keep a smaller say.
+_DROP_ROS_WEIGHTS = {"ros": 0.5, "value": 0.3, "week": 0.2}
 _MAX_DROP_CANDIDATES = 5
 
 # Roster slots that do not count against the active roster size.
@@ -109,11 +113,28 @@ def _value_of(player: dict) -> float:
     return float(player.get("value") or 0.0)
 
 
+def _ros_of(player: dict) -> float | None:
+    ros = player.get("ros_total")
+    return None if ros is None else float(ros)
+
+
 def _keep_scores(players: list[dict]) -> dict[int, float]:
     """How much each player is worth keeping, 0-1, relative to his own roster."""
     top_value = max((_value_of(p) for p in players), default=0.0) or 1.0
     top_points = max((float(p.get("projected_points") or 0.0) for p in players),
                      default=0.0) or 1.0
+    if any(_ros_of(p) is not None for p in players):
+        top_ros = max((_ros_of(p) or 0.0 for p in players), default=0.0) or 1.0
+        w = _DROP_ROS_WEIGHTS
+        return {
+            id(p): round(
+                w["ros"] * (_ros_of(p) or 0.0) / top_ros
+                + w["value"] * _value_of(p) / top_value
+                + w["week"] * float(p.get("projected_points") or 0.0) / top_points,
+                3,
+            )
+            for p in players
+        }
     return {
         id(p): round(
             _DROP_VALUE_WEIGHT * _value_of(p) / top_value
@@ -154,7 +175,13 @@ def _outvalues(target: dict, drop: dict) -> bool:
     all (a kicker, a defense, a deep bench body), who can go for any real
     lineup gain.
     """
-    if _value_of(target) > _value_of(drop):
+    target_ros, drop_ros = _ros_of(target), _ros_of(drop)
+    if target_ros is not None and drop_ros is not None:
+        # Rest-of-season points, when both are projected, are the direct
+        # measure of "worth more from here on" in this league's scoring.
+        if target_ros > drop_ros:
+            return True
+    elif _value_of(target) > _value_of(drop):
         return True
     return _value_of(drop) == 0 and target.get("upgrade_points", 0.0) >= _MEANINGFUL_UPGRADE
 
@@ -181,15 +208,42 @@ def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
             continue
         if _outvalues(target, candidate):
             return ({k: candidate.get(k) for k in (
-                "player_id", "name", "position", "projected_points", "value")},
+                "player_id", "name", "position", "projected_points", "value",
+                "ros_total")},
                 f"Drop {candidate['name']} (value {int(_value_of(candidate))}, "
-                f"{candidate.get('projected_points')} pts) — worth less than "
-                f"{target['name']} (value {int(_value_of(target))}).")
+                f"{candidate.get('projected_points')} pts"
+                + (f", {candidate['ros_total']} ROS" if _ros_of(candidate) is not None else "")
+                + f") — worth less than {target['name']} (value {int(_value_of(target))}"
+                + (f", {target['ros_total']} ROS" if _ros_of(target) is not None else "")
+                + ").")
         break  # the least-valuable bench player is worth more; the rest are too
     return None, (
         f"Nobody on your bench is worth less than {target['name']} rest-of-season "
         "— a one-week pickup at best, not worth a permanent drop."
     )
+
+
+async def _attach_ros(players: list[dict], league: dict, season: int, week: int, db) -> bool:
+    """Set ``ros_total`` (ROS + fantasy-playoff points) on each player, in place.
+
+    Only the roster and the shortlisted targets — projecting the whole pool
+    for the season would cost more than the drop decision is worth. A failure
+    leaves the market-value ranking in charge.
+    """
+    from . import ros
+    ids = [str(p["player_id"]) for p in players if p.get("player_id")]
+    if not ids:
+        return False
+    try:
+        by_id, _ = await ros.ros_for_ids(ids, league=league, season=season, week=week, db=db)
+    except Exception as e:
+        logger.warning(f"ROS unavailable for waiver drops: {e}")
+        return False
+    for p in players:
+        entry = by_id.get(str(p.get("player_id")))
+        if entry:
+            p["ros_total"] = entry["total_points"]
+    return bool(by_id)
 
 
 def _is_claimable(row: dict) -> bool:
@@ -504,6 +558,7 @@ async def get_waiver_targets(
 
     # Who you would drop: bench players only, least worth keeping first. Stashed
     # players are left out — dropping an IR spot is a different decision.
+    ros_ok = await _attach_ros([*mine_scored, *top], league, season, week, db)
     injured_held = [p for p in mine_scored if misses_this_week(p.get("injury_status"))]
     set_starters = {str(p) for p in (mine.get("starters") or []) if p}
     # A player whose game has started cannot be dropped until it ends.
@@ -587,6 +642,8 @@ async def get_waiver_targets(
         ],
         # Would-be upgrades whose add cannot land before their kickoff.
         "too_late_for_this_week": too_late,
+        # Drops are ranked mainly on rest-of-season points when available.
+        "drop_ranking": "ros" if ros_ok else "market_value",
         "horizon": "this_week",
         "method": (
             "free agents (nobody in the league rosters them) projected for the "

@@ -19,6 +19,48 @@ logger = logging.getLogger(__name__)
 # list (deep bench / K / DST). Low but non-zero so they still count for depth.
 ESTIMATED_REPLACEMENT_VALUE = 150.0
 
+# An extra body received in a lopsided-count trade costs a roster spot: the
+# receiver has to cut someone to make room, and unless he starts, he is depth
+# the waiver wire also sells. Such pieces count at this share of their value.
+# This is what makes "one stud for two lesser players" favour the stud side.
+DEPTH_DISCOUNT = 0.5
+
+
+def _fairness_value(player: dict) -> float:
+    """A player's value in the fairness sum.
+
+    Unpriced players (no market value: K, DEF, deep bench) count as nothing.
+    They used to count ESTIMATED_REPLACEMENT_VALUE each, so padding a deal with
+    worthless kickers and defenses *raised* its fairness score — a replacement
+    level player is, by definition, free on waivers.
+    """
+    if player.get("value_source") == "estimated":
+        return 0.0
+    return float(player.get("calculated_value", ESTIMATED_REPLACEMENT_VALUE) or 0.0)
+
+
+def _package(received: list[dict], given_count: int) -> tuple[float, float, list[float]]:
+    """``(value, depth_discount, per_player_values)`` of a package to its receiver.
+
+    When a team receives more players than it sends, the extra ones — the
+    least valuable pieces of the package — cost roster spots. Each of them
+    counts at DEPTH_DISCOUNT unless the analysis marked him as a starter for
+    the receiver (``starts_for_receiver``): depth that starts is worth its
+    full value, depth that sits is not.
+    """
+    values = [_fairness_value(p) for p in received]
+    extra = max(0, len(received) - max(1, given_count))
+    discount = 0.0
+    if extra:
+        order = sorted(range(len(received)), key=lambda i: values[i])
+        for i in order[:extra]:
+            if received[i].get("starts_for_receiver"):
+                continue
+            cut = values[i] * (1 - DEPTH_DISCOUNT)
+            values[i] -= cut
+            discount += cut
+    return sum(values), discount, values
+
 
 def league_format_from_settings(league: dict | None) -> dict:
     """Derive value format (ppr, superflex, teams, dynasty) from a Sleeper league."""
@@ -194,23 +236,28 @@ class TradeAnalyzer:
         Returns:
             Tuple of (recommendation, fairness_score, details)
         """
-        team1_value = sum(p.get("calculated_value", ESTIMATED_REPLACEMENT_VALUE) for p in team1_gives)
-        team2_value = sum(p.get("calculated_value", ESTIMATED_REPLACEMENT_VALUE) for p in team2_gives)
+        # What each side's package is worth to the team *receiving* it: priced
+        # players at market value, unpriced ones (K/DEF/deep bench) at nothing,
+        # and depth that costs a roster spot at a discount — see `_package`.
+        # team1_value: what team 1 gives, as team 2 (the receiver) values it.
+        team1_value, team2_depth, team2_effective = _package(team1_gives, len(team2_gives))
+        team2_value, team1_depth, team1_effective = _package(team2_gives, len(team1_gives))
 
         # Positional fit: receiving a player at a position of need is worth more
         # to that team. Scale proportionally to the player's value (up to +20% at
         # maximum need) so it stays meaningful next to real market values.
-        def _fit_bonus(received: list[dict], needs: dict[str, int]) -> float:
+        def _fit_bonus(received: list[dict], effective: list[float],
+                       needs: dict[str, int]) -> float:
             bonus = 0.0
-            for player in received:
+            for player, val in zip(received, effective, strict=True):
                 pos = player.get("position", "")
                 need = needs.get(pos, 5)
-                val = player.get("calculated_value", ESTIMATED_REPLACEMENT_VALUE)
                 bonus += val * (need / 10.0) * 0.20
             return bonus
 
-        team1_need_adjustment = _fit_bonus(team2_gives, team1_needs)  # team1 receives team2_gives
-        team2_need_adjustment = _fit_bonus(team1_gives, team2_needs)  # team2 receives team1_gives
+        # team1 receives team2_gives, team2 receives team1_gives
+        team1_need_adjustment = _fit_bonus(team2_gives, team1_effective, team1_needs)
+        team2_need_adjustment = _fit_bonus(team1_gives, team2_effective, team2_needs)
 
         adjusted_team1_receives = team2_value + team1_need_adjustment
         adjusted_team2_receives = team1_value + team2_need_adjustment
@@ -238,6 +285,10 @@ class TradeAnalyzer:
             "team2_receives_adjusted_value": round(adjusted_team2_receives, 2),
             "team1_need_bonus": round(team1_need_adjustment, 2),
             "team2_need_bonus": round(team2_need_adjustment, 2),
+            # Value taken off each side's received package because the extra
+            # bodies cost roster spots and would not start (see `_package`).
+            "team1_depth_discount": round(team1_depth, 2),
+            "team2_depth_discount": round(team2_depth, 2),
             "value_difference": round(value_diff, 2)
         }
 
@@ -326,10 +377,12 @@ async def analyze_trade(
         # so consensus values match how this league actually plays.
         league_fmt = {"ppr": 0.0, "num_qbs": 1, "num_teams": len(rosters) or 12,
                       "is_dynasty": False, "superflex": False}
+        league_obj: dict = {}
         try:
             league_result = await get_league(league_id)
             if league_result.get("success") and league_result.get("league"):
-                league_fmt = league_format_from_settings(league_result["league"])
+                league_obj = league_result["league"]
+                league_fmt = league_format_from_settings(league_obj)
         except Exception as e:
             logger.warning(f"Could not fetch league format, using defaults: {e}")
 
@@ -399,6 +452,18 @@ async def analyze_trade(
         team1_gives_enriched = _enrich_gives(team1_gives, team1_players)
         team2_gives_enriched = _enrich_gives(team2_gives, team2_players)
 
+        # Rest-of-season lineup points, each side. Also decides which depth
+        # pieces would start for their new team (they then count in full).
+        ros_block = None
+        if nfl_db is not None and league_obj:
+            try:
+                ros_block = await _ros_deltas(
+                    league_obj, team1_roster, team2_roster,
+                    team1_gives_enriched, team2_gives_enriched, nfl_db,
+                )
+            except Exception as e:  # ROS is additive; never sink the analysis
+                logger.warning(f"ROS deltas unavailable for trade: {e}")
+
         # Evaluate trade fairness
         recommendation, fairness_score, trade_details = analyzer._evaluate_trade_fairness(
             team1_gives_enriched,
@@ -409,6 +474,9 @@ async def analyze_trade(
 
         # Generate warnings
         warnings = []
+        deadline = (ros_block or {}).get("trade_deadline") or {}
+        if deadline.get("passed") or deadline.get("urgent"):
+            warnings.append(deadline["message"])
 
         # Check for injured players. The designation itself, not only a DNP:
         # an Out or IR player sits at full market value in the fairness score,
@@ -465,9 +533,21 @@ async def analyze_trade(
                 "is_trending": p.get("is_trending", False),
             }
 
+        verdict = _verdict(recommendation, fairness_score, ros_block)
+
         return create_success_response({
             "recommendation": recommendation,
             "fairness_score": round(fairness_score, 2),
+            # Plain-language call. Led by the rest-of-season lineup change when
+            # it is known — that, not market value, is what a trade does to
+            # your season — with the market-value fairness alongside.
+            "verdict": verdict,
+            "ros_points_delta": (
+                {"team1": ros_block["team1"]["ros_points_delta"],
+                 "team2": ros_block["team2"]["ros_points_delta"]}
+                if ros_block else None
+            ),
+            "ros": ros_block,
             "value_format": {
                 "scoring": ("ppr" if league_fmt["ppr"] >= 1 else "half-ppr" if league_fmt["ppr"] > 0 else "standard"),
                 "superflex": league_fmt.get("superflex", False),
@@ -503,3 +583,118 @@ async def analyze_trade(
             ErrorType.UNEXPECTED,
             {"recommendation": None, "fairness_score": 0}
         )
+
+
+def _roster_ids(roster: dict) -> list[str]:
+    """Every player on a roster except taxi (reserve players come back)."""
+    taxi = {str(p) for p in (roster.get("taxi") or [])}
+    ids = roster.get("players") or [
+        p.get("player_id") for p in roster.get("players_enriched") or []
+    ]
+    return [str(p) for p in ids if p and str(p) not in taxi]
+
+
+async def _ros_deltas(
+    league: dict, team1_roster: dict, team2_roster: dict,
+    team1_gives: list[dict], team2_gives: list[dict], db,
+) -> dict | None:
+    """Each team's rest-of-season lineup change from the trade.
+
+    Scored the way the trade finder scores a swap: the best legal lineup is
+    re-optimised for every remaining week (regular season and fantasy
+    playoffs) before and after, and the weeks are summed. A depth piece that
+    would never start adds nothing; one that covers a bye adds that week.
+    Marks each received player ``starts_for_receiver`` for the fairness sum.
+    """
+    from . import ros, sleeper_tools
+    from .roster_needs import lineup_slots, starting_lineup
+
+    state = await sleeper_tools.get_nfl_state()
+    nfl_state = (state or {}).get("nfl_state") or {}
+    week = int(nfl_state.get("week") or 1)
+    season = int(nfl_state.get("season") or 0)
+    if not season:
+        return None
+    ids1, ids2 = _roster_ids(team1_roster), _roster_ids(team2_roster)
+    give1 = [str(p.get("player_id")) for p in team1_gives]
+    give2 = [str(p.get("player_id")) for p in team2_gives]
+    by_id, meta = await ros.ros_for_ids(
+        list(dict.fromkeys(ids1 + ids2 + give1 + give2)),
+        league=league, season=season, week=week, db=db,
+    )
+    weeks = sorted(set(meta["windows"]["regular"]) | set(meta["windows"]["playoff"]))
+    slots = lineup_slots(league.get("roster_positions"))
+
+    def _players(ids: list[str]) -> list[dict]:
+        return [{**by_id[i], "projected_points": by_id[i]["total_points"]}
+                for i in ids if i in by_id]
+
+    def _side(ids: list[str], gives: list[str], gets: list[str], received: list[dict]) -> dict:
+        before = _players(ids)
+        after = _players([i for i in ids if i not in set(gives)] + gets)
+        starters = {p.get("player_id") for p in starting_lineup(after, slots)}
+        for player in received:
+            player["starts_for_receiver"] = str(player.get("player_id")) in starters
+        gives_pts = sum(by_id[i]["total_points"] for i in gives if i in by_id)
+        gets_pts = sum(by_id[i]["total_points"] for i in gets if i in by_id)
+        delta = (ros.weekly_lineup_total(after, slots, weeks)
+                 - ros.weekly_lineup_total(before, slots, weeks))
+        return {
+            "gives_ros_points": round(gives_pts, 1),
+            "receives_ros_points": round(gets_pts, 1),
+            "raw_ros_points_delta": round(gets_pts - gives_pts, 1),
+            # The change in this team's best lineup, summed over the weeks left.
+            "ros_points_delta": round(delta, 1),
+            "ros_points_delta_per_week": round(delta / max(1, len(weeks)), 2),
+            "received_starters": sorted(
+                p.get("full_name") or p.get("player_id") for p in received
+                if p.get("starts_for_receiver")),
+        }
+
+    return {
+        "weeks": weeks,
+        "playoff_weeks": meta["windows"]["playoff"],
+        "team1": _side(ids1, give1, give2, team2_gives),
+        "team2": _side(ids2, give2, give1, team1_gives),
+        "players": {i: {k: by_id[i].get(k) for k in (
+            "player", "position", "ros_points", "playoff_points", "total_points",
+            "bye_weeks", "injury_weeks")} for i in give1 + give2 if i in by_id},
+        "trade_deadline": ros.trade_deadline_status(league.get("settings") or {}, week),
+        "schedule_unknown_weeks": meta["schedule_unknown_weeks"],
+    }
+
+
+# Below this a rest-of-season lineup change is inside the noise.
+_ROS_NOISE_PER_WEEK = 0.5
+
+
+def _verdict(recommendation: str, fairness: float, ros_block: dict | None) -> str:
+    """One sentence: the ROS lineup change first, market fairness second."""
+    market = f"market-value fairness {round(fairness)}/100 ({recommendation})"
+    if not ros_block:
+        return f"Judged on market value only: {market}."
+    t1, t2 = ros_block["team1"]["ros_points_delta"], ros_block["team2"]["ros_points_delta"]
+    bar = _ROS_NOISE_PER_WEEK * max(1, len(ros_block.get("weeks") or []))
+
+    def _say(label: str, d: float) -> str:
+        if d >= bar:
+            return f"{label} gains {d:+.1f} ROS lineup points"
+        if d <= -bar:
+            return f"{label} loses {abs(d):.1f} ROS lineup points"
+        return f"{label} is roughly even ({d:+.1f})"
+
+    if t1 >= bar and t2 >= bar:
+        call = "Both lineups improve — a real trade."
+    elif t1 >= bar > t2:
+        call = "Favours team 1 on the field."
+    elif t2 >= bar > t1:
+        call = "Favours team 2 on the field."
+    elif t1 <= -bar and t2 <= -bar:
+        call = "Neither lineup improves."
+    else:
+        call = "Little rest-of-season difference to either lineup."
+    text = f"{_say('Team 1', t1)}; {_say('team 2', t2)}. {call} Also: {market}."
+    deadline = ros_block.get("trade_deadline") or {}
+    if deadline.get("passed"):
+        text = f"{deadline['message']} {text}"
+    return text
