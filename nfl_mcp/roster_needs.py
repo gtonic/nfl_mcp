@@ -88,6 +88,11 @@ def starting_lineup_total(players: list[dict], slots: dict[str, int]) -> float:
     return lineup_total(players, expand_slots(slots))
 
 
+def starting_lineup(players: list[dict], slots: dict[str, int]) -> list[dict]:
+    """The players who win a slot in the best legal starting lineup, FLEX included."""
+    return [p for p in greedy_mean_lineup(players, expand_slots(slots)) if p]
+
+
 def lineup_gain(players: list[dict], slots: dict[str, int], candidate: dict,
                 base: float | None = None) -> float:
     """How much adding `candidate` improves the best legal starting lineup.

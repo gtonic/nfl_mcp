@@ -89,7 +89,10 @@ class TestProjectMany:
         # base 17 (rank<=5) * smash 1.10 * env 1.08 * usage(1.05*1.05) > base
         assert p["projected_points"] > 17.0
         assert p["floor"] < p["projected_points"] < p["ceiling"]
-        assert p["confidence"] >= 80  # value + real vegas + usage
+        # value + real vegas + snap/trend usage, but a rank-bucket base with no
+        # weeks of real volume behind it: medium, not high.
+        assert p["confidence"] == 63
+        assert p["confidence_level"] == "medium"
         assert p["matchup_tier"] == "smash"
 
     async def test_injury_out_zeroes_projection(self):
@@ -107,8 +110,58 @@ class TestProjectMany:
         p = res["projections"][0]
         assert p["value_source"] == "baseline"
         assert p["projected_points"] > 0
-        assert p["confidence"] == 50  # no real signals
+        assert p["confidence"] == 45  # no real signals
+        assert p["confidence_level"] == "low"
 
     async def test_tool_project_players_empty(self):
         res = await pj.project_players([], db=None)
         assert res["success"] is False
+
+
+class TestConfidenceDiscriminates:
+    """Confidence was 100 for every skill player with an opportunity base.
+
+    The opportunity base was credited twice (+20 as a value signal, +15 as
+    "real usage") and Vegas added +15, so the cap swallowed every difference.
+    """
+
+    def _conf(self, **kw):
+        args = {"has_market": True, "base_source": "opportunity", "usage_games": 6,
+                "vegas_real": True}
+        args.update(kw)
+        return pj.projection_confidence(**args)
+
+    def test_a_well_sampled_healthy_starter_is_high_but_not_capped(self):
+        assert 80 <= self._conf() < 100
+
+    def test_more_weeks_of_real_usage_is_more_confident(self):
+        assert self._conf(usage_games=2) < self._conf(usage_games=4) < self._conf(usage_games=6)
+
+    def test_injury_doubt_lowers_confidence(self):
+        assert self._conf(injury_mult=0.9) < self._conf()
+        assert self._conf(injury_mult=0.35) < self._conf(injury_mult=0.9)
+
+    def test_a_volatile_role_lowers_confidence(self):
+        assert self._conf(volume_cv=0.6) < self._conf(volume_cv=0.35) < self._conf(volume_cv=0.1)
+
+    def test_fallback_inputs_lower_confidence(self):
+        assert self._conf(vegas_real=False) < self._conf()
+        assert self._conf(base_source="rank_bucket") < self._conf()
+        assert self._conf(inherits_volume=True) < self._conf()
+
+    def test_stays_on_the_0_to_100_scale(self):
+        worst = pj.projection_confidence(has_market=False, base_source="rank_bucket",
+                                         volume_cv=0.9, injury_mult=0.35,
+                                         inherits_volume=True)
+        assert 0 <= worst <= 100
+
+    def test_usage_sample_counts_prior_games_and_volume_swing(self):
+        from nfl_mcp.opportunity_tools import usage_sample
+        index = {
+            "steady guy": {"games": [{"week": w, "targets": 6} for w in (1, 2, 3)]},
+            "boom bust": {"games": [{"week": 1, "targets": 1}, {"week": 2, "targets": 11}]},
+        }
+        # Week 3 itself is not prior history.
+        assert usage_sample(index, "Steady Guy", week=3) == {"games": 2, "volume_cv": 0.0}
+        assert usage_sample(index, "Boom Bust", week=3)["volume_cv"] > 0.5
+        assert usage_sample(index, "Nobody", week=3) is None

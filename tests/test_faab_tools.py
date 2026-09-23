@@ -35,6 +35,7 @@ VALUES = {
     "elite3": {"player_id": "elite3", "name": "Elite RB C", "position": "RB", "value": 9400, "position_rank": 4},
     "te1": {"player_id": "te1", "name": "My TE", "position": "TE", "value": 3000, "position_rank": 12},
     "te_fa": {"player_id": "te_fa", "name": "Free TE", "position": "TE", "value": 4500, "position_rank": 8},
+    "mid_rb": {"player_id": "mid_rb", "name": "Mid RB", "position": "RB", "value": 2000, "position_rank": 30},
     "k_fa": {"player_id": "k_fa", "name": "Free K", "position": "K", "value": 500, "position_rank": 1},
 }
 
@@ -132,6 +133,69 @@ class TestFaab:
         res = await _run(league_id="1", player_id="unknown_id")
         assert res["recommendation"] is None
         assert "consensus value list" in res["message"]
+
+    async def test_exhausted_budget_caps_every_bid_at_zero(self):
+        # `remaining or 10**9` read an empty budget as unlimited.
+        rosters = {"success": True, "rosters": [
+            {"roster_id": 1, "players_enriched": [], "settings": {"waiver_budget_used": 100}}]}
+        res = await _run(league_id="1", player_id="9509", my_roster_id=1, rosters=rosters)
+        r = res["recommendation"]
+        assert res["remaining_budget"] == 0
+        assert r["bid_absolute"] == 0
+        assert r["range_absolute"] == {"safe": 0, "aggressive": 0}
+
+    async def test_a_rostered_player_is_not_a_waiver_target(self):
+        rosters = {"success": True, "rosters": [
+            {"roster_id": 4, "players": ["9509"], "players_enriched": []}]}
+        res = await _run(league_id="1", player_id="9509", rosters=rosters)
+        assert res["recommendation"] is None
+        assert res["rostered_by"] == 4
+        assert "already rostered" in res["message"]
+
+
+class TestPriorityAdvice:
+    """Non-FAAB advice used to say "high waiver-priority claim" for everyone.
+
+    Tre Tucker, a +0 upgrade, was told to spend a high claim — under rolling
+    waivers that sends you to the back of the order for depth.
+    """
+
+    ROSTER_FULL_AT_RB = {"success": True, "rosters": [{"roster_id": 1, "players_enriched": [
+        {"player_id": "9509", "full_name": "Bijan Robinson", "position": "RB"},
+        {"player_id": "elite1", "full_name": "Elite RB A", "position": "RB"},
+        {"player_id": "elite3", "full_name": "Elite RB C", "position": "RB"},
+    ]}]}
+
+    async def test_depth_does_not_get_a_high_claim(self):
+        res = await _run(league_id="1", player_id="mid_rb", my_roster_id=1,
+                         league=_league(faab=False), rosters=self.ROSTER_FULL_AT_RB,
+                         trending=[])
+        r = res["recommendation"]
+        assert r["tier"] == "solid" and r["breakdown"]["upgrade_score"] == 0.0
+        assert r["priority_advice"] == "low"
+        assert "high waiver-priority" not in res["message"]
+        assert "don't burn waiver priority" in res["message"]
+        assert "back of the order" in res["message"]   # waiver_type 0 is rolling
+
+    async def test_a_real_upgrade_gets_a_high_claim(self):
+        rosters = {"success": True, "rosters": [{"roster_id": 1, "players_enriched": [
+            {"player_id": "weak", "full_name": "Weak RB", "position": "RB"}]}]}
+        res = await _run(league_id="1", player_id="9509", my_roster_id=1,
+                         league=_league(faab=False), rosters=rosters)
+        assert res["recommendation"]["priority_advice"] == "high"
+        assert "high waiver-priority claim" in res["message"]
+
+    async def test_faab_leagues_carry_no_priority_advice(self):
+        res = await _run(league_id="1", player_id="9509")
+        assert res["recommendation"]["priority_advice"] is None
+
+    def test_advice_follows_tier_and_gain(self):
+        assert ft._priority_advice("must_add", 0.0) == "high"      # scarce, high value
+        assert ft._priority_advice("strong", 0.0) == "low"
+        assert ft._priority_advice("strong", 0.6) == "high"
+        assert ft._priority_advice("speculative", 0.6) == "medium"
+        assert ft._priority_advice("hold_or_stream", 1.0) == "low"
+        assert ft._priority_advice("solid", None) == "medium"      # no roster context
 
     async def test_requires_player(self):
         res = await ft.recommend_faab_bid(league_id="1", db=None)

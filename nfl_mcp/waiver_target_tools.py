@@ -21,14 +21,17 @@ from .briefing_tools import _staleness_warnings
 from .database import NFLDatabase
 from .errors import create_success_response
 from .injury_match import build_injury_index, injury_for_row, misses_this_week
+from .player_values import get_values_service
 from .roster_needs import (
     lineup_bars,
     lineup_gain,
     lineup_slots,
     slot_counts,
+    starting_lineup,
     starting_lineup_total,
 )
 from .teams import normalize_team
+from .trade_analyzer_tools import league_format_from_settings
 from .waiver_rules import waiver_rules
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,97 @@ _INACTIVE_STATUSES = {"Inactive", "Non Football Injury", "Practice Squad"}
 # Below this the "upgrade" is inside the noise of a weekly projection (MAE is
 # ~5.8 points), so calling it an upgrade would be false precision.
 _MEANINGFUL_UPGRADE = 1.5
+
+# How a drop candidate is ranked: mostly by rest-of-season market value, partly
+# by this week's projection. One bad week says little; a low market value says
+# the league agrees he is replaceable.
+_DROP_VALUE_WEIGHT = 0.6
+_MAX_DROP_CANDIDATES = 5
+
+# Roster slots that do not count against the active roster size.
+_NON_ROSTER_SLOTS = {"IR", "TAXI"}
+
+
+def _value_of(player: dict) -> float:
+    return float(player.get("value") or 0.0)
+
+
+def _keep_scores(players: list[dict]) -> dict[int, float]:
+    """How much each player is worth keeping, 0-1, relative to his own roster."""
+    top_value = max((_value_of(p) for p in players), default=0.0) or 1.0
+    top_points = max((float(p.get("projected_points") or 0.0) for p in players),
+                     default=0.0) or 1.0
+    return {
+        id(p): round(
+            _DROP_VALUE_WEIGHT * _value_of(p) / top_value
+            + (1 - _DROP_VALUE_WEIGHT) * float(p.get("projected_points") or 0.0) / top_points,
+            3,
+        )
+        for p in players
+    }
+
+
+def _droppable(players: list[dict], slots: dict[str, int],
+               protected_ids: set[str]) -> list[dict]:
+    """Bench players who could go, least worth keeping first.
+
+    Never anyone who starts in the best lineup or whom the manager has set as
+    a starter (``protected_ids``) — the drop list used to be the five lowest
+    projections, which put a FLEX starter worth 2249 on it — and never a
+    player who projects low only because he misses this week: a zero for an
+    Out starter says nothing about the rest of the season.
+    """
+    starting = {id(p) for p in starting_lineup(players, slots)}
+    keep = _keep_scores(players)
+    bench = [
+        p for p in players
+        if id(p) not in starting
+        and str(p.get("player_id")) not in protected_ids
+        and not misses_this_week(p.get("injury_status"))
+    ]
+    bench.sort(key=lambda p: (keep[id(p)], _value_of(p), p.get("projected_points") or 0.0))
+    return [{**p, "keep_score": keep[id(p)]} for p in bench]
+
+
+def _outvalues(target: dict, drop: dict) -> bool:
+    """Whether a claim is worth more than the player it would cost.
+
+    Rest-of-season value decides, because a drop is permanent and this week's
+    edge is not. The one exception is a player the market does not price at
+    all (a kicker, a defense, a deep bench body), who can go for any real
+    lineup gain.
+    """
+    if _value_of(target) > _value_of(drop):
+        return True
+    return _value_of(drop) == 0 and target.get("upgrade_points", 0.0) >= _MEANINGFUL_UPGRADE
+
+
+def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
+               set_starters: set[str], open_spots: int) -> tuple[dict | None, str]:
+    """The player to drop for `target`, or None and why not."""
+    if open_spots > 0:
+        return None, "Open roster spot — no drop needed."
+    # Judged on the roster *after* the add: a starter he displaces at his own
+    # position (the kicker a streamer replaces) becomes droppable; a set
+    # starter elsewhere does not.
+    same_position = {
+        str(p.get("player_id")) for p in players if p.get("position") == target.get("position")
+    }
+    protected = set_starters - same_position
+    for candidate in _droppable([*players, target], slots, protected):
+        if candidate.get("player_id") == target.get("player_id"):
+            continue
+        if _outvalues(target, candidate):
+            return ({k: candidate.get(k) for k in (
+                "player_id", "name", "position", "projected_points", "value")},
+                f"Drop {candidate['name']} (value {int(_value_of(candidate))}, "
+                f"{candidate.get('projected_points')} pts) — worth less than "
+                f"{target['name']} (value {int(_value_of(target))}).")
+        break  # the least-valuable bench player is worth more; the rest are too
+    return None, (
+        f"Nobody on your bench is worth less than {target['name']} rest-of-season "
+        "— a one-week pickup at best, not worth a permanent drop."
+    )
 
 
 def _is_claimable(row: dict) -> bool:
@@ -111,6 +205,9 @@ async def get_waiver_targets(
     slots = slot_counts(league.get("roster_positions"))
     rules = waiver_rules(league)
     is_faab = rules["waiver_type"] == "faab"
+    # Sleeper waiver_type 0 is rolling priority: a successful claim moves you
+    # to the back of the order, so every claim has a real cost.
+    rolling = not is_faab and (league.get("settings") or {}).get("waiver_type") == 0
 
     rosters_resp = await sleeper_tools.get_rosters(league_id)
     rosters = (rosters_resp or {}).get("rosters") or []
@@ -213,6 +310,22 @@ async def get_waiver_targets(
 
     mine_scored = _named(my_proj, my_inputs)
     pool_scored = _named(pool_proj, pool_inputs)
+
+    # Rest-of-season market value, so a drop weighs more than one week. The
+    # answer without it is still useful, so a failed fetch only degrades.
+    values_ok = False
+    try:
+        service = get_values_service(db)
+        fmt = league_format_from_settings(league)
+        values = await service.get_values(
+            fmt["ppr"], fmt["num_qbs"], fmt["num_teams"], fmt["is_dynasty"])
+        for p in (*mine_scored, *pool_scored):
+            hit = service.lookup(values, player_id=p.get("player_id"),
+                                 name=p.get("name"), position=p.get("position"))
+            p["value"] = int(hit["value"]) if hit and hit.get("value") is not None else None
+        values_ok = bool((values or {}).get("list"))
+    except Exception as e:
+        logger.warning(f"player values unavailable for waiver drops: {e}")
     whole_slots = lineup_slots(league.get("roster_positions"))
     base_total = starting_lineup_total(mine_scored, whole_slots)
     # The weakest player actually starting where each position could play.
@@ -267,15 +380,20 @@ async def get_waiver_targets(
     targets.sort(key=lambda t: (t["upgrade_points"], t["trending_adds"]), reverse=True)
     top = [t for t in targets if t["verdict"] in ("upgrade", "speculative")][:limit]
 
-    # Who you would drop: your own weakest projections, worst first. Stashed
-    # players are left out — dropping an IR spot is a different decision — and
-    # so is anyone who projects low only because he misses this week: a zero
-    # for an Out starter says nothing about the rest of the season.
+    # Who you would drop: bench players only, least worth keeping first. Stashed
+    # players are left out — dropping an IR spot is a different decision.
     injured_held = [p for p in mine_scored if misses_this_week(p.get("injury_status"))]
-    drops = sorted(
-        (p for p in mine_scored if not misses_this_week(p.get("injury_status"))),
-        key=lambda p: p["projected_points"],
-    )[:5]
+    set_starters = {str(p) for p in (mine.get("starters") or []) if p}
+    drops = _droppable(mine_scored, whole_slots, set_starters)[:_MAX_DROP_CANDIDATES]
+    roster_size = sum(
+        1 for slot in league.get("roster_positions") or [] if slot not in _NON_ROSTER_SLOTS
+    )
+    active_count = sum(1 for p in (mine.get("players") or []) if str(p) not in unavailable)
+    open_spots = max(0, roster_size - active_count) if roster_size else 0
+    for target in top:
+        drop, note = _pair_drop(target, mine_scored, whole_slots, set_starters, open_spots)
+        target["drop"] = drop
+        target["drop_note"] = note
 
     empty_slots = sorted(
         position for position, count in slots.items()
@@ -300,14 +418,22 @@ async def get_waiver_targets(
         "stale_data_warnings": _staleness_warnings(freshness),
         "positions_considered": sorted(wanted),
         "vegas_active": vegas_active,
-        "warnings": ([] if vegas_active else [
+        "warnings": ([] if values_ok else [
+            "No market values available — drops are ranked by this week's "
+            "projection only."
+        ]) + ([] if vegas_active else [
             "No live Vegas lines (set ODDS_API_KEY) — defenses and kickers are "
             "priced off a constant, so they are reported as no_signal rather "
             "than ranked."
         ]),
         "replacement_levels": {k: round(v, 1) for k, v in levels.items()},
         "targets": top,
+        # Bench players only (never a starter, never someone who misses just
+        # this week), ranked by rest-of-season value and this week's
+        # projection. Each target carries its own `drop`, paired only when he
+        # is worth more than the player he costs.
         "drop_candidates": drops,
+        "open_roster_spots": open_spots,
         # Out/doubtful players on your active roster, kept off the drop list.
         # Whether to hold, move to IR or cut them is not a one-week call.
         "injured_not_dropped": [
@@ -329,6 +455,10 @@ async def get_waiver_targets(
              # all make the lineup worse.
              f"Nothing on waivers beats your current starters in week {week} "
              f"({len(pool_scored)} free agents checked).")
-            + ("" if is_faab else " Priority waivers: spend position, not budget.")
+            + ("" if is_faab else
+               " Rolling waivers: a successful claim sends you to the back of the "
+               "order — spend it on a real lineup upgrade, and add marginal players "
+               "as free agents once they clear waivers."
+               if rolling else " Priority waivers: spend position, not budget.")
         ),
     })

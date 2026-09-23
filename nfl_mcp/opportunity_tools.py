@@ -142,6 +142,41 @@ def trailing_volume(
     }
 
 
+def usage_sample(
+    name_index: dict[str, dict],
+    name: str,
+    week: int,
+    lookback: int = opportunity.DEFAULT_LOOKBACK,
+) -> dict | None:
+    """How much real usage history backs a player's projection, and how steady.
+
+    ``games`` is the number of prior games in the lookback window; ``volume_cv``
+    the coefficient of variation of his weekly opportunities (targets + carries
+    + pass attempts) over them — a role that swings from 2 to 9 targets is a
+    less certain projection than one that sits at 6 every week. None without
+    prior games.
+    """
+    entry = name_index.get(norm_name(name))
+    if not entry:
+        return None
+    prior = [g for g in entry["games"] if g["week"] < week]
+    if not prior:
+        return None
+    games = sorted(prior, key=lambda g: g.get("week", 0))[-lookback:]
+    volumes = [
+        float(g.get("targets", 0.0) or 0.0) + float(g.get("carries", 0.0) or 0.0)
+        + float(g.get("attempts", 0.0) or 0.0)
+        for g in games
+    ]
+    mean = sum(volumes) / len(volumes)
+    if len(volumes) < 2 or mean <= 0:
+        cv = None
+    else:
+        var = sum((v - mean) ** 2 for v in volumes) / len(volumes)
+        cv = round(var ** 0.5 / mean, 3)
+    return {"games": len(games), "volume_cv": cv}
+
+
 def vacated_volume(
     name_index: dict[str, dict],
     out_players: list[str],

@@ -45,6 +45,44 @@ def _slot_takes(slot: str, position: str) -> bool:
     return _eligible(slot, position)
 
 
+def _priority_advice(tier: str, upgrade_score: float | None) -> str:
+    """How hard to spend a waiver-priority claim: "high", "medium" or "low".
+
+    A priority claim is not free — under rolling waivers a successful one sends
+    you to the back of the order — so it is worth spending on a real lineup
+    upgrade or a scarce, high-value add, not on depth. `upgrade_score` is None
+    without roster context, when only the tier can speak.
+    """
+    if tier == "must_add":
+        return "high"  # scarce enough to claim even as depth
+    if upgrade_score is None:
+        return "medium" if tier in ("strong", "solid") else "low"
+    if upgrade_score <= 0:
+        return "low"
+    if upgrade_score >= 0.25 and tier in ("strong", "solid"):
+        return "high"
+    return "medium" if tier in ("strong", "solid", "speculative") else "low"
+
+
+def _priority_message(advice: str, name: str, tier: str, value: float, upgrade: float,
+                      has_roster: bool, rolling: bool, clear_days) -> str:
+    cost = (" Rolling waivers: a successful claim sends you to the back of the order."
+            if rolling else "")
+    gain = f"+{int(upgrade)} to your best lineup" if has_roster else "no roster context"
+    if advice == "high":
+        return (f"Non-FAAB league — worth a high waiver-priority claim on {name} "
+                f"[{tier}] (value {int(value)}, {gain}).{cost}")
+    if advice == "medium":
+        return (f"Non-FAAB league — low-to-middle priority on {name} [{tier}] "
+                f"(value {int(value)}, {gain}): claim him only if nobody better is "
+                f"on your list.{cost}")
+    wait = (f"wait the {clear_days} clear day(s) and add him as a free agent"
+            if clear_days else "wait until he clears waivers and add him as a free agent")
+    return (f"Non-FAAB league — don't burn waiver priority on {name} [{tier}] "
+            f"(value {int(value)}, {gain}): {wait}.{cost} Season-long view; "
+            "get_waiver_targets answers a one-week need.")
+
+
 def _tier(pct: float) -> str:
     if pct >= 30:
         return "must_add"
@@ -105,6 +143,29 @@ async def recommend_faab_bid(
         })
     target_value = float(target.get("value") or 0)
     position = (target.get("position") or "").upper()
+
+    # A player someone already rosters is not a waiver target at any price —
+    # reserve and taxi included, since those are owned too.
+    rosters_res = await get_rosters(league_id)
+    all_rosters = rosters_res.get("rosters", []) if rosters_res.get("success") else []
+    target_id = str(target.get("player_id") or player_id or "")
+    owner = next((
+        r for r in all_rosters
+        if target_id and target_id in {
+            str(pid) for key in ("players", "reserve", "taxi") for pid in (r.get(key) or [])
+        }
+    ), None)
+    if owner is not None:
+        return create_success_response({
+            "recommendation": None,
+            "is_faab_league": is_faab,
+            "rostered_by": owner.get("roster_id"),
+            "message": (
+                f"{target.get('name')} is already on your roster — nothing to claim."
+                if my_roster_id is not None and owner.get("roster_id") == my_roster_id else
+                f"{target.get('name')} is already rostered (roster {owner.get('roster_id')}) "
+                "— not on waivers; use analyze_trade to acquire him."),
+        })
     max_value = max((float(v.get("value") or 0) for v in values.get("list", [])), default=target_value or 1)
 
     warnings: list[str] = []
@@ -114,8 +175,7 @@ async def recommend_faab_bid(
     replacement_value = 0.0
     my_roster = None
     if my_roster_id is not None:
-        rosters_res = await get_rosters(league_id)
-        for r in (rosters_res.get("rosters", []) if rosters_res.get("success") else []):
+        for r in all_rosters:
             if r.get("roster_id") == my_roster_id:
                 my_roster = r
                 break
@@ -191,16 +251,23 @@ async def recommend_faab_bid(
     aggressive_abs = safe_abs = None
     if is_faab:
         used = (my_roster.get("settings", {}) or {}).get("waiver_budget_used") if my_roster else None
-        remaining_budget = (total_budget - used) if used is not None else total_budget
-        bid_absolute = round(bid_pct / 100.0 * total_budget)
-        if remaining_budget is not None:
-            bid_absolute = min(bid_absolute, remaining_budget)
-            if bid_absolute >= remaining_budget * 0.9 and remaining_budget > 0:
-                warnings.append("This would use most of your remaining budget")
-        aggressive_abs = min(round(bid_pct * 1.25 / 100.0 * total_budget), remaining_budget or 10**9)
-        safe_abs = round(bid_pct * 0.7 / 100.0 * total_budget)
+        remaining_budget = max(0, (total_budget - used) if used is not None else total_budget)
+        # Every number is capped by what is left. `remaining or 10**9` treated
+        # an exhausted budget as unlimited and recommended bids you cannot make.
+        bid_absolute = min(round(bid_pct / 100.0 * total_budget), remaining_budget)
+        if bid_absolute >= remaining_budget * 0.9 and remaining_budget > 0:
+            warnings.append("This would use most of your remaining budget")
+        if remaining_budget == 0:
+            warnings.append("No FAAB left — only $0 bids are possible")
+        aggressive_abs = min(round(bid_pct * 1.25 / 100.0 * total_budget), remaining_budget)
+        safe_abs = min(round(bid_pct * 0.7 / 100.0 * total_budget), remaining_budget)
     else:
         warnings.append("Not a FAAB league (waiver priority) — use your claim priority instead of a $ bid")
+
+    has_roster = my_roster is not None
+    priority_advice = None if is_faab else _priority_advice(
+        tier, upgrade_score if has_roster else None)
+    rolling = not is_faab and settings.get("waiver_type") == 0
 
     reasoning = [
         f"Market value {int(target_value)} ({position} #{target.get('position_rank')})",
@@ -221,6 +288,8 @@ async def recommend_faab_bid(
             "range_pct": {"safe": round(bid_pct * 0.7, 1), "aggressive": round(min(_MAX_BID_PCT, bid_pct * 1.25), 1)},
             "range_absolute": {"safe": safe_abs, "aggressive": aggressive_abs},
             "tier": tier,
+            # Non-FAAB only: how hard to spend a priority claim on him.
+            "priority_advice": priority_advice,
             "reasoning": reasoning,
             "warnings": warnings,
             "breakdown": {
@@ -242,7 +311,7 @@ async def recommend_faab_bid(
              + (f"(${bid_absolute} of {total_budget}) " if bid_absolute is not None else "")
              + f"on {target.get('name')} [{tier}]")
             if is_faab else
-            (f"Non-FAAB league — use a high waiver-priority claim on {target.get('name')} "
-             f"[{tier}] (value {int(target_value)}); the bid_pct below is only a priority heuristic.")
+            _priority_message(priority_advice, target.get("name"), tier, target_value,
+                              upgrade, has_roster, rolling, settings.get("waiver_clear_days"))
         ),
     })
