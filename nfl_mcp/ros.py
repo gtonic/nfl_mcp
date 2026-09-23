@@ -550,10 +550,10 @@ async def get_ros_projections(
         })
     db = db if db is not None else NFLDatabase()
     if week is None or season is None:
-        state = await sleeper_tools.get_nfl_state()
-        nfl_state = (state or {}).get("nfl_state") or {}
-        week = week or int(nfl_state.get("week") or 1)
-        season = season or int(nfl_state.get("season") or 0)
+        from .week_context import current_season_week
+        current = await current_season_week(db)
+        week = week or current["week"]
+        season = season or current["season"]
 
     league = ((await sleeper_tools.get_league(league_id)) or {}).get("league") or {}
     if not league:

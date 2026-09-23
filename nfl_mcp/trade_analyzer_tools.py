@@ -606,13 +606,12 @@ async def _ros_deltas(
     would never start adds nothing; one that covers a bye adds that week.
     Marks each received player ``starts_for_receiver`` for the fairness sum.
     """
-    from . import ros, sleeper_tools
+    from . import ros
     from .roster_needs import lineup_slots, starting_lineup
+    from .week_context import current_season_week
 
-    state = await sleeper_tools.get_nfl_state()
-    nfl_state = (state or {}).get("nfl_state") or {}
-    week = int(nfl_state.get("week") or 1)
-    season = int(nfl_state.get("season") or 0)
+    current = await current_season_week(db)
+    week, season = int(current["week"]), int(current["season"])
     if not season:
         return None
     ids1, ids2 = _roster_ids(team1_roster), _roster_ids(team2_roster)
