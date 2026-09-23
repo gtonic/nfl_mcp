@@ -51,19 +51,15 @@ from nfl_mcp.tool_registry import (
     get_nfl_standings,
     get_nfl_state,
     get_playoff_bracket,
-    get_playoff_preparation_plan,
     get_roster_recommendations,
     get_rosters,
     get_scheme_classification,
-    get_season_bye_week_coordination,
     get_stack_opportunities,
     get_start_sit_recommendation,
-    get_strategic_matchup_preview,
     get_team_injuries,
     get_team_player_stats,
     get_team_schedule,
     get_teams,
-    get_trade_deadline_analysis,
     get_traded_picks,
     get_transactions,
     get_trending_players,
@@ -127,10 +123,6 @@ class TestToolRegistry:
         assert callable(get_nfl_state)
         assert callable(get_trending_players)
         assert callable(get_fantasy_context)
-        assert callable(get_strategic_matchup_preview)
-        assert callable(get_season_bye_week_coordination)
-        assert callable(get_trade_deadline_analysis)
-        assert callable(get_playoff_preparation_plan)
         assert callable(get_user)
         assert callable(get_user_leagues)
         assert callable(get_league_drafts)

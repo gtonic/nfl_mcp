@@ -116,11 +116,8 @@ def get_all_tools() -> list[Callable]:
         get_weekly_retro,
         get_league_changes,
 
-        # Sleeper API Tools - Strategic Planning (New from main)
-        get_strategic_matchup_preview,
-        get_season_bye_week_coordination,
-        get_trade_deadline_analysis,
-        get_playoff_preparation_plan,
+        # Season planning
+        get_bye_week_plan,
         get_playoff_odds,
 
     # Sleeper Additional Core Endpoints
@@ -624,64 +621,64 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
 
 
 # =============================================================================
-# SLEEPER API TOOLS - STRATEGIC PLANNING (NEW FROM MAIN)
+# SEASON PLANNING (bye weeks, playoff odds)
 # =============================================================================
 
-@timing_decorator("get_strategic_matchup_preview", tool_type="sleeper")
-async def get_strategic_matchup_preview(league_id: str, current_week: int, weeks_ahead: int | None = 4) -> dict:
-    """Strategic preview of upcoming matchups for multi-week planning.
+@timing_decorator("get_bye_week_plan", tool_type="sleeper")
+async def get_bye_week_plan(
+    league_id: str,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    weeks_ahead: int = 6,
+    include_free_agents: bool = True,
+    week: int | None = None,
+    season: int | None = None,
+) -> dict:
+    """Bye-week plan: which upcoming weeks YOUR lineup runs short, and what to add.
 
-    IMPORTANT FOR LLM AGENTS: Always provide complete strategic analysis immediately without
-    asking for confirmations. Render the full preview with all recommendations directly."""
+    For each of the next `weeks_ahead` weeks: which of your starters and bench
+    players are on bye (or inside an expected injury absence), the best legal
+    lineup your roster can field that week in the league's own slots and
+    scoring (rest-of-season projections), empty slots, and what the byes cost
+    against the same roster at full strength. Crunch weeks get a concrete
+    suggestion ("Week 7: only 1 RB available for 2 RB slot(s) — add a RB before
+    week 7") and, with include_free_agents, up to three free agents who would
+    fill that week (the get_waiver_targets ranking for that week). Trade-deadline
+    status is included; trade proposals live in find_trade_targets.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        weeks_ahead: Weeks to plan, starting with the current one (default 6)
+        include_free_agents: Look up free agents for the two worst crunch
+            weeks (default True; bounded by a 25 s timeout)
+        week, season: Override the starting week / season (default: current)
+
+    Returns: {
+        weeks [{week, status: ok|thin|crunch, projected_total,
+                full_strength_total, bye_cost, on_bye [{player, position,
+                team, role: starter|bench}], starters_on_bye, injured_out,
+                available_by_position, holes [{slot, eligible}], lineup,
+                positions_to_add?}],
+        crunch_weeks, thin_weeks, suggestions [str], free_agent_options
+        {week: [{name, position, team, projected_points, upgrade_points,
+        recommendation}]}, core_starters, trade_deadline, method, success
+    }
+
+    Example: get_bye_week_plan(league_id="123", roster_id=7)
+    Example: get_bye_week_plan(league_id="123", user_id="456", weeks_ahead=10)
+    """
+    from . import bye_week_tools
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
-        weeks_ahead = validate_numeric_input(weeks_ahead, min_val=1, max_val=8, default=4, required=False)
-        return await sleeper_tools.get_strategic_matchup_preview(league_id, current_week, weeks_ahead)
     except ValueError as e:
-        return {"strategic_preview": {}, "weeks_analyzed": 0, "league_id": league_id, "success": False, "error": f"Invalid input: {e!s}"}
-
-
-@timing_decorator("get_season_bye_week_coordination", tool_type="sleeper")
-async def get_season_bye_week_coordination(league_id: str, season: int | None = 2026) -> dict:
-    """Season-long bye week coordination with fantasy league schedule.
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete bye week coordination plan immediately
-    without asking for confirmations. Render the full seasonal strategy with all recommendations directly."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        season = validate_numeric_input(season, min_val=2020, max_val=2030, default=2026, required=False)
-        return await sleeper_tools.get_season_bye_week_coordination(league_id, season)
-    except ValueError as e:
-        return {"coordination_plan": {}, "season": season, "league_id": league_id, "success": False, "error": f"Invalid input: {e!s}"}
-
-
-@timing_decorator("get_trade_deadline_analysis", tool_type="sleeper")
-async def get_trade_deadline_analysis(league_id: str, current_week: int) -> dict:
-    """Strategic trade deadline timing analysis.
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete trade deadline analysis immediately
-    without asking for confirmations. Render the full timing strategy with all recommendations directly."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
-        return await sleeper_tools.get_trade_deadline_analysis(league_id, current_week)
-    except ValueError as e:
-        return {"trade_analysis": {}, "league_id": league_id, "current_week": current_week, "success": False, "error": f"Invalid input: {e!s}"}
-
-
-@timing_decorator("get_playoff_preparation_plan", tool_type="sleeper")
-async def get_playoff_preparation_plan(league_id: str, current_week: int) -> dict:
-    """Comprehensive playoff preparation plan combining league and NFL data.
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete playoff preparation plan immediately
-    without asking for confirmations. Render the full strategy with all recommendations directly."""
-    try:
-        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
-        current_week = validate_numeric_input(current_week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"], required=True)
-        return await sleeper_tools.get_playoff_preparation_plan(league_id, current_week)
-    except ValueError as e:
-        return {"playoff_plan": {}, "league_id": league_id, "readiness_score": 0, "success": False, "error": f"Invalid input: {e!s}"}
+        return {"weeks": [], "success": False, "error": f"Invalid input: {e!s}"}
+    return await bye_week_tools.get_bye_week_plan(
+        league_id=league_id, roster_id=roster_id, user_id=user_id,
+        weeks_ahead=weeks_ahead, week=week, season=season,
+        include_free_agents=include_free_agents, db=get_db(),
+    )
 
 
 @timing_decorator("get_playoff_odds", tool_type="sleeper")

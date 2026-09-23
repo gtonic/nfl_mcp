@@ -53,7 +53,7 @@ class TestFailuresAreLogged:
     standing between it and a log line was a bare `except: continue`.
     """
 
-    @pytest.mark.parametrize("module", ["sleeper_strategy", "playoff_tools"])
+    @pytest.mark.parametrize("module", ["bye_week_tools", "playoff_tools"])
     def test_no_bare_handler_skips_an_item_silently(self, module):
         import ast
         import importlib
