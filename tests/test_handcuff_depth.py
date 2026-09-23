@@ -1,7 +1,7 @@
 """Handcuff lookup against the shape `get_depth_chart` actually returns."""
 import pytest
 
-from nfl_mcp.handcuff_tools import handcuff_from_depth
+from nfl_mcp.handcuff_tools import backs_up, handcuff_from_depth
 
 # Verbatim from a live get_depth_chart("BUF") response.
 BUF = [
@@ -18,8 +18,15 @@ class TestCurrentShape:
         # through to "you_roster_a_backup" and report no handcuff at all.
         assert handcuff_from_depth(BUF, "James Cook III") == ("Ray Davis", "depth")
 
-    def test_a_backup_has_a_handcuff_too(self):
-        assert handcuff_from_depth(BUF, "Ray Davis") == ("Ty Johnson", "depth")
+    def test_a_backup_has_no_handcuff(self):
+        # The RB2 *is* the contingent value. The RB3 behind him inherits
+        # nothing while the starter plays, so he is nobody's handcuff.
+        assert handcuff_from_depth(BUF, "Ray Davis") == (None, "you_roster_a_backup")
+        assert backs_up(BUF, "Ray Davis") == "James Cook III"
+
+    def test_a_starter_backs_up_nobody(self):
+        assert backs_up(BUF, "James Cook III") is None
+        assert backs_up(BUF, "Saquon Barkley") is None
 
     def test_last_man_on_the_chart_is_the_contingent_value(self):
         assert handcuff_from_depth(BUF, "Ty Johnson") == (None, "you_roster_a_backup")

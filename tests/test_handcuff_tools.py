@@ -6,6 +6,7 @@ import pytest
 from nfl_mcp.handcuff_tools import (
     _availability,
     _clean_name,
+    _match_athlete,
     get_handcuff_map,
     handcuff_from_depth,
 )
@@ -52,7 +53,9 @@ class TestHandcuffFromDepth:
 class TestAvailability:
     def test_free_agent(self):
         assert _availability("x", {}, my_roster_id=1) == "free_agent"
-        assert _availability(None, {"x": 1}, my_roster_id=1) == "free_agent"
+
+    def test_unmatched_player_is_unknown_not_free_agent(self):
+        assert _availability(None, {"x": 1}, my_roster_id=1) == "unknown"
 
     def test_yours_vs_opponent(self):
         assert _availability("x", {"x": 1}, my_roster_id=1) == "yours"
@@ -134,3 +137,57 @@ class TestGetHandcuffMap:
         res = await get_handcuff_map("123", roster_id=1, db=None)
         assert res["success"] is False
         assert "database" in res["error"]
+
+
+class TestMatchAthlete:
+    TEAM = [
+        {"id": "1", "full_name": "Kenneth Walker", "position": "RB"},
+        {"id": "2", "full_name": "D.J. Giddens", "position": "RB"},
+        {"id": "3", "full_name": "Zach Charbonnet", "position": "RB"},
+        {"id": "4", "full_name": "Cameron Skattebo", "position": "RB"},
+    ]
+
+    def test_suffix_and_punctuation(self):
+        assert _match_athlete("Kenneth Walker III", self.TEAM)["id"] == "1"
+        assert _match_athlete("DJ Giddens", self.TEAM)["id"] == "2"
+
+    def test_first_initial_and_last_name(self):
+        assert _match_athlete("Cam Skattebo", self.TEAM)["id"] == "4"
+
+    def test_no_match(self):
+        assert _match_athlete("Nobody Here", self.TEAM) is None
+
+
+class TestUnmatchedHandcuff:
+    async def _run(self, db, players, depth_row):
+        depth = {"depth_chart": [{"position": "RB", "players": depth_row}]}
+        rosters = {"rosters": [{"roster_id": 1, "players": players}], "success": True}
+        with patch("nfl_mcp.sleeper_tools.get_rosters", new=AsyncMock(return_value=rosters)), \
+             patch("nfl_mcp.nfl_tools.get_depth_chart", new=AsyncMock(return_value=depth)):
+            return await get_handcuff_map("123", roster_id=1, db=db)
+
+    @pytest.mark.asyncio
+    async def test_unmatched_name_is_unknown(self):
+        db = _DB(
+            by_id={"rb_star": {"id": "rb_star", "full_name": "Star Back", "position": "RB",
+                               "team_id": "SF"}},
+            by_team={"SF": [{"id": "rb_star", "full_name": "Star Back", "position": "RB"}]},
+        )
+        res = await self._run(db, ["rb_star"], ["Star Back", "Mystery Man"])
+        hc = res["handcuffs"][0]
+        assert hc["handcuff"] == "Mystery Man"
+        assert hc["handcuff_status"] == "unknown"
+        assert res["priority_free_agents"] == []
+
+    @pytest.mark.asyncio
+    async def test_rostered_backup_reports_the_starter_he_backs_up(self):
+        db = _DB(
+            by_id={"rb2": {"id": "rb2", "full_name": "Second Back", "position": "RB",
+                           "team_id": "SF"}},
+            by_team={"SF": []},
+        )
+        res = await self._run(db, ["rb2"], ["Star Back", "Second Back", "Third Back"])
+        hc = res["handcuffs"][0]
+        assert hc["handcuff"] is None          # not "Third Back"
+        assert hc["match"] == "you_roster_a_backup"
+        assert hc["backs_up"] == "Star Back"
