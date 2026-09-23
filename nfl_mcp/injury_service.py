@@ -9,7 +9,10 @@ logger = logging.getLogger(__name__)
 # Configuration constants for performance tuning
 MAX_CONCURRENT_TEAMS = 6  # Parallel team fetches
 MAX_CONCURRENT_INJURIES = 15  # Parallel injury detail fetches per team
-ATHLETE_CACHE_SIZE = 500  # LRU cache size for athlete names
+# Athlete-name cache cap. The league-wide injury list names ~1900 athletes; at
+# 500 (with no eviction) most names were refetched on every crawl.
+ATHLETE_CACHE_SIZE = 4000
+UNKNOWN_NAME = "Unknown"  # placeholder when an athlete's name could not be fetched
 REQUEST_TIMEOUT = 10.0  # Seconds per request
 
 
@@ -113,7 +116,19 @@ STATUS_SEVERITY = {
     "NA": InjurySeverity.SEVERE,
     "DNR": InjurySeverity.SEVERE,
     "COV": InjurySeverity.SEVERE,
+    # "reserve/covid-19" normalizes to Reserve; projections treat any Reserve
+    # list as out, so it must not fall through to the default.
+    "Reserve": InjurySeverity.SEVERE,
+    "Inactive": InjurySeverity.SIGNIFICANT,
+    # "We do not know" (projections: uncertain, 0.95) is milder than a real
+    # Questionable tag and must not outrank one in worst_status.
+    "Unknown": InjurySeverity.MINOR,
 }
+
+# Severity of a status the tables do not know. Projections price an
+# unrecognised designation as questionable (0.9), so severity matches that
+# rather than outranking a real Questionable.
+DEFAULT_SEVERITY = InjurySeverity.QUESTIONABLE
 
 
 # ESPN Core API `$ref` links end at the athlete id followed by a query string
@@ -123,8 +138,8 @@ _ATHLETE_ID_PATTERN = re.compile(r"/athletes/(\d+)(?:/|\?|$)")
 
 
 def status_severity(status: str | None) -> int:
-    """Severity rank for a status string, MODERATE for anything unrecognised."""
-    return int(STATUS_SEVERITY.get(status, InjurySeverity.MODERATE)) if status else 0
+    """Severity rank for a status string, DEFAULT_SEVERITY for anything unrecognised."""
+    return int(STATUS_SEVERITY.get(status, DEFAULT_SEVERITY)) if status else 0
 
 
 def worst_status(*statuses: str | None) -> str | None:
@@ -201,6 +216,10 @@ class InjuryAggregator:
         # Semaphores for concurrency control
         self._team_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TEAMS)
         self._injury_semaphore = asyncio.Semaphore(MAX_CONCURRENT_INJURIES)
+        # Teams whose last ESPN crawl was complete: every list page read and
+        # every listed report resolved. Only these may be pruned (see
+        # NFLDatabase.upsert_injuries) -- a partial crawl is not a recovery.
+        self.complete_teams: set[str] = set()
 
     def _require_client(self) -> None:
         """Fail loudly when used outside ``async with``.
@@ -294,7 +313,7 @@ class InjuryAggregator:
         Returns:
             Severity score 1-5
         """
-        return STATUS_SEVERITY.get(status, InjurySeverity.MODERATE)
+        return STATUS_SEVERITY.get(status, DEFAULT_SEVERITY)
 
     @staticmethod
     def calculate_confidence(sources: list[str], statuses_match: bool) -> int:
@@ -381,11 +400,15 @@ class InjuryAggregator:
             headers: HTTP headers to use
 
         Returns:
-            List of InjuryReport objects for the team
+            List of InjuryReport objects for the team. The team is added to
+            ``complete_teams`` only when every page was listed and every
+            report resolved.
         """
+        self.complete_teams.discard(team)
         all_injury_urls = []
         page = 1
         page_count = 1
+        listed_all = False
 
         # First, collect all injury URLs from paginated list
         while page <= page_count:
@@ -447,8 +470,14 @@ class InjuryAggregator:
             except Exception as e:
                 logger.debug(f"[InjuryAggregator] ESPN page {page} failed for {team}: {e}")
                 break
+        else:
+            listed_all = True  # no page failed
 
         if not all_injury_urls:
+            # A fully listed team with no reports is complete: its last
+            # injured player has recovered and must be pruned.
+            if listed_all:
+                self.complete_teams.add(team)
             return []
 
         # Batch fetch all injury details concurrently
@@ -473,6 +502,13 @@ class InjuryAggregator:
                 result.team_id = team
                 injuries.append(result)
 
+        if listed_all and len(injuries) == len(all_injury_urls):
+            self.complete_teams.add(team)
+        else:
+            logger.info(
+                f"[InjuryAggregator] {team}: partial crawl ({len(injuries)}/"
+                f"{len(all_injury_urls)} reports, all pages listed={listed_all}); not pruned"
+            )
         return injuries
 
     async def _fetch_espn_injury_detail(self, url: str, headers: dict) -> InjuryReport | None:
@@ -520,17 +556,17 @@ class InjuryAggregator:
                         )
                         if athlete_resp.status_code == 200:
                             athlete_data = athlete_resp.json()
-                            player_name = athlete_data.get("displayName", "Unknown")
-                        else:
-                            player_name = "Unknown"
-                    except TimeoutError:
-                        player_name = "Unknown"
+                            player_name = athlete_data.get("displayName")
                     except Exception:
-                        player_name = "Unknown"
+                        player_name = None
 
-                # Cache the athlete name (with size limit)
-                if len(self._athlete_name_cache) < ATHLETE_CACHE_SIZE:
+                # Cache real names only: a cached "Unknown" from one failed
+                # fetch stuck for the life of the process.
+                if player_name and len(self._athlete_name_cache) < ATHLETE_CACHE_SIZE:
                     self._athlete_name_cache[player_id] = player_name
+                # The store keeps its previously known name for an "Unknown"
+                # (see NFLDatabase.upsert_injuries).
+                player_name = player_name or UNKNOWN_NAME
 
             # Extract status and type
             status_data = data.get("status", {})
@@ -657,6 +693,19 @@ class InjuryAggregator:
 
         # Aggregate newly fetched data
         newly_fetched = self._aggregate_injuries(espn_injuries, cbs_injuries)
+
+        # A failed name fetch: reuse the name stored for that athlete.
+        if self._db and hasattr(self._db, "get_player_injury_from_cache"):
+            for inj in newly_fetched:
+                if inj.player_name in ("", UNKNOWN_NAME):
+                    try:
+                        stored = self._db.get_player_injury_from_cache(
+                            inj.player_id, max_age_hours=24 * 365)
+                    except Exception:
+                        stored = None
+                    name = (stored or {}).get("player_name") if isinstance(stored, dict) else None
+                    if name and name != UNKNOWN_NAME:
+                        inj.player_name = name
 
         # Cache newly fetched results
         if self._db and newly_fetched:
@@ -859,6 +908,17 @@ async def get_injury_reports(
     async with InjuryAggregator(db=db) as aggregator:
         injuries = await aggregator.fetch_all_injuries(teams, use_cache)
         return [inj.to_dict() for inj in injuries]
+
+
+async def crawl_injury_reports(teams: list[str] | None = None) -> tuple[list[dict], set[str]]:
+    """A fresh (uncached) crawl plus the teams it covered completely.
+
+    For the prefetch, which prunes reports a crawl no longer lists: only the
+    returned teams may be pruned, including those with no reports left.
+    """
+    async with InjuryAggregator() as aggregator:
+        injuries = await aggregator.fetch_all_injuries(teams, use_cache=False)
+        return [inj.to_dict() for inj in injuries], set(aggregator.complete_teams)
 
 
 async def get_player_injury_report(

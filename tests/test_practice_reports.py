@@ -168,7 +168,10 @@ class TestStorage:
         got = pr.lookup_practice(db, "Michael Penix", "ATL", season=2026, week=3)
         assert got["pattern"] == "DNP-LP-FP"
         assert got["source"] == "nfl.com"
-        assert pr.lookup_practice(db, "Michael Penix", "ATL", season=2026, week=2) is None
+        # Week 2 also reads week 3 (a short-week team's report is stored
+        # under the next week); week 1 sees nothing.
+        assert pr.lookup_practice(db, "Michael Penix", "ATL", season=2026, week=2)["pattern"] == "DNP-LP-FP"
+        assert pr.lookup_practice(db, "Michael Penix", "ATL", season=2026, week=1) is None
 
     def test_news_note_does_not_overwrite_the_official_report(self, db):
         base = {"player_name": "Nick Muse", "team": "ATL", "date": "2026-09-22",

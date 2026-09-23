@@ -36,11 +36,15 @@ class TestWorstStatus:
         assert worst_status(None, None) is None
         assert worst_status() is None
 
-    def test_unknown_status_is_treated_as_moderate(self):
+    def test_unknown_status_is_treated_as_questionable(self):
         # Not silently best-cased: an unrecognised designation must still beat
-        # a minor one, or a feed change would quietly downgrade everyone.
-        assert status_severity("Some New Designation") == 3
+        # a minor one, or a feed change would quietly downgrade everyone. It
+        # ranks with Questionable (projections price it at 0.9), not above.
+        assert status_severity("Some New Designation") == 2
         assert worst_status("Probable", "Some New Designation") == "Some New Designation"
+        assert worst_status("Unknown", "Questionable") == "Questionable"
+        assert worst_status("Questionable", "Unknown") == "Questionable"
+        assert status_severity("Reserve") == 5
 
 
 class TestBuildInjuryIndex:
