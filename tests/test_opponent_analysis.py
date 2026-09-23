@@ -9,6 +9,19 @@ import pytest
 from nfl_mcp import opponent_analysis_tools
 
 
+@pytest.fixture(autouse=True)
+def _offline_week(monkeypatch):
+    """analyze_opponent reads the current week and its matchup; keep both offline."""
+    async def _now(db=None):
+        return {"season": 2026, "week": 3}
+
+    async def _no_matchups(league_id, week):
+        return {"success": True, "matchups": []}
+
+    monkeypatch.setattr(opponent_analysis_tools, "_season_week", _now)
+    monkeypatch.setattr(opponent_analysis_tools, "get_matchups", _no_matchups)
+
+
 class TestOpponentAnalyzerModule:
     """Test the opponent_analysis_tools module functionality."""
 

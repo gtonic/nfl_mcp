@@ -48,6 +48,21 @@ def _ros_offline(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_unit_offense_read(monkeypatch):
+    """Keep the projection engine's K/DEF offense fallback off the network.
+
+    Without Vegas lines it reads nflverse offense rankings; tests of the
+    fallback patch `projections._unit_matchup` themselves.
+    """
+    from nfl_mcp import projections
+
+    async def _none(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(projections, "_unit_matchup", _none)
+
+
+@pytest.fixture(autouse=True)
 def _no_sleeper_second_opinion(monkeypatch):
     """Keep the Sleeper-projection second opinion offline in unit tests.
 

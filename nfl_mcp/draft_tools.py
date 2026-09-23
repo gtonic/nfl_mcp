@@ -34,7 +34,7 @@ from .errors import (
     handle_http_errors,
 )
 from .player_values import get_values_service, scoring_to_ppr
-from .sleeper_tools import get_draft, get_draft_picks
+from .sleeper_tools import get_draft, get_draft_picks, get_league
 
 logger = logging.getLogger(__name__)
 
@@ -344,12 +344,14 @@ def _unrankable_gaps(
     return gaps
 
 
-def _my_picks_remaining(picks_made: int, my_slot: int, num_teams: int, rounds: int) -> int:
-    """How many picks this slot still has, snake order."""
+def _my_picks_remaining(picks_made: int, my_slot: int, num_teams: int, rounds: int,
+                        draft_type: str | None = "snake", reversal_round: int | None = 0) -> int:
+    """How many picks this slot still has, in the draft's order (snake, linear,
+    3rd-round reversal). Traded future picks are not followed."""
     total = num_teams * rounds
     return sum(
         1 for pk in range(picks_made + 1, total + 1)
-        if _snake_slot(pk - 1, num_teams) == my_slot
+        if _pick_slot(pk - 1, num_teams, draft_type, reversal_round) == my_slot
     )
 
 
@@ -557,10 +559,25 @@ async def recommend_draft_pick(
     num_teams = int(settings.get("teams", 12) or 12)
     superflex = int(settings.get("slots_super_flex", 0) or 0) > 0 or int(settings.get("slots_qb", 1) or 1) >= 2
     scoring = _scoring_from_draft(draft)
-    dynasty = (draft.get("type") == "dynasty") or ((draft.get("metadata") or {}).get("is_dynasty") in (True, "true"))
+    league = None
+    if draft.get("league_id"):
+        try:
+            league = ((await get_league(str(draft["league_id"]))) or {}).get("league")
+        except Exception as e:
+            logger.debug(f"league settings unavailable for draft {draft_id}: {e}")
+    dynasty = _is_dynasty(draft, league)
 
     picks_res = await get_draft_picks(draft_id)
     picks = picks_res.get("picks", []) if picks_res.get("success") else []
+
+    # Who holds my slot: roster (league drafts) and user ids, so a traded
+    # pick is credited to whoever made it.
+    my_roster_id = None
+    my_user_ids: set[str] = set()
+    if my_slot is not None:
+        my_roster_id = (draft.get("slot_to_roster_id") or {}).get(str(my_slot))
+        my_user_ids = {str(uid) for uid, slot in (draft.get("draft_order") or {}).items()
+                       if slot == my_slot}
 
     drafted_ids = set()
     my_counts: dict[str, int] = {}
@@ -569,7 +586,7 @@ async def recommend_draft_pick(
         pid = pk.get("player_id")
         if pid:
             drafted_ids.add(str(pid))
-        if my_slot is not None and pk.get("draft_slot") == my_slot:
+        if my_slot is not None and _is_my_pick(pk, my_slot, my_roster_id, my_user_ids):
             meta = pk.get("metadata") or {}
             pos = (meta.get("position") or "").upper()
             if pos:
@@ -718,7 +735,8 @@ async def recommend_draft_pick(
 
     rounds = int(settings.get("rounds", 15) or 15)
     picks_left = (
-        _my_picks_remaining(len(picks), my_slot, num_teams, rounds)
+        _my_picks_remaining(len(picks), my_slot, num_teams, rounds,
+                            draft.get("type"), settings.get("reversal_round"))
         if my_slot is not None else 0
     )
     roster_gaps = _unrankable_gaps(my_counts, reqs, picks_left) if my_slot is not None else []
@@ -821,13 +839,56 @@ def _need_weighted_ranking(
     return scored
 
 
+def _pick_slot(overall_index: int, num_teams: int, draft_type: str | None = "snake",
+               reversal_round: int | None = 0) -> int:
+    """The 1-based slot picking at a 0-based overall pick index.
+
+    ``linear`` drafts run 1..N every round. Snake drafts alternate, and with
+    Sleeper's ``reversal_round`` (3rd-round reversal: ``3``) the direction
+    flips once more from that round on, so round 3 repeats round 2's order.
+    """
+    rnd = overall_index // num_teams + 1
+    pos_in_round = overall_index % num_teams
+    if (draft_type or "snake") == "linear":
+        forward = True
+    else:
+        forward = rnd % 2 == 1
+        if reversal_round and rnd >= int(reversal_round):
+            forward = not forward
+    return pos_in_round + 1 if forward else num_teams - pos_in_round
+
+
 def _snake_slot(overall_index: int, num_teams: int) -> int:
     """Return the 1-based slot picking at a 0-based overall pick index (snake)."""
-    rnd = overall_index // num_teams
-    pos_in_round = overall_index % num_teams
-    if rnd % 2 == 0:
-        return pos_in_round + 1
-    return num_teams - pos_in_round
+    return _pick_slot(overall_index, num_teams)
+
+
+def _is_my_pick(pick: dict, my_slot: int, my_roster_id=None, my_user_ids=frozenset()) -> bool:
+    """Whether a made pick is mine.
+
+    ``draft_slot`` is the column of the board, not who picked: a traded pick
+    keeps its column but is made by another team. Sleeper records the picker
+    as ``roster_id`` (league drafts) and ``picked_by`` (user id); the column
+    is only the fallback when the draft maps neither (mocks).
+    """
+    if my_roster_id is not None and pick.get("roster_id") is not None:
+        return str(pick["roster_id"]) == str(my_roster_id)
+    if my_user_ids and pick.get("picked_by"):
+        return str(pick["picked_by"]) in my_user_ids
+    return pick.get("draft_slot") == my_slot
+
+
+def _is_dynasty(draft: dict, league: dict | None) -> bool:
+    """Dynasty values or redraft: the league's ``settings.type`` (0 redraft,
+    1 keeper, 2 dynasty). Sleeper's draft ``type`` is the order (snake/linear/
+    auction) and is never "dynasty"."""
+    league_type = ((league or {}).get("settings") or {}).get("type")
+    if league_type is not None:
+        try:
+            return int(league_type) == 2
+        except (TypeError, ValueError):
+            pass
+    return (draft.get("metadata") or {}).get("is_dynasty") in (True, "true")
 
 
 def _starting_lineup_value(players: list[dict], reqs: dict[str, int]) -> float:

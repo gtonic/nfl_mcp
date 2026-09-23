@@ -418,6 +418,41 @@ class TestUnrankableStarterSlots:
         assert dt._my_picks_remaining(177, my_slot=9, num_teams=12, rounds=15) == 0
 
 
+class TestDraftOrder:
+    def test_third_round_reversal(self):
+        # 3RR: round 3 repeats round 2's order (12 -> 1), round 4 goes 1 -> 12.
+        order = [dt._pick_slot(i, 4, "snake", 3) for i in range(16)]
+        assert order == [1, 2, 3, 4, 4, 3, 2, 1, 4, 3, 2, 1, 1, 2, 3, 4]
+
+    def test_linear(self):
+        assert [dt._pick_slot(i, 3, "linear") for i in range(6)] == [1, 2, 3, 1, 2, 3]
+
+    def test_plain_snake_unchanged(self):
+        assert [dt._pick_slot(i, 3) for i in range(6)] == [1, 2, 3, 3, 2, 1]
+
+    def test_picks_remaining_with_reversal(self):
+        # Slot 1 of 4, 4 rounds, 3RR: picks 1, 8, 12, 13 (not 1, 8, 9, 16).
+        assert dt._my_picks_remaining(8, 1, 4, 4, "snake", 3) == 2
+        assert dt._my_picks_remaining(12, 1, 4, 4, "snake", 3) == 1
+
+    def test_my_pick_by_roster_not_column(self):
+        # A traded pick: made by roster 7 from slot 3's column.
+        traded = {"draft_slot": 3, "roster_id": 7, "picked_by": "u7"}
+        assert not dt._is_my_pick(traded, 3, my_roster_id=3, my_user_ids={"u3"})
+        assert dt._is_my_pick(traded, 5, my_roster_id=7, my_user_ids={"u7"})
+        assert dt._is_my_pick({"draft_slot": 5, "picked_by": "u7"}, 5, None, {"u7"})
+        # Mock drafts map neither: the column is all there is.
+        assert dt._is_my_pick({"draft_slot": 3}, 3)
+
+    def test_dynasty_from_league_type(self):
+        draft = {"type": "snake", "metadata": {}}
+        assert dt._is_dynasty(draft, {"settings": {"type": 2}})
+        assert not dt._is_dynasty(draft, {"settings": {"type": 1}})
+        assert not dt._is_dynasty(draft, {"settings": {"type": 0}})
+        assert not dt._is_dynasty(draft, None)
+        assert dt._is_dynasty({"metadata": {"is_dynasty": "true"}}, None)
+
+
 class TestDraftTilts:
     """Playoff schedule and handcuff signals: tiebreakers, never drivers."""
 

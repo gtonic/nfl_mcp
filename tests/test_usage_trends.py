@@ -146,3 +146,87 @@ class TestTool:
     async def test_needs_players_or_a_roster(self):
         out = await usage_trends.get_usage_trends(league_id="L", season=2026)
         assert out["success"] is False
+
+
+# 28 teams play; LV is among them every week of the window (its bye is 13).
+_TEAMS = ["LV", "MIA", "LAC", "BUF", "KC", "DEN", "NE", "NYJ", "PIT", "BAL", "CLE", "CIN",
+          "HOU", "IND", "JAX", "TEN", "DAL", "PHI", "NYG", "WAS", "CHI", "DET", "GB", "MIN",
+          "ATL", "CAR", "NO", "TB"]
+
+
+class TestByeVersusInjured:
+    SCHEDULE = dict.fromkeys(_TEAMS, "XXX")
+
+    def test_team_on_the_schedule_is_not_on_bye(self):
+        # The weekly file may not list his team (lagging or partial file);
+        # the schedule decides.
+        row = week_row(1, None, None, "LV", {}, {"MIA"}, schedule=self.SCHEDULE,
+                       injury_status="Out")
+        assert row["status"] == "injured"
+        assert row["injury_status"] == "Out"
+
+    def test_team_missing_from_the_schedule_is_on_bye(self):
+        assert week_row(13, None, None, "SF", {}, None, schedule=self.SCHEDULE)["status"] == "bye"
+
+    def test_no_report_is_did_not_play(self):
+        row = week_row(1, None, None, "LV", {}, None, schedule=self.SCHEDULE)
+        assert row["status"] == "did_not_play"
+
+    def test_suspension_is_inactive(self):
+        assert usage_trends.missed_week_status("Suspended") == "inactive"
+        assert usage_trends.missed_week_status("Questionable") == "injured"
+        assert usage_trends.missed_week_status("Active") == "did_not_play"
+
+    def test_status_at_kickoff(self):
+        history = [
+            {"injury_status": "Questionable", "recorded_at": "2026-09-16T07:00:00+00:00"},
+            {"injury_status": "Out", "recorded_at": "2026-09-20T19:00:00+00:00"},
+        ]
+        # Latest report before the game.
+        assert usage_trends.status_at_kickoff(history, "2026-09-20T20:05Z") == "Out"
+        # History starts after week 1: the first report within days of it.
+        assert usage_trends.status_at_kickoff(history, "2026-09-13T20:25Z") == "Questionable"
+        assert usage_trends.status_at_kickoff(history, "2026-09-01T20:25Z") is None
+        assert usage_trends.status_at_kickoff([], "2026-09-13T20:25Z") is None
+
+
+class _InjuryDB(_DB):
+    def get_athletes_by_ids(self, ids):
+        rows = {"11604": {"full_name": "Brock Bowers", "position": "TE", "team_id": "LV"}}
+        return {i: rows[i] for i in ids if i in rows}
+
+    def get_week_opponents(self, season, week):
+        return dict(zip(_TEAMS, _TEAMS[1:] + _TEAMS[:1], strict=True))
+
+    def get_week_kickoffs(self, season, week):
+        return {"LV": {1: "2026-09-13T20:25Z", 2: "2026-09-20T20:05Z"}[week]}
+
+    def get_all_current_injuries(self):
+        return [{"player_id": "4432665", "player_name": "Brock Bowers", "team_id": "LV",
+                 "injury_status": "Questionable"}]
+
+    def get_injury_history(self, player_id, limit=10):
+        assert player_id == "4432665"  # the report's id, not the Sleeper one
+        return [
+            {"injury_status": "Questionable", "recorded_at": "2026-09-16T07:02:23+00:00"},
+            {"injury_status": "Out", "recorded_at": "2026-09-20T19:39:56+00:00"},
+        ]
+
+
+class TestInjuredWeeksInTheTool:
+    @pytest.mark.asyncio
+    async def test_bowers_weeks_1_2_are_injured_not_bye(self):
+        rosters = {"rosters": [{"roster_id": 7, "players": ["11604"]}]}
+        # Nobody from LV in the weekly file those weeks.
+        logs = {"m1": {"player_id": "m1", "name": "Other Guy", "position": "WR", "team": "MIA",
+                       "games": [_game(1, team="MIA"), _game(2, team="MIA")]}}
+        with patch.object(opportunity_tools, "_fetch_game_logs", AsyncMock(return_value=logs)), \
+             patch.object(usage_trends, "_fetch_week_stats", AsyncMock(return_value={})), \
+             patch("nfl_mcp.sleeper_tools.get_rosters", AsyncMock(return_value=rosters)):
+            out = await usage_trends.get_usage_trends(
+                league_id="L", roster_id=7, weeks=2, season=2026, through_week=2,
+                db=_InjuryDB())
+        weeks = out["players"][0]["weeks"]
+        assert [w["status"] for w in weeks] == ["injured", "injured"]
+        assert weeks[1]["injury_status"] == "Out"
+        assert "missed week 1, 2 injured" in out["players"][0]["flags"]

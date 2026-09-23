@@ -251,6 +251,70 @@ def trend_demand(rank: int | None) -> str:
     return "light"
 
 
+# What a claim adds to your best lineup, in points. This week: the same 3.0 /
+# 1.5 bars get_waiver_targets has always used (1.5 is inside a weekly
+# projection's noise, 3.0 is well clear of it). Rest of season: the gain per
+# remaining week, byes and injuries covered by whoever is next best.
+WEEK_HIGH_GAIN = 3.0
+WEEK_MEDIUM_GAIN = 1.5
+ROS_HIGH_GAIN_PER_WEEK = 2.0
+ROS_MEDIUM_GAIN_PER_WEEK = 0.75
+
+_WORTH_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _gain_level(gain: float | None, high: float, medium: float) -> str | None:
+    if gain is None:
+        return None
+    return "high" if gain >= high else "medium" if gain >= medium else "low"
+
+
+def horizon_worth(week_gain: float | None, ros_gain: float | None,
+                  ros_weeks: int | None) -> dict:
+    """How much a claim is worth, judged on both horizons at once.
+
+    get_waiver_targets used to judge this week only and recommend_faab_bid the
+    season only, so the same player could be "claim now" in one and "wait" in
+    the other. Both now call this: ``worth`` is the better of the two
+    horizons, and ``this_week_only`` is True when that worth rests on this
+    week's game alone — the only case in which a claim that lands after his
+    kickoff is worth nothing (``priority_strategy(this_week=...)``).
+
+    Returns ``{worth, week_gain, week_worth, ros_gain, ros_gain_per_week,
+    ros_weeks, ros_worth, this_week_only, driven_by}``; ``worth`` is None
+    when neither gain is known.
+    """
+    per_week = (round(ros_gain / ros_weeks, 2)
+                if ros_gain is not None and ros_weeks else None)
+    week_worth = _gain_level(week_gain, WEEK_HIGH_GAIN, WEEK_MEDIUM_GAIN)
+    ros_worth = _gain_level(per_week, ROS_HIGH_GAIN_PER_WEEK, ROS_MEDIUM_GAIN_PER_WEEK)
+    known = [w for w in (week_worth, ros_worth) if w is not None]
+    worth = max(known, key=_WORTH_RANK.__getitem__) if known else None
+    this_week_only = ros_worth is None or (
+        week_worth is not None and _WORTH_RANK[ros_worth] < _WORTH_RANK[week_worth])
+    if worth is None:
+        driven_by = None
+    elif ros_worth is None:
+        driven_by = "this_week"
+    elif week_worth is None:
+        driven_by = "rest_of_season"
+    elif _WORTH_RANK[week_worth] == _WORTH_RANK[ros_worth]:
+        driven_by = "both"
+    else:
+        driven_by = "this_week" if this_week_only else "rest_of_season"
+    return {
+        "worth": worth,
+        "week_gain": week_gain,
+        "week_worth": week_worth,
+        "ros_gain": ros_gain,
+        "ros_gain_per_week": per_week,
+        "ros_weeks": ros_weeks,
+        "ros_worth": ros_worth,
+        "this_week_only": this_week_only,
+        "driven_by": driven_by,
+    }
+
+
 def _ordinal(n: int) -> str:
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{suffix}"

@@ -14,6 +14,11 @@ from .sleeper_tools import active_enriched, get_league_users, get_matchups, get_
 
 logger = logging.getLogger(__name__)
 
+# Kickers and defenses are one-a-week units: nobody carries a second, and
+# "snap share" does not apply to either. Depth and snap penalties made every
+# K and DEF group "critical" regardless of who it was.
+_UNIT_POSITIONS = frozenset({"K", "DEF", "DST"})
+
 
 class OpponentAnalyzer:
     """Analyzer for identifying and exploiting opponent roster weaknesses."""
@@ -86,17 +91,23 @@ class OpponentAnalyzer:
 
         # Calculate strength score (0-100)
         base_score = 50.0
+        is_unit = (position or "").upper() in _UNIT_POSITIONS
 
-        # Depth contribution (more depth = stronger)
-        if depth_count >= 4:
+        # Depth contribution (more depth = stronger). Not for K/DEF: one is
+        # the whole position.
+        if is_unit:
+            pass
+        elif depth_count >= 4:
             base_score += 20
         elif depth_count >= 3:
             base_score += 10
         elif depth_count <= 1:
             base_score -= 20
 
-        # Snap percentage contribution
-        if avg_snap_pct >= 70:
+        # Snap percentage contribution (K/DEF have no offensive snap share)
+        if is_unit:
+            pass
+        elif avg_snap_pct >= 70:
             base_score += 15
         elif avg_snap_pct >= 50:
             base_score += 5
@@ -124,9 +135,9 @@ class OpponentAnalyzer:
 
         # Compile concerns
         concerns = []
-        if depth_count < self.weakness_thresholds["depth_count_low"]:
+        if not is_unit and depth_count < self.weakness_thresholds["depth_count_low"]:
             concerns.append(f"Shallow depth ({depth_count} player{'s' if depth_count != 1 else ''})")
-        if avg_snap_pct < self.weakness_thresholds["snap_pct_low"]:
+        if not is_unit and avg_snap_pct < self.weakness_thresholds["snap_pct_low"]:
             concerns.append(f"Low snap share (avg {avg_snap_pct:.1f}%)")
         if injured_players:
             concerns.append(f"Injury concerns: {', '.join(injured_players)}")
@@ -282,13 +293,18 @@ class OpponentAnalyzer:
 
     def analyze_opponent_roster(
         self,
-        opponent_roster: dict
+        opponent_roster: dict,
+        starters: list[dict] | None = None,
     ) -> dict:
         """
         Perform comprehensive analysis of opponent roster.
 
         Args:
             opponent_roster: Opponent's roster data with enriched players
+            starters: This week's starters (from the week's matchup). The
+                roster's own ``starters_enriched`` is the lineup as last saved,
+                which is stale until the manager sets this week's; it is only
+                the fallback.
 
         Returns:
             Dict with complete opponent analysis
@@ -297,7 +313,8 @@ class OpponentAnalyzer:
         # IR/taxi players cannot start, so they must not make an opponent
         # look deep at a position they are actually thin at.
         all_players = active_enriched(opponent_roster)
-        starters = opponent_roster.get("starters_enriched", [])
+        if starters is None:
+            starters = opponent_roster.get("starters_enriched", [])
 
         # An empty (undrafted / pre-draft) roster isn't "100% vulnerable" —
         # every position would score 0 and invert to a max vulnerability. Flag
@@ -364,10 +381,76 @@ class OpponentAnalyzer:
         }
 
 
+async def _season_week(db=None) -> dict:
+    """``{season, week}`` now (a seam for tests)."""
+    from .week_context import current_season_week
+    return await current_season_week(db)
+
+
+def _matchup_starters(matchup: dict, roster: dict) -> list[dict]:
+    """This week's starters from the matchup, enriched where we can.
+
+    The matchup carries the lineup as set for *this* week; Sleeper's roster
+    `starters` is whatever was saved last, which is last week's until the
+    manager touches it. "0" is Sleeper's empty-slot marker.
+    """
+    ids = [str(p) for p in (matchup.get("starters") or []) if p and str(p) != "0"]
+    known: dict[str, dict] = {}
+    for p in (roster.get("players_enriched") or []) + (matchup.get("starters_enriched") or []):
+        if p.get("player_id") is not None:
+            known[str(p["player_id"])] = p
+    return [known.get(pid) or {"player_id": pid} for pid in ids]
+
+
+async def _project_starters(starters: list[dict], league_id: str, season: int | None,
+                            week: int, db) -> dict | None:
+    """Projected points of this week's starters in the league's own scoring.
+
+    Sleeper's ``custom_points`` is a commissioner's manual override (null in
+    almost every league), not a projection.
+    """
+    from . import projections
+    from .teams import normalize_team
+
+    ids = [str(p.get("player_id")) for p in starters if p.get("player_id")]
+    if not ids:
+        return None
+    rows = db.get_athletes_by_ids(ids) if db is not None else {}
+    inputs, unprojected = [], []
+    for p in starters:
+        pid = str(p.get("player_id"))
+        row = rows.get(pid) or {}
+        position = (row.get("position") or p.get("position") or "").upper()
+        team = normalize_team(row.get("team_id")) or (
+            normalize_team(pid) if position in ("DEF", "DST") else None)
+        name = team if position in ("DEF", "DST") else (row.get("full_name") or p.get("full_name"))
+        if not (team and name and position):
+            unprojected.append(p.get("full_name") or pid)
+            continue
+        inputs.append({"name": name, "position": position, "team": team, "player_id": pid})
+    if not inputs:
+        return None
+    res = await projections.project_players(inputs, season=season, week=week, db=db,
+                                            league_id=league_id)
+    rows_out = [
+        {"player": r.get("player"), "position": r.get("position"),
+         "projected_points": r.get("projected_points"), "on_bye": r.get("on_bye")}
+        for r in (res or {}).get("projections") or []
+    ]
+    if not rows_out:
+        return None
+    return {
+        "projected_points": round(sum(float(r["projected_points"] or 0) for r in rows_out), 1),
+        "starters": rows_out,
+        "unprojected": unprojected,
+    }
+
+
 async def analyze_opponent(
     league_id: str,
     opponent_roster_id: int,
-    current_week: int | None = None
+    current_week: int | None = None,
+    db=None,
 ) -> dict:
     """
     Analyze an opponent's roster to identify weaknesses and exploitation opportunities.
@@ -450,37 +533,67 @@ async def analyze_opponent(
                     opponent_name = user.get("display_name") or user.get("username")
                     break
 
-        # Initialize analyzer
-        analyzer = OpponentAnalyzer()
+        # This week: the lineup the opponent has set for it, and what it
+        # projects. Defaults to the current NFL week.
+        season = None
+        try:
+            now = await _season_week(db)
+            season = now.get("season")
+            current_week = current_week or now.get("week")
+        except Exception as e:
+            logger.debug(f"current week unavailable: {e}")
 
-        # Perform analysis
-        analysis = analyzer.analyze_opponent_roster(opponent_roster)
-
-        # Add matchup context if week provided
-        matchup_context = None
+        matchup = None
         if current_week:
             try:
                 matchups_result = await get_matchups(league_id, current_week)
                 if matchups_result.get("success"):
-                    matchups = matchups_result.get("matchups", [])
-                    for matchup in matchups:
-                        if matchup.get("roster_id") == opponent_roster_id:
-                            matchup_context = {
-                                "week": current_week,
-                                "matchup_id": matchup.get("matchup_id"),
-                                "points": matchup.get("points"),
-                                "projected_points": matchup.get("custom_points")
-                            }
-                            break
+                    matchup = next(
+                        (m for m in matchups_result.get("matchups", [])
+                         if m.get("roster_id") == opponent_roster_id),
+                        None,
+                    )
             except Exception as e:
                 logger.warning(f"Could not fetch matchup context: {e}")
+
+        starters = (_matchup_starters(matchup, opponent_roster)
+                    if matchup and matchup.get("starters") else None)
+
+        # Initialize analyzer
+        analyzer = OpponentAnalyzer()
+
+        # Perform analysis
+        analysis = analyzer.analyze_opponent_roster(opponent_roster, starters=starters)
+
+        matchup_context = None
+        if matchup is not None:
+            projection = None
+            if starters:
+                try:
+                    projection = await _project_starters(starters, league_id, season,
+                                                         current_week, db)
+                except Exception as e:
+                    logger.warning(f"Could not project opponent starters: {e}")
+            matchup_context = {
+                "week": current_week,
+                "matchup_id": matchup.get("matchup_id"),
+                "points": matchup.get("points"),
+                # Our projection of this week's starters in the league's
+                # scoring (None when they could not be projected).
+                "projected_points": (projection or {}).get("projected_points"),
+                "projected_starters": (projection or {}).get("starters"),
+                "projection_source": "project_players (league scoring)" if projection else None,
+            }
 
         # Compile response
         response_data = {
             **analysis,
             "opponent_name": opponent_name,
             "league_id": league_id,
-            "matchup_context": matchup_context
+            "matchup_context": matchup_context,
+            # Whose lineup the starter read is on: this week's matchup, or
+            # the roster's last saved lineup when no matchup was available.
+            "starters_source": "matchup" if starters is not None else "roster",
         }
 
         return create_success_response(response_data)

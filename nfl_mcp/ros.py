@@ -469,6 +469,11 @@ def ros_input(row: dict, injury_index: dict) -> dict | None:
     team = normalize_team(row.get("team_id") or row.get("team"))
     position = (row.get("position") or "").upper()
     name = row.get("full_name") or row.get("name")
+    if not name and position in _DEFENSE:
+        # Sleeper's team defenses carry no name in the athlete cache; they are
+        # named by their team, as the weekly projection names them. Without
+        # this every DEF was dropped from ROS and a DST slot counted as empty.
+        name = team
     if not team or not position or not name:
         return None
     injury = injury_for_row(row, injury_index) or {}
@@ -528,6 +533,31 @@ def weekly_lineup_total(players: list[dict], slots: dict[str, int], weeks: list[
         ]
         total += starting_lineup_total(week_players, slots)
     return round(total, 1)
+
+
+def lineup_gains(roster: list[dict], candidate: dict, slots: dict[str, int],
+                 week: int, weeks: list[int]) -> dict:
+    """What adding `candidate` does to the best lineup, this week and from here on.
+
+    ``roster`` and ``candidate`` are ROS entries (``weekly_points``). Returns
+    ``{week_gain, ros_gain, ros_weeks}``: this week's lineup gain, and the
+    summed week-by-week gain over `weeks` — so a pickup who only covers a bye
+    is worth that one week, not a season.
+    """
+    from .roster_needs import starting_lineup_total
+
+    def _at(players: list[dict], w: int) -> list[dict]:
+        return [{"position": p.get("position"),
+                 "projected_points": (p.get("weekly_points") or {}).get(w, 0.0)}
+                for p in players]
+
+    week_gain = (starting_lineup_total(_at([*roster, candidate], week), slots)
+                 - starting_lineup_total(_at(roster, week), slots))
+    ros_gain = (weekly_lineup_total([*roster, candidate], slots, weeks)
+                - weekly_lineup_total(roster, slots, weeks)) if weeks else 0.0
+    return {"week_gain": round(max(0.0, week_gain), 1),
+            "ros_gain": round(max(0.0, ros_gain), 1),
+            "ros_weeks": len(weeks)}
 
 
 # --------------------------------------------------------------------------
@@ -644,7 +674,14 @@ async def get_ros_projections(
 
 
 __all__ = [
-    "expected_absence", "get_ros_projections", "playoff_window",
-    "ros_for_ids", "ros_input", "ros_projections", "season_windows",
-    "trade_deadline_status", "weekly_lineup_total",
+    "expected_absence",
+    "get_ros_projections",
+    "lineup_gains",
+    "playoff_window",
+    "ros_for_ids",
+    "ros_input",
+    "ros_projections",
+    "season_windows",
+    "trade_deadline_status",
+    "weekly_lineup_total",
 ]

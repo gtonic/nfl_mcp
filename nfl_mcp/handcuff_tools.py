@@ -37,36 +37,88 @@ def _clean_name(name: str | None) -> str:
     return re.sub(r"(?<=[a-z])[A-Z]+$", "", (name or "").strip())
 
 
+def _depth_row(depth_chart: list[dict], player_name: str) -> tuple[list[str], int] | None:
+    """``(names in depth order, index of the player)`` on his depth-chart row."""
+    s = norm_name(player_name)
+    for row in depth_chart or []:
+        names = [_clean_name(p) for p in (row.get("players") or [])]
+        names = [n for n in names if n and n != "-"]
+        for idx, name in enumerate(names):
+            if norm_name(name) == s:
+                return names, idx
+    return None
+
+
 def handcuff_from_depth(depth_chart: list[dict], starter_name: str) -> tuple[str | None, str]:
     """The immediate backup behind ``starter_name`` on the team's depth chart.
 
     Returns ``(handcuff_name_or_None, method)``:
       - ``depth`` — starter is a listed starter; the first backup is the handcuff.
       - ``no_backup_listed`` — starter found but no backup behind them.
-      - ``you_roster_a_backup`` — the player is already a backup (they ARE the
-        contingent value, so no handcuff to chase).
+      - ``you_roster_a_backup`` — the player is a backup himself. He *is* the
+        contingent value; the man behind him is nobody's handcuff (an RB2's
+        RB3 inherits nothing while the starter plays). See `backs_up`.
       - ``not_on_depth_chart`` — couldn't place them.
     """
-    s = norm_name(starter_name)
+    found = _depth_row(depth_chart, starter_name)
+    if found is None:
+        return None, "not_on_depth_chart"
+    names, idx = found
+    if idx > 0:
+        return None, "you_roster_a_backup"
+    if len(names) > 1:
+        return names[1], "depth"
+    return None, "no_backup_listed"
 
-    # Find the row listing the player, and take the next usable name after him
-    # as the handcuff.
-    for row in depth_chart or []:
-        names = [_clean_name(p) for p in (row.get("players") or [])]
-        names = [n for n in names if n and n != "-"]
-        for idx, name in enumerate(names):
-            if norm_name(name) != s:
-                continue
-            for backup in names[idx + 1:]:
-                return backup, "depth"
-            # Last on the chart at his position: he *is* the contingent value.
-            return None, ("no_backup_listed" if idx == 0 else "you_roster_a_backup")
 
-    return None, "not_on_depth_chart"
+def backs_up(depth_chart: list[dict], player_name: str) -> str | None:
+    """The starter a backup sits behind (None for a starter or an unplaced player)."""
+    found = _depth_row(depth_chart, player_name)
+    if found is None or found[1] == 0:
+        return None
+    names, _ = found
+    return names[0]
+
+
+def _match_athlete(name: str, athletes: list[dict], position: str = "RB") -> dict | None:
+    """The athletes-cache row for a depth-chart name on one team.
+
+    Normalised full names first (suffixes, periods, apostrophes: "Kenneth
+    Walker III" = "Kenneth Walker"); then, among the team's players at the
+    position, a unique first-initial + last-name match ("DJ" vs "D.J.",
+    "Cam" vs "Cameron"). None when neither is unambiguous.
+    """
+    target = norm_name(name)
+    if not target:
+        return None
+    exact = [a for a in athletes if norm_name(a.get("full_name")) == target]
+    if len(exact) == 1:
+        return exact[0]
+    at_position = [a for a in (exact or athletes)
+                   if (a.get("position") or "").upper() in ("", position)]
+    if exact:
+        return at_position[0] if len(at_position) == 1 else None
+    parts = target.split()
+    if len(parts) < 2:
+        return None
+    first, last = parts[0], parts[-1]
+    loose = [
+        a for a in at_position
+        if (n := norm_name(a.get("full_name")).split()) and len(n) >= 2
+        and n[-1] == last and n[0][:1] == first[:1]
+    ]
+    return loose[0] if len(loose) == 1 else None
 
 
 def _availability(player_id: str | None, rostered: dict[str, int], my_roster_id: int) -> str:
-    if not player_id or player_id not in rostered:
+    """free_agent / yours / rostered_by_opponent — or ``unknown`` without an id.
+
+    An unmatched name used to fall through to "free_agent", sending managers
+    to the wire for a player who may well be rostered.
+    """
+    if not player_id:
+        return "unknown"
+    if player_id not in rostered:
         return "free_agent"
     return "yours" if rostered[player_id] == my_roster_id else "rostered_by_opponent"
 
@@ -108,7 +160,7 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
     for r in rosters:
         rid = r.get("roster_id")
         for pid in (r.get("players") or []):
-            rostered[pid] = rid
+            rostered[str(pid)] = rid
         if rid == roster_id:
             my_players = r.get("players") or []
 
@@ -128,7 +180,8 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
         starter = rb.get("full_name")
         team = (rb.get("team_id") or "").upper()
         entry = {"starter": starter, "team": team, "handcuff": None,
-                 "handcuff_status": None, "handcuff_player_id": None, "match": None}
+                 "handcuff_status": None, "handcuff_player_id": None, "match": None,
+                 "backs_up": None}
         if not team:
             entry["match"] = "no_team"
             handcuffs.append(entry)
@@ -144,23 +197,22 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
 
         handcuff_name, method = handcuff_from_depth(depth_cache[team], starter or "")
         entry["match"] = method
+        if method == "you_roster_a_backup":
+            # He is the handcuff; the starter he would replace, for context.
+            entry["backs_up"] = backs_up(depth_cache[team], starter or "")
         if handcuff_name:
             if team not in team_athletes_cache:
                 team_athletes_cache[team] = db.get_athletes_by_team(team) or []
-            hc_norm = norm_name(handcuff_name)
-            hc = next(
-                (a for a in team_athletes_cache[team] if norm_name(a.get("full_name")) == hc_norm),
-                None,
-            )
-            hc_id = hc.get("id") if hc else None
+            hc = _match_athlete(handcuff_name, team_athletes_cache[team])
+            hc_id = str(hc.get("id")) if hc and hc.get("id") is not None else None
             entry["handcuff"] = handcuff_name
             entry["handcuff_player_id"] = hc_id
             entry["handcuff_status"] = _availability(hc_id, rostered, roster_id)
         handcuffs.append(entry)
 
     # Priority: securable free-agent handcuffs first.
-    order = {"free_agent": 0, "rostered_by_opponent": 1, "yours": 2, None: 3}
-    handcuffs.sort(key=lambda h: order.get(h["handcuff_status"], 3))
+    order = {"free_agent": 0, "unknown": 1, "rostered_by_opponent": 2, "yours": 3, None: 4}
+    handcuffs.sort(key=lambda h: order.get(h["handcuff_status"], 4))
     free = [h for h in handcuffs if h["handcuff_status"] == "free_agent" and h["handcuff"]]
 
     return create_success_response({

@@ -19,6 +19,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+from . import ros
 from .briefing_tools import _staleness_warnings
 from .database import NFLDatabase
 from .errors import create_success_response
@@ -38,6 +39,7 @@ from .roster_needs import (
 from .teams import normalize_team
 from .trade_analyzer_tools import league_format_from_settings
 from .waiver_rules import (
+    horizon_worth,
     latest_drops,
     priority_strategy,
     trend_demand,
@@ -225,22 +227,26 @@ def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
     )
 
 
-async def _attach_ros(players: list[dict], league: dict, season: int, week: int, db) -> bool:
+async def _attach_ros(players: list[dict], league: dict, season: int, week: int, db,
+                      sink: dict | None = None) -> bool:
     """Set ``ros_total`` (ROS + fantasy-playoff points) on each player, in place.
 
     Only the roster and the shortlisted targets — projecting the whole pool
     for the season would cost more than the drop decision is worth. A failure
-    leaves the market-value ranking in charge.
+    leaves the market-value ranking in charge. ``sink`` receives the entries
+    and windows (``by_id``, ``meta``) for the rest-of-season claim gain.
     """
     from . import ros
     ids = [str(p["player_id"]) for p in players if p.get("player_id")]
     if not ids:
         return False
     try:
-        by_id, _ = await ros.ros_for_ids(ids, league=league, season=season, week=week, db=db)
+        by_id, meta = await ros.ros_for_ids(ids, league=league, season=season, week=week, db=db)
     except Exception as e:
         logger.warning(f"ROS unavailable for waiver drops: {e}")
         return False
+    if sink is not None:
+        sink.update(by_id=by_id, meta=meta or {})
     for p in players:
         entry = by_id.get(str(p.get("player_id")))
         if entry:
@@ -499,7 +505,10 @@ async def get_waiver_targets(
     # so every one of them projects identically and "ranking" them is noise.
     # Say so rather than emitting a confident order over indistinguishable rows.
     vegas_active = bool((pool_proj or {}).get("vegas_active"))
-    undifferentiated = set() if vegas_active else {"K", "DEF", "DST"}
+    # Since the engine prices K/DEF off the season's offense read when there
+    # are no lines, only a position still sitting on the constant is noise.
+    priced = {c["position"] for c in pool_scored if c.get("base_source") == "offense_rank"}
+    undifferentiated = set() if vegas_active else {"K", "DEF", "DST"} - priced
 
     targets = []
     for candidate in pool_scored:
@@ -559,23 +568,44 @@ async def get_waiver_targets(
         if t["verdict"] == "too_late" and t["upgrade_points"] >= _MEANINGFUL_UPGRADE
     ][:5]
 
+    # Who you would drop: bench players only, least worth keeping first. Stashed
+    # players are left out — dropping an IR spot is a different decision.
+    ros_data: dict = {}
+    ros_ok = await _attach_ros([*mine_scored, *top], league, season, week, db, sink=ros_data)
+
+    # Both horizons for every target — this week's lineup gain and the
+    # rest-of-season one — judged by the same rule recommend_faab_bid uses,
+    # so the two tools cannot disagree about the same player.
+    ros_by_id = ros_data.get("by_id") or {}
+    windows = (ros_data.get("meta") or {}).get("windows") or {}
+    ros_weeks = sorted(set(windows.get("regular") or []) | set(windows.get("playoff") or []))
+    mine_ros = [ros_by_id[str(p.get("player_id"))] for p in mine_scored
+                if str(p.get("player_id")) in ros_by_id]
+    for target in top:
+        entry = ros_by_id.get(str(target.get("player_id")))
+        ros_gain = None
+        if entry and mine_ros and ros_weeks:
+            ros_gain = ros.lineup_gains(mine_ros, entry, whole_slots, week, ros_weeks)["ros_gain"]
+        target["claim_worth"] = horizon_worth(target["upgrade_points"], ros_gain,
+                                              len(ros_weeks) if ros_gain is not None else None)
+        target["ros_gain"] = ros_gain
+
     # Non-FAAB leagues: claim now, wait for free agency, or leave him — one
     # helper, shared with recommend_faab_bid.
     for target in top:
         pid = str(target.get("player_id"))
+        combined = target["claim_worth"]
+        worth = (combined["worth"] if combined["ros_worth"] is not None
+                 else _claim_worth(target["verdict"], target["upgrade_points"]))
         target["waiver_strategy"] = priority_strategy(
-            league, mine,
-            worth=_claim_worth(target["verdict"], target["upgrade_points"]),
+            league, mine, worth=worth,
             demand=trend_demand(trend_rank.get(pid)),
             kickoff=parse_kickoff(target.get("kickoff")),
             previous_kickoff=parse_kickoff(
                 (previous_games.get(target["team"]) or {}).get("kickoff")),
-            dropped_at=last_dropped.get(pid), now=now, this_week=True,
+            dropped_at=last_dropped.get(pid), now=now,
+            this_week=combined["this_week_only"],
         )
-
-    # Who you would drop: bench players only, least worth keeping first. Stashed
-    # players are left out — dropping an IR spot is a different decision.
-    ros_ok = await _attach_ros([*mine_scored, *top], league, season, week, db)
     injured_held = [p for p in mine_scored if misses_this_week(p.get("injury_status"))]
     set_starters = {str(p) for p in (mine.get("starters") or []) if p}
     # A player whose game has started cannot be dropped until it ends.
@@ -630,10 +660,14 @@ async def get_waiver_targets(
         "warnings": ([] if values_ok else [
             "No market values available — drops are ranked by this week's "
             "projection only."
-        ]) + ([] if vegas_active else [
-            "No live Vegas lines (set ODDS_API_KEY) — defenses and kickers are "
-            "priced off a constant, so they are reported as no_signal rather "
+        ]) + ([] if vegas_active or not undifferentiated else [
+            "No live Vegas lines (set ODDS_API_KEY) — "
+            + "/".join(sorted(undifferentiated & {"K", "DEF"}))
+            + " priced off a constant, so they are reported as no_signal rather "
             "than ranked."
+        ]) + ([] if vegas_active or not priced else [
+            "No live Vegas lines — " + "/".join(sorted(priced))
+            + " priced off the season's offense scoring instead."
         ]),
         "replacement_levels": {k: round(v, 1) for k, v in levels.items()},
         "targets": top,
@@ -661,7 +695,11 @@ async def get_waiver_targets(
         "too_late_for_this_week": too_late,
         # Drops are ranked mainly on rest-of-season points when available.
         "drop_ranking": "ros" if ros_ok else "market_value",
+        # Ranked on this week's lineup gain; every target also carries the
+        # rest-of-season gain (`ros_gain`, `claim_worth`), and its waiver
+        # strategy weighs both — the same rule as recommend_faab_bid.
         "horizon": "this_week",
+        "horizons_reported": ["this_week", "rest_of_season"],
         "method": (
             "free agents (nobody in the league rosters them) projected for the "
             "coming week in this league's scoring, ranked by how many points they "

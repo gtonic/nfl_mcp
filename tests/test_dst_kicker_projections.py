@@ -109,3 +109,61 @@ class TestEngineWiring:
             values_index={}, rankings={}, lines=lines,
         )
         assert result["projected_points"] == 7.0
+
+
+class TestSeasonScoringFallback:
+    """No Vegas lines: K/DEF are priced off the season's offense read, as start/sit is."""
+
+    @staticmethod
+    def _fallback_projection(engine, monkeypatch, name, position, team, opponent, status=None):
+        lines = {team: {"home_team": team, "away_team": opponent, "home_implied_total": None,
+                        "away_implied_total": None, "is_fallback": True}}
+        monkeypatch.setattr(engine.vegas, "get_game_lines", lambda t, ln=None, **_: lines[team])
+        player = {"name": name, "position": position, "team": team, "opponent": opponent}
+        if status:
+            player["injury"] = {"status": status}
+        return engine._project_one(player, values_index={}, rankings={}, lines=lines)
+
+    @pytest.mark.asyncio
+    async def test_defenses_are_no_longer_one_constant(self, monkeypatch):
+        from nfl_mcp import projections
+        from nfl_mcp.scoring import resolve_scoring
+
+        engine = projections.get_projection_engine()
+        soft = self._fallback_projection(engine, monkeypatch, "SF", "DEF", "SF", "CAR")
+        hard = self._fallback_projection(engine, monkeypatch, "PIT", "DEF", "PIT", "DET")
+        assert soft["projected_points"] == hard["projected_points"] == 7.0
+
+        async def _unit(position, team, opponent, season, model):
+            ppg = {"CAR": 15.0, "DET": 31.0}[opponent]
+            return {"projected_points": projections.defense_base(ppg), "offense_rank": 1,
+                    "matchup_tier": "neutral", "points_per_game": ppg}
+
+        monkeypatch.setattr(projections, "_unit_matchup", _unit)
+        await projections._apply_unit_fallback([soft, hard], 2026, resolve_scoring("ppr"))
+        assert soft["projected_points"] == 11.0
+        assert hard["projected_points"] == 3.5
+        assert soft["breakdown"]["base_source"] == "offense_rank"
+        assert soft["unit_matchup"]["points_per_game"] == 15.0
+
+    @pytest.mark.asyncio
+    async def test_vegas_bye_and_injury(self, monkeypatch):
+        from nfl_mcp import projections
+        from nfl_mcp.scoring import resolve_scoring
+
+        engine = projections.get_projection_engine()
+        live = {"position": "K", "team": "CHI", "opponent": "MIN", "vegas_active": True,
+                "projected_points": 9.5, "breakdown": {}}
+        bye = {"position": "K", "team": "CHI", "opponent": "", "on_bye": True,
+               "projected_points": 0.0, "breakdown": {}}
+        out = self._fallback_projection(engine, monkeypatch, "Some Kicker", "K", "BUF", "MIA",
+                                        status="Out")
+
+        async def _unit(*_a, **_k):
+            return {"projected_points": 10.0}
+
+        monkeypatch.setattr(projections, "_unit_matchup", _unit)
+        await projections._apply_unit_fallback([live, bye, out], 2026, resolve_scoring("ppr"))
+        assert live["projected_points"] == 9.5      # live lines win
+        assert bye["projected_points"] == 0.0       # a bye stays zero
+        assert out["projected_points"] == 0.0       # ruled out stays zero
