@@ -26,3 +26,22 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "live" in item.keywords:
             item.add_marker(skip_live)
+
+
+@pytest.fixture(autouse=True)
+def _ros_offline(monkeypatch):
+    """Keep the rest-of-season engine off the network in the unit suite.
+
+    ROS fetches any schedule week that is not cached and the defense rankings;
+    tests that need either patch `nfl_mcp.ros` themselves.
+    """
+    from nfl_mcp import ros
+
+    async def _no_schedule(*_a, **_k):
+        return []
+
+    async def _no_rankings(*_a, **_k):
+        return {}
+
+    monkeypatch.setattr(ros, "_fetch_week_schedule", _no_schedule)
+    monkeypatch.setattr(ros, "_defense_rankings", _no_rankings)

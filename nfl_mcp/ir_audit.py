@@ -63,6 +63,13 @@ def audit_roster(
         row = athletes.get(pid) or {}
         report = find_report(row, injury_index, row.get("team_id"))
         report_status = (report or {}).get("injury_status")
+        # How long he is expected to be gone (ros.expected_absence): what
+        # decides whether an ir_full player is worth a bench spot meanwhile.
+        from .ros import SEASON_ENDING_WEEKS, expected_absence
+        weeks_out, window = expected_absence(
+            sleeper_injury_status(row) or report_status,
+            (report or {}).get("injury_description"), (report or {}).get("return_date"),
+        )
         return {
             "action": action,
             "player": row.get("full_name") or pid,
@@ -70,6 +77,9 @@ def audit_roster(
             "position": row.get("position"),
             "sleeper_status": sleeper_injury_status(row),
             "report_status": None if report_status == "Active" else report_status,
+            "expected_weeks_out": (None if not weeks_out else
+                                   "season" if weeks_out >= SEASON_ENDING_WEEKS else weeks_out),
+            "absence_basis": window,
             "reason": reason,
         }
 
