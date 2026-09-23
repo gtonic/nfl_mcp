@@ -274,10 +274,8 @@ class DefenseRankingsAnalyzer:
             Each ranking has: team, rank, points_allowed_avg, matchup_tier
         """
         if season is None:
-            season = datetime.now().year
-            # Adjust for NFL season (starts in September)
-            if datetime.now().month < 3:
-                season -= 1
+            from .week_context import current_season_week
+            season = (await current_season_week(self.db))["season"]
 
         # Check cache first. A placeholder answer is kept only briefly so the
         # next call retries nflverse instead of serving neutral ranks for 6h.
@@ -786,6 +784,9 @@ async def get_defense_rankings(
         -> Shows which defenses are easiest/hardest for WRs and RBs
     """
     analyzer = get_defense_analyzer()
+    if season is None:
+        from .week_context import current_season_week
+        season = (await current_season_week(analyzer.db))["season"]
 
     # Fetch all rankings
     all_rankings = await analyzer.fetch_defense_rankings(season)
@@ -807,7 +808,7 @@ async def get_defense_rankings(
     )
     if is_fallback:
         message = (
-            f"⚠️ No live defense data for {season or datetime.now().year} "
+            f"⚠️ No live defense data for {season} "
             "(preseason / not published yet) — rankings are neutral placeholders; "
             "treat matchup grades as low-confidence."
         )
@@ -817,7 +818,7 @@ async def get_defense_rankings(
     return create_success_response({
         "rankings": filtered,
         "positions": positions,
-        "season": season or datetime.now().year,
+        "season": season,
         "total_teams": 32,
         "is_fallback": is_fallback,
         "tiers_explained": {

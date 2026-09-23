@@ -608,7 +608,6 @@ async def _startup_warmup(nfl_db: NFLDatabase, shutdown_event: asyncio.Event) ->
     from .sleeper_tools import (
         _fetch_all_team_schedules,
         advanced_enrich_enabled,
-        get_nfl_state,
     )
 
     if not advanced_enrich_enabled():
@@ -619,16 +618,8 @@ async def _startup_warmup(nfl_db: NFLDatabase, shutdown_event: asyncio.Event) ->
     logger.info("[Startup Prefetch] Running initial cache warm-up...")
     try:
         # Get current season
-        state = await get_nfl_state()
-        season = 2026  # Default
-        if state.get("success") and state.get("nfl_state"):
-            season_raw = state["nfl_state"].get(
-                "season"
-            ) or state["nfl_state"].get("league_season")
-            try:
-                season = int(season_raw) if season_raw is not None else 2026
-            except (ValueError, TypeError):
-                season = 2026
+        from .week_context import current_season_week
+        season = (await current_season_week(nfl_db))["season"]
 
         logger.info(
             f"[Startup Prefetch] Fetching schedules for all 32 teams (season={season})..."

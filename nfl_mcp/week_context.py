@@ -120,28 +120,36 @@ def bye_check(
 
 
 async def resolve_season_week(
-    season: int | None, week: int | None
+    season: int | None, week: int | None, db=None
 ) -> tuple[int | None, int | None, bool]:
-    """Fill in season/week from NFL state when the caller omitted them.
+    """Fill in season/week from the current NFL week when the caller omitted them.
 
     Omitting them is the common case — an agent rarely knows the current week —
     and it silently downgraded every projection to the positional-rank baseline:
     six static values per position, so a workhorse RB came out at 16.8 instead
     of 31.1 for the same week. It also leaves nothing to check a bye against.
 
+    Built on ``current_season_week`` (live state, last good state, cached
+    schedule, calendar), so a Sleeper outage no longer lands on week 0.
+
     Returns ``(season, week, inferred)`` so callers can report which values were
     used rather than leaving it to be guessed from the numbers.
     """
     if season is not None and week is not None:
         return season, week, False
+    if db is None:
+        try:
+            from .database import get_shared_db
+            db = get_shared_db()
+        except Exception as e:
+            logger.debug(f"no database for season/week inference: {e}")
     try:
-        from .nfl_tools import get_current_season_and_week
-        got_season, got_week = await get_current_season_and_week()
+        current = await current_season_week(db)
     except Exception as e:
         logger.debug(f"season/week inference failed: {e}")
         return season, week, False
-    resolved_season = season if season is not None else got_season
-    resolved_week = week if week is not None else got_week
+    resolved_season = season if season is not None else current["season"]
+    resolved_week = week if week is not None else current["week"]
     return resolved_season, resolved_week, True
 
 

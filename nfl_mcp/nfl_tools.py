@@ -677,7 +677,15 @@ def _player_line(row: dict) -> dict:
     default_data={"team_id": None, "team_name": None, "player_stats": []},
     operation_name="fetching team player statistics"
 )
-async def get_team_player_stats(team_id: str, season: int | None = 2026, season_type: int | None = 2, limit: int | None = 50) -> dict:
+async def _season_or_current(season: int | None) -> int:
+    """``season`` if given, else the current NFL season (never a literal year)."""
+    if season:
+        return season
+    current_season, _ = await get_current_season_and_week()
+    return current_season
+
+
+async def get_team_player_stats(team_id: str, season: int | None = None, season_type: int | None = 2, limit: int | None = 50) -> dict:
     """
     Get season-to-date statistics for every fantasy-relevant player on a team.
 
@@ -688,7 +696,7 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
 
     Args:
         team_id: The team abbreviation in any spelling (e.g., 'KC', 'WAS', 'LA')
-        season: Season year (defaults to 2026)
+        season: Season year (defaults to the current season)
         season_type: 1=Pre, 2=Regular, 3=Post (defaults to 2)
         limit: Maximum number of player stats to return (1-100, defaults to 50)
 
@@ -713,7 +721,7 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
         )
 
     # Validate and set defaults
-    season = season or 2026
+    season = await _season_or_current(season)
     season_type = season_type or 2
     limit = validate_limit(limit or 50, 1, 100, 50)
     team = normalize_team(team_id)
@@ -755,7 +763,7 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
     default_data={"standings": [], "season": None, "season_type": None},
     operation_name="fetching NFL standings"
 )
-async def get_nfl_standings(season: int | None = 2026, season_type: int | None = 2, group: int | None = None) -> dict:
+async def get_nfl_standings(season: int | None = None, season_type: int | None = 2, group: int | None = None) -> dict:
     """
     Get current NFL standings from ESPN's Core API.
 
@@ -763,7 +771,7 @@ async def get_nfl_standings(season: int | None = 2026, season_type: int | None =
     decisions, such as which teams might rest players or be more motivated.
 
     Args:
-        season: Season year (defaults to 2026)
+        season: Season year (defaults to the current season)
         season_type: 1=Pre, 2=Regular, 3=Post, 4=Off (defaults to 2)
         group: Conference group (1=AFC, 2=NFC, None=both, defaults to None for all)
 
@@ -779,7 +787,7 @@ async def get_nfl_standings(season: int | None = 2026, season_type: int | None =
         - error_type: Type of error (if any)
     """
     # Validate and set defaults
-    season = season or 2026
+    season = await _season_or_current(season)
     season_type = season_type or 2
 
     headers = get_http_headers("nfl_teams")  # Reuse existing config
@@ -879,7 +887,7 @@ async def get_nfl_standings(season: int | None = 2026, season_type: int | None =
     default_data={"team_id": None, "team_name": None, "schedule": []},
     operation_name="fetching team schedule"
 )
-async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
+async def get_team_schedule(team_id: str, season: int | None = None) -> dict:
     """
     Get the schedule for a specific NFL team from ESPN's Site API.
 
@@ -890,7 +898,7 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
 
     Args:
         team_id: The team abbreviation (e.g., 'KC', 'TB', 'NE') or ESPN team ID
-        season: Season year (defaults to 2026)
+        season: Season year (defaults to the current season)
 
     Returns:
         A dictionary containing:
@@ -912,7 +920,7 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
         )
 
     # Validate season
-    season = season or 2026
+    season = await _season_or_current(season)
     team_id_upper = _espn_team(team_id)
 
     # Try cache first (if advanced enrichment is enabled)
@@ -1099,7 +1107,7 @@ async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
     default_data={"players": [], "season": None, "category": None},
     operation_name="fetching league leaders"
 )
-async def get_league_leaders(category: str, season: int = 2026, season_type: int = 2, week: int | None = None) -> dict:
+async def get_league_leaders(category: str, season: int | None = None, season_type: int = 2, week: int | None = None) -> dict:
     """Fetch current NFL statistical leaders for a single category.
 
     Instead of returning all categories, this focuses on one requested category.
@@ -1114,7 +1122,7 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
 
     Args:
         category: One of pass, rush, receiving, tackles, sacks
-        season: Season year (default 2026)
+        season: Season year (default: the current season)
         season_type: 1=Pre, 2=Regular, 3=Post
 
     Returns:
@@ -1146,8 +1154,8 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
         )
     multi = len(requested_tokens) > 1
 
-    if season < 2000 or season > 2100:
-        season = 2026
+    if not isinstance(season, int) or season < 2000 or season > 2100:
+        season = await _season_or_current(None)
     if season_type not in (1, 2, 3):
         season_type = 2
 
@@ -1310,32 +1318,17 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
 # Helper: current season and week detection
 # ============================================================================
 
-async def get_current_season_and_week() -> tuple[int | None, int | None]:
-    """Fetch current NFL season and week from Sleeper API.
-
-    Returns:
-        Tuple of (season: int, week: int) or (None, None) on failure.
+async def get_current_season_and_week() -> tuple[int, int]:
+    """Current NFL ``(season, week)`` — a thin wrapper over the canonical
+    ``week_context.current_season_week`` (live state, last good state, cached
+    schedule, calendar). Never week 0 and never a hard-coded season.
     """
+    from .week_context import current_season_week
+    db = None
     try:
-        from .sleeper_tools import get_nfl_state
-        state = await get_nfl_state()
-        if state.get("success") and state.get("nfl_state"):
-            st = state["nfl_state"]
-            season = st.get("season") or st.get("league_season")
-            week = st.get("week") or st.get("display_week")
-            if season is not None:
-                try:
-                    season = int(season)
-                except (ValueError, TypeError):
-                    season = 2026
-            if week is not None:
-                try:
-                    week = int(week)
-                except (ValueError, TypeError):
-                    week = 0
-            return season, week
+        from .database import get_shared_db
+        db = get_shared_db()
     except Exception:
-        # Fallback: return current year and week 0
-        import datetime
-        return datetime.datetime.now().year, 0
-    return 2026, 0
+        pass
+    current = await current_season_week(db)
+    return current["season"], current["week"]

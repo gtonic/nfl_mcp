@@ -24,25 +24,25 @@ def _analyzer():
 class TestResolveSeasonWeek:
     @pytest.mark.asyncio
     async def test_explicit_values_are_left_alone_and_not_flagged(self, monkeypatch):
-        async def _boom():
+        async def _boom(db=None):
             raise AssertionError("must not call NFL state when both are given")
-        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _boom)
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _boom)
 
         assert await _resolve_season_week(2026, 3) == (2026, 3, False)
 
     @pytest.mark.asyncio
     async def test_both_missing_are_inferred(self, monkeypatch):
-        async def _state():
-            return (2026, 5)
-        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _state)
+        async def _state(db=None):
+            return {"season": 2026, "week": 5, "source": "nfl_state"}
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
 
         assert await _resolve_season_week(None, None) == (2026, 5, True)
 
     @pytest.mark.asyncio
     async def test_a_partially_given_pair_keeps_the_caller_value(self, monkeypatch):
-        async def _state():
-            return (2026, 5)
-        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _state)
+        async def _state(db=None):
+            return {"season": 2026, "week": 5, "source": "nfl_state"}
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
 
         # Caller pinned the week; only the season is filled in.
         assert await _resolve_season_week(None, 9) == (2026, 9, True)
@@ -50,9 +50,9 @@ class TestResolveSeasonWeek:
 
     @pytest.mark.asyncio
     async def test_a_failing_lookup_degrades_instead_of_raising(self, monkeypatch):
-        async def _boom():
+        async def _boom(db=None):
             raise RuntimeError("sleeper down")
-        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _boom)
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _boom)
 
         assert await _resolve_season_week(None, None) == (None, None, False)
 
@@ -64,9 +64,9 @@ class TestToolsReportWhatTheyUsed:
                             lambda: lo.LineupOptimizer(db=None, auto_project=False,
                                                        defense_analyzer=_analyzer()))
 
-        async def _state():
-            return (2026, 4)
-        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _state)
+        async def _state(db=None):
+            return {"season": 2026, "week": 4, "source": "nfl_state"}
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
 
     @pytest.mark.asyncio
     async def test_start_sit_reports_the_inferred_week(self):
@@ -120,9 +120,9 @@ class TestBaseSourceIsVisible:
         monkeypatch.setattr(lo, "get_lineup_optimizer",
                             lambda: lo.LineupOptimizer(db=None, auto_project=True,
                                                        defense_analyzer=_analyzer()))
-        async def _state():
-            return (2026, 2)
-        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _state)
+        async def _state(db=None):
+            return {"season": 2026, "week": 2, "source": "nfl_state"}
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
         monkeypatch.setattr("nfl_mcp.projections.get_projection_engine",
                             lambda db=None: FakeEngine())
 

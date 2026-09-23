@@ -157,6 +157,12 @@ class TestDefenseRankingsAnalyzer:
 class TestGetDefenseRankings:
     """Test get_defense_rankings MCP tool."""
 
+    @pytest.fixture(autouse=True)
+    def _current_week(self, monkeypatch):
+        async def _state(db=None):
+            return {"season": 2026, "week": 3, "source": "nfl_state"}
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
+
     @pytest.mark.asyncio
     async def test_get_defense_rankings_returns_dict(self):
         """Test function returns proper structure."""

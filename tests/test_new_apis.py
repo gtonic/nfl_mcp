@@ -255,8 +255,11 @@ class TestNFLStandings:
             assert "evaluate young players" in nyg_team["fantasy_context"]
 
     @pytest.mark.asyncio
-    async def test_get_nfl_standings_defaults(self):
-        """Test standings with default parameters."""
+    async def test_get_nfl_standings_defaults(self, monkeypatch):
+        """Test standings with default parameters (season = the current one)."""
+        async def _state(db=None):
+            return {"season": 2026, "week": 3, "source": "nfl_state"}
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
         mock_response = MagicMock()
         mock_response.json.return_value = {"children": []}
         mock_response.raise_for_status = MagicMock()
