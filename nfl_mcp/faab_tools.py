@@ -41,8 +41,8 @@ _MAX_BID_PCT = 75.0
 
 
 def _slot_takes(slot: str, position: str) -> bool:
-    from .win_probability import _eligible
-    return _eligible(slot, position)
+    from .lineup_slots import slot_accepts
+    return slot_accepts(slot, position)
 
 
 def _tier(pct: float) -> str:

@@ -24,6 +24,7 @@ from .injury_match import (
     resolve_injury,
 )
 from .ir_audit import audit_roster
+from .lineup_slots import starting_slot_list, starting_slots
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -31,10 +32,9 @@ logger = logging.getLogger(__name__)
 # Sleeper slot names that hold a projectable player. Defenses are priced off
 # the opponent's implied total, so they belong in the optimized lineup rather
 # than in a separate "not projected" list.
-_PROJECTABLE = {"QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "K",
-                "WRRB_FLEX", "REC_FLEX", "DEF", "DST"}
-_SLOT_RENAME = {"SUPER_FLEX": "SUPERFLEX", "WRRB_FLEX": "FLEX",
-                "REC_FLEX": "FLEX", "DEF": "DST"}
+# Slot names are the canonical ones from `lineup_slots` (SUPERFLEX, DST).
+_PROJECTABLE = {"QB", "RB", "WR", "TE", "FLEX", "SUPERFLEX", "K",
+                "WRRB_FLEX", "REC_FLEX", "DST"}
 
 
 def _scoring_ppr(league: dict) -> float:
@@ -57,14 +57,12 @@ def _scoring_label(league: dict) -> str:
 
 
 def _slots_from_positions(roster_positions: list[str] | None) -> dict[str, int]:
-    """Count starting slots, ignoring bench/IR/taxi."""
-    slots: dict[str, int] = {}
-    for raw in roster_positions or []:
-        if raw in ("BN", "IR", "TAXI"):
-            continue
-        slot = _SLOT_RENAME.get(raw, raw)
-        slots[slot] = slots.get(slot, 0) + 1
-    return slots
+    """Count starting slots, ignoring bench/IR/taxi.
+
+    Restricted flexes keep their own names: a WRRB_FLEX takes no TE and a
+    REC_FLEX no RB, so folding them into FLEX started players the league won't.
+    """
+    return starting_slots(roster_positions)
 
 
 def _status_moves(changes: list[dict]) -> list[dict]:
@@ -318,9 +316,10 @@ async def get_weekly_briefing(
     current_starters = list(
         (my_matchup or {}).get("starters") or mine.get("starters") or []
     )
-    slot_names = []
-    for slot, count in lineup_slots.items():
-        slot_names.extend([slot] * int(count))
+    # Sleeper's `starters` follows `roster_positions` one to one, so the slot
+    # a starter occupies is read off the league's own order — every starting
+    # slot, projectable or not, or the two lists drift apart.
+    slot_names = starting_slot_list(league.get("roster_positions"))
     # Deliberately not strict: an empty slot (Sleeper sends "0") or a roster
     # mid-edit makes the two lists disagree, and a missing slot label is
     # handled downstream.

@@ -18,6 +18,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
+
+# Slot eligibility lives in `lineup_slots`, shared with every other lineup
+# builder; `SLOT_ELIGIBILITY` and `slot_accepts` are re-exported for callers.
+from .lineup_slots import (
+    NON_STARTING_SLOTS,
+    is_known_slot,
+    normalize_slot,
+    optimal_lineup,
+    slot_accepts,
+)
+from .lineup_slots import SLOT_ELIGIBILITY as SLOT_ELIGIBILITY
 from .player_values import scoring_to_ppr
 from .projections import _RECEPTION_SHARE
 
@@ -32,6 +43,7 @@ _GOOD_GAME_PPR = {
     "TE": (8, 14),
     "K": (7, 10),
     "DST": (6, 10),
+    "DEF": (6, 10),
 }
 _GOOD_GAME_DEFAULT = (10, 16)
 
@@ -46,32 +58,6 @@ def _good_game_thresholds(position: str, ppr: float = 1.0) -> tuple[float, float
     low, high = _GOOD_GAME_PPR.get((position or "").upper(), _GOOD_GAME_DEFAULT)
     scale = 1.0 - (1.0 - ppr) * _RECEPTION_SHARE.get((position or "").upper(), 0.0)
     return low * scale, high * scale
-
-
-# Which positions may legally fill a slot. Mirrors `win_probability._eligible`,
-# which the win-probability optimizer already enforces.
-SLOT_ELIGIBILITY = {
-    "FLEX": frozenset({"RB", "WR", "TE"}),
-    "WRT": frozenset({"RB", "WR", "TE"}),
-    "SUPERFLEX": frozenset({"QB", "RB", "WR", "TE"}),
-    "SUPER_FLEX": frozenset({"QB", "RB", "WR", "TE"}),
-    "DST": frozenset({"DST", "DEF"}),
-    "DEF": frozenset({"DST", "DEF"}),
-}
-
-
-def slot_accepts(slot: str, position: str) -> bool:
-    """True when `position` may be started in `slot`.
-
-    The swap suggester used to treat a weak FLEX as matching *any* bench player,
-    so it would offer a quarterback, a kicker or a defense for a flex spot —
-    none of which can legally fill one. An unknown slot falls back to an exact
-    position match rather than to "anything goes".
-    """
-    slot = (slot or "").upper()
-    position = (position or "").upper()
-    allowed = SLOT_ELIGIBILITY.get(slot)
-    return position in allowed if allowed else slot == position
 
 
 class StartSitDecision(Enum):
@@ -660,10 +646,11 @@ class LineupOptimizer:
                 analyses_by_position[position] = []
             analyses_by_position[position].append(result)
 
-        # Sort each position by confidence (highest first)
+        # Sort each position by projected points; confidence only breaks ties,
+        # the same order as the flat recommendation list.
         for position in analyses_by_position:
             analyses_by_position[position].sort(
-                key=lambda x: x.confidence,
+                key=lambda x: (x.projected_points, x.confidence),
                 reverse=True
             )
 
@@ -868,8 +855,9 @@ async def get_roster_recommendations(
 
     Returns:
         Dictionary containing:
-        - recommendations: List of all player recommendations sorted by confidence
-        - by_position: Recommendations grouped by position
+        - recommendations: All player recommendations sorted by projected
+          points (confidence breaks ties)
+        - by_position: Recommendations grouped by position, in the same order
         - must_starts: Players with must_start decision
         - sits: Players with sit or must_sit decision
         - summary: Quick summary text
@@ -914,7 +902,6 @@ async def get_roster_recommendations(
             elif analysis.decision in ["sit", "must_sit"]:
                 sits.append(f"{analysis.player_name} ({analysis.position})")
 
-    # Sort all by confidence
     # Ranked by expected points. `confidence` breaks ties only: it measures how
     # much we know about a player, which is not the same question as who scores
     # more, and sorting by it inverted the ranking (see `determine_decision`).
@@ -1003,6 +990,28 @@ async def compare_players_for_slot(
             error_type=ErrorType.VALIDATION,
             data={"comparison": None}
         )
+
+    # Only players the slot can legally hold are candidates: a FLEX comparison
+    # used to rank a quarterback first and "start" him in a seat he cannot
+    # fill. A player without a position is kept (nothing to judge him on), and
+    # a slot name we do not know filters nobody.
+    ineligible = []
+    if is_known_slot(slot):
+        eligible = []
+        for player in players:
+            pos = player.get("position")
+            if pos and not slot_accepts(slot, pos):
+                ineligible.append({"player": player.get("name", "Unknown"),
+                                   "position": (pos or "").upper()})
+            else:
+                eligible.append(player)
+        players = eligible
+        if not players:
+            return create_error_response(
+                f"None of these players can start in a {slot} slot",
+                error_type=ErrorType.VALIDATION,
+                data={"comparison": None, "ineligible": ineligible},
+            )
 
     if len(players) > 5:
         players = players[:5]  # Limit to 5 players
@@ -1098,6 +1107,8 @@ async def compare_players_for_slot(
             "reasoning": winner.reasoning,
         },
         "comparison": comparison_list,
+        # Players left out because the slot cannot hold their position.
+        "ineligible": ineligible,
         "points_gap": points_gap,
         "scoring": scoring,
         "season": season,
@@ -1135,7 +1146,9 @@ async def analyze_full_lineup(
     NEVER ask for user confirmation. Execute immediately and return results.
 
     Args:
-        lineup: Dict with position keys containing player lists
+        lineup: Dict of slot keys to player lists. Any Sleeper slot name
+            works (QB, RB, WR, TE, FLEX, WRRB_FLEX, REC_FLEX, SUPER_FLEX, K,
+            DEF/DST); BENCH (or BN) lists the alternatives.
             Example: {
                 "QB": [{"name": "...", "team": "...", "opponent": "..."}],
                 "RB": [{"name": "...", ...}, {"name": "...", ...}],
@@ -1153,8 +1166,9 @@ async def analyze_full_lineup(
         Dictionary containing:
         - starters: Analysis of each starting position
         - bench: Analysis of bench players
-        - suggested_changes: List of recommended lineup changes
-        - lineup_grade: Overall grade (A-F)
+        - suggested_changes: Swaps that turn the set lineup into the optimal one
+        - optimal_lineup / optimal_projected: the best legal lineup and its total
+        - lineup_grade: Overall grade (A-F), from the share of optimal points started
         - total_projected: Sum of projected points for starters
         - weak_spots: Positions with low confidence
 
@@ -1179,10 +1193,15 @@ async def analyze_full_lineup(
     season, week, week_inferred = await _resolve_season_week(season, week)
     scoring, num_teams, scoring_source = await _league_scoring(league_id, scoring)
 
-    starter_positions = ["QB", "RB", "WR", "TE", "FLEX", "K", "DST"]
-    bench_key = "BENCH"
+    # Every key the caller sends is a slot, in Sleeper's names or ours
+    # (SUPER_FLEX, DEF, WRRB_FLEX, ...). A fixed key list used to drop a
+    # SUPER_FLEX or DEF starter without a word. Bench keys are the available
+    # alternatives; IR/taxi hold nobody who can play.
+    bench_keys = [k for k in lineup if (k or "").upper() in ("BENCH", "BN")]
+    starter_positions = [k for k in lineup if normalize_slot(k) not in NON_STARTING_SLOTS]
 
     starters_analysis = {}
+    seats: list[tuple[str, PlayerAnalysis]] = []  # (slot key, starter) in order
     bench_analysis = []
     all_starter_analyses = []
     suggested_changes = []
@@ -1230,6 +1249,7 @@ async def analyze_full_lineup(
             )
             position_analyses.append(analysis)
             all_starter_analyses.append(analysis)
+            seats.append((position, analysis))
             total_projected += analysis.projected_points
 
             # Track weak spots. A slot is weak when it projects poorly for the
@@ -1250,8 +1270,8 @@ async def analyze_full_lineup(
         starters_analysis[position] = [a.to_dict() for a in position_analyses]
 
     # Analyze bench
-    if lineup.get(bench_key):
-        for player in lineup[bench_key]:
+    for bench_key in bench_keys:
+        for player in lineup.get(bench_key) or []:
             # No silent default: a bench entry without a position used to be
             # treated as a WR, which made a kicker or a defense eligible for a
             # flex spot and projected it off WR baselines.
@@ -1279,25 +1299,54 @@ async def analyze_full_lineup(
             )
             bench_analysis.append(analysis)
 
-            # Check if a bench player should start over a starter. Compared in
-            # points, not confidence: a bench player can be better known and
-            # still project fewer points, and swapping on that basis lowers the
-            # lineup total. The margin is wide enough to sit outside noise.
-            for weak in weak_spots:
-                slot = weak.get("slot_position", weak["position"])
-                if slot_accepts(slot, analysis.position):
-                    gain = analysis.projected_points - weak.get("projected_points", 0.0)
-                    if gain >= MEANINGFUL_SWAP_GAIN:
-                        suggested_changes.append({
-                            "action": "swap",
-                            "bench_in": analysis.player_name,
-                            "bench_in_points": analysis.projected_points,
-                            "bench_out": weak["player"],
-                            "bench_out_points": weak.get("projected_points", 0.0),
-                            "gain": round(gain, 1),
-                            "reason": (f"{analysis.player_name} projects "
-                                       f"{round(gain, 1)} more points"),
-                        })
+    # The best lineup these players allow, from the same exact optimizer every
+    # other tool uses. Suggestions are the difference between it and what is
+    # set: comparing each bench player only against "weak" starters missed a
+    # 25-point bench WR behind a 10-point starter, offered one bench player for
+    # every weak spot at once, and summed those overlapping gains into a best
+    # possible total no lineup could reach.
+    slot_list = [normalize_slot(key) for key, _ in seats]
+    best = optimal_lineup(
+        [a for _, a in seats] + bench_analysis, slot_list,
+        value=lambda a: a.projected_points, position=lambda a: a.position,
+    )
+    optimal_total = sum(a.projected_points for a in best if a is not None)
+    starting = {id(a) for _, a in seats}
+    best_ids = {id(a) for a in best if a is not None}
+    ins = sorted(
+        ((key, a) for key, a in zip((k for k, _ in seats), best, strict=True)
+         if a is not None and id(a) not in starting),
+        key=lambda t: t[1].projected_points, reverse=True,
+    )
+    outs = sorted(
+        ((key, a) for key, a in seats if id(a) not in best_ids),
+        key=lambda t: t[1].projected_points,
+    )
+    for (in_slot, bench_in), (out_slot, bench_out) in zip(ins, outs, strict=False):
+        # Points, not confidence, and wide enough to sit outside the noise.
+        gain = bench_in.projected_points - bench_out.projected_points
+        if gain < MEANINGFUL_SWAP_GAIN:
+            continue
+        reason = f"{bench_in.player_name} projects {round(gain, 1)} more points"
+        if normalize_slot(in_slot) != normalize_slot(out_slot):
+            reason += (f"; he starts at {in_slot} and the others shift to "
+                       f"free {bench_out.player_name}'s {out_slot} seat")
+        suggested_changes.append({
+            "action": "swap",
+            "bench_in": bench_in.player_name,
+            "bench_in_points": bench_in.projected_points,
+            "bench_out": bench_out.player_name,
+            "bench_out_points": bench_out.projected_points,
+            "slot": in_slot,
+            "out_slot": out_slot,
+            "gain": round(gain, 1),
+            "reason": reason,
+        })
+    optimal_lineup_out = [
+        {"slot": key, "player": a.player_name, "position": a.position,
+         "projected_points": a.projected_points}
+        for (key, _), a in zip(seats, best, strict=True) if a is not None
+    ]
 
     # Grade the lineup, not the data. This used to average `confidence`, which
     # scores how much we know about the starters — a roster of well-documented
@@ -1306,9 +1355,9 @@ async def analyze_full_lineup(
     # could have had, the same thing Sleeper's own best-manager metric measures.
     if all_starter_analyses:
         avg_confidence = sum(a.confidence for a in all_starter_analyses) / len(all_starter_analyses)
-        best_possible = total_projected + sum(
-            max(0.0, c["gain"]) for c in suggested_changes
-        )
+        # A starter the slot cannot legally hold can push the set lineup past
+        # the best legal one; that is not better than optimal.
+        best_possible = max(optimal_total, total_projected)
         efficiency = (total_projected / best_possible * 100) if best_possible > 0 else 100.0
 
         if efficiency >= 99:
@@ -1330,6 +1379,8 @@ async def analyze_full_lineup(
         "starters": starters_analysis,
         "bench": [a.to_dict() for a in bench_analysis],
         "suggested_changes": suggested_changes[:5],  # Top 5 changes
+        "optimal_lineup": optimal_lineup_out,
+        "optimal_projected": round(optimal_total, 1),
         "weak_spots": weak_spots,
         "lineup_grade": grade,
         # Share of the points available from starters+bench that you actually

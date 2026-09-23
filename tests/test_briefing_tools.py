@@ -25,8 +25,10 @@ class TestSlotParsing:
         assert slots == {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DST": 1}
 
     def test_sleeper_flex_aliases_are_normalized(self):
+        # Restricted flexes keep their names: folding them into FLEX started a
+        # TE in a WRRB_FLEX and an RB in a REC_FLEX.
         slots = briefing_tools._slots_from_positions(["SUPER_FLEX", "WRRB_FLEX", "REC_FLEX"])
-        assert slots == {"SUPERFLEX": 1, "FLEX": 2}
+        assert slots == {"SUPERFLEX": 1, "WRRB_FLEX": 1, "REC_FLEX": 1}
 
 
 class TestBuildPlayer:
