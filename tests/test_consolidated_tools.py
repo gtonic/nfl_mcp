@@ -193,3 +193,24 @@ async def test_analyze_lineup_reads_the_set_lineup_from_the_league():
     assert [p["name"] for p in lineup["BENCH"]] == ["W"]
     assert out["empty_slots"] == ["FLEX"]
     assert out["lineup_grade"] == "B"
+
+
+@pytest.mark.asyncio
+async def test_defense_rankings_opponent_team_replaces_matchup_difficulty():
+    rankings = {"success": True, "positions": ["WR", "RB"], "rankings": {"WR": [], "RB": []}}
+    fake = type("A", (), {"get_matchup_difficulty": lambda self, pos, team, r: {"rank": 3, "team": team, "pos": pos}})()
+    with patch("nfl_mcp.matchup_tools.get_defense_rankings", AsyncMock(return_value=rankings)), \
+         patch("nfl_mcp.matchup_tools.get_defense_analyzer", return_value=fake):
+        out = await tool_registry.get_defense_rankings(positions=["WR", "RB"], opponent_team="kan")
+    assert out["opponent_team"] == "KC"
+    assert out["matchups"]["WR"] == {"rank": 3, "team": "KC", "pos": "WR"}
+
+
+@pytest.mark.asyncio
+async def test_roster_matchups_from_league_roster():
+    analyze = AsyncMock(return_value={"success": True, "analysis": []})
+    with patch("nfl_mcp.roster_context.load_roster_players", AsyncMock(return_value=ROSTER_CTX)), \
+         patch("nfl_mcp.matchup_tools.analyze_roster_matchups", analyze):
+        out = await tool_registry.analyze_roster_matchups(league_id="123456", roster_id=7)
+    assert [p["name"] for p in analyze.await_args.kwargs["players"]] == ["QB One"]
+    assert out["on_bye"] == ["WR Bye"]

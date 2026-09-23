@@ -66,7 +66,7 @@ SCENARIOS = [
     {
         "id": "matchup",
         "prompt": "How tough is the WR matchup against the Kansas City defense?",
-        "expect": ["get_matchup_difficulty"],
+        "expect": ["get_defense_rankings"],
     },
     {
         "id": "injuries",

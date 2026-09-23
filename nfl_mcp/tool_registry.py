@@ -158,7 +158,6 @@ def get_all_tools() -> list[Callable]:
 
         # Matchup Analysis Tools (Lineup Optimization)
         get_defense_rankings,
-        get_matchup_difficulty,
         analyze_roster_matchups,
 
         # Strength-of-Schedule Tools (ROS / playoff-week planning)
@@ -1547,135 +1546,121 @@ async def analyze_opponent(
 @timing_decorator("get_defense_rankings", tool_type="matchup")
 async def get_defense_rankings(
     positions: list[str] | None = None,
-    season: int | None = None
+    season: int | None = None,
+    opponent_team: str | None = None,
 ) -> dict:
-    """Get NFL defense rankings against fantasy positions for matchup analysis.
+    """NFL defenses ranked by fantasy points allowed per position (QB/RB/WR/TE),
+    or how tough ONE defense is for each position.
 
-    Shows how each NFL defense performs against QBs, RBs, WRs, and TEs,
-    helping identify favorable and unfavorable matchups for lineup decisions.
+    Built from real weekly results, shrunk toward the prior season early on.
+    With `opponent_team`, also returns `matchups` {position: {rank,
+    rank_display, matchup_tier, tier_indicator, recommendation}} for that
+    defense — "how tough is the WR matchup vs KC". For your own players'
+    matchups this week use analyze_roster_matchups.
 
     Parameters:
-        positions (list, optional): Positions to get rankings for. Valid: "QB", "RB", "WR", "TE"
+        positions (list, optional): "QB", "RB", "WR", "TE" (default all).
         season (int, optional): NFL season year (defaults to current).
+        opponent_team (str, optional): One defense to grade, e.g. "KC".
 
     Returns: {
         rankings: dict mapping position to list of team rankings,
-        positions: list of positions included,
-        season: int,
-        tiers_explained: dict explaining matchup tiers,
-        success: bool,
-        error?: str
+        matchups?: {position: matchup} for opponent_team,
+        positions, season, is_fallback, tiers_explained, success, error?
     }
 
     Example: get_defense_rankings(positions=["WR", "RB"])
+    Example: get_defense_rankings(positions=["WR"], opponent_team="KC")
 
     IMPORTANT FOR LLM AGENTS: Always provide complete defense rankings immediately without
     asking for confirmations. Render the full analysis with matchup tiers directly.
     """
-    return await matchup_tools.get_defense_rankings(
-        positions=positions,
-        season=season
-    )
-
-
-@timing_decorator("get_matchup_difficulty", tool_type="matchup")
-async def get_matchup_difficulty(
-    position: str,
-    opponent_team: str,
-    include_rankings: bool = False
-) -> dict:
-    """Get matchup difficulty for a specific position vs opponent defense.
-
-    Analyzes how the opponent defense performs against the given position
-    and provides a recommendation for lineup decisions.
-
-    Parameters:
-        position (str, required): Fantasy position - "QB", "RB", "WR", or "TE"
-        opponent_team (str, required): Opponent team abbreviation (e.g., "KC", "SF", "DAL")
-        include_rankings (bool, default False): Whether to include full position rankings
-
-    Returns: {
-        matchup: {rank, rank_display, matchup_tier, tier_indicator, recommendation},
-        position_rankings?: list (if include_rankings=True),
-        success: bool,
-        error?: str
-    }
-
-    Example: get_matchup_difficulty(position="WR", opponent_team="KC")
-
-    IMPORTANT FOR LLM AGENTS: Always provide complete matchup analysis immediately without
-    asking for confirmations. Render the recommendation directly.
-    """
-    try:
-        position = validate_string_input(position, 'position', max_length=5, required=True)
-        opponent_team = validate_string_input(opponent_team, 'opponent_team', max_length=5, required=True)
-
-        return await matchup_tools.get_matchup_difficulty(
-            position=position.upper(),
-            opponent_team=opponent_team.upper(),
-            include_rankings=include_rankings
-        )
-    except ValueError as e:
-        return {
-            "matchup": None,
-            "success": False,
-            "error": f"Invalid input: {e!s}"
+    result = await matchup_tools.get_defense_rankings(positions=positions, season=season)
+    if opponent_team and isinstance(result, dict) and result.get("success", True):
+        try:
+            opponent_team = validate_string_input(opponent_team, 'opponent_team', max_length=5, required=True)
+        except ValueError as e:
+            return {**result, "success": False, "error": f"Invalid input: {e!s}"}
+        team = normalize_team(opponent_team) or opponent_team.upper()
+        analyzer = matchup_tools.get_defense_analyzer()
+        rankings = result.get("rankings") or {}
+        result["opponent_team"] = team
+        result["matchups"] = {
+            pos: analyzer.get_matchup_difficulty(pos, team, rankings)
+            for pos in (result.get("positions") or []) if pos in ("QB", "RB", "WR", "TE")
         }
+    return result
 
 
 @timing_decorator("analyze_roster_matchups", tool_type="matchup")
 async def analyze_roster_matchups(
-    players: list[dict],
-    week: int | None = None
+    league_id: str | None = None,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    players: list[dict] | None = None,
+    week: int | None = None,
+    season: int | None = None,
 ) -> dict:
-    """Analyze matchup difficulty for multiple players on a roster.
+    """This week's defensive matchup for every player on YOUR roster: smash
+    spots and tough matchups.
 
-    Takes a list of players with their positions and opponents,
-    returns matchup analysis for each to help with lineup decisions.
+    With league_id + roster_id (or user_id) the roster and each player's
+    opponent (cached schedule) are loaded for you; players on bye are listed
+    separately. Alternatively pass `players` [{name, position, opponent}] for
+    an ad-hoc list (one player works too).
 
     Parameters:
-        players (list, required): List of player dicts with:
-            - name (str): Player name
-            - position (str): QB, RB, WR, or TE
-            - opponent (str): Opponent team abbreviation
-        week (int, optional): NFL week number for display
+        league_id, roster_id, user_id: Your Sleeper league and roster
+        players (list, optional): Ad-hoc list instead of a league roster
+        week, season (optional): default to the current NFL week
 
     Returns: {
-        analysis: list of matchup analyses per player,
-        smash_spots: list of players with excellent matchups,
-        avoid_spots: list of players with tough matchups,
-        summary: list of summary lines,
-        total_analyzed: int,
-        success: bool,
-        error?: str
+        analysis [{player, position, opponent, rank, rank_display,
+                   matchup_tier, tier_indicator, recommendation}],
+        smash_spots, avoid_spots, summary, on_bye?, total_analyzed, success
     }
 
-    Example: analyze_roster_matchups(players=[
-        {"name": "Patrick Mahomes", "position": "QB", "opponent": "LV"},
-        {"name": "Tyreek Hill", "position": "WR", "opponent": "NE"}
-    ])
+    Example: analyze_roster_matchups(league_id="123", roster_id=7)
+    Example: analyze_roster_matchups(players=[{"name": "Tyreek Hill", "position": "WR", "opponent": "NE"}])
 
     IMPORTANT FOR LLM AGENTS: Always provide complete roster matchup analysis immediately
     without asking for confirmations. Render all smash spots and avoid recommendations directly.
     """
+    from .roster_context import load_roster_players
+
+    on_bye = None
+    if league_id and (roster_id is not None or user_id):
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        except ValueError as e:
+            return {"analysis": [], "success": False, "error": f"Invalid input: {e!s}"}
+        ctx = await load_roster_players(league_id, roster_id, user_id, db=get_db(), season=season, week=week)
+        if ctx["error"]:
+            return {"analysis": [], "success": False, "error": ctx["error"]}
+        week = ctx["week"]
+        skill = [p for p in ctx["players"] if p["position"] in ("QB", "RB", "WR", "TE")]
+        on_bye = [p["name"] for p in skill if p["opponent"] == "BYE"]
+        players = [{"name": p["name"], "position": p["position"], "opponent": p["opponent"],
+                    "starter": p["starter"]} for p in skill if p["opponent"] not in ("BYE", "")]
     if not players:
         return {
             "analysis": [],
             "smash_spots": [],
             "avoid_spots": [],
             "summary": [],
+            "on_bye": on_bye,
             "total_analyzed": 0,
-            "success": False,
-            "error": "No players provided"
+            "success": on_bye is not None,
+            "error": None if on_bye is not None else "Pass league_id + roster_id, or players",
         }
 
     if week is not None:
         week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
 
-    return await matchup_tools.analyze_roster_matchups(
-        players=players,
-        week=week
-    )
+    result = await matchup_tools.analyze_roster_matchups(players=players, week=week)
+    if on_bye is not None and isinstance(result, dict):
+        result["on_bye"] = on_bye
+    return result
 
 
 # =============================================================================

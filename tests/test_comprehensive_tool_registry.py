@@ -40,7 +40,6 @@ from nfl_mcp.tool_registry import (
     get_league_drafts,
     get_league_leaders,
     get_league_users,
-    get_matchup_difficulty,
     get_matchups,
     get_nfl_news,
     get_nfl_standings,
@@ -125,7 +124,6 @@ class TestToolRegistry:
         assert callable(analyze_trade)
         assert callable(analyze_opponent)
         assert callable(get_defense_rankings)
-        assert callable(get_matchup_difficulty)
         assert callable(analyze_roster_matchups)
         assert callable(get_start_sit_recommendation)
         assert callable(compare_players_for_slot)

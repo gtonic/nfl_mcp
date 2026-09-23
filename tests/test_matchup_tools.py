@@ -249,7 +249,7 @@ class TestAnalyzeRosterMatchups:
         result = await wrapper_func(players=[])
 
         assert result["success"] is False
-        assert "No players provided" in result.get("error", "")
+        assert "players" in result.get("error", "")
 
     @pytest.mark.asyncio
     async def test_analyze_roster_matchups_invalid_position(self):
@@ -280,7 +280,7 @@ class TestToolRegistryIntegration:
         tool_names = [t.__name__ for t in tools]
 
         assert "get_defense_rankings" in tool_names
-        assert "get_matchup_difficulty" in tool_names
+        assert "get_matchup_difficulty" not in tool_names  # folded into get_defense_rankings
         assert "analyze_roster_matchups" in tool_names
 
     def test_matchup_tools_import(self):
