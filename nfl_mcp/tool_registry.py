@@ -141,7 +141,6 @@ def get_all_tools() -> list[Callable]:
 
         # Player Value Tools (real market-consensus values)
         get_player_values,
-        get_player_value,
 
         # Draft Assistant Tools (VBD board + live pick recommendations)
         get_draft_board,
@@ -149,7 +148,6 @@ def get_all_tools() -> list[Callable]:
         simulate_draft,
 
         # Projection Tools (transparent weekly projections)
-        project_player,
         project_players,
         get_opportunity_projections,
         get_ros_projections,
@@ -1078,6 +1076,7 @@ async def analyze_trade(
 
 @timing_decorator("get_player_values", tool_type="values")
 async def get_player_values(
+    players: list[str] | None = None,
     scoring: str = "ppr",
     superflex: bool = False,
     num_teams: int = 12,
@@ -1085,21 +1084,46 @@ async def get_player_values(
     position: str | None = None,
     limit: int | None = 100,
 ) -> dict:
-    """Get consensus player market values (real values, not heuristics), best-first.
+    """Consensus player market values (FantasyCalc; real values, not heuristics).
 
-    Format-aware values you can trust for trades and draft ordering.
+    Format-aware values you can trust for trades and draft ordering. Without
+    `players`: the best-first list. With `players`: just those players (a
+    one-element list for a single player).
 
     Parameters:
+        players (list, optional): Sleeper player ids or names to look up (max 25).
         scoring (str): "ppr", "half-ppr", or "standard".
         superflex (bool): True for 2-QB / superflex leagues.
         num_teams (int): League size (default 12).
         dynasty (bool): Dynasty values vs redraft.
-        position (str, optional): Filter (QB, RB, WR, TE).
-        limit (int): Max players (default 100).
-    Returns: {values:[...], total, format, source, stale, updated_at, success}
+        position (str, optional): Filter the list (QB, RB, WR, TE).
+        limit (int): Max players in the list (default 100).
+    Returns: {values:[{name, position, team, value, overall_rank, ...}], total,
+              not_found? (lookups only), format, source, stale, updated_at, success}
+
+    Example: get_player_values(players=["Bijan Robinson"], scoring="half-ppr")
 
     IMPORTANT FOR LLM AGENTS: Provide the values immediately without asking for confirmation.
     """
+    if players:
+        import asyncio
+        wanted = [str(p).strip() for p in players[:25] if str(p).strip()]
+        hits = await asyncio.gather(*(
+            player_values.get_player_value(
+                player_id=p if p.isdigit() else None, name=None if p.isdigit() else p,
+                scoring=scoring, superflex=superflex, num_teams=num_teams,
+                dynasty=dynasty, db=get_db())
+            for p in wanted))
+        values = [h["value"] for h in hits if h.get("value")]
+        return {
+            "values": values,
+            "total": len(values),
+            "not_found": [p for p, h in zip(wanted, hits, strict=True) if not h.get("value")],
+            "source": next((h.get("source") for h in hits if h.get("source")), None),
+            "stale": any(h.get("stale") for h in hits),
+            "success": True,
+            "error": None,
+        }
     if position is not None:
         try:
             position = validate_string_input(position, 'position', max_length=5, required=False)
@@ -1108,29 +1132,6 @@ async def get_player_values(
     return await player_values.get_player_values(
         scoring=scoring, superflex=superflex, num_teams=num_teams,
         dynasty=dynasty, position=position, limit=limit, db=get_db(),
-    )
-
-
-@timing_decorator("get_player_value", tool_type="values")
-async def get_player_value(
-    player_id: str | None = None,
-    name: str | None = None,
-    scoring: str = "ppr",
-    superflex: bool = False,
-    num_teams: int = 12,
-    dynasty: bool = False,
-) -> dict:
-    """Get the consensus market value for one player (by Sleeper id or name).
-
-    Parameters:
-        player_id (str, optional): Sleeper player id (preferred).
-        name (str, optional): Player name (fallback lookup).
-        scoring / superflex / num_teams / dynasty: League format.
-    Returns: {value:{...}|None, found, source, stale, success}
-    """
-    return await player_values.get_player_value(
-        player_id=player_id, name=name, scoring=scoring, superflex=superflex,
-        num_teams=num_teams, dynasty=dynasty, db=get_db(),
     )
 
 
@@ -1260,69 +1261,6 @@ async def simulate_draft(
 # PROJECTION TOOLS (transparent weekly fantasy point projections)
 # =============================================================================
 
-@timing_decorator("project_player", tool_type="projection")
-async def project_player(
-    player_name: str,
-    position: str,
-    team: str,
-    opponent: str = "",
-    snap_percentage: float | None = None,
-    usage_trend: str | None = None,
-    injury_status: str | None = None,
-    scoring: str = "ppr",
-    superflex: bool = False,
-    season: int | None = None,
-    week: int | None = None,
-    wind_mph: float | None = None,
-    is_dome: bool = False,
-    league_id: str | None = None,
-) -> dict:
-    """Project weekly fantasy points for one player (transparent, no scraping).
-
-    Combines a baseline × matchup × Vegas game environment × usage × injury into a
-    projection with floor/ceiling, confidence and a full breakdown. season/week
-    default to the current NFL week (`week_inferred` says so); with week > 1 the
-    opportunity-based baseline is used (trailing nflverse volume, backtested to
-    beat rank-bucket PPG).
-
-    Parameters:
-        player_name, position (QB/RB/WR/TE/K/DEF), team (required abbreviations).
-        opponent (optional): opponent abbreviation, or "BYE". Omit it to have it
-            filled from the cached schedule; a team with no game that week
-            projects 0 with `on_bye: true`.
-        injury_status (optional): looked up in the injury tables when omitted.
-        snap_percentage (float, optional), usage_trend ("up"/"down", optional),
-        scoring ("ppr"/"half-ppr"/"standard"), superflex (bool),
-        season (int, optional), week (int, optional).
-        league_id (str, optional): Sleeper league id — prices every stat with
-            the league's full scoring_settings (pass TD/INT values, fumbles, TE
-            premium, first downs, bonuses, K distance and DEF points-allowed
-            tiers) instead of the preset; reported as `scoring_used`.
-    Returns: {projection:{projected_points, floor, ceiling, confidence, on_bye,
-              bye_status, breakdown, sleeper_projection, consensus,
-              disagreement, gap,...}, sleeper_second_opinion, season, week,
-              week_inferred, success}
-        `projected_points` is ours and primary. `sleeper_projection` is
-        Sleeper's weekly stat line priced in the same scoring, `consensus`
-        the plain average, `disagreement` true when they differ by > 4 pts or
-        > 25% (`gap` = ours - Sleeper's).
-    """
-    try:
-        player_name = validate_string_input(player_name, 'player_name', max_length=100, required=True)
-        position = validate_string_input(position, 'position', max_length=5, required=True)
-        team = validate_string_input(team, 'team', max_length=5, required=True)
-        opponent = validate_string_input(opponent or '', 'opponent', max_length=8, required=False)
-    except ValueError as e:
-        return {"projection": None, "success": False, "error": f"Invalid input: {e!s}"}
-    return await projections.project_player(
-        player_name=player_name, position=position.upper(), team=team.upper(),
-        opponent=opponent.upper(), snap_percentage=snap_percentage, usage_trend=usage_trend,
-        injury_status=injury_status, scoring=scoring, superflex=superflex,
-        season=season, week=week, wind_mph=wind_mph, is_dome=is_dome, db=get_db(),
-        league_id=league_id,
-    )
-
-
 @timing_decorator("project_players", tool_type="projection")
 async def project_players(
     players: list[dict],
@@ -1333,11 +1271,18 @@ async def project_players(
     week: int | None = None,
     league_id: str | None = None,
 ) -> dict:
-    """Project weekly fantasy points for multiple players at once.
+    """Project THIS WEEK's fantasy points for one or more players (transparent).
+
+    Combines a baseline × matchup × Vegas game environment × usage × injury into
+    a projection with floor/ceiling, confidence and a full breakdown. Pass a
+    one-element list for a single player. For anything beyond this week use
+    get_ros_projections.
 
     Parameters:
-        players (list, required): dicts with name, position, team, opponent and
-            optional usage {snap_percentage, usage_trend} and injury {status}.
+        players (list, required): dicts with name, position (QB/RB/WR/TE/K/DEF),
+            team, and optionally opponent, player_id (Sleeper, exact match),
+            usage {snap_percentage, usage_trend}, injury {status} and weather
+            {wind_mph, is_dome} (e.g. from get_weather_forecast).
             opponent "BYE" (or a team the cached schedule has no game for)
             projects 0 with `on_bye: true`; a blank opponent is filled from the
             schedule. A missing injury status is looked up in the injury tables.
@@ -1358,6 +1303,9 @@ async def project_players(
         Our `projected_points` stays primary; Sleeper's projection (priced in
         the league's scoring) is a labelled second opinion. Pass each
         player's Sleeper `player_id` for an exact match (else name + team).
+
+    Example: project_players(players=[{"name": "Puka Nacua", "position": "WR", "team": "LAR"}],
+                             league_id="123")
 
     IMPORTANT FOR LLM AGENTS: Return projections immediately without asking for confirmation.
     """

@@ -29,7 +29,7 @@ SCENARIOS = [
     {
         "id": "player_value",
         "prompt": "What is Bijan Robinson worth in a 12-team PPR league?",
-        "expect": ["get_player_value", "get_player_values"],
+        "expect": ["get_player_values"],
     },
     {
         "id": "trade_fairness",

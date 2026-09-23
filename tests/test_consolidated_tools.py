@@ -107,3 +107,14 @@ async def test_vegas_lines_team_and_roster_modes():
     assert [p["name"] for p in sent] == ["QB One"] and sent[0]["opponent"] == "LV"
     assert out["roster"]["on_bye"] == ["WR Bye"]
     assert out["roster"]["analysis"] == [{"player": "QB One"}]
+
+
+@pytest.mark.asyncio
+async def test_player_values_accepts_one_or_more_players():
+    async def one(player_id=None, name=None, **kw):
+        found = {"4046": "Bijan Robinson", None: None}.get(player_id) or (name if name == "Puka Nacua" else None)
+        return {"value": {"name": found, "value": 9000} if found else None, "source": "fantasycalc"}
+    with patch("nfl_mcp.player_values.get_player_value", side_effect=one):
+        out = await tool_registry.get_player_values(players=["4046", "Puka Nacua", "Nobody"])
+    assert [v["name"] for v in out["values"]] == ["Bijan Robinson", "Puka Nacua"]
+    assert out["not_found"] == ["Nobody"]
