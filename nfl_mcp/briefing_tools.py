@@ -26,6 +26,7 @@ from .injury_match import (
 from .ir_audit import audit_roster
 from .lineup_slots import starting_slot_list, starting_slots
 from .teams import normalize_team
+from .week_context import BYE, bye_check, week_opponents, week_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -232,11 +233,9 @@ async def get_weekly_briefing(
     # 4) Context shared by every player: opponent, weather, trailing usage.
     #    Opponents come from the cached schedule rather than the odds feed,
     #    which publishes several weeks at once.
-    opponents: dict[str, str] = {}
-    for team, opp in db.get_week_opponents(season, week).items():
-        canon_team, canon_opp = normalize_team(team), normalize_team(opp)
-        if canon_team and canon_opp:
-            opponents[canon_team] = canon_opp
+    opponents = week_opponents(db, season, week)
+    # Complete enough to call a missing team a bye (None: cache cold/partial).
+    schedule = week_schedule(db, season, week)
 
     weather: dict[str, dict] = {}
     try:
@@ -405,13 +404,20 @@ async def get_weekly_briefing(
     )
 
     projected_ids = {p["player_id"] for p in my_inputs}
-    unprojectable = [
+    unprojectable, on_bye = [], []
+    for pid in (mine.get("players") or []):
+        if pid in projected_ids or pid in unavailable:
+            continue
+        row = athletes.get(pid) or {}
         # Team defenses have no name in the athlete rows, so fall back to the
         # id, which for a DEF *is* the team code.
-        (athletes.get(pid) or {}).get("full_name") or pid
-        for pid in (mine.get("players") or [])
-        if pid not in projected_ids and pid not in unavailable
-    ]
+        label = row.get("full_name") or pid
+        # Named as a bye only when the week's schedule is complete enough to
+        # prove it; otherwise it stays "could not price".
+        if row and bye_check(row.get("team_id"), None, schedule, week)["status"] == BYE:
+            on_bye.append(label)
+        else:
+            unprojectable.append(label)
     # Players the projection zeroed or nearly zeroed for injury. Before this
     # they vanished: priced (so not `not_projected`), both sources agreeing (so
     # no `injury_source_conflicts`), not starting (so not in `bench`) — Brock
@@ -495,7 +501,10 @@ async def get_weekly_briefing(
             if p.get("injury_detail")
             and p["injury_detail"]["sleeper_status"] != p["injury_detail"]["report_status"]
         ],
-        # Byes, and anything the projection layer could not price.
+        # Teams with no game this week, per the cached schedule.
+        "on_bye": on_bye,
+        # Anything else the projection layer could not price (no team, no
+        # position, or a schedule too incomplete to tell a bye from a gap).
         "not_projected": unprojectable,
         "unavailable": unavailable_now,
         "ir_moves": [m for m in ir["moves"] if m["action"] != "not_eligible"],

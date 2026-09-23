@@ -1170,7 +1170,7 @@ async def project_player(
     player_name: str,
     position: str,
     team: str,
-    opponent: str,
+    opponent: str = "",
     snap_percentage: float | None = None,
     usage_trend: str | None = None,
     injury_status: str | None = None,
@@ -1184,22 +1184,28 @@ async def project_player(
     """Project weekly fantasy points for one player (transparent, no scraping).
 
     Combines a baseline × matchup × Vegas game environment × usage × injury into a
-    projection with floor/ceiling, confidence and a full breakdown. Pass season +
-    week (week > 1) to use the opportunity-based baseline (trailing nflverse
-    volume, backtested to beat rank-bucket PPG); omit either for the rank baseline.
+    projection with floor/ceiling, confidence and a full breakdown. season/week
+    default to the current NFL week (`week_inferred` says so); with week > 1 the
+    opportunity-based baseline is used (trailing nflverse volume, backtested to
+    beat rank-bucket PPG).
 
     Parameters:
-        player_name, position (QB/RB/WR/TE), team, opponent (all required abbreviations).
+        player_name, position (QB/RB/WR/TE), team (required abbreviations).
+        opponent (optional): opponent abbreviation, or "BYE". Omit it to have it
+            filled from the cached schedule; a team with no game that week
+            projects 0 with `on_bye: true`.
+        injury_status (optional): looked up in the injury tables when omitted.
         snap_percentage (float, optional), usage_trend ("up"/"down", optional),
-        injury_status (optional), scoring ("ppr"/"half-ppr"/"standard"), superflex (bool),
-        season (int, optional), week (int, optional) — pass both for opportunity baseline.
-    Returns: {projection:{projected_points, floor, ceiling, confidence, breakdown,...}, success}
+        scoring ("ppr"/"half-ppr"/"standard"), superflex (bool),
+        season (int, optional), week (int, optional).
+    Returns: {projection:{projected_points, floor, ceiling, confidence, on_bye,
+              bye_status, breakdown,...}, season, week, week_inferred, success}
     """
     try:
         player_name = validate_string_input(player_name, 'player_name', max_length=100, required=True)
         position = validate_string_input(position, 'position', max_length=5, required=True)
         team = validate_string_input(team, 'team', max_length=5, required=True)
-        opponent = validate_string_input(opponent, 'opponent', max_length=5, required=True)
+        opponent = validate_string_input(opponent or '', 'opponent', max_length=8, required=False)
     except ValueError as e:
         return {"projection": None, "success": False, "error": f"Invalid input: {e!s}"}
     return await projections.project_player(
@@ -1224,11 +1230,16 @@ async def project_players(
     Parameters:
         players (list, required): dicts with name, position, team, opponent and
             optional usage {snap_percentage, usage_trend} and injury {status}.
+            opponent "BYE" (or a team the cached schedule has no game for)
+            projects 0 with `on_bye: true`; a blank opponent is filled from the
+            schedule. A missing injury status is looked up in the injury tables.
         scoring/superflex/num_teams: league format for the value baseline.
-        season (int, optional), week (int, optional): pass both (week > 1) to use
-            the opportunity-based baseline (trailing nflverse volume, backtested to
-            beat rank-bucket PPG); omit either for the positional-rank baseline.
-    Returns: {projections:[...], total, success}
+        season (int, optional), week (int, optional): default to the current
+            NFL week (`week_inferred`); with week > 1 the opportunity-based
+            baseline is used (trailing nflverse volume, backtested to beat
+            rank-bucket PPG).
+    Returns: {projections:[...], on_bye:[names], schedule_known, season, week,
+              week_inferred, total, success}
 
     IMPORTANT FOR LLM AGENTS: Return projections immediately without asking for confirmation.
     """
@@ -1248,8 +1259,9 @@ async def get_opportunity_projections(
     lookback: int = 6,
     min_games: int = 2,
     top_n: int = 50,
+    scoring: str = "ppr",
 ) -> dict:
-    """Opportunity-based PPR projections from trailing volume (beats trailing-PPG).
+    """Opportunity-based projections from trailing volume (beats trailing-PPG).
 
     Projects each player's next-week points from recency-weighted trailing
     targets/carries (QB: pass attempts) × their points-per-opportunity shrunk
@@ -1265,11 +1277,16 @@ async def get_opportunity_projections(
         lookback (int, optional): Trailing games to weight (default 6).
         min_games (int, optional): Min prior games to project a player (default 2).
         top_n (int, optional): Cap when players is omitted (default 50).
+        scoring (str, optional): 'ppr' (default), 'half_ppr', 'standard', or a
+            raw per-reception value like '0.5'. Changes both the points and the
+            receiver-vs-runner order, so pass your league's real setting.
 
     Returns: {
-        season, week, lookback, count,
-        projections: [{player_id, name, position, team, projected_ppr,
-                       exp_targets, exp_carries, games_used}] (highest-first),
+        season, week, lookback, count, scoring, ppr,
+        projections: [{player_id, name, position, team, projected_points
+                       (in `scoring`; `projected_ppr` is the same number under
+                       its historical key), exp_targets, exp_carries,
+                       games_used}] (highest-first),
         success: bool, error?: str
     }
 
@@ -1285,6 +1302,7 @@ async def get_opportunity_projections(
         lookback=lookback,
         min_games=min_games,
         top_n=top_n,
+        scoring=scoring,
     )
 
 
@@ -1675,7 +1693,7 @@ async def get_start_sit_recommendation(
     player_name: str,
     position: str,
     team: str,
-    opponent: str,
+    opponent: str = "",
     player_id: str | None = None,
     target_share: float | None = None,
     snap_percentage: float | None = None,
@@ -1696,7 +1714,9 @@ async def get_start_sit_recommendation(
         player_name (str, required): Player's full name
         position (str, required): Fantasy position (QB, RB, WR, TE)
         team (str, required): Player's team abbreviation
-        opponent (str, required): Opponent team abbreviation
+        opponent (str, optional): Opponent team abbreviation, or "BYE". Omit to
+            fill it from the cached schedule. A team with no game that week is
+            must_sit with `on_bye: true`, whatever else is passed.
         player_id (str, optional): Player ID for database lookup
         target_share (float, optional): Target share percentage (0-100)
         snap_percentage (float, optional): Snap count percentage (0-100)
@@ -1738,7 +1758,7 @@ async def get_start_sit_recommendation(
         player_name = validate_string_input(player_name, 'player_name', max_length=100, required=True)
         position = validate_string_input(position, 'position', max_length=5, required=True)
         team = validate_string_input(team, 'team', max_length=5, required=True)
-        opponent = validate_string_input(opponent, 'opponent', max_length=5, required=True)
+        opponent = validate_string_input(opponent or '', 'opponent', max_length=8, required=False)
 
         if league_id:
 

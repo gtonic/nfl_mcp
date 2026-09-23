@@ -30,7 +30,8 @@ from .lineup_slots import (
 )
 from .lineup_slots import SLOT_ELIGIBILITY as SLOT_ELIGIBILITY
 from .player_values import scoring_to_ppr
-from .projections import _RECEPTION_SHARE
+from .projections import _RECEPTION_SHARE, availability
+from .week_context import BYE, bye_check, resolve_season_week, week_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,12 @@ class StartSitDecision(Enum):
     MUST_SIT = "must_sit"
 
 
+_BETTER_THAN_SIT = frozenset({
+    StartSitDecision.MUST_START.value, StartSitDecision.START.value,
+    StartSitDecision.FLEX.value,
+})
+
+
 class ConfidenceLevel(Enum):
     """Enum for confidence levels."""
     HIGH = "high"
@@ -97,10 +104,17 @@ class PlayerAnalysis:
 
     # Health factors
     injury_status: str = "healthy"
-    practice_status: str = "full"
+    # None when nobody reported one. It used to default to "full", which told
+    # the user an Out player had practised fully.
+    practice_status: str | None = None
     # Where the status came from: "caller" when passed in, otherwise the
     # injury tables ("report", "sleeper" or "both"), None when nothing is known.
     injury_source: str | None = None
+
+    # Schedule: "bye", "playing" or "unknown" (no opponent and no cached
+    # schedule to check against — treated as playing, but unverified).
+    on_bye: bool = False
+    bye_status: str = "unknown"
 
     # Projection
     projected_points: float = 0.0
@@ -134,6 +148,8 @@ class PlayerAnalysis:
             "injury_status": self.injury_status,
             "practice_status": self.practice_status,
             "injury_source": self.injury_source,
+            "on_bye": self.on_bye,
+            "bye_status": self.bye_status,
             "projected_points": self.projected_points,
             "floor": self.floor,
             "ceiling": self.ceiling,
@@ -182,7 +198,30 @@ INJURY_STATUS_SCORES = {
     "na": 0,
     "dnr": 0,
     "cov": 0,
+    "inactive": 0,
+    "reserve": 0,
+    # "We do not know" — not a green light, not a red one.
+    "unknown": 70,
 }
+
+# Fallback by availability class (see `projections.availability`) for a
+# status the table does not list, so the health score and the projection
+# multiplier read every status the same way. A listed status used to be the
+# only kind that could bench a player: anything else scored a perfect 100.
+_HEALTH_BY_AVAILABILITY = {
+    "healthy": 100, "out": 0, "doubtful": 25, "questionable": 60,
+    "uncertain": 70, "unrecognised": 60,
+}
+
+
+def injury_score(status: str | None) -> float:
+    """Health score (0-100) for an injury status."""
+    s = (status or "").strip().lower()
+    if not s:
+        return 100
+    if s in INJURY_STATUS_SCORES:
+        return INJURY_STATUS_SCORES[s]
+    return _HEALTH_BY_AVAILABILITY[availability(s)]
 
 # Practice status scores
 PRACTICE_STATUS_SCORES = {
@@ -236,31 +275,9 @@ async def _league_scoring(
     return "ppr", num_teams, "default"
 
 
-async def _resolve_season_week(
-    season: int | None, week: int | None
-) -> tuple[int | None, int | None, bool]:
-    """Fill in season/week from NFL state when the caller omitted them.
-
-    Omitting them is the common case — an agent rarely knows the current week —
-    and it silently downgraded every projection to the positional-rank baseline:
-    six static values per position, so a workhorse RB came out at 16.8 instead
-    of 31.1 for the same week. All differentiation then came from the matchup
-    tier, which the engine's own backtest rates at zero for WRs.
-
-    Returns ``(season, week, inferred)`` so callers can report which values were
-    used rather than leaving it to be guessed from the numbers.
-    """
-    if season is not None and week is not None:
-        return season, week, False
-    try:
-        from .nfl_tools import get_current_season_and_week
-        got_season, got_week = await get_current_season_and_week()
-    except Exception as e:
-        logger.debug(f"season/week inference failed: {e}")
-        return season, week, False
-    resolved_season = season if season is not None else got_season
-    resolved_week = week if week is not None else got_week
-    return resolved_season, resolved_week, True
+# Shared with the projection tools, which used to skip this step and answer
+# the same question off a weaker baseline (see `week_context`).
+_resolve_season_week = resolve_season_week
 
 
 class LineupOptimizer:
@@ -346,23 +363,27 @@ class LineupOptimizer:
         scores["usage"] = usage_score
 
         # 3. Health score
-        injury_score = INJURY_STATUS_SCORES.get(
-            analysis.injury_status.lower(),
-            100 if analysis.injury_status.lower() == "healthy" else 50
-        )
-        practice_score = PRACTICE_STATUS_SCORES.get(
-            analysis.practice_status.lower(),
-            100 if analysis.practice_status.lower() == "full" else 70
-        )
-        health_score = (injury_score * 0.6 + practice_score * 0.4)
+        inj_score = injury_score(analysis.injury_status)
+        practice = (analysis.practice_status or "").strip().lower()
+        if practice:
+            practice_score = PRACTICE_STATUS_SCORES.get(practice, 70)
+            health_score = (inj_score * 0.6 + practice_score * 0.4)
+        else:
+            # No practice report: score the designation alone rather than
+            # inventing a full practice to average it with.
+            practice_score = None
+            health_score = float(inj_score)
         scores["health"] = health_score
 
-        if injury_score < 60:
+        if inj_score < 60:
             reasoning.append(f"⚠️ Injury concern: {analysis.injury_status}")
-        if practice_score < 70:
+        elif availability(analysis.injury_status) == "uncertain":
+            reasoning.append(f"⚠️ Status {analysis.injury_status!r} — verify before kickoff")
+        if practice_score is not None and practice_score < 70:
             reasoning.append(f"⚠️ Limited practice: {analysis.practice_status}")
         if health_score >= 90:
-            reasoning.append("✅ Healthy, full practice")
+            reasoning.append("✅ Healthy, full practice" if practice_score is not None
+                             else "✅ No injury designation")
 
         # 4. Projection score
         projection_score = 50  # Default
@@ -417,8 +438,26 @@ class LineupOptimizer:
         health_score: float,
         ppr: float = 1.0,
         confidence: float | None = None,
+        injury_status: str | None = None,
+        on_bye: bool = False,
     ) -> str:
         """Start/sit decision from expected points, not from how much we know.
+
+        Availability comes first and is read the way the projection reads it
+        (`projections.availability`):
+
+        - on bye, or a status that rules him out (Out, IR, Inactive, Reserve,
+          Sus, PUP, ...): must_sit;
+        - Doubtful: decided on the projection, which already carries the ×0.35
+          discount, but never better than `sit` — "risky, avoid". It used to be
+          a flat must_sit here while the projection priced him at a third of
+          his points, so the two tools disagreed about whether he was a zero.
+          He is not: doubtful players do sometimes play. But no lineup should
+          count on one;
+        - an "Unknown" designation: at most `start`, never `must_start`.
+
+        Without `injury_status` (older callers) a health score of 25 or less
+        still means must_sit.
 
         This used to key off `confidence`, which is a *data-quality* score:
         25% matchup, 25% snap share, 20% health, 15% projection, 15% trend. The
@@ -439,9 +478,21 @@ class LineupOptimizer:
         much do we know", which is a real question, just not this one.
         """
         # An unavailable player is not a lineup question.
-        if health_score <= 25:
+        kind = availability(injury_status) if injury_status is not None else None
+        if on_bye or health_score <= 0 or kind == "out":
+            return StartSitDecision.MUST_SIT.value
+        if kind is None and health_score <= 25:
             return StartSitDecision.MUST_SIT.value
 
+        decision = self._decision_from_points(projected_points, position, ppr)
+        if kind == "doubtful" and decision in _BETTER_THAN_SIT:
+            return StartSitDecision.SIT.value
+        if kind == "uncertain" and decision == StartSitDecision.MUST_START.value:
+            return StartSitDecision.START.value
+        return decision
+
+    @staticmethod
+    def _decision_from_points(projected_points: float, position: str, ppr: float) -> str:
         adequate, good = _good_game_thresholds(position, ppr)
         if projected_points <= 0:
             # No projection at all: say we cannot tell rather than implying a
@@ -500,6 +551,29 @@ class LineupOptimizer:
             opponent=opponent.upper()
         )
 
+        # A team without a game this week: nothing else about him matters. This
+        # used to fall through to a full projection, and a receiver on bye came
+        # back as a 17-point must-start.
+        bye = bye_check(team, opponent, week_schedule(self.db, season, week), week)
+        analysis.bye_status = bye["status"]
+        if bye["status"] == BYE:
+            analysis.on_bye = True
+            analysis.opponent = "BYE"
+            analysis.matchup_tier = "bye"
+            if (injury_data or {}).get("status"):
+                analysis.injury_status = injury_data["status"]
+                analysis.injury_source = "caller"
+            analysis.base_source = "bye"
+            analysis.decision = StartSitDecision.MUST_SIT.value
+            # Certain, not merely well-documented: no game, no points.
+            analysis.confidence = 100.0
+            analysis.confidence_level = ConfidenceLevel.HIGH.value
+            analysis.reasoning = [f"🚫 {bye['reason']}"]
+            return analysis
+        # A blank opponent is filled from the schedule when it knows the game.
+        opponent = bye["opponent"] or opponent
+        analysis.opponent = opponent.upper()
+
         # Get matchup data
         if self.defense_analyzer and position.upper() in ["QB", "RB", "WR", "TE"]:
             try:
@@ -537,7 +611,7 @@ class LineupOptimizer:
         if injury_data:
             analysis.injury_source = analysis.injury_source or "caller"
             analysis.injury_status = injury_data.get("status") or "healthy"
-            analysis.practice_status = injury_data.get("practice_status") or "full"
+            analysis.practice_status = injury_data.get("practice_status") or None
 
         # Apply projection data — or auto-project when the caller didn't supply
         # points, so start/sit works without manual point entry.
@@ -578,17 +652,21 @@ class LineupOptimizer:
         analysis.confidence_level = confidence_level
         analysis.reasoning = reasoning
 
-        # Determine decision
-        health_score = INJURY_STATUS_SCORES.get(
-            analysis.injury_status.lower(), 100
-        )
+        # Determine decision. Health is read through the same vocabulary as the
+        # projection's multiplier: an unlisted status used to score 100 here.
         analysis.decision = self.determine_decision(
             analysis.projected_points,
             analysis.position,
-            health_score,
+            injury_score(analysis.injury_status),
             ppr=scoring_to_ppr(scoring),
             confidence=analysis.confidence,
+            injury_status=analysis.injury_status,
         )
+        if availability(analysis.injury_status) == "doubtful":
+            analysis.reasoning.append(
+                "⚠️ Doubtful — risky, avoid: projected at 35% of his points, "
+                "and rarely plays"
+            )
 
         return analysis
 
@@ -679,7 +757,7 @@ async def get_start_sit_recommendation(
     player_name: str,
     position: str,
     team: str,
-    opponent: str,
+    opponent: str = "",
     player_id: str | None = None,
     target_share: float | None = None,
     snap_percentage: float | None = None,
@@ -797,6 +875,8 @@ async def get_start_sit_recommendation(
             "floor": analysis.floor,
             "ceiling": analysis.ceiling,
             "base_source": analysis.base_source,
+            "on_bye": analysis.on_bye,
+            "bye_status": analysis.bye_status,
         },
         "confidence": analysis.confidence,
         "confidence_level": analysis.confidence_level,
@@ -811,7 +891,11 @@ async def get_start_sit_recommendation(
         "factors": {
             "matchup": f"#{analysis.matchup_rank} ({analysis.matchup_tier})",
             "usage": f"Snaps: {analysis.snap_percentage}%, Targets: {analysis.target_share}%",
-            "health": f"{analysis.injury_status}, Practice: {analysis.practice_status}",
+            # Practice is only stated when someone reported it: the default
+            # used to print "Practice: full" next to an Out designation.
+            "health": (f"{analysis.injury_status}, Practice: {analysis.practice_status}"
+                       if analysis.practice_status else analysis.injury_status),
+            "schedule": "on bye" if analysis.on_bye else analysis.bye_status,
             "projection": f"{analysis.projected_points} pts" if analysis.projected_points > 0 else "N/A",
         },
         "message": f"{analysis.player_name}: {decision_display} (Confidence: {analysis.confidence:.0f}%)"
@@ -889,6 +973,7 @@ async def get_roster_recommendations(
     all_recommendations = []
     must_starts = []
     sits = []
+    on_bye = []
 
     for _position, analyses in analyses_by_position.items():
         for analysis in analyses:
@@ -901,6 +986,8 @@ async def get_roster_recommendations(
                 must_starts.append(f"{analysis.player_name} ({analysis.position})")
             elif analysis.decision in ["sit", "must_sit"]:
                 sits.append(f"{analysis.player_name} ({analysis.position})")
+            if analysis.on_bye:
+                on_bye.append(f"{analysis.player_name} ({analysis.position})")
 
     # Ranked by expected points. `confidence` breaks ties only: it measures how
     # much we know about a player, which is not the same question as who scores
@@ -921,12 +1008,15 @@ async def get_roster_recommendations(
         summary_lines.append(f"🟢 MUST STARTS: {', '.join(must_starts)}")
     if sits:
         summary_lines.append(f"🔴 CONSIDER SITTING: {', '.join(sits)}")
+    if on_bye:
+        summary_lines.append(f"🚫 ON BYE: {', '.join(on_bye)}")
 
     return create_success_response({
         "recommendations": all_recommendations,
         "by_position": by_position,
         "must_starts": must_starts,
         "sits": sits,
+        "on_bye": on_bye,
         "summary": summary_lines,
         "total_analyzed": len(all_recommendations),
         "week": week,
@@ -1039,8 +1129,9 @@ async def compare_players_for_slot(
         )
         analyses.append(analysis)
 
-    # Points decide the slot, confidence only breaks a tie.
-    analyses.sort(key=lambda x: (x.projected_points, x.confidence), reverse=True)
+    # Points decide the slot, confidence only breaks a tie. A player on bye
+    # sorts last whatever the caller claimed he projects.
+    analyses.sort(key=lambda x: (not x.on_bye, x.projected_points, x.confidence), reverse=True)
 
     # Get winner and runner up
     winner = analyses[0]
@@ -1055,7 +1146,13 @@ async def compare_players_for_slot(
     # Verdict scaled to the projection's own error. The backtest puts weekly
     # MAE at ~5.8 points, so a 1-point edge is not an edge — calling it one is
     # the false precision this tool used to trade in.
-    if not runner_up:
+    if winner.on_bye:
+        verdict = "Every player compared is on bye — none of them can score in this slot"
+    elif runner_up and runner_up.on_bye:
+        verdict = (f"Start {winner.player_name}: "
+                   + ", ".join(a.player_name for a in analyses if a.on_bye)
+                   + " on bye")
+    elif not runner_up:
         verdict = f"Only {winner.player_name} to consider"
     elif points_gap >= 5.0:
         verdict = (f"Clear choice: {winner.player_name} projects {points_gap} more "
@@ -1091,6 +1188,7 @@ async def compare_players_for_slot(
             "decision": analysis.decision,
             "decision_display": f"{decision_emoji.get(analysis.decision, '⚪')} {analysis.decision.upper().replace('_', ' ')}",
             "matchup_tier": analysis.matchup_tier,
+            "on_bye": analysis.on_bye,
             "reasoning": analysis.reasoning[:3] if analysis.reasoning else [],  # Top 3 reasons
         })
 
@@ -1104,6 +1202,7 @@ async def compare_players_for_slot(
             "ceiling": winner.ceiling,
             "confidence": winner.confidence,
             "decision": winner.decision,
+            "on_bye": winner.on_bye,
             "reasoning": winner.reasoning,
         },
         "comparison": comparison_list,
@@ -1118,8 +1217,9 @@ async def compare_players_for_slot(
         "confidence_gap": round(confidence_gap, 1),
         "verdict": verdict,
         "total_compared": len(analyses),
-        "message": (f"For {slot}: Start {winner.player_name} "
-                    f"({winner.projected_points} projected, {winner.confidence:.0f}% confidence)")
+        "message": (f"For {slot}: every player compared is on bye" if winner.on_bye
+                    else f"For {slot}: Start {winner.player_name} "
+                         f"({winner.projected_points} projected, {winner.confidence:.0f}% confidence)")
     })
 
 
@@ -1263,8 +1363,10 @@ async def analyze_full_lineup(
                     "player": analysis.player_name,
                     "projected_points": analysis.projected_points,
                     "confidence": analysis.confidence,
-                    "issue": (f"projects {analysis.projected_points} "
-                              f"(adequate for {analysis.position} is {adequate:.1f})"),
+                    "on_bye": analysis.on_bye,
+                    "issue": ("on bye — no game this week" if analysis.on_bye
+                              else f"projects {analysis.projected_points} "
+                                   f"(adequate for {analysis.position} is {adequate:.1f})"),
                 })
 
         starters_analysis[position] = [a.to_dict() for a in position_analyses]
