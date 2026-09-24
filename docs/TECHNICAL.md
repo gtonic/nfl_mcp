@@ -231,6 +231,37 @@ backoff and, on total failure, return the most recent cached snapshot with
 `failure_reason`, `snapshot_fetched_at`, `snapshot_age_seconds` (present but
 `null` on a fresh success).
 
+### Weekly projections (Sleeper-first)
+
+Every tool that projects a week — `project_players`, start/sit,
+`analyze_lineup`, the briefing, waiver targets, trade tools, ROS's current
+week — goes through one path, `ProjectionEngine.project_many`, so the same
+player gets the same number everywhere:
+
+```
+projected_points = 0.25 × model_projection + 0.75 × sleeper_projection
+model_projection = regressed_rate(opportunity, rank_bucket, games)   # k = 2
+                   × matchup × Vegas environment × usage × injury/practice
+```
+
+- `sleeper_projection` is Sleeper's projected stat line priced with the
+  league's `ScoringModel` (`sleeper_projections.price_stats`).
+- Byes and Out are 0. Questionable discounts only our quarter (Sleeper's line
+  already carries its own injury read); Doubtful is capped at 35% of the
+  healthier reading. A player Sleeper lists without points (benched,
+  inactive) projects 0 — but only when Sleeper has published his team.
+- No Sleeper number (outage, off-season, unlisted player): the model alone,
+  `projection_source: "model_only"` plus a warning. Each projection carries
+  `model_projection`, `sleeper_projection`, `blend_weights` and
+  `projection_source` (`sleeper_blend` / `model_only` / `bye`); floor and
+  ceiling are `mean × (1 ± volatility)` around the blend, calibrated to ~68%.
+- Streaming blends each week's K/DEF schedule projection with Sleeper's team
+  K/DEF the same way. ROS later weeks stay on our model (per-game rate =
+  the same regressed rate): Sleeper publishes future weeks, but there is no
+  point-in-time history to backtest a ROS blend on.
+- The weight is reproducible: `python -m evals.backtest.sleeper_blend`
+  (fetches and caches Sleeper's projection history on first run).
+
 ## Eval suite (`evals/`)
 
 A three-layer suite that keeps the intelligence honest:
