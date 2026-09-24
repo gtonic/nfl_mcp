@@ -24,8 +24,8 @@ class TestRankBuckets:
         assert rank_bucket("TE", 15) == pytest.approx(8.5)
         assert rank_bucket("TE", 10) == pytest.approx(10.5)
 
-    def test_qb_unchanged(self):
-        assert [rank_bucket("QB", r) for r in (1, 5, 10, 15, 25)] == [22, 20, 18, 16, 14]
+    def test_qb_mid_tiers_recalibrated_in_the_models_own_scoring(self):
+        assert [rank_bucket("QB", r) for r in (1, 5, 10, 15, 25)] == [22, 19, 17, 16, 14]
 
     def test_unranked_and_invalid_ranks_are_the_last_tier(self):
         for pos, tiers in _RANK_BUCKETS.items():

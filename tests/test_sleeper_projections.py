@@ -78,9 +78,10 @@ class TestSecondOpinion:
     def test_rule(self, ours, theirs, flag):
         assert sp.second_opinion(ours, theirs)["disagreement"] is flag
 
-    def test_consensus_is_the_average_and_gap_is_ours_minus_theirs(self):
+    def test_consensus_is_the_blend_and_gap_is_ours_minus_theirs(self):
         op = sp.second_opinion(12.0, 8.0)
-        assert op["consensus"] == 10.0 and op["gap"] == 4.0
+        # 0.25 * 12 + 0.75 * 8
+        assert op["consensus"] == 9.0 and op["gap"] == 4.0
 
     def test_a_ruled_out_player_keeps_a_zero_consensus(self):
         op = sp.second_opinion(0.0, 11.1, ruled_out=True)

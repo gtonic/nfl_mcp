@@ -246,6 +246,20 @@ best sd scale       2.0              1.25       (i.e. ~right)
 - Coverage is measured on fantasy-relevant players (`--min-trailing 5`); deep
   bench players are noisier still.
 
+### Sleeper-first blend (`sleeper_blend.py`)
+The weekly projection is `0.25 × our model + 0.75 × Sleeper`. This eval
+reproduces the weight: production's model (regressed opportunity × matchup ×
+Vegas) vs Sleeper's historical weekly projections vs the blend, a sweep of the
+model weight, band coverage at the live `_VOLATILITY` and start/sit pairwise
+accuracy. Truth everywhere in `evals/backtest` is the stat line priced by
+`ScoringModel` (Sleeper defaults), not nflverse's `fantasy_points_ppr`.
+
+```bash
+python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025   # network on first run
+python -m evals.backtest.sleeper_blend --include-dnp              # + weeks the player sat
+```
+Sleeper history is cached (compacted, ~0.6 MB/week) in `evals/backtest/.cache/sleeper/`.
+
 ---
 
 ## Layer B — data-source contract checks (`evals/contracts/`)

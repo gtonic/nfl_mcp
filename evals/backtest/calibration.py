@@ -53,6 +53,7 @@ from collections import defaultdict
 
 from nfl_mcp.opportunity import project_opportunity
 from nfl_mcp.projections import _VOLATILITY
+from nfl_mcp.scoring import ScoringModel
 from nfl_mcp.win_probability import player_sd, win_prob
 
 from .data import load_season
@@ -70,11 +71,11 @@ DEFAULT_LINEUP_SIZE = 9
 def actual_points(record: dict, ppr: float) -> float:
     """The week's real points in the requested scoring.
 
-    nflverse publishes full-PPR totals, so the per-reception value is backed out
-    rather than recomputed from components (which would drop the scoring details
-    nflverse already handled).
+    Priced from the full stat line with the same `ScoringModel` the
+    projection uses (Sleeper's defaults at `ppr`), not from nflverse's
+    `fantasy_points_ppr`, whose INT -2 is not the scoring being predicted.
     """
-    return record["ppr"] - (1.0 - ppr) * record.get("receptions", 0.0)
+    return ScoringModel.preset(ppr).game_points(record, record.get("position"))
 
 
 def build_samples(

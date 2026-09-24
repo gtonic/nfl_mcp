@@ -54,7 +54,9 @@ _PRIORS: dict[str, dict[str, float]] = {
     "WR": {"ppt": 1.65, "ppc": 0.80},
     "TE": {"ppt": 1.72, "ppc": 0.80},
     "RB": {"ppt": 1.45, "ppc": 0.62},
-    "QB": {"ppa": 0.45, "ppc": 0.75},
+    # QB 0.43 (was 0.45): with the volume shrinkage below, 0.45 left the
+    # weekly QB projection ~0.3 points high (2023-25, weeks 3+).
+    "QB": {"ppa": 0.43, "ppc": 0.75},
 }
 # League-average catch rate per target, by position (2023-24). A target is worth
 # one reception this often, so lowering the per-reception value removes exactly
@@ -65,6 +67,16 @@ _CATCH_RATE: dict[str, float] = {"WR": 0.63, "TE": 0.72, "RB": 0.79, "QB": 0.0}
 _K_TARGETS, _K_CARRIES, _K_ATTEMPTS = 20.0, 25.0, 60.0
 
 DEFAULT_LOOKBACK = 6
+# A starting QB's pass attempts are steadier than his trailing mean says: two
+# 45-attempt comebacks do not make a 45-attempt passer. So QBs look further
+# back (8 games) and their expected attempts are shrunk toward the league
+# starter mean by a few pseudo-games. From the 2023-25 weekly backtest (truth
+# priced in the same scoring): QB MAE 6.32 -> 6.23, bias +0.30 -> -0.04, and
+# ROS top-12 QB MAE 3.75 -> 3.31. RB/WR/TE did not improve and keep the plain
+# six-game window.
+QB_LOOKBACK = 8
+QB_ATTEMPTS_PRIOR = 30.6
+QB_ATTEMPTS_PSEUDO_GAMES = 3.0
 OPPORTUNITY_POSITIONS = ("QB", "RB", "WR", "TE")
 
 
@@ -111,7 +123,7 @@ def _shrunk_rate(total_points: float, total_volume: float, prior: float, k: floa
 def project_opportunity(
     prior_games: list[dict],
     position: str,
-    lookback: int = DEFAULT_LOOKBACK,
+    lookback: int | None = None,
     ppr: float = FULL_PPR,
     extra_volume: dict[str, float] | None = None,
     scoring: ScoringModel | None = None,
@@ -123,7 +135,9 @@ def project_opportunity(
             carries, attempts, receptions, *_yards, *_tds, interceptions, week).
             MUST contain only games before the one being predicted (leak-free).
         position: QB/RB/WR/TE.
-        lookback: how many most-recent games to weight (recency-weighted linearly).
+        lookback: how many most-recent games to weight (recency-weighted
+            linearly). None: the position's default (`QB_LOOKBACK` for a QB,
+            `DEFAULT_LOOKBACK` otherwise).
         ppr: points per reception for the league (1.0 full, 0.5 half, 0.0 standard).
         extra_volume: opportunities inherited from an unavailable teammate, as
             ``{"targets": n, "carries": n, "attempts": n}``. Added to the
@@ -145,6 +159,8 @@ def project_opportunity(
     if priors is None or not prior_games:
         return None
 
+    if lookback is None:
+        lookback = QB_LOOKBACK if pos == "QB" else DEFAULT_LOOKBACK
     games = sorted(prior_games, key=lambda g: g.get("week", 0))[-lookback:]
     n = len(games)
     # Recency weights: oldest .. newest -> 1 .. n.
@@ -158,8 +174,9 @@ def project_opportunity(
                        priors["ppc"] + model.prior_delta(pos, "rush"), _K_CARRIES)
 
     if pos == "QB":
-        exp_attempts = _weighted_mean([g.get("attempts", 0.0) for g in games], weights) \
-            + extra.get("attempts", 0.0)
+        trailing = _weighted_mean([g.get("attempts", 0.0) for g in games], weights)
+        exp_attempts = (trailing * n + QB_ATTEMPTS_PSEUDO_GAMES * QB_ATTEMPTS_PRIOR) \
+            / (n + QB_ATTEMPTS_PSEUDO_GAMES) + extra.get("attempts", 0.0)
         tot_attempts = sum(g.get("attempts", 0.0) for g in games)
         tot_pass_pts = sum(model.pass_points(g) for g in games)
         ppa = _shrunk_rate(tot_pass_pts, tot_attempts,

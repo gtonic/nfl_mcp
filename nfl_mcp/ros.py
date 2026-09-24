@@ -460,8 +460,13 @@ async def ros_projections(
     async def _project(w: int, subset: list[dict]) -> dict[tuple, dict]:
         if not subset:
             return {}
+        # The injury tables and the week's practice report, as start/sit and
+        # project_players read them, so this week's number is the same one
+        # every other tool shows (without them a questionable DNP projected
+        # here at 0.9 of his points and at 0.65 in the lineup).
         res = await projections.project_players(
-            _inputs(w, subset), scoring=scoring, num_teams=num_teams,
+            projections._with_injuries(_inputs(w, subset), db, season, w),
+            scoring=scoring, num_teams=num_teams,
             superflex=superflex, season=season, week=w,
         )
         return {(r.get("player"), r.get("team")): r for r in (res or {}).get("projections") or []}

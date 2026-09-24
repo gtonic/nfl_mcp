@@ -1,6 +1,8 @@
 """project_player now uses the opportunity baseline when season+week are given."""
 import types
 
+import pytest
+
 from nfl_mcp import opportunity_tools
 from nfl_mcp.opportunity import project_opportunity
 from nfl_mcp.projections import ProjectionEngine
@@ -36,15 +38,21 @@ def test_opportunity_base_used_when_season_week_given():
     player = {"name": "Test Receiver", "position": "WR", "team": "BUF", "opponent": "MIA",
               "usage": {"snap_percentage": 90, "usage_trend": "up"}}
     # neutral matchup + fallback vegas + no injury -> multipliers are 1.0, so the
-    # projection equals the opportunity base (usage is intentionally skipped).
+    # projection is the opportunity base regressed toward the rank bucket
+    # (usage is intentionally skipped).
     out = eng._project_one(player, {}, {}, {}, _index(), week=6)
 
     expected = round(project_opportunity(_wr_games(), "WR"), 1)
-    assert out["breakdown"]["base_source"] == "opportunity"
+    bd = out["breakdown"]
+    assert bd["base_source"] == "opportunity"
     assert out["value_source"] == "opportunity"
-    assert out["breakdown"]["usage_mult"] == 1.0        # skipped to avoid double-count
-    assert out["breakdown"]["base_ppg"] == expected
-    assert out["projected_points"] == expected
+    assert bd["usage_mult"] == 1.0        # skipped to avoid double-count
+    assert bd["base_ppg"] == expected
+    # Four games against two games-equivalent of the unranked WR prior (5.5).
+    assert bd["prior_ppg"] == 5.5 and bd["prior_weight"] == pytest.approx(0.33)
+    regressed = (4 * expected + 2 * 5.5) / 6
+    assert bd["regressed_base_ppg"] == pytest.approx(regressed, abs=0.01)
+    assert out["projected_points"] == round(regressed, 1)
 
 
 def test_falls_back_to_rank_bucket_without_opportunity_data():
