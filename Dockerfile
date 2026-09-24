@@ -51,10 +51,17 @@ RUN pip install --no-cache-dir --no-deps -e . && pip check
 # ---- Runtime stage ---------------------------------------------------------
 FROM python:3.13-slim AS runtime
 
+# NFL_MCP_HOST: the server binds loopback by default; inside the container it
+# must listen on all interfaces so the published port reaches it. Publish it
+# on the host's loopback only (docker run -p 127.0.0.1:9000:9000 ...).
+# NFL_MCP_DB_PATH: keep the SQLite cache on the /data volume so it survives
+# container re-creation (docker run -v nfl-mcp-data:/data ...).
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    NFL_MCP_HOST=0.0.0.0 \
+    NFL_MCP_DB_PATH=/data/nfl_data.db
 
 WORKDIR /app
 
@@ -80,8 +87,12 @@ RUN python -c "import nfl_mcp.server"
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash app \
-    && chown -R app:app /app
+    && mkdir -p /data \
+    && chown -R app:app /app /data
 USER app
+
+# Persistent cache (a named volume inherits the app ownership set above).
+VOLUME /data
 
 # Expose the port
 EXPOSE 9000

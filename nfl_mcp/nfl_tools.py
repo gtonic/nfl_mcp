@@ -15,6 +15,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .config import LIMITS, LONG_TIMEOUT, create_http_client, get_http_headers, validate_limit
+from .config import safe_espn_ref as _safe_espn_ref
 from .errors import (
     ErrorType,
     create_error_response,
@@ -511,6 +512,9 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
             detail = item
             ref = item.get('$ref') if isinstance(item, dict) else None
             if ref and not (isinstance(item, dict) and item.get('status')):
+                ref = _safe_espn_ref(ref)
+                if ref is None:
+                    return None
                 try:
                     r = await client.get(ref, headers=headers)
                     r.raise_for_status()
@@ -536,7 +540,7 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
 
             # Athlete: dereference when given as a $ref, else read inline.
             athlete = detail.get('athlete', {}) or {}
-            a_ref = athlete.get('$ref') if isinstance(athlete, dict) else None
+            a_ref = _safe_espn_ref(athlete.get('$ref')) if isinstance(athlete, dict) else None
             if a_ref:
                 try:
                     ar = await client.get(a_ref, headers=headers)
@@ -1202,6 +1206,7 @@ async def get_league_leaders(category: str, season: int = 2026, season_type: int
         cache_stats = {"hits": 0, "misses": 0}
 
         async def _fetch_json(url: str, client, headers, cache: dict[str, Any]) -> Any:
+            url = _safe_espn_ref(url)
             if not url:
                 return None
             if url in cache:

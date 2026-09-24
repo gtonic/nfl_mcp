@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from .config import create_http_client, get_http_headers
+from .config import safe_espn_ref as _safe_espn_ref
 from .errors import (
     create_success_response,
     handle_http_errors,
@@ -257,7 +258,7 @@ async def get_coaching_staff(team_id: str, season: int | None = None) -> dict:
 
         # Fetch details for each coach reference
         for coach_ref in coach_refs:
-            ref_url = coach_ref.get('$ref', '')
+            ref_url = _safe_espn_ref(coach_ref.get('$ref')) or ''
             if ref_url:
                 try:
                     coach_response = await client.get(ref_url, headers=headers)
@@ -286,7 +287,7 @@ async def get_coaching_staff(team_id: str, season: int | None = None) -> dict:
 
                     # Get team name if we don't have it yet
                     if not team_name:
-                        team_ref = coach_data.get('team', {}).get('$ref', '')
+                        team_ref = _safe_espn_ref((coach_data.get('team') or {}).get('$ref')) or ''
                         if team_ref:
                             try:
                                 team_response = await client.get(team_ref, headers=headers)
@@ -401,7 +402,7 @@ async def get_all_coaching_staffs() -> dict:
         all_teams = []
 
         for team_ref in team_refs:
-            team_url = team_ref.get('$ref', '')
+            team_url = _safe_espn_ref(team_ref.get('$ref')) or ''
             if not team_url:
                 continue
 
@@ -433,7 +434,7 @@ async def get_all_coaching_staffs() -> dict:
                     # lacks `position`/`displayName`, so take the first coach and
                     # build the name from first/last.
                     for coach_ref in coach_refs[:5]:
-                        ref_url = coach_ref.get('$ref', '')
+                        ref_url = _safe_espn_ref(coach_ref.get('$ref')) or ''
                         if not ref_url:
                             continue
                         try:

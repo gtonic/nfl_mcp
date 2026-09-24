@@ -11,7 +11,7 @@ def _mock_response(status_code=200, text="", headers=None, chunks=None):
 
     ``raise_for_status`` is a *sync* Mock because httpx's real method is
     synchronous (and crawl_url calls it without ``await``). The body is served
-    through ``aiter_bytes`` like a real ``send(..., stream=True)`` response.
+    through ``aiter_raw`` like a real ``send(..., stream=True)`` response.
     """
     resp = AsyncMock()
     resp.status_code = status_code
@@ -24,7 +24,7 @@ def _mock_response(status_code=200, text="", headers=None, chunks=None):
         for chunk in body_chunks:
             yield chunk
 
-    resp.aiter_bytes = _aiter_bytes
+    resp.aiter_raw = _aiter_bytes
     resp.aclose = AsyncMock()
     return resp
 
@@ -133,7 +133,7 @@ class TestCrawlUrlSSRF:
 
     @pytest.mark.asyncio
     async def test_blocks_loopback_ip(self):
-        result = await crawl_url("http://127.0.0.1:8080/admin")
+        result = await crawl_url("http://127.0.0.1/admin")
         assert result["success"] is False
         assert "Blocked non-public address" in result["error"]
 

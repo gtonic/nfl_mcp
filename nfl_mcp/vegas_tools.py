@@ -7,6 +7,7 @@ Helps identify high-scoring game environments and calculate implied team totals.
 Phase 4: Final phase of lineup optimization feature set.
 """
 
+import asyncio
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,7 @@ import httpx
 from .config import create_http_client
 from .database import NFLDatabase, get_shared_db
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
+from .log_redaction import redact
 from .teams import CODE_TO_FULL_NAME, FULL_NAME_TO_CODE, normalize_team
 
 logger = logging.getLogger(__name__)
@@ -218,6 +220,11 @@ class VegasLinesAnalyzer:
         self._lines_cache: dict[str, dict] = {}
         self._cache_time: datetime | None = None
         self._retry_after: datetime | None = None
+        # Serializes API refreshes: every Odds API call costs credits, so N
+        # concurrent tool calls on a cold cache must trigger ONE fetch.
+        # (Re-created per event loop: a Lock binds to the loop it first waits on.)
+        self._fetch_lock: asyncio.Lock | None = None
+        self._fetch_lock_loop: asyncio.AbstractEventLoop | None = None
 
     def _get_team_abbrev(self, full_name: str) -> str:
         """Convert full team name to abbreviation."""
@@ -266,13 +273,29 @@ class VegasLinesAnalyzer:
         Returns:
             Dict mapping game keys to line data
         """
-        # Check cache
+        cached = self._fresh_cached_lines(include_live)
+        if cached is not None:
+            return cached
+        loop = asyncio.get_running_loop()
+        if self._fetch_lock is None or self._fetch_lock_loop is not loop:
+            self._fetch_lock, self._fetch_lock_loop = asyncio.Lock(), loop
+        async with self._fetch_lock:
+            # Re-check: a concurrent caller may have refreshed while we waited.
+            cached = self._fresh_cached_lines(include_live)
+            if cached is not None:
+                return cached
+            return await self._fetch_lines_from_api(include_live)
+
+    def _fresh_cached_lines(self, include_live: bool) -> dict[str, dict] | None:
         if self._cache_time and self._lines_cache and not include_live:
             age = datetime.now(UTC) - self._cache_time
             if age < timedelta(hours=self.CACHE_TTL_HOURS):
                 logger.debug("Using cached Vegas lines")
                 return self._lines_cache
+        return None
 
+    async def _fetch_lines_from_api(self, include_live: bool) -> dict[str, dict]:
+        """One Odds API refresh (callers hold ``_fetch_lock``)."""
         if not self.api_key:
             logger.warning("No ODDS_API_KEY configured, using fallback data")
             return self._get_fallback_lines()
@@ -431,10 +454,10 @@ class VegasLinesAnalyzer:
                 return lines
 
         except httpx.HTTPError as e:
-            logger.error(f"HTTP error fetching odds: {e}")
+            logger.error(f"HTTP error fetching odds: {redact(str(e))}")
             return self._get_fallback_lines(backoff=not include_live)
         except Exception as e:
-            logger.error(f"Error fetching odds: {e}")
+            logger.error(f"Error fetching odds: {redact(str(e))}")
             return self._get_fallback_lines(backoff=not include_live)
 
     def _get_fallback_lines(self, backoff: bool = False) -> dict[str, dict]:
