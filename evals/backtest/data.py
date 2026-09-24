@@ -17,6 +17,9 @@ from io import StringIO
 
 import httpx
 
+from nfl_mcp.opportunity_tools import _COLUMN_ALIASES, _STAT_FIELDS
+from nfl_mcp.scoring import ScoringModel
+
 logger = logging.getLogger(__name__)
 
 NFLVERSE_URL = (
@@ -28,6 +31,11 @@ GAMES_URL = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/game
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
 # nflverse abbreviations -> the abbreviations used across this codebase.
 _TEAM_FIX = {"LA": "LAR", "WAS": "WSH", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LAR"}
+# Truth is priced in the scoring the model predicts in: Sleeper's defaults at
+# full PPR (INT -1, fumbles lost -2, 2-pt +2). nflverse's `fantasy_points_ppr`
+# charges -2 per interception, so scoring against it read every QB as
+# over-projected by what was really a scoring mismatch.
+TRUTH_SCORING = ScoringModel.preset(1.0)
 
 
 def _to_float(v) -> float:
@@ -41,7 +49,11 @@ def load_season(season: int, use_cache: bool = True) -> list[dict]:
     """Return regular-season weekly records for a season.
 
     Each record: player_id, player, position, team, opponent, season, week,
-    ppr (fantasy_points_ppr), touches (targets + carries).
+    touches (targets + carries), the full stat line production parses
+    (`opportunity_tools._STAT_FIELDS`, fumbles and 2-pt conversions included)
+    and ``ppr``: that line priced by ``TRUTH_SCORING`` (Sleeper's full-PPR
+    defaults, the scoring the projection is made in). nflverse's own
+    ``fantasy_points_ppr`` is kept as ``ppr_nflverse``.
     """
     os.makedirs(_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(_CACHE_DIR, f"player_stats_{season}.csv")
@@ -74,7 +86,7 @@ def load_season(season: int, use_cache: bool = True) -> list[dict]:
             continue
         targets = _to_float(row.get("targets"))
         carries = _to_float(row.get("carries") or row.get("rushing_attempts"))
-        records.append({
+        record = {
             "player_id": pid,
             "player": row.get("player_display_name") or row.get("player_name"),
             "position": pos,
@@ -82,21 +94,19 @@ def load_season(season: int, use_cache: bool = True) -> list[dict]:
             "opponent": _TEAM_FIX.get(opp, opp),
             "season": int(season),
             "week": int(wk),
-            "ppr": _to_float(row.get("fantasy_points_ppr")),
+            "ppr_nflverse": _to_float(row.get("fantasy_points_ppr")),
             "touches": targets + carries,
-            # Opportunity components (for the opportunity-based projection).
-            "targets": targets,
-            "carries": carries,
-            "attempts": _to_float(row.get("attempts")),
-            "receptions": _to_float(row.get("receptions")),
-            "receiving_yards": _to_float(row.get("receiving_yards")),
-            "receiving_tds": _to_float(row.get("receiving_tds")),
-            "rushing_yards": _to_float(row.get("rushing_yards")),
-            "rushing_tds": _to_float(row.get("rushing_tds")),
-            "passing_yards": _to_float(row.get("passing_yards")),
-            "passing_tds": _to_float(row.get("passing_tds")),
-            "interceptions": _to_float(row.get("interceptions")),
-        })
+        }
+        # The full stat line, read the way production reads it (nflverse
+        # renamed `interceptions` to `passing_interceptions` in 2025, and the
+        # fumble / 2-pt columns used to be dropped here).
+        for field in _STAT_FIELDS:
+            cols = _COLUMN_ALIASES.get(field, (field,))
+            record[field] = _to_float(
+                next((row[c] for c in cols if row.get(c) not in (None, "")), None))
+        record["targets"], record["carries"] = targets, carries
+        record["ppr"] = TRUTH_SCORING.game_points(record, pos)
+        records.append(record)
     logger.info("Loaded %d REG records for %s", len(records), season)
     return records
 

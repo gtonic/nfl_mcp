@@ -47,9 +47,9 @@ class TestPlayerSd:
         from nfl_mcp.projections import _VOLATILITY
 
         for position in ("QB", "RB", "WR", "TE"):
-            assert _VOLATILITY[position] >= 0.5, (
+            assert _VOLATILITY[position] >= 0.45, (
                 f"{position} volatility looks hand-picked again — re-run "
-                "python -m evals.backtest.calibration before lowering it"
+                "python -m evals.backtest.sleeper_blend before lowering it"
             )
 
 

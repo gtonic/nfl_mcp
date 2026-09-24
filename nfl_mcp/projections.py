@@ -1,18 +1,27 @@
 """
-Transparent weekly fantasy point projections.
+Transparent weekly fantasy point projections — Sleeper-first.
 
-Instead of scraping a fragile third-party page, this builds a projection from
-signals the server already has:
+The weekly number is a blend (``sleeper_projections.blend``):
 
-    projected = base_ppg(position_rank)   # talent/role baseline (FantasyCalc rank)
-              × matchup_multiplier         # defense vs position (matchup_tools)
-              × environment_multiplier      # Vegas implied team total (vegas_tools)
-              × usage_multiplier            # snap% / usage trend (enrichment)
-              × injury_multiplier           # availability
+    projected = 0.25 × model_projection + 0.75 × Sleeper's projection
 
-Every factor is reported in a `breakdown` so the number is explainable, and a
-`confidence` reflects how many real signals were available. No API key needed
-(FantasyCalc + ESPN); Vegas is optional (ODDS_API_KEY improves it).
+where Sleeper's projected stat line is priced in the league's scoring, and
+our own model is built from signals the server already has:
+
+    model_projection = base                    # trailing opportunity regressed
+                                               # toward the rank bucket
+                     × matchup_multiplier      # defense vs position (matchup_tools)
+                     × environment_multiplier  # Vegas implied team total
+                     × usage_multiplier        # snap% / usage trend (rank bucket only)
+                     × injury_multiplier       # availability
+
+Without a Sleeper projection for the player (an outage, the off-season, a
+player it does not list) the model alone is used, labelled
+``projection_source: "model_only"`` with a warning. Byes and Out are zero
+either way. Every factor is reported in a `breakdown` so the number is
+explainable, and a `confidence` reflects how many real signals were
+available. No API key needed (Sleeper + FantasyCalc + ESPN); Vegas is
+optional (ODDS_API_KEY improves it).
 
 `scoring` sets the points scale, not just which market values are consulted:
 both baselines are rebased to the league's per-reception value, so a half-PPR
@@ -33,6 +42,7 @@ from . import opportunity_tools
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .matchup_tools import get_defense_analyzer, matchup_ratio
 from .player_values import get_values_service
+from .ros import PRIOR_GAMES, regressed_rate
 from .scoring import ScoringModel, league_scoring, resolve_scoring
 from .teams import normalize_team
 from .vegas_tools import get_vegas_analyzer
@@ -61,11 +71,14 @@ _RECEPTION_SHARE = {"WR": 0.35, "TE": 0.41, "RB": 0.21, "QB": 0.0, "K": 0.0,
 # low — WR37-48 priced at 7.5 scored 10.0, TE13-20 at 6.5 scored 8.2 — which is
 # what the ROS-only `PRIOR_SCALE` had compensated for. The top tiers (at most
 # ten players over two seasons) keep their market-informed values: last
-# season's rank is a weaker ranking than the market's and regresses them. QB is
-# unchanged: last season's QB21+ by points per game are mostly backups, the
-# market's QB21-32 are starters, so the proxy does not carry over there.
+# season's rank is a weaker ranking than the market's and regresses them. QB
+# 4-12 came down a point once truth was priced in the projection's own scoring
+# (2023-25, INT -1 rather than nflverse's -2): QB4-8 scored 18.0 per game over
+# the rest of the season, QB9-12 16.9. QB21+ stays: last season's QB21+ by
+# points per game are mostly backups, the market's QB21-32 are starters, so
+# the proxy does not carry over there.
 _RANK_BUCKETS: dict[str, tuple[tuple[int | None, float], ...]] = {
-    "QB": ((3, 22.0), (8, 20.0), (12, 18.0), (20, 16.0), (None, 14.0)),
+    "QB": ((3, 22.0), (8, 19.0), (12, 17.0), (20, 16.0), (None, 14.0)),
     "RB": ((3, 19.0), (8, 16.0), (15, 14.0), (24, 12.5), (36, 10.0), (60, 7.5), (None, 5.5)),
     "WR": ((5, 18.0), (12, 17.0), (24, 13.0), (36, 12.0), (48, 10.0), (72, 7.0), (None, 5.5)),
     "TE": ((3, 14.0), (6, 12.0), (12, 10.5), (20, 8.5), (32, 7.0), (None, 4.5)),
@@ -153,16 +166,13 @@ def _ranking_entry(rankings: dict | None, position: str, opponent: str) -> dict 
 # `mean ± volatility·mean`, i.e. a ±1σ band under the Normal the win-probability
 # optimizer assumes, so reality should land inside ~68% of the time.
 #
-# Measured by evals/backtest/calibration.py (2023-24, n~5.2k player-weeks): the
-# hand-picked values covered only 36%, the stated floor was breached 36% of the
-# time rather than 16%, and the win probability was badly over-confident as a
-# result (matchups called 96% were won 79% of the time). These are the widths
-# that hit 68.3% coverage per position.
-_VOLATILITY = {"QB": 0.54, "RB": 0.65, "WR": 0.72, "TE": 0.74,
-               # K/DST are not in the nflverse player-stats sample the
-               # calibration runs on, so these carry the overall ~2x correction
-               # rather than a per-position measurement.
-               "K": 0.70, "DST": 0.90, "DEF": 0.90}
+# The hand-picked values once covered only 36% (evals/backtest/calibration.py).
+# These are the widths that hit 68.3% coverage around the *blended* weekly
+# projection per position (evals/backtest/sleeper_blend.py, 2023-25 weeks 3+,
+# QB/RB/WR/TE n~8k; K 2025 n=415; DEF priced from nflverse team stats,
+# n=1.3k). Around the model-only number the same widths cover 67-69%.
+_VOLATILITY = {"QB": 0.47, "RB": 0.62, "WR": 0.68, "TE": 0.71,
+               "K": 0.58, "DST": 0.78, "DEF": 0.78}
 
 
 def _environment_mult(implied_total: float | None, is_fallback: bool) -> float:
@@ -206,21 +216,21 @@ def defense_base(opponent_implied_total: float | None) -> float:
 def kicker_base(implied_total: float | None) -> float:
     """Expected fantasy points for a kicker, from his own team's total.
 
-    Rises with scoring but flattens at the top: a team expected to score 30 is
-    trading field goals for touchdowns, which pays the kicker one point
-    instead of three.
+    Rises with scoring and flattens from 21 up: a team expected to score 30 is
+    trading field goals for touchdowns. The tiers are the mean kicker score
+    per implied-total band (2025, Sleeper default scoring, n=543): 6.2 / 7.9 /
+    8.7 / 8.6 / 8.8 below 18 / 18-21 / 21-24 / 24-28 / 28+. The old 9.5 peak
+    at 24-28 was not in the data.
     """
     if implied_total is None:
         return 8.0
     if implied_total >= 28:
-        return 9.0
-    if implied_total >= 24:
-        return 9.5
+        return 8.8
     if implied_total >= 21:
-        return 8.5
+        return 8.7
     if implied_total >= 18:
-        return 7.5
-    return 6.5
+        return 7.9
+    return 6.2
 
 
 def _usage_mult(snap_pct: float | None, usage_trend: str | None) -> float:
@@ -661,17 +671,33 @@ class ProjectionEngine:
             weather.get("temp_f"), bool(weather.get("is_dome")),
         ) if weather else 1.0
 
-        projected = round(base * matchup_mult * env_mult * usage_mult * weather_mult * inj_mult, 1)
+        sample = None
+        if base_source == "opportunity" and opp_index and week and name:
+            sample = opportunity_tools.usage_sample(opp_index, name, week)
+
+        # Two or three games of opportunity are a small sample: the rate is
+        # regressed toward the rank bucket exactly as ROS prices later weeks
+        # (`ros.regressed_rate`, PRIOR_GAMES games-equivalent of prior), so
+        # the weekly and ROS numbers share one per-game rate. Volume inherited
+        # from an absent starter is added back on top, unregressed. Weekly
+        # backtest (2023-25): model MAE weeks 3-4 5.72 -> 5.54, weeks 5+
+        # 5.64 -> 5.55.
+        rate = base
+        prior_ppg = prior_weight = None
+        if base_source == "opportunity":
+            games = int((sample or {}).get("games") or 0)
+            prior_ppg = base_ppg(position, pos_rank, ppr, model)
+            own = own_base if own_base is not None else base
+            prior_weight = round(PRIOR_GAMES / (games + PRIOR_GAMES), 2)
+            rate = round(regressed_rate(own, prior_ppg, games) + (base - own), 2)
+
+        projected = round(rate * matchup_mult * env_mult * usage_mult * weather_mult * inj_mult, 1)
         vol = _VOLATILITY.get(position, 0.35)
         if inj_mult == 0.0:
             floor = ceiling = 0.0
         else:
             floor = round(projected * (1 - vol), 1)
             ceiling = round(projected * (1 + vol), 1)
-
-        sample = None
-        if base_source == "opportunity" and opp_index and week and name:
-            sample = opportunity_tools.usage_sample(opp_index, name, week)
         has_real_usage = (
             usage.get("snap_percentage") is not None
             or usage.get("usage_trend") is not None
@@ -706,6 +732,10 @@ class ProjectionEngine:
                 "base_ppg": base,
                 "base_source": base_source,
                 "position_rank": pos_rank,
+                # Opportunity base only: the rank-bucket prior it is regressed
+                # toward, the prior's weight, and the rate actually priced.
+                **({"prior_ppg": prior_ppg, "prior_weight": prior_weight,
+                    "regressed_base_ppg": rate} if prior_ppg is not None else {}),
                 "matchup_mult": round(matchup_mult, 3),
                 # Opponent's points allowed to the position vs an average
                 # defense, shrunk (None: the tier alone priced the matchup).
@@ -832,8 +862,12 @@ class ProjectionEngine:
             for p in players
         ]
         await _apply_unit_fallback(projections, season, model)
+        blend_summary = await _apply_sleeper_blend(projections, players, season, week, model)
         return {
             "projections": projections,
+            "projection_sources": blend_summary["sources"],
+            "sleeper_projections_active": blend_summary["active"],
+            **({"warnings": blend_summary["warnings"]} if blend_summary["warnings"] else {}),
             "values_source": values_index.get("source"),
             "vegas_active": bool(lines),
             "opportunity_active": bool(opp_index),
@@ -894,6 +928,83 @@ async def _apply_unit_fallback(projections: list[dict], season: int | None, mode
         proj["unit_matchup"] = {k: unit.get(k) for k in _UNIT_FIELDS}
         bd["base_ppg"] = float(unit["projected_points"])
         bd["base_source"] = "offense_rank"
+
+
+async def _sleeper_index(season: int, week: int) -> dict:
+    """Sleeper's week (a seam for tests)."""
+    from .sleeper_projections import fetch_week_projections
+    return await fetch_week_projections(season, week)
+
+
+async def _apply_sleeper_blend(projections: list[dict], inputs: list[dict],
+                               season: int | None, week: int | None, model) -> dict:
+    """Make each projection Sleeper-first, in place (see module doc).
+
+    ``projected_points`` becomes the blend of ours (kept as
+    ``model_projection``) and Sleeper's (``sleeper_projection``), floor and
+    ceiling are re-centred on it, and ``projection_source`` / ``blend_weights``
+    say which it was. Every tool that projects a week goes through
+    ``project_many``, so start/sit, the lineup, briefing, waivers, trades and
+    ROS's current week all read this one number. Never raises.
+    """
+    from . import sleeper_projections as sp
+
+    index: dict = {}
+    if season and week:
+        try:
+            index = await _sleeper_index(season, week)
+        except Exception as e:  # the model alone must still answer
+            logger.warning(f"Sleeper projections unavailable for {season} wk{week}: {e}")
+            index = {}
+    active = bool((index or {}).get("by_id"))
+    sources = {"sleeper_blend": 0, "model_only": 0, "bye": 0}
+    missing: list[str] = []
+    for proj, given in zip(projections, inputs, strict=False):
+        ours = float(proj.get("projected_points") or 0.0)
+        proj["model_projection"] = ours
+        if proj.get("on_bye"):
+            proj.update({"sleeper_projection": 0.0, "projection_source": "bye",
+                         "blend_weights": dict(sp.MODEL_ONLY_WEIGHTS)})
+            sources["bye"] += 1
+            continue
+        theirs, status = (None, "unavailable")
+        if active:
+            theirs, status = sp.points_for(
+                index, model, player_id=(given or {}).get("player_id"),
+                name=proj.get("player"), team=proj.get("team"), position=proj.get("position"))
+        bd = proj.setdefault("breakdown", {})
+        bd["sleeper_status"] = status
+        if theirs is None:
+            proj.update({"sleeper_projection": None, "projection_source": "model_only",
+                         "blend_weights": dict(sp.MODEL_ONLY_WEIGHTS)})
+            sources["model_only"] += 1
+            missing.append(proj.get("player") or "?")
+            continue
+        inj = float(bd.get("injury_mult", 1.0))
+        blended = sp.blend(ours, theirs, availability(proj.get("injury_status")), inj)
+        vol = _VOLATILITY.get((proj.get("position") or "").upper(), 0.35)
+        proj.update({
+            "projected_points": blended,
+            "floor": 0.0 if blended == 0 else round(blended * (1 - vol), 1),
+            "ceiling": 0.0 if blended == 0 else round(blended * (1 + vol), 1),
+            "sleeper_projection": theirs,
+            "projection_source": "sleeper_blend",
+            "blend_weights": dict(sp.BLEND_WEIGHTS),
+        })
+        sources["sleeper_blend"] += 1
+    warnings = []
+    if missing:
+        why = ("Sleeper projections unavailable" if not active
+               else "no Sleeper projection for " + ", ".join(missing[:10])
+               + (f" (+{len(missing) - 10} more)" if len(missing) > 10 else ""))
+        warnings.append(f"{why} — model only (opportunity regressed toward the rank "
+                        "prior), less accurate than the Sleeper-first blend.")
+        for proj in projections:
+            if proj.get("projection_source") == "model_only":
+                proj["warning"] = ("No Sleeper projection — our model alone "
+                                   "(projection_source: model_only).")
+    return {"active": active, "sources": {k: v for k, v in sources.items() if v},
+            "warnings": warnings}
 
 
 _engine: ProjectionEngine | None = None

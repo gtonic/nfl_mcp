@@ -58,9 +58,18 @@ class TestProjectOpportunity:
         ]
         proj = project_opportunity(games, "QB")
         # Sleeper's default charges -1 per interception (it was hard-coded -2):
-        # pass pts/gm = 11.2 + 8 - 1 = 18.2; ppa = (72.8 + 60*0.45)/(140+60)
-        # = 0.499 -> 17.47, plus rushing ~2.0.
-        assert proj == pytest.approx(19.47, abs=0.2)
+        # pass pts/gm = 11.2 + 8 - 1 = 18.2; ppa = (72.8 + 60*0.43)/(140+60)
+        # = 0.493; attempts shrunk 3 pseudo-games toward 30.6:
+        # (4*35 + 3*30.6)/7 = 33.1 -> 16.33, plus rushing ~2.0.
+        assert proj == pytest.approx(18.33, abs=0.2)
+
+    def test_qb_attempts_shrink_toward_the_starter_mean(self):
+        hot = [{"week": w, "attempts": 50, "passing_yards": 350, "passing_tds": 2,
+                "interceptions": 1, "carries": 0} for w in (1, 2)]
+        cold = [{**g, "attempts": 20, "passing_yards": 140} for g in hot]
+        # Two 50-attempt games do not make a 50-attempt passer, nor two 20s a 20.
+        assert project_opportunity(hot, "QB") < 50 * 0.5
+        assert project_opportunity(cold, "QB") > 20 * 0.35
 
     def test_unknown_position_and_empty(self):
         assert project_opportunity([_wr_game(1, 5, 4, 50)], "K") is None

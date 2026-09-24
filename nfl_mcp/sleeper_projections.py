@@ -1,16 +1,24 @@
-"""Sleeper's weekly projections as a second opinion on ours.
+"""Sleeper's weekly projections: the primary weekly number, blended with ours.
 
 Sleeper publishes a projected *stat line* per player per week (Rotowire's, at
 the time of writing) — pass yards, receptions, FGs by distance, points
 allowed. Priced here with the league's own :class:`scoring.ScoringModel`, it is
-an independent number to hold ours against: where the two agree, the
-projection is on firmer ground; where they differ by a lot, something is worth
-a look (a role change, an injury one side has and the other has not, a game
-environment read).
+the larger part of every weekly projection (:func:`blend`):
 
-Ours stays the primary number. There is no stored history of our weekly
-projections to back-test a blend on, so ``consensus`` is a plain average,
-reported as a second opinion rather than used to rank anything.
+    projected = BLEND_MODEL_WEIGHT × ours + (1 − BLEND_MODEL_WEIGHT) × Sleeper
+
+From ``evals/backtest/sleeper_blend.py`` (2023-25, weeks 3+, n≈8k player-weeks,
+truth priced in the same scoring): ours MAE 5.65, Sleeper 5.41, the 0.25/0.75
+blend 5.39 with the best rank correlation of the three. Sleeper wins mostly on
+depth-chart knowledge — a benched or demoted player it does not project at all
+— and ours adds a little on TEs and on usage the stat line has not caught up
+with. Where the two differ by a lot, ``disagreement`` flags it.
+
+A row in Sleeper's list with no projected points is an explicit zero ("Sleeper
+does not expect him to play"): 95% of the players our model priced at 5+
+points who had such a row did not play that week. No row at all is missing
+data, and so is a zero for a team none of whose players are projected yet —
+both fall back to our model alone.
 
 Endpoints (undocumented, verified live 2026-09):
   * ``api.sleeper.app/projections/nfl/<season>/<week>?season_type=regular&position[]=...``
@@ -62,28 +70,42 @@ DISAGREE_MIN_POINTS = 3.0
 # still well inside either projection's error.
 DISAGREE_MIN_GAP = 2.0
 
+# Share of the weekly projection that is our own model; Sleeper's is the rest.
+# One weight for every position and scoring: per position the backtest's best
+# weight ranged 0.1 (QB, RB) to 0.4 (TE), each within 0.02 MAE of 0.25, and
+# the same 0.25 was best in both real leagues' scoring (see module doc).
+BLEND_MODEL_WEIGHT = 0.25
+BLEND_WEIGHTS = {"model": BLEND_MODEL_WEIGHT, "sleeper": round(1 - BLEND_MODEL_WEIGHT, 2)}
+MODEL_ONLY_WEIGHTS = {"model": 1.0, "sleeper": 0.0}
+
 # (season, week) -> (fetched_at, index); see `_index` for its shape.
 _cache: dict[tuple[int, int], tuple[datetime, dict]] = {}
 
 
 def _index(rows) -> dict:
-    """``{"by_id": {id: row}, "by_name": {(name, team): row}, "by_def": {team: row}}``
-    from either payload.
+    """``{"by_id": {id: row}, "by_name": {(name, team): row}, "by_def": {team: row},
+    "unprojected": {"by_id", "by_name"}, "teams": {team}}`` from either payload.
 
     Each row is ``{player_id, name, position, team, opponent, stats}``. Rows
-    without any projected points (a practice-squad player, a free agent) are
-    dropped.
+    with projected points go in the main maps; rows Sleeper lists without any
+    (a benched QB, an inactive back, a practice-squad player) go in
+    ``unprojected`` — an explicit zero, see :func:`points_for`. Only rows with
+    a team can be one: the v1 payload carries none, and its empty lines are
+    dropped. ``teams`` are the teams with at least one projected player.
     """
     by_id: dict[str, dict] = {}
     by_name: dict[tuple[str, str], dict] = {}
     by_def: dict[str, dict] = {}
+    un_id: dict[str, dict] = {}
+    un_name: dict[tuple[str, str], dict] = {}
+    teams: set[str] = set()
     if isinstance(rows, dict):  # the v1 payload: {player_id: stats}
         rows = [{"player_id": pid, "stats": stats} for pid, stats in rows.items()]
     for r in rows or []:
         if not isinstance(r, dict):
             continue
         stats = r.get("stats") or {}
-        if not isinstance(stats, dict) or "pts_ppr" not in stats:
+        if not isinstance(stats, dict):
             continue
         player = r.get("player") or {}
         pid = str(r.get("player_id") or "")
@@ -93,6 +115,14 @@ def _index(rows) -> dict:
         row = {"player_id": pid, "name": name or None, "position": position,
                "team": team, "opponent": normalize_team(r.get("opponent")) or None,
                "stats": stats}
+        if "pts_ppr" not in stats:
+            if team and name:
+                if pid:
+                    un_id[pid] = row
+                un_name[(norm_name(name), team)] = row
+            continue
+        if team:
+            teams.add(team)
         if pid:
             by_id[pid] = row
         if name and team:
@@ -103,7 +133,9 @@ def _index(rows) -> dict:
             code = team or normalize_team(pid)
             if code:
                 by_def[code] = {**row, "position": "DEF", "team": code}
-    return {"by_id": by_id, "by_name": by_name, "by_def": by_def}
+                teams.add(code)
+    return {"by_id": by_id, "by_name": by_name, "by_def": by_def,
+            "unprojected": {"by_id": un_id, "by_name": un_name}, "teams": teams}
 
 
 async def fetch_week_projections(season: int, week: int) -> dict:
@@ -187,12 +219,68 @@ def lookup(index: dict, *, player_id: str | None = None, name: str | None = None
     return None
 
 
+def _unprojected_row(index: dict, *, player_id: str | None, name: str | None,
+                     team: str | None) -> dict | None:
+    """The player's row among those Sleeper lists without points (name-checked)."""
+    un = index.get("unprojected") or {}
+    team = normalize_team(team) or (team or "").upper() or None
+    if player_id and (row := (un.get("by_id") or {}).get(str(player_id))):
+        if not (name and row.get("name")) or norm_name(name) == norm_name(row["name"]):
+            return row
+    if name and team:
+        return (un.get("by_name") or {}).get((norm_name(name), team))
+    return None
+
+
+def points_for(index: dict, model: ScoringModel, *, player_id: str | None = None,
+               name: str | None = None, team: str | None = None,
+               position: str | None = None) -> tuple[float | None, str]:
+    """``(points, status)``: Sleeper's number for a player in this scoring.
+
+    status is ``projected`` (a priced stat line), ``not_projected`` (listed
+    without points: an explicit 0.0 — a benched starter, an inactive back) or
+    ``missing`` (None). A listed-but-unprojected player only counts as zero
+    when Sleeper projects somebody else on his team this week; otherwise the
+    team simply has not been published yet, and that is missing data.
+    """
+    row = lookup(index, player_id=player_id, name=name, team=team, position=position)
+    if row:
+        return price_stats(row["stats"], model), "projected"
+    if (position or "").upper() in ("DEF", "DST"):
+        return None, "missing"
+    row = _unprojected_row(index, player_id=player_id, name=name, team=team)
+    if row and row.get("team") in (index.get("teams") or set()):
+        return 0.0, "not_projected"
+    return None, "missing"
+
+
+def blend(model_points: float, sleeper_points: float, availability_kind: str = "healthy",
+          injury_mult: float = 1.0) -> float:
+    """The weekly projection from ours and Sleeper's (see module doc).
+
+    `model_points` already carry our availability multiplier, Sleeper's its own
+    read of the injury. So a questionable tag discounts only our quarter of the
+    number instead of being charged twice. Out is zero whatever Sleeper says.
+    Doubtful is capped at our doubtful share of the healthier of the two
+    readings: Sleeper often still projects a doubtful player in full.
+    """
+    if availability_kind == "out" or injury_mult == 0.0:
+        return 0.0
+    mixed = BLEND_MODEL_WEIGHT * model_points + (1 - BLEND_MODEL_WEIGHT) * sleeper_points
+    if availability_kind == "doubtful" and 0.0 < injury_mult < 1.0:
+        healthy = model_points / injury_mult
+        mixed = min(mixed, injury_mult * max(healthy, sleeper_points))
+    return round(max(0.0, mixed), 1)
+
+
 def second_opinion(ours: float | None, theirs: float | None, ruled_out: bool = False) -> dict:
     """``{sleeper_projection, consensus, disagreement, gap}`` for two numbers.
 
-    `ruled_out`: our zero comes from a status that rules him out. The
-    disagreement still stands — it says "check his status" — but the
-    consensus is not half a player who will not take the field.
+    `ours` is our model's number (``model_projection``), not the blend.
+    ``consensus`` is the blend of the two (:data:`BLEND_MODEL_WEIGHT`), before
+    any injury cap. `ruled_out`: our zero comes from a status that rules him
+    out. The disagreement still stands — it says "check his status" — but the
+    consensus is not part of a player who will not take the field.
     """
     if theirs is None:
         return {"sleeper_projection": None, "consensus": None,
@@ -207,7 +295,8 @@ def second_opinion(ours: float | None, theirs: float | None, ruled_out: bool = F
         or (abs(gap) > DISAGREE_RELATIVE * base and abs(gap) >= DISAGREE_MIN_GAP))
     out = {
         "sleeper_projection": theirs,
-        "consensus": 0.0 if ruled_out else round((ours + theirs) / 2.0, 1),
+        "consensus": 0.0 if ruled_out else round(
+            BLEND_MODEL_WEIGHT * ours + (1 - BLEND_MODEL_WEIGHT) * theirs, 1),
         "disagreement": disagree,
         # Positive: we are higher than Sleeper.
         "gap": gap,
@@ -252,17 +341,18 @@ async def annotate(projections: list[dict], inputs: list[dict], season: int | No
         if proj.get("on_bye"):
             proj.update(second_opinion(0.0, 0.0))
             continue
-        row = lookup(index, player_id=(given or {}).get("player_id"),
-                     name=proj.get("player"), team=proj.get("team"),
-                     position=proj.get("position"))
-        theirs = price_stats(row["stats"], model) if row else None
+        theirs, _status = points_for(index, model, player_id=(given or {}).get("player_id"),
+                                     name=proj.get("player"), team=proj.get("team"),
+                                     position=proj.get("position"))
         ruled_out = (proj.get("breakdown") or {}).get("injury_mult") == 0.0
-        proj.update(second_opinion(proj.get("projected_points"), theirs, ruled_out))
+        # Held against our model's own number: the blended one is mostly
+        # Sleeper's already, and a gap to it would say little.
+        ours = proj.get("model_projection", proj.get("projected_points"))
+        proj.update(second_opinion(ours, theirs, ruled_out))
         if proj["disagreement"]:
             disagreements.append({
                 "player": proj.get("player"), "position": proj.get("position"),
-                "ours": proj.get("projected_points"), "sleeper": theirs,
-                "gap": proj["gap"],
+                "ours": ours, "sleeper": theirs, "gap": proj["gap"],
             })
     disagreements.sort(key=lambda d: abs(d["gap"]), reverse=True)
     return {
@@ -273,5 +363,7 @@ async def annotate(projections: list[dict], inputs: list[dict], season: int | No
         "rule": (f"disagreement = gap > {DISAGREE_ABSOLUTE:g} pts or > "
                  f"{DISAGREE_RELATIVE:.0%} of the larger number and >= "
                  f"{DISAGREE_MIN_GAP:g} pts (ignored below {DISAGREE_MIN_POINTS:g} pts)"),
-        "note": "Our projection stays primary; consensus is a plain average, not back-tested.",
+        "note": (f"projected_points is the Sleeper-first blend ({BLEND_MODEL_WEIGHT:g} ours + "
+                 f"{1 - BLEND_MODEL_WEIGHT:g} Sleeper, evals/backtest/sleeper_blend.py); "
+                 "disagreement compares our model (model_projection) with Sleeper."),
     }

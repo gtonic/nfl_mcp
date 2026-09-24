@@ -76,7 +76,7 @@ class TestStreaming:
         # ~85 fantasy points here and priced every defense at 3.5.
         assert unit_points("DEF", {"opponent_points_scored_avg": 85.0,
                                    "opponent_points_per_game": 15.0}, model) == 11.0
-        assert unit_points("K", {"own_points_per_game": 25.0}, model) == 9.5
+        assert unit_points("K", {"own_points_per_game": 25.0}, model) == 8.7
 
 
 class TestUnitMatchup:
