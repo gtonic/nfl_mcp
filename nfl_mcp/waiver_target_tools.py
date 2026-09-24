@@ -493,7 +493,7 @@ async def get_waiver_targets(
             hit = service.lookup(values, player_id=p.get("player_id"),
                                  name=p.get("name"), position=p.get("position"))
             mult = model.value_multiplier(p.get("position")) if model is not None else 1.0
-            p["value"] = (int(round(float(hit["value"]) * mult))
+            p["value"] = (round(float(hit["value"]) * mult)
                           if hit and hit.get("value") is not None else None)
         values_ok = bool((values or {}).get("list"))
     except Exception as e:
