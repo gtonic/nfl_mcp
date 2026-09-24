@@ -2019,6 +2019,8 @@ async def get_start_sit_recommendation(
         return {"recommendation": None, "confidence": 0, "success": False,
                 "error": f"Could not resolve {player_name!r} to a team and position — pass team and position."}
     snap = lineup_tools.recent_snap_share(db, who["player_id"], season, week)
+    usage = lineup_tools.recent_usage(db, who["player_id"], who["position"], who["team"],
+                                      season, week)
     result = await lineup_optimizer_tools.get_start_sit_recommendation(
         player_name=who["name"] or player_name,
         position=who["position"].upper(),
@@ -2031,10 +2033,11 @@ async def get_start_sit_recommendation(
         league_id=league_id,
         season=season,
         week=week,
+        usage=usage,
     )
     if isinstance(result, dict):
         result["resolved"] = {"team": who["team"], "position": who["position"],
-                              "player_id": who["player_id"], "snap_percentage": snap}
+                              "player_id": who["player_id"], "snap_percentage": snap, **usage}
     return result
 
 

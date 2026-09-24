@@ -637,6 +637,6 @@ async def analyze_opponent(
         logger.exception(f"Error analyzing opponent: {e}")
         return create_error_response(
             f"Unexpected error during opponent analysis: {e!s}",
-            ErrorType.INTERNAL,
+            ErrorType.UNEXPECTED,
             {"vulnerability_score": 0}
         )

@@ -100,6 +100,9 @@ class StartSitDecision(Enum):
     MUST_SIT = "must_sit"
 
 
+# Positions a (non-superflex) flex slot does not take.
+_NO_FLEX = frozenset({"QB", "K", "DEF", "DST"})
+
 _BETTER_THAN_SIT = frozenset({
     StartSitDecision.MUST_START.value, StartSitDecision.START.value,
     StartSitDecision.FLEX.value,
@@ -470,7 +473,9 @@ class LineupOptimizer:
         if practice_score is not None and practice_score < 70:
             line = (f" ({analysis.practice_pattern}, {analysis.practice_trend})"
                     if analysis.practice_pattern and "-" in analysis.practice_pattern else "")
-            reasoning.append(f"⚠️ Limited practice: {analysis.practice_status}{line}")
+            label = ("Did not practice" if practice_score <= PRACTICE_STATUS_SCORES["dnp"]
+                     else "Limited practice")
+            reasoning.append(f"⚠️ {label}: {analysis.practice_status}{line}")
         elif analysis.practice_trend == "worsening":
             reasoning.append(f"⚠️ Practice trending down: {analysis.practice_pattern}")
         if health_score >= 90:
@@ -579,6 +584,12 @@ class LineupOptimizer:
             return StartSitDecision.MUST_SIT.value
 
         decision = self._decision_from_points(projected_points, position, ppr, unit_scale)
+        if decision == StartSitDecision.FLEX.value and (position or "").upper() in _NO_FLEX:
+            # A QB (outside superflex), K or DEF cannot go in a flex slot, so
+            # "flex" is no answer: a borderline one still fills his only slot
+            # (start); with no projection at all, do not count on him (sit).
+            decision = (StartSitDecision.START.value if projected_points > 0
+                        else StartSitDecision.SIT.value)
         if kind == "doubtful" and decision in _BETTER_THAN_SIT:
             return StartSitDecision.SIT.value
         if kind == "uncertain" and decision == StartSitDecision.MUST_START.value:
@@ -996,6 +1007,7 @@ async def get_start_sit_recommendation(
     league_id: str | None = None,
     season: int | None = None,
     week: int | None = None,
+    usage: dict | None = None,
 ) -> dict:
     """
     Get a start/sit recommendation for a single player.
@@ -1045,8 +1057,9 @@ async def get_start_sit_recommendation(
     season, week, week_inferred = await _resolve_season_week(season, week)
     scoring, num_teams, scoring_source = await _league_scoring(league_id, scoring)
 
-    # Build optional data dicts
-    usage_data = {}
+    # Build optional data dicts. `usage` carries looked-up inputs
+    # (red_zone_opportunities, usage_trend, ...); explicit arguments win.
+    usage_data = {k: v for k, v in (usage or {}).items() if v is not None}
     if target_share is not None:
         usage_data["target_share"] = target_share
     if snap_percentage is not None:

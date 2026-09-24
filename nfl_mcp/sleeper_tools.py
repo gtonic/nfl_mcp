@@ -233,6 +233,63 @@ def availability_error(freshness: dict) -> str | None:
     return None
 
 
+ROSTER_PURPOSES = ("availability", "lineup")
+
+
+async def load_rosters(league_id: str, purpose: str = "lineup", fetch=None) -> dict:
+    """League rosters plus how far to trust them, for one kind of question.
+
+    ``roster_freshness`` plus ``blocking_error``: the reason the rosters cannot
+    answer this ``purpose`` at all, else None.
+
+    - ``availability`` ("who is a free agent"): a snapshot older than an hour
+      blocks — a day of adds and drops may have happened since.
+    - ``lineup`` ("who is on my team"): any snapshot is usable; the caller
+      surfaces ``warning``/``stale`` (see ``mark_roster_staleness``) instead of
+      hard-failing on an upstream blip.
+
+    ``fetch`` is the ``get_rosters`` to call (modules that import it by name
+    pass their own so it can be stubbed where it is used).
+    """
+    if purpose not in ROSTER_PURPOSES:
+        raise ValueError(f"purpose must be one of {ROSTER_PURPOSES}, got {purpose!r}")
+    fetch = fetch or get_rosters
+    try:
+        resp = await fetch(league_id)
+    except Exception as e:
+        resp = {"success": False, "error": str(e), "rosters": []}
+    state = roster_freshness(resp)
+    state["purpose"] = purpose
+    state["blocking_error"] = (availability_error(state) if purpose == "availability"
+                               else state["error"])
+    return state
+
+
+def find_roster(
+    rosters: list[dict], league_id: str, roster_id: int | None, user_id: str | None,
+    purpose: str = "use",
+) -> tuple[dict | None, str | None]:
+    """``(roster, None)`` for the roster asked about, or ``(None, error)``.
+
+    By ``roster_id`` when given, else the roster ``user_id`` owns or co-owns.
+    ``purpose`` only words the missing-identifier error ("… which team to
+    advise").
+    """
+    if roster_id is None:
+        if not user_id:
+            return None, f"Pass roster_id or user_id to identify which team to {purpose}."
+        mine = roster_of_user(rosters, user_id)
+    else:
+        mine = next((r for r in rosters or [] if r.get("roster_id") == roster_id), None)
+        if mine is None:
+            # MCP clients sometimes send the id as a string.
+            mine = next((r for r in rosters or []
+                         if str(r.get("roster_id")) == str(roster_id)), None)
+    if not mine:
+        return None, f"No roster found in league {league_id} for the given identifier."
+    return mine, None
+
+
 async def get_rosters(league_id: str) -> dict:
     """
     Get all rosters in a fantasy league from Sleeper API.
