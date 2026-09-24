@@ -324,3 +324,51 @@ def test_advanced_enrich_is_read_at_call_time(monkeypatch):
     import pathlib
     src = pathlib.Path("nfl_mcp/nfl_tools.py").read_text()
     assert "import ADVANCED_ENRICH_ENABLED" not in src
+
+
+class TestFlexSeatsByPoints:
+    def _rb(self, name, pts):
+        return {"name": name, "position": "RB", "projected_points": pts}
+
+    def test_flex_rb3_is_a_starter_not_surplus(self):
+        from nfl_mcp.roster_needs import (
+            lineup_slots,
+            replacement_levels,
+            slot_counts,
+            surplus_players,
+        )
+        positions = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "BN"]
+        roster = [self._rb("RB1", 20), self._rb("RB2", 15), self._rb("RB3", 12),
+                  {"name": "WR1", "position": "WR", "projected_points": 14},
+                  {"name": "WR2", "position": "WR", "projected_points": 9},
+                  {"name": "WR3", "position": "WR", "projected_points": 5},
+                  {"name": "WR4", "position": "WR", "projected_points": 3},
+                  {"name": "TE1", "position": "TE", "projected_points": 8},
+                  {"name": "QB1", "position": "QB", "projected_points": 20}]
+        frac, whole = slot_counts(positions), lineup_slots(positions)
+        # Old behaviour (fractional floor): RB3 is surplus.
+        assert "RB3" in {p["name"] for p in surplus_players(list(roster), frac)}
+        surplus = {p["name"] for p in surplus_players(list(roster), frac, whole_slots=whole)}
+        assert surplus == {"WR4"}  # RB3 and WR3 hold the two FLEX seats
+        levels = replacement_levels(list(roster), frac, whole)
+        assert levels["RB"] == 12 and levels["WR"] == 5
+
+    def test_position_with_nobody_keeps_a_zero_bar(self):
+        from nfl_mcp.roster_needs import lineup_slots, replacement_levels, slot_counts
+        positions = ["QB", "RB", "TE", "BN"]
+        levels = replacement_levels([{"name": "R", "position": "RB", "projected_points": 5}],
+                                    slot_counts(positions), lineup_slots(positions))
+        assert levels == {"RB": 5}
+
+
+class TestTradeFinderDepth:
+    def test_no_fourth_qb_in_one_qb_league(self):
+        from nfl_mcp.trade_finder_tools import _over_depth
+        mine = [{"position": "QB"}] * 3 + [{"position": "WR"}] * 5
+        slots = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1}
+        assert _over_depth(mine, {"position": "WR"}, {"position": "QB"}, slots)
+        assert not _over_depth(mine, {"position": "QB"}, {"position": "QB"}, slots)
+        assert not _over_depth(mine[:2], {"position": "WR"}, {"position": "QB"}, slots)
+        # Superflex: a QB fits two seats.
+        assert not _over_depth(mine, {"position": "WR"}, {"position": "QB"},
+                               {**slots, "SUPER_FLEX": 1})
