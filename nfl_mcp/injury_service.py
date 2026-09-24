@@ -482,6 +482,13 @@ class InjuryAggregator:
         Returns:
             InjuryReport or None
         """
+        from .config import safe_espn_ref
+
+        # Follow only ESPN links, over https: an off-ESPN ref resolves to no
+        # report, so its team counts as partially crawled and is not pruned.
+        url = safe_espn_ref(url)
+        if not url:
+            return None
         try:
             resp = await self._http_client.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             if resp.status_code != 200:
@@ -508,11 +515,12 @@ class InjuryAggregator:
                 # Try inline displayName first
                 player_name = athlete_ref.get("displayName")
 
-                if not player_name:
+                athlete_link = safe_espn_ref(athlete_url)
+                if not player_name and athlete_link:
                     # Fetch athlete details (with timeout)
                     try:
                         athlete_resp = await self._http_client.get(
-                            athlete_url, headers=headers, timeout=REQUEST_TIMEOUT
+                            athlete_link, headers=headers, timeout=REQUEST_TIMEOUT
                         )
                         if athlete_resp.status_code == 200:
                             athlete_data = athlete_resp.json()

@@ -230,6 +230,22 @@ class TestInheritedAbsenceUsesTheReport:
         assert projections._absence_detail(lambda n, t: "Out", "X", "BUF") == {"status": "Out"}
 
 
+class TestEspnRefsAreFollowedSafely:
+    @pytest.mark.asyncio
+    async def test_off_espn_detail_ref_is_not_fetched_and_team_not_pruned(self):
+        async def _get(url, **_):
+            r = MagicMock(status_code=200, headers={})
+            r.json = MagicMock(return_value={"items": [{"$ref": "http://evil.example/inj/1"}],
+                                             "pageCount": 1})
+            return r
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=_get)
+        agg = InjuryAggregator(http_client=client)
+        assert await agg.fetch_espn_injuries(["BUF"]) == []
+        assert all("evil.example" not in c.args[0] for c in client.get.await_args_list)
+        assert "BUF" not in agg.complete_teams
+
+
 # 7 ---------------------------------------------------------------------------
 class TestPrefetchCrawlReadsTheSharedDb:
     @pytest.mark.asyncio

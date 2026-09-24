@@ -116,13 +116,13 @@ class TestAthleteNames:
     async def test_failed_name_fetch_is_not_cached(self):
         InjuryAggregator.clear_caches()
         detail = MagicMock(status_code=200)
-        detail.json.return_value = {"athlete": {"$ref": "https://x/athletes/77?lang=en"},
+        detail.json.return_value = {"athlete": {"$ref": "https://sports.core.api.espn.com/athletes/77?lang=en"},
                                     "status": "Out"}
         client = MagicMock()
         client.get = AsyncMock(side_effect=[detail, MagicMock(status_code=503)])
         agg = InjuryAggregator(http_client=client)
         try:
-            rep = await agg._fetch_espn_injury_detail("https://x/inj/1", {})
+            rep = await agg._fetch_espn_injury_detail("https://sports.core.api.espn.com/inj/1", {})
             assert rep.player_name == "Unknown"
             assert "77" not in InjuryAggregator._athlete_name_cache
         finally:
