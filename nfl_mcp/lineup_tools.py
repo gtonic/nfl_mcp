@@ -93,6 +93,10 @@ _MIN_TEAM_TARGETS = 15
 _team_targets_cache: dict[tuple, dict[str, float]] = {}
 
 
+def clear_usage_cache() -> None:
+    _team_targets_cache.clear()
+
+
 def _team_week_targets(db, season: int, week: int) -> dict[str, float]:
     """``{team: targets}`` for one recorded week of ``player_usage_stats``."""
     key = (id(db), int(season), int(week))

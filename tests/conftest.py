@@ -98,14 +98,18 @@ def _no_sleeper_second_opinion(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clear_process_caches():
     """Short-lived in-process caches must not leak one test's mocks into the next."""
-    from nfl_mcp import nfl_tools, sleeper_tools, weather_tools
+    from nfl_mcp import handcuff_tools, lineup_tools, nfl_tools, sleeper_tools, weather_tools
     sleeper_tools.clear_nfl_state_cache()
     weather_tools.clear_forecast_cache()
     nfl_tools.clear_season_stats_cache()
+    handcuff_tools.clear_depth_chart_cache()
+    lineup_tools.clear_usage_cache()
     yield
     sleeper_tools.clear_nfl_state_cache()
     weather_tools.clear_forecast_cache()
     nfl_tools.clear_season_stats_cache()
+    handcuff_tools.clear_depth_chart_cache()
+    lineup_tools.clear_usage_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -221,3 +225,11 @@ def _block_network(request, monkeypatch):
     yield
     if attempts:
         pytest.fail(f"test attempted network access: {sorted(set(attempts))}", pytrace=False)
+
+
+@pytest.fixture
+def current_week_2026(monkeypatch):
+    """Pin the canonical current NFL week (2026 week 3) for tools that default to it."""
+    async def _state(db=None):
+        return {"season": 2026, "week": 3, "source": "nfl_state"}
+    monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)

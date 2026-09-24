@@ -91,6 +91,7 @@ ROSTER_CTX = {"error": None, "roster_id": 7, "season": 2026, "week": 3, "players
 ]}
 
 
+@pytest.mark.usefixtures("current_week_2026")
 @pytest.mark.asyncio
 async def test_vegas_lines_team_and_roster_modes():
     lines = AsyncMock(return_value={"success": True, "games": [], "summary": []})

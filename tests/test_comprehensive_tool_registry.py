@@ -180,6 +180,7 @@ class TestToolRegistry:
         assert isinstance(result, dict)
         assert 'athletes' in result or 'success' in result or 'error' in result
 
+    @pytest.mark.usefixtures("current_week_2026")
     @pytest.mark.asyncio
     async def test_vegas_tools_functionality(self):
         """Test Vegas lines tools."""

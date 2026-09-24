@@ -2292,10 +2292,18 @@ async def get_vegas_lines(
     import asyncio
 
     from .roster_context import load_roster_players
+    from .week_context import resolve_season_week
 
+    # The book publishes more than one week at once: without a week the games
+    # of two slates were mixed. Default to the current week, and say so.
+    week_inferred = False
+    if week is None:
+        season, week, week_inferred = await resolve_season_week(season, None)
     result = await vegas_tools.get_vegas_lines(teams=teams, week=week, season=season)
     if not isinstance(result, dict):
         return result
+    result.setdefault("week", week)
+    result["week_inferred"] = week_inferred
     if teams:
         valid = [t for t in teams[:8] if isinstance(t, str) and t.strip()]
         envs = await asyncio.gather(*(vegas_tools.get_game_environment(team=t) for t in valid),

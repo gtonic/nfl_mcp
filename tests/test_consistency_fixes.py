@@ -440,3 +440,57 @@ class TestWaiverWording:
         out = priority_strategy(league, {"settings": {"waiver_position": 3}}, worth="high",
                                 demand="low", kickoff=now + timedelta(days=3), now=now)
         assert out["recommendation"] == "add_now" and out["claim_cost_places"] == 0
+
+
+class TestVegasDefaultWeek:
+    @pytest.mark.asyncio
+    async def test_omitted_week_is_the_current_one(self, monkeypatch, current_week_2026):
+        from nfl_mcp import tool_registry, vegas_tools
+        seen = {}
+
+        async def _lines(teams=None, week=None, season=None):
+            seen.update(week=week, season=season)
+            return {"success": True, "games": []}
+        monkeypatch.setattr(vegas_tools, "get_vegas_lines", _lines)
+        out = await tool_registry.get_vegas_lines()
+        assert seen == {"week": 3, "season": 2026}
+        assert out["week_inferred"] is True
+        out = await tool_registry.get_vegas_lines(week=5)
+        assert seen["week"] == 5 and out["week_inferred"] is False
+
+
+class TestHandcuffDepthCharts:
+    @pytest.mark.asyncio
+    async def test_fetched_concurrently_and_cached(self, monkeypatch):
+        import asyncio
+
+        from nfl_mcp import handcuff_tools
+        in_flight = peak = calls = 0
+
+        class _Nfl:
+            @staticmethod
+            async def get_depth_chart(team):
+                nonlocal in_flight, peak, calls
+                calls += 1
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await asyncio.sleep(0.01)
+                in_flight -= 1
+                return {"depth_chart": [{"position": "RB", "players": [team + " RB1"]}]}
+
+        sem = asyncio.Semaphore(handcuff_tools.DEPTH_CHART_CONCURRENCY)
+        teams = ["KC", "BUF", "MIA", "NYJ"]
+        charts = await asyncio.gather(*(handcuff_tools._depth_chart(_Nfl, t, sem) for t in teams))
+        assert peak > 1 and calls == 4 and all(charts)
+        await handcuff_tools._depth_chart(_Nfl, "KC", sem)
+        assert calls == 4  # served from the cache
+
+
+def test_kickoff_weekday_is_vienna_like_kickoff_local():
+    from nfl_mcp.game_clock import game_lock
+    # MNF 20:15 ET = 00:15 UTC Tuesday = 02:15 Tuesday in Vienna.
+    lock = game_lock({"kickoff": "2026-09-29T00:15:00Z"})
+    assert lock["kickoff_local"].startswith("2026-09-29T02:15")
+    assert lock["kickoff_weekday"] == "Tue"
+    # Sunday 13:00 ET = 19:00 Vienna Sunday.
+    assert game_lock({"kickoff": "2026-09-27T17:00:00Z"})["kickoff_weekday"] == "Sun"

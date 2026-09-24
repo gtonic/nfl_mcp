@@ -155,6 +155,7 @@ async def test_athlete_tools():
     assert isinstance(result, dict)
     assert 'athletes' in result or 'success' in result or 'error' in result
 
+@pytest.mark.usefixtures("current_week_2026")
 @pytest.mark.asyncio
 async def test_vegas_tools():
     """Test Vegas lines tools."""
