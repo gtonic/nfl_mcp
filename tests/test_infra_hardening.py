@@ -323,7 +323,7 @@ def _stream_response(status=200, content_type="text/html", chunks=(b"<html></htm
         for c in chunks:
             yield c
 
-    resp.aiter_bytes = _aiter
+    resp.aiter_raw = _aiter
     resp.aclose = AsyncMock()
     return resp
 
@@ -419,6 +419,7 @@ class TestCrawlDnsPinning:
         monkeypatch.delenv("NFL_MCP_ALLOW_PRIVATE_URLS", raising=False)
         monkeypatch.setattr(config, "resolve_host_addresses_async", AsyncMock(return_value=["127.0.0.1"]))
         monkeypatch.setattr(config, "_ip_is_disallowed", lambda ip: False)
+        monkeypatch.setattr(config, "ALLOWED_URL_PORTS", frozenset({80, 443, local_server}))
         result = await web_tools.crawl_url(f"http://pinned.invalid:{local_server}/")
         assert result["success"] is True, result
         assert result["title"] == "pinned"

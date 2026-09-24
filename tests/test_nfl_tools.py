@@ -239,8 +239,8 @@ class TestGetTeamInjuries:
     @pytest.mark.asyncio
     async def test_get_team_injuries_dereferences_refs(self):
         """Core-API items are bare $refs; the tool must follow injury + athlete refs."""
-        inj_ref = "http://espn/v2/nfl/seasons/2026/athletes/9/injuries/1"
-        ath_ref = "http://espn/v2/nfl/seasons/2026/athletes/9"
+        inj_ref = "https://sports.core.api.espn.com/v2/nfl/seasons/2026/athletes/9/injuries/1"
+        ath_ref = "https://sports.core.api.espn.com/v2/nfl/seasons/2026/athletes/9"
 
         def make(payload):
             m = MagicMock()

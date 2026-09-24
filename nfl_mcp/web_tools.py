@@ -8,6 +8,7 @@ import asyncio
 import ipaddress
 import os
 import re
+import zlib
 from urllib.parse import urljoin
 
 import httpcore
@@ -21,7 +22,13 @@ from .config import (
     resolve_safe_url,
     validate_limit,
 )
-from .errors import create_success_response, handle_http_errors, handle_validation_error
+from .errors import (
+    ErrorType,
+    create_error_response,
+    create_success_response,
+    handle_http_errors,
+    handle_validation_error,
+)
 
 # Maximum number of redirect hops crawl_url will follow (each re-validated).
 MAX_CRAWL_REDIRECTS = 5
@@ -30,6 +37,10 @@ _REDIRECT_STATUS = {301, 302, 303, 307, 308}
 # Hard cap on the body bytes read from a crawled URL (the text limit applies
 # after parsing; without this a huge or endless body is buffered whole).
 DEFAULT_CRAWL_MAX_BYTES = 2 * 1024 * 1024
+
+# Wall-clock budget for the whole crawl (all redirect hops + body). The
+# per-read httpx timeout alone lets a slow-drip server hold a call open.
+CRAWL_TOTAL_TIMEOUT_SECONDS = 20.0
 
 # Only textual documents are parsed. A missing Content-Type is treated as HTML.
 _ALLOWED_CONTENT_TYPES = {
@@ -124,17 +135,56 @@ def _pin_key(url: str) -> str:
     return httpx.URL(url).raw_host.decode("ascii").lower()
 
 
+class _UnsupportedEncoding(Exception):
+    pass
+
+
+def _decompressor(content_encoding: str | None):
+    """A zlib decompressobj for the body's Content-Encoding (None = identity)."""
+    encoding = (content_encoding or "").strip().lower()
+    if encoding in ("", "identity"):
+        return None
+    if encoding in ("gzip", "x-gzip"):
+        return zlib.decompressobj(16 + zlib.MAX_WBITS)
+    if encoding == "deflate":
+        return zlib.decompressobj(zlib.MAX_WBITS | 32)  # zlib- or gzip-wrapped
+    raise _UnsupportedEncoding(encoding)
+
+
 async def _read_capped(response, max_bytes: int) -> tuple[bytes, bool]:
-    """Read at most ``max_bytes`` of the body; returns (body, truncated)."""
+    """Read at most ``max_bytes`` of the *decoded* body; returns (body, truncated).
+
+    Reads the raw (still-compressed) stream and inflates it here with
+    ``max_length``: httpx's own decoder inflates each network chunk whole, so
+    a ~200 KB gzip bomb became a 64 MB chunk before any cap applied. Both the
+    compressed input and the inflated output are bounded by ``max_bytes``.
+    """
+    decoder = _decompressor(response.headers.get("content-encoding"))
     chunks: list[bytes] = []
     size = 0
-    async for chunk in response.aiter_bytes():
-        remaining = max_bytes - size
-        if len(chunk) >= remaining:
-            chunks.append(chunk[:remaining])
+    raw_size = 0
+    async for raw in response.aiter_raw():
+        raw_size += len(raw)
+        data = raw
+        while data:
+            remaining = max_bytes - size
+            if decoder is None:
+                piece, data = data, b""
+            else:
+                if decoder.eof:
+                    break
+                # +1 so hitting the cap exactly is still seen as truncation.
+                piece = decoder.decompress(data, remaining + 1)
+                data = decoder.unconsumed_tail
+                if not piece:
+                    continue
+            if len(piece) >= remaining:
+                chunks.append(piece[:remaining])
+                return b"".join(chunks), True
+            chunks.append(piece)
+            size += len(piece)
+        if raw_size >= max_bytes:
             return b"".join(chunks), True
-        chunks.append(chunk)
-        size += len(chunk)
     return b"".join(chunks), False
 
 
@@ -204,7 +254,9 @@ async def crawl_url(url: str, max_length: int | None = 10000) -> dict:
     if not ok:
         return handle_validation_error(reason, _error_data)
 
-    headers = get_http_headers("web_crawler")
+    # Ask for an uncompressed body; _read_capped still inflates (boundedly)
+    # when a server compresses anyway.
+    headers = {**get_http_headers("web_crawler"), "Accept-Encoding": "identity"}
     max_bytes = _crawl_max_bytes()
     transport, backend = _pinned_transport()
     if addresses:
@@ -212,49 +264,67 @@ async def crawl_url(url: str, max_length: int | None = 10000) -> dict:
 
     # Follow redirects manually so every hop is re-validated (and pinned) —
     # otherwise a public URL could 3xx-redirect into the private network.
-    async with create_http_client(follow_redirects=False, transport=transport) as client:
-        current_url = url
-        response = None
-        try:
-            for _ in range(MAX_CRAWL_REDIRECTS + 1):
-                request = client.build_request("GET", current_url, headers=headers)
-                response = await client.send(request, stream=True)
+    # The whole crawl (every hop + the body) runs under one wall-clock budget.
+    try:
+        async with asyncio.timeout(CRAWL_TOTAL_TIMEOUT_SECONDS):
+            async with create_http_client(follow_redirects=False, transport=transport) as client:
+                current_url = url
+                response = None
+                try:
+                    for _ in range(MAX_CRAWL_REDIRECTS + 1):
+                        request = client.build_request("GET", current_url, headers=headers)
+                        response = await client.send(request, stream=True)
 
-                if response.status_code in _REDIRECT_STATUS:
-                    location = response.headers.get("location")
-                    if not location:
-                        break  # malformed redirect; fall through to normal handling
-                    next_url = urljoin(current_url, location)
-                    ok, reason, _host, addresses = await resolve_safe_url(next_url)
-                    if not ok:
-                        return handle_validation_error(f"Blocked redirect: {reason}", _error_data)
-                    if addresses:
-                        backend.pin(_pin_key(next_url), addresses)
-                    await response.aclose()
-                    response = None
-                    current_url = next_url
-                    continue
+                        if response.status_code in _REDIRECT_STATUS:
+                            location = response.headers.get("location")
+                            if not location:
+                                break  # malformed redirect; fall through to normal handling
+                            next_url = urljoin(current_url, location)
+                            ok, reason, _host, addresses = await resolve_safe_url(next_url)
+                            if not ok:
+                                return handle_validation_error(f"Blocked redirect: {reason}", _error_data)
+                            if addresses:
+                                backend.pin(_pin_key(next_url), addresses)
+                            await response.aclose()
+                            response = None
+                            current_url = next_url
+                            continue
 
-                # Non-redirect response: process it.
-                break
-            else:
-                return handle_validation_error(
-                    f"Too many redirects (>{MAX_CRAWL_REDIRECTS})", _error_data
-                )
+                        # Non-redirect response: process it.
+                        break
+                    else:
+                        return handle_validation_error(
+                            f"Too many redirects (>{MAX_CRAWL_REDIRECTS})", _error_data
+                        )
 
-            response.raise_for_status()
+                    response.raise_for_status()
 
-            media_type = _media_type(response.headers.get("content-type"))
-            if not _content_type_allowed(media_type):
-                return handle_validation_error(
-                    f"Unsupported content type: {media_type} (only HTML, text, JSON and XML are crawled)",
-                    _error_data,
-                )
+                    media_type = _media_type(response.headers.get("content-type"))
+                    if not _content_type_allowed(media_type):
+                        return handle_validation_error(
+                            f"Unsupported content type: {media_type} (only HTML, text, JSON and XML are crawled)",
+                            _error_data,
+                        )
 
-            body, truncated_bytes = await _read_capped(response, max_bytes)
-        finally:
-            if response is not None:
-                await response.aclose()
+                    try:
+                        body, truncated_bytes = await _read_capped(response, max_bytes)
+                    except _UnsupportedEncoding as e:
+                        return handle_validation_error(
+                            f"Unsupported content encoding: {e}", _error_data
+                        )
+                    except zlib.error as e:
+                        return handle_validation_error(
+                            f"Corrupt compressed body: {e}", _error_data
+                        )
+                finally:
+                    if response is not None:
+                        await response.aclose()
+    except TimeoutError:
+        return create_error_response(
+            f"Crawl exceeded {CRAWL_TOTAL_TIMEOUT_SECONDS:.0f}s total time limit",
+            ErrorType.TIMEOUT,
+            _error_data,
+        )
 
     encoding = getattr(response, "charset_encoding", None) or "utf-8"
     try:

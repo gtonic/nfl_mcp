@@ -1020,6 +1020,6 @@ def _enrich_usage_and_opponent(nfl_db, athlete: dict, season: int | None, week: 
             logger.debug(f"[Enrichment] {player_name}: Vegas analysis failed: {e}")
 
     if enriched_additions:
-        logger.info(f"[Enrichment] {player_name}: Added {len(enriched_additions)} enrichment fields")
+        logger.debug(f"[Enrichment] {player_name}: Added {len(enriched_additions)} enrichment fields")
 
     return enriched_additions

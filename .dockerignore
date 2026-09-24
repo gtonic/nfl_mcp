@@ -49,10 +49,14 @@ htmlcov
 uv.lock
 *.log
 
-# Tests & docs (not needed at runtime)
+# Tests, docs & dev tooling (not needed at runtime)
 tests
 docs
 examples
+evals
+scripts
+FastMCP.txt
+Taskfile.yml
 *.md
 !README.md
 
