@@ -181,3 +181,23 @@ class TestOneNumberEverywhere:
         # The disagreement check compares our model with Sleeper, not the blend.
         assert proj["gap"] == round(proj["model_projection"] - 11.0, 1)
         assert a.to_dict()["projection_source"] == "sleeper_blend"
+
+
+class TestStreamingBlend:
+    def test_unit_week_is_blended_with_sleepers_defense(self):
+        from nfl_mcp.streaming_tools import _blend_unit_week
+        index = sp._index(_payload())
+        week = {"week": 3, "projected_points": 8.0}
+        _blend_unit_week("DEF", "BUF", week, {3: index}, PPR)
+        theirs = week["sleeper_projection"]
+        assert week["projection_source"] == "sleeper_blend" and week["model_projection"] == 8.0
+        assert week["projected_points"] == sp.blend(8.0, theirs)
+
+    def test_unpublished_week_and_bye_stay_model_only(self):
+        from nfl_mcp.streaming_tools import _blend_unit_week
+        later = {"week": 4, "projected_points": 8.0}
+        _blend_unit_week("K", "BUF", later, {}, PPR)
+        assert later["projection_source"] == "model_only" and later["projected_points"] == 8.0
+        bye = {"week": 3, "projected_points": 0.0, "on_bye": True}
+        _blend_unit_week("DEF", "BUF", bye, {3: sp._index(_payload())}, PPR)
+        assert bye["projection_source"] == "bye" and bye["projected_points"] == 0.0

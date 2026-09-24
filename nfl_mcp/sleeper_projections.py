@@ -8,7 +8,7 @@ the larger part of every weekly projection (:func:`blend`):
     projected = BLEND_MODEL_WEIGHT × ours + (1 − BLEND_MODEL_WEIGHT) × Sleeper
 
 From ``evals/backtest/sleeper_blend.py`` (2023-25, weeks 3+, n≈8k player-weeks,
-truth priced in the same scoring): ours MAE 5.65, Sleeper 5.41, the 0.25/0.75
+truth priced in the same scoring): ours MAE 5.55, Sleeper 5.40, the 0.25/0.75
 blend 5.39 with the best rank correlation of the three. Sleeper wins mostly on
 depth-chart knowledge — a benched or demoted player it does not project at all
 — and ours adds a little on TEs and on usage the stat line has not caught up
@@ -72,7 +72,7 @@ DISAGREE_MIN_GAP = 2.0
 
 # Share of the weekly projection that is our own model; Sleeper's is the rest.
 # One weight for every position and scoring: per position the backtest's best
-# weight ranged 0.1 (QB, RB) to 0.4 (TE), each within 0.02 MAE of 0.25, and
+# weight ranged 0.1 (QB) to 0.3 (TE), each within 0.01 MAE of 0.25, and
 # the same 0.25 was best in both real leagues' scoring (see module doc).
 BLEND_MODEL_WEIGHT = 0.25
 BLEND_WEIGHTS = {"model": BLEND_MODEL_WEIGHT, "sleeper": round(1 - BLEND_MODEL_WEIGHT, 2)}
@@ -99,6 +99,7 @@ def _index(rows) -> dict:
     un_id: dict[str, dict] = {}
     un_name: dict[tuple[str, str], dict] = {}
     teams: set[str] = set()
+    by_k: dict[str, dict] = {}
     if isinstance(rows, dict):  # the v1 payload: {player_id: stats}
         rows = [{"player_id": pid, "stats": stats} for pid, stats in rows.items()]
     for r in rows or []:
@@ -123,6 +124,10 @@ def _index(rows) -> dict:
             continue
         if team:
             teams.add(team)
+            # The team's kicker (the most-projected one), for per-team streaming.
+            if position == "K" and float(stats.get("pts_ppr") or 0) >= float(
+                    (by_k.get(team) or {}).get("stats", {}).get("pts_ppr") or 0):
+                by_k[team] = row
         if pid:
             by_id[pid] = row
         if name and team:
@@ -135,7 +140,8 @@ def _index(rows) -> dict:
                 by_def[code] = {**row, "position": "DEF", "team": code}
                 teams.add(code)
     return {"by_id": by_id, "by_name": by_name, "by_def": by_def,
-            "unprojected": {"by_id": un_id, "by_name": un_name}, "teams": teams}
+            "unprojected": {"by_id": un_id, "by_name": un_name}, "teams": teams,
+            "by_k": by_k}
 
 
 async def fetch_week_projections(season: int, week: int) -> dict:
