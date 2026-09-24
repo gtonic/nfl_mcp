@@ -248,24 +248,8 @@ def _usage_mult(snap_pct: float | None, usage_trend: str | None) -> float:
     return mult
 
 
-# Statuses that mean the player will not take the field. Sleeper's short codes
-# are in here alongside the long forms, because the short ones are what the
-# player feed actually sends: `Sus` (suspension), `NA` (not active — almost
-# always an unrostered player), `DNR` (did not report), `COV` (COVID list).
-# Verified against the live cache: 110 players carried one of those four and
-# every one of them was projected at full points and never auto-benched.
-UNAVAILABLE_STATUSES = frozenset({
-    "out", "ir", "injured reserve", "injured_reserve", "suspended", "sus", "pup",
-    "nfi", "na", "dnr", "cov", "doubtful_out", "inactive", "reserve",
-})
-# Prefixes of the long list designations ("Reserve/PUP", "PUP-R",
-# "Reserve-Suspended", "Inactive (injury)"): all of them mean no game this week.
-_UNAVAILABLE_PREFIXES = ("reserve", "pup", "suspend", "injured reserve", "inactive", "nfi")
-DOUBTFUL_STATUSES = frozenset({"doubtful"})
-QUESTIONABLE_STATUSES = frozenset({"questionable", "q", "dnp", "lp"})
-# A designation that says "we do not know" rather than "something is wrong".
-# Priced as mild uncertainty: not a questionable tag, and not healthy either.
-UNCERTAIN_STATUSES = frozenset({"unknown"})
+# The status vocabulary lives in `injury_status` (Sleeper short codes, ESPN
+# long forms and practice codes onto one table); this is its projection view.
 UNCERTAIN_MULT = 0.95
 
 
@@ -277,18 +261,8 @@ def availability(status: str | None) -> str:
     score, so the two cannot disagree about whether a player plays — they did:
     `Inactive` and `Reserve` projected at 0.9 and scored a perfect health 100.
     """
-    s = (status or "").strip().lower()
-    if not s or s in ("active", "healthy", "probable", "fp"):
-        return "healthy"
-    if s in UNAVAILABLE_STATUSES or s.startswith(_UNAVAILABLE_PREFIXES):
-        return "out"
-    if s in DOUBTFUL_STATUSES:
-        return "doubtful"
-    if s in QUESTIONABLE_STATUSES:
-        return "questionable"
-    if s in UNCERTAIN_STATUSES:
-        return "uncertain"
-    return "unrecognised"
+    from . import injury_status
+    return injury_status.availability(status)
 
 
 # How a questionable tag plays out depends on the week's practice: a player
@@ -343,6 +317,38 @@ def _injury_mult(status: str | None) -> float:
         "Add it to the status tables in projections.py / injury_service.py."
     )
     return 0.9
+
+
+def _absence_detail(status_of, name: str, team: str) -> dict:
+    """What ROS needs to price an absent starter (``ros.expected_absence``):
+    his status plus, when the lookup has them, the report text, return date
+    and reserve placement date. The status alone gave a starter out with a
+    season-ending ACL note a one-week absence."""
+    detail = getattr(status_of, "detail", None)
+    extra = detail(name, team) if callable(detail) else None
+    return {"status": status_of(name, team), **(extra or {})}
+
+
+def _report_absence(row: dict | None, db) -> dict:
+    """``{description, return_date, placed_on}`` from a stored report row."""
+    if not row:
+        return {}
+    from .ros import is_reserve, reserve_since
+    out = {
+        "description": " ".join(str(x) for x in (row.get("injury_description"),
+                                                  row.get("game_status")) if x) or None,
+        "return_date": row.get("return_date"),
+        # ESPN's list designation ("PUP-R" under an "Out" status).
+        "game_status": row.get("game_status"),
+    }
+    if (db is not None and row.get("player_id") and hasattr(db, "get_injury_history")
+            and (is_reserve(row.get("injury_status")) or is_reserve(row.get("game_status")))):
+        try:
+            placed = reserve_since(db.get_injury_history(str(row["player_id"]), limit=50))
+            out["placed_on"] = placed.isoformat() if placed else None
+        except Exception as e:
+            logger.debug(f"injury history unavailable for {row.get('player_name')}: {e}")
+    return {k: v for k, v in out.items() if v}
 
 
 def _depth_map(values_index: dict) -> dict[tuple[str, str], list[dict]]:
@@ -563,7 +569,7 @@ class ProjectionEngine:
         # is what keeps this from inventing points out of an absence.
         starters_out: list[str] = []
         vacated: dict[str, float] = {}
-        inherited_from: dict[str, str | None] = {}
+        inherited_from: dict[str, dict] = {}
         own_base = None
         if depth and status_of and team and opp_index and week:
             starters_out = _starters_ahead(depth, depth_team, position, pos_rank, status_of)
@@ -573,7 +579,8 @@ class ProjectionEngine:
                 vacated = opportunity_tools.vacated_volume(
                     opp_index, list(shares), week, share=shares)
                 if vacated:
-                    inherited_from = {n: status_of(n, depth_team) for n in shares}
+                    inherited_from = {n: _absence_detail(status_of, n, depth_team)
+                                      for n in shares}
         if opp_index and week and name:
             opp_base = opportunity_tools.opportunity_base_for(
                 opp_index, name, position, week, ppr=ppr,
@@ -754,7 +761,8 @@ class ProjectionEngine:
                 "starters_out_ahead": starters_out,
                 "vacated_volume": vacated,
                 # Only when volume was inherited: the opportunity base without
-                # it, and the status of whoever it came from (ROS uses both).
+                # it, and whoever it came from -- status, report text, return
+                # date, reserve placement -- which ROS prices the absence on.
                 **({"own_base_ppg": own_base, "inherited_from": inherited_from}
                    if own_base is not None else {}),
             },
@@ -784,6 +792,7 @@ class ProjectionEngine:
         known for players who are not on the roster being projected.
         """
         index: dict[tuple[str, str], str] = {}
+        reports: dict[tuple[str, str], dict] = {}
         # `getattr`, not `self.db`: the engine is legitimately built via
         # `__new__` with only the dependencies a caller needs stubbed, and a
         # missing handle must degrade to "everyone available" rather than raise
@@ -798,6 +807,7 @@ class ProjectionEngine:
                     status = row.get("injury_status")
                     if name and status:
                         index[(name, team)] = status
+                        reports[(name, team)] = row
             except Exception as e:
                 logger.debug(f"injury lookup unavailable for depth pricing: {e}")
 
@@ -805,6 +815,11 @@ class ProjectionEngine:
             from .opportunity_tools import norm_name
             return index.get((norm_name(name), team))
 
+        def _detail(name: str, team: str) -> dict:
+            from .opportunity_tools import norm_name
+            return _report_absence(reports.get((norm_name(name), team)), db)
+
+        _get.detail = _detail
         return _get
 
     async def project_many(

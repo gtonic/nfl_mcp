@@ -427,6 +427,29 @@ def latest_practice_week(rows: list[dict] | None) -> list[dict]:
     return sorted((r for r in dated if r["date"] >= floor), key=lambda r: r["date"])
 
 
+def reads_next_week(db, season: int, week: int, now: datetime | None = None) -> bool:
+    """Whether a lookup of ``(season, week)`` should also read ``week + 1``.
+
+    Only for the current week: a short-week team's NFL.com report is stored
+    under the next week while Sleeper's counter still shows this one on
+    Monday and Tuesday. For a past week, reading ``week + 1`` returned the
+    following week's report (the latest one wins) as if it were that week's.
+    Current means Sleeper's week (the calendar week turning on Wednesday) or
+    the schedule's (the first week with a game still to finish).
+    """
+    from .week_context import infer_from_calendar, infer_from_schedule  # deferred: cycle
+
+    now = now or datetime.now(UTC)
+    current = {infer_from_calendar(now)}
+    try:
+        scheduled = infer_from_schedule(db, now)
+    except Exception:
+        scheduled = None
+    if scheduled:
+        current.add(scheduled)
+    return (int(season), int(week)) in current
+
+
 def lookup_practice(db, player_name: str | None, team: str | None,
                     season: int | None = None, week: int | None = None) -> dict | None:
     """``summarize`` of the stored reports for a player known by name and team."""

@@ -168,10 +168,33 @@ class TestStorage:
         got = pr.lookup_practice(db, "Michael Penix", "ATL", season=2026, week=3)
         assert got["pattern"] == "DNP-LP-FP"
         assert got["source"] == "nfl.com"
-        # Week 2 also reads week 3 (a short-week team's report is stored
-        # under the next week); week 1 sees nothing.
-        assert pr.lookup_practice(db, "Michael Penix", "ATL", season=2026, week=2)["pattern"] == "DNP-LP-FP"
-        assert pr.lookup_practice(db, "Michael Penix", "ATL", season=2026, week=1) is None
+        # While week 2 is current, it also reads week 3 (a short-week team's
+        # report is stored under the next week); week 1 sees nothing.
+        with patch.object(pr, "reads_next_week", lambda _db, s, w, now=None: w == 2):
+            assert pr.lookup_practice(db, "Michael Penix", "ATL", season=2026, week=2)["pattern"] == "DNP-LP-FP"
+            assert pr.lookup_practice(db, "Michael Penix", "ATL", season=2026, week=1) is None
+
+    def test_a_past_week_does_not_read_the_next_weeks_report(self, db):
+        db.upsert_practice_status([
+            {"player_name": "Past Guy", "team": "ATL", "date": "2026-09-16", "status": "DNP",
+             "season": 2026, "week": 2, "source": "nfl.com"},
+            {"player_name": "Past Guy", "team": "ATL", "date": "2026-09-23", "status": "FP",
+             "season": 2026, "week": 3, "source": "nfl.com"},
+        ])
+        with patch.object(pr, "reads_next_week", lambda _db, s, w, now=None: w == 3):
+            assert pr.lookup_practice(db, "Past Guy", "ATL", season=2026, week=2)["latest"] == "DNP"
+        with patch.object(pr, "reads_next_week", lambda _db, s, w, now=None: w == 2):
+            assert pr.lookup_practice(db, "Past Guy", "ATL", season=2026, week=2)["latest"] == "FP"
+
+    def test_reads_next_week_only_for_the_current_week(self):
+        # Wednesday 2026-09-23: Sleeper and the calendar are on week 3.
+        wed = datetime(2026, 9, 23, 18, tzinfo=UTC)
+        assert pr.reads_next_week(None, 2026, 3, now=wed)
+        assert not pr.reads_next_week(None, 2026, 2, now=wed)
+        assert not pr.reads_next_week(None, 2025, 3, now=wed)
+        # Tuesday: Sleeper still shows week 2.
+        tue = datetime(2026, 9, 22, 18, tzinfo=UTC)
+        assert pr.reads_next_week(None, 2026, 2, now=tue)
 
     def test_news_note_does_not_overwrite_the_official_report(self, db):
         base = {"player_name": "Nick Muse", "team": "ATL", "date": "2026-09-22",

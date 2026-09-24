@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from enum import IntEnum
 
+from . import injury_status
+
 logger = logging.getLogger(__name__)
 
 # Configuration constants for performance tuning
@@ -14,6 +16,15 @@ MAX_CONCURRENT_INJURIES = 15  # Parallel injury detail fetches per team
 ATHLETE_CACHE_SIZE = 4000
 UNKNOWN_NAME = "Unknown"  # placeholder when an athlete's name could not be fetched
 REQUEST_TIMEOUT = 10.0  # Seconds per request
+# An empty team list is only believed in small numbers. One team's last injured
+# player recovering is routine; several teams losing every report in the same
+# crawl is ESPN serving empty lists (an outage), and pruning on it would mark
+# every injured player on those teams Active.
+MAX_EMPTY_TEAMS_PER_CRAWL = 3
+# ...and only for a team that had few open reports to lose. ESPN keeps IR and
+# PUP placements listed all season, so a team dropping from a handful of open
+# reports to none in one crawl is a feed problem, not a recovery.
+EMPTY_TEAM_MAX_PRIOR_OPEN = 2
 
 
 class InjurySeverity(IntEnum):
@@ -59,71 +70,9 @@ class InjuryReport:
         }
 
 
-# Status normalization mappings
-STATUS_NORMALIZATIONS = {
-    # ESPN statuses
-    "out": "Out",
-    "doubtful": "Doubtful",
-    "questionable": "Questionable",
-    "probable": "Probable",
-    "active": "Active",
-    "day-to-day": "Questionable",
-    "injured reserve": "IR",
-    "ir": "IR",
-    "pup": "PUP",
-    "nfi": "NFI",
-    "suspension": "Suspended",
-    "reserve/covid-19": "Reserve",
-
-    # CBS/other variations
-    "inj": "Out",
-    "q": "Questionable",
-    "d": "Doubtful",
-    "o": "Out",
-    "p": "Probable",
-    "i/r": "IR",
-    "injured": "Out",
-    "healthy": "Active",
-    "limited": "Questionable",
-    "did not practice": "DNP",
-    "dnp": "DNP",
-    "limited participation": "LP",
-    "lp": "LP",
-    "full participation": "FP",
-    "fp": "FP",
-}
-
-# Severity mapping based on status
-STATUS_SEVERITY = {
-    "Active": InjurySeverity.MINOR,
-    "Probable": InjurySeverity.MINOR,
-    "FP": InjurySeverity.MINOR,
-    "LP": InjurySeverity.QUESTIONABLE,
-    "Questionable": InjurySeverity.QUESTIONABLE,
-    "DNP": InjurySeverity.MODERATE,
-    "Doubtful": InjurySeverity.SIGNIFICANT,
-    "Out": InjurySeverity.SIGNIFICANT,
-    "IR": InjurySeverity.SEVERE,
-    "PUP": InjurySeverity.SEVERE,
-    "NFI": InjurySeverity.SEVERE,
-    "Suspended": InjurySeverity.SEVERE,
-    # Sleeper's short codes, which the player feed actually sends. Verified
-    # against the live cache: `NA` (96 players, almost all unrostered),
-    # `Sus` (10, body part literally "Suspension"), `DNR` (2, one of them an
-    # ACL case), `COV` (2). All four previously fell through to the MODERATE
-    # default and projected at full points.
-    "Sus": InjurySeverity.SEVERE,
-    "NA": InjurySeverity.SEVERE,
-    "DNR": InjurySeverity.SEVERE,
-    "COV": InjurySeverity.SEVERE,
-    # "reserve/covid-19" normalizes to Reserve; projections treat any Reserve
-    # list as out, so it must not fall through to the default.
-    "Reserve": InjurySeverity.SEVERE,
-    "Inactive": InjurySeverity.SIGNIFICANT,
-    # "We do not know" (projections: uncertain, 0.95) is milder than a real
-    # Questionable tag and must not outrank one in worst_status.
-    "Unknown": InjurySeverity.MINOR,
-}
+# The status vocabulary lives in `injury_status`; these are views of it for
+# the callers that rank stored strings (SQL CASE maps, trend deltas).
+STATUS_SEVERITY: dict[str, int] = injury_status.severity_map()
 
 # Severity of a status the tables do not know. Projections price an
 # unrecognised designation as questionable (0.9), so severity matches that
@@ -139,7 +88,7 @@ _ATHLETE_ID_PATTERN = re.compile(r"/athletes/(\d+)(?:/|\?|$)")
 
 def status_severity(status: str | None) -> int:
     """Severity rank for a status string, DEFAULT_SEVERITY for anything unrecognised."""
-    return int(STATUS_SEVERITY.get(status, DEFAULT_SEVERITY)) if status else 0
+    return injury_status.severity(status)
 
 
 def worst_status(*statuses: str | None) -> str | None:
@@ -154,14 +103,15 @@ def worst_status(*statuses: str | None) -> str | None:
     known = [s for s in statuses if s]
     if not known:
         return None
-    return max(known, key=lambda s: (status_severity(s), _TIEBREAK.get(s, 0)))
+    return max(known, key=lambda s: (status_severity(s),
+                                     _TIEBREAK.get(injury_status.normalize(s), 0)))
 
 
 # Doubtful and Out share a rung on the 1-5 scale, and `max` then kept whichever
 # source happened to be passed first: roster enrichment showed Jayden Daniels at
 # ESPN's "Doubtful" while Sleeper already had him "Out". Within a rung, a
 # designation that rules the player out outranks one that merely doubts him.
-_TIEBREAK = {"Doubtful": 0, "Out": 1}
+_TIEBREAK = {"Doubtful": 0, "Out": 1, "Inactive": 1}
 
 
 def extract_athlete_id(athlete_url: str | None) -> str | None:
@@ -203,15 +153,20 @@ class InjuryAggregator:
     # reused on a 304 (which has no body) so "not modified" != "no injuries".
     _page_refs_cache: dict[str, tuple[int, list[str]]] = {}
 
-    def __init__(self, http_client=None, db=None):
+    def __init__(self, http_client=None, db=None, persist: bool = True):
         """Initialize the aggregator.
 
         Args:
             http_client: Optional httpx.AsyncClient to use
-            db: Optional NFLDatabase instance for caching
+            db: Optional NFLDatabase instance for caching, stored-name fallback
+                and position lookup
+            persist: Write fetched reports to ``db``. False for a caller that
+                owns persistence (the prefetch, which prunes as it writes) but
+                still wants the lookups.
         """
         self._http_client = http_client
         self._db = db
+        self._persist = persist
         self._own_client = False
         # Semaphores for concurrency control
         self._team_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TEAMS)
@@ -220,6 +175,8 @@ class InjuryAggregator:
         # every listed report resolved. Only these may be pruned (see
         # NFLDatabase.upsert_injuries) -- a partial crawl is not a recovery.
         self.complete_teams: set[str] = set()
+        # Complete teams whose list came back empty (see prunable_teams).
+        self.empty_teams: set[str] = set()
 
     def _require_client(self) -> None:
         """Fail loudly when used outside ``async with``.
@@ -300,8 +257,7 @@ class InjuryAggregator:
         if not status:
             return "Unknown"
 
-        status_lower = status.lower().strip()
-        return STATUS_NORMALIZATIONS.get(status_lower, status.title())
+        return injury_status.normalize(status) or status.strip().title()
 
     @staticmethod
     def get_severity(status: str) -> int:
@@ -313,7 +269,7 @@ class InjuryAggregator:
         Returns:
             Severity score 1-5
         """
-        return STATUS_SEVERITY.get(status, DEFAULT_SEVERITY)
+        return injury_status.severity(status) or int(DEFAULT_SEVERITY)
 
     @staticmethod
     def calculate_confidence(sources: list[str], statuses_match: bool) -> int:
@@ -405,6 +361,7 @@ class InjuryAggregator:
             report resolved.
         """
         self.complete_teams.discard(team)
+        self.empty_teams.discard(team)
         all_injury_urls = []
         page = 1
         page_count = 1
@@ -475,9 +432,11 @@ class InjuryAggregator:
 
         if not all_injury_urls:
             # A fully listed team with no reports is complete: its last
-            # injured player has recovered and must be pruned.
+            # injured player has recovered and must be pruned -- unless the
+            # crawl as a whole says otherwise (prunable_teams).
             if listed_all:
                 self.complete_teams.add(team)
+                self.empty_teams.add(team)
             return []
 
         # Batch fetch all injury details concurrently
@@ -543,6 +502,7 @@ class InjuryAggregator:
 
             # Check athlete name cache first
             player_name = self._athlete_name_cache.get(player_id)
+            position = None
 
             if not player_name:
                 # Try inline displayName first
@@ -557,6 +517,9 @@ class InjuryAggregator:
                         if athlete_resp.status_code == 200:
                             athlete_data = athlete_resp.json()
                             player_name = athlete_data.get("displayName")
+                            pos = athlete_data.get("position")
+                            position = (pos.get("abbreviation") if isinstance(pos, dict)
+                                        else None)
                     except Exception:
                         player_name = None
 
@@ -590,18 +553,21 @@ class InjuryAggregator:
             else:
                 _confidence = 50
 
+            details = data.get("details") or {}
             return InjuryReport(
                 player_id=str(player_id),
                 player_name=player_name,
                 team_id="",  # Will be set by caller
-                position=None,  # Not available in injury endpoint
+                # Not in the injury endpoint; the athlete fetch has it when it
+                # ran, fetch_all_injuries fills the rest from the athletes table.
+                position=position,
                 injury_status=normalized_status,
                 # Prefer the body part; fall back to the human-readable status
                 # description ("active") — never the raw enum ("INJURY_STATUS_ACTIVE").
-                injury_type=((data.get("details") or {}).get("type")
+                injury_type=(details.get("type")
                              or (type_data.get("description") if isinstance(type_data, dict) else None)),
                 injury_description=data.get("shortComment") or data.get("longComment"),
-                game_status=None,
+                game_status=_game_status(details),
                 severity=self.get_severity(normalized_status),
                 confidence=_confidence,
                 sources=["ESPN"],
@@ -707,8 +673,13 @@ class InjuryAggregator:
                     if name and name != UNKNOWN_NAME:
                         inj.player_name = name
 
+        # ESPN's injury endpoint carries no position; without one the
+        # position guard in injury_match never fires.
+        if self._db:
+            self._fill_positions(newly_fetched)
+
         # Cache newly fetched results
-        if self._db and newly_fetched:
+        if self._db and self._persist and newly_fetched:
             cached_count = self._cache_injuries(newly_fetched)
             logger.debug(f"[InjuryAggregator] Cached {cached_count} injuries from {len(stale_teams)} teams")
 
@@ -716,6 +687,45 @@ class InjuryAggregator:
         all_injuries = fresh_cached + newly_fetched
 
         return all_injuries
+
+    def _fill_positions(self, reports: list[InjuryReport]) -> None:
+        """Set a missing ``position`` from the Sleeper athletes table.
+
+        By ESPN id first (Sleeper's payload names it: an exact join), else by
+        normalized name on the same team when exactly one athlete has it.
+        """
+        missing = [r for r in reports if not r.position and r.player_id]
+        if not missing:
+            return
+        from .opportunity_tools import norm_name  # deferred: heavy import
+        from .teams import normalize_team
+
+        by_espn: dict = {}
+        if hasattr(self._db, "get_athletes_by_espn_ids"):
+            try:
+                by_espn = self._db.get_athletes_by_espn_ids(
+                    [r.player_id for r in missing]) or {}
+            except Exception as e:
+                logger.debug(f"[InjuryAggregator] ESPN id lookup failed: {e}")
+        rosters: dict[str, dict[str, dict | None]] = {}
+        for report in missing:
+            row = by_espn.get(str(report.player_id)) if isinstance(by_espn, dict) else None
+            team = normalize_team(report.team_id)
+            if row is None and team and hasattr(self._db, "get_athletes_by_team"):
+                if team not in rosters:
+                    names: dict[str, dict | None] = {}
+                    try:
+                        for a in self._db.get_athletes_by_team(team) or []:
+                            key = norm_name(a.get("full_name"))
+                            if key:
+                                # Two athletes of one name: no guess.
+                                names[key] = None if key in names else a
+                    except Exception as e:
+                        logger.debug(f"[InjuryAggregator] roster lookup failed for {team}: {e}")
+                    rosters[team] = names
+                row = rosters[team].get(norm_name(report.player_name))
+            if isinstance(row, dict) and row.get("position"):
+                report.position = row["position"]
 
     def _get_cached_injuries(
         self,
@@ -910,15 +920,93 @@ async def get_injury_reports(
         return [inj.to_dict() for inj in injuries]
 
 
-async def crawl_injury_reports(teams: list[str] | None = None) -> tuple[list[dict], set[str]]:
-    """A fresh (uncached) crawl plus the teams it covered completely.
+def _game_status(details: dict) -> str | None:
+    """ESPN's roster designation for a report (``details.fantasyStatus``).
+
+    Says what the status alone does not: ``Out`` with ``PUP-R`` is a reserve
+    list, not a one-week absence. All-caps words ("QUESTIONABLE") are shown in
+    the canonical spelling; list codes ("PUP-R") as sent.
+    """
+    fantasy = details.get("fantasyStatus") if isinstance(details, dict) else None
+    value = (fantasy or {}).get("description") if isinstance(fantasy, dict) else None
+    if not value or not isinstance(value, str):
+        return None
+    value = value.strip()
+    if value.isalpha() and value.isupper():
+        return injury_status.normalize(value) or value.title()
+    return value
+
+
+def open_report_counts(db) -> dict[str, int]:
+    """``{team: stored reports that are not healthy}`` -- what a prune would clear."""
+    counts: dict[str, int] = {}
+    if db is None or not hasattr(db, "get_all_current_injuries"):
+        return counts
+    try:
+        rows = db.get_all_current_injuries() or []
+    except Exception as e:
+        logger.debug(f"[InjuryAggregator] stored reports unavailable: {e}")
+        return counts
+    for row in rows:
+        team = row.get("team_id")
+        if team and not injury_status.is_healthy(row.get("injury_status")):
+            counts[team] = counts.get(team, 0) + 1
+    return counts
+
+
+def prunable_teams(complete: set[str], empty: set[str],
+                   prior_open: dict[str, int] | None = None) -> set[str]:
+    """The teams a crawl may prune, from those it covered completely.
+
+    A complete team with an empty list used to count as "everyone recovered",
+    so an ESPN outage serving empty lists marked every injured player Active.
+    Now: more than ``MAX_EMPTY_TEAMS_PER_CRAWL`` empty teams in one crawl and
+    nothing is pruned; otherwise an empty team is pruned only if it had at
+    most ``EMPTY_TEAM_MAX_PRIOR_OPEN`` open reports (its last injured player
+    recovering, while the rest of the league still reports).
+    """
+    complete = set(complete)
+    empty = set(empty) & complete
+    if len(empty) > MAX_EMPTY_TEAMS_PER_CRAWL:
+        logger.warning(
+            f"[InjuryAggregator] {len(empty)} teams returned no injury reports "
+            f"({', '.join(sorted(empty))}); treating it as a feed outage, nothing pruned"
+        )
+        return set()
+    prior_open = prior_open or {}
+    held = {t for t in empty if prior_open.get(t, 0) > EMPTY_TEAM_MAX_PRIOR_OPEN}
+    if held:
+        logger.warning(
+            "[InjuryAggregator] empty injury list for "
+            + ", ".join(f"{t} ({prior_open[t]} open)" for t in sorted(held))
+            + "; not pruned"
+        )
+    return complete - held
+
+
+async def crawl_injury_reports(teams: list[str] | None = None,
+                               db=None) -> tuple[list[dict], set[str]]:
+    """A fresh (uncached) crawl plus the teams it may prune.
 
     For the prefetch, which prunes reports a crawl no longer lists: only the
-    returned teams may be pruned, including those with no reports left.
+    returned teams may be pruned, including those with no reports left (see
+    ``prunable_teams``). ``db`` (default: the shared database) is read for the
+    stored-name fallback, positions and the prior open reports -- never
+    written: the caller persists.
     """
-    async with InjuryAggregator() as aggregator:
+    if db is None:
+        try:
+            from .database import get_shared_db
+            db = get_shared_db()
+        except Exception as e:
+            logger.debug(f"[InjuryAggregator] shared database unavailable: {e}")
+            db = None
+    async with InjuryAggregator(db=db, persist=False) as aggregator:
         injuries = await aggregator.fetch_all_injuries(teams, use_cache=False)
-        return [inj.to_dict() for inj in injuries], set(aggregator.complete_teams)
+        complete = set(aggregator.complete_teams)
+        empty = set(aggregator.empty_teams) & complete
+        prior = open_report_counts(db) if empty else {}
+        return [inj.to_dict() for inj in injuries], prunable_teams(complete, empty, prior)
 
 
 async def get_player_injury_report(

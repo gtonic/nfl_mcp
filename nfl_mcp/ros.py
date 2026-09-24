@@ -341,7 +341,26 @@ def _per_game(proj: dict, position: str, model) -> tuple[float, str, float | Non
     return round(float(base) * usage, 2), source, None
 
 
-def _inherited(proj: dict) -> tuple[float, int]:
+def _starter_absence(entry, today: date | None = None) -> int:
+    """Games an absent starter is expected to miss, from an ``inherited_from``
+    value: a status string, or ``{status, description, return_date,
+    placed_on}`` (see ``projections._absence_detail``)."""
+    if not isinstance(entry, dict):
+        return expected_absence(entry, today=today)[0]
+    placed = entry.get("placed_on")
+    if isinstance(placed, str):
+        try:
+            placed = date.fromisoformat(placed[:10])
+        except ValueError:
+            placed = None
+    status = entry.get("status")
+    if not is_reserve(status) and is_reserve(entry.get("game_status")):
+        status = entry.get("game_status")
+    return expected_absence(status, entry.get("description"), entry.get("return_date"),
+                            today, placed_on=placed)[0]
+
+
+def _inherited(proj: dict, today: date | None = None) -> tuple[float, int]:
     """``(points_per_game, team_games)`` inherited from absent starters.
 
     The weekly base includes a share of an out teammate's volume; ROS used to
@@ -354,7 +373,7 @@ def _inherited(proj: dict) -> tuple[float, int]:
     if own is None or base is None or bd.get("base_source") != "opportunity":
         return 0.0, 0
     bump = max(0.0, float(base) - float(own)) * float(bd.get("usage_mult") or 1.0)
-    games = max((expected_absence(s)[0] for s in (bd.get("inherited_from") or {}).values()),
+    games = max((_starter_absence(s, today) for s in (bd.get("inherited_from") or {}).values()),
                 default=1)
     return round(bump, 2), games
 
@@ -505,7 +524,7 @@ async def ros_projections(
         proj = now_proj.get(key) or {}
         rate_src = rate_proj.get(key) or proj
         per_game, source, prior_weight = _per_game(rate_src, p["position"], model)
-        inherited, inherited_games = _inherited(rate_src)
+        inherited, inherited_games = _inherited(rate_src, today)
         injury = p.get("injury") or {}
         absent, absence_reason = expected_absence(
             injury.get("status"), injury.get("description"), injury.get("return_date"), today,

@@ -40,8 +40,8 @@ def _espn_team(team_id: str) -> str:
 
 # ESPN's team injury list is each player's *latest* report ever filed, so most
 # of it is players who are healthy again ("Active") and a tail of reports from
-# earlier seasons. Neither is an injury.
-_HEALTHY_STATUSES = frozenset({"active", "healthy"})
+# earlier seasons. Neither is an injury. "Healthy" is the shared vocabulary's
+# (injury_status): Active, Probable, FP.
 # A report this old is from a previous season unless it names a return date
 # still ahead (a season-ending IR placement filed in the summer).
 _STALE_REPORT_DAYS = 180
@@ -65,7 +65,8 @@ def _parse_when(value: Any) -> datetime | None:
 def _is_current_injury(status: str | None, date: Any, return_date: Any = None,
                        now: datetime | None = None) -> bool:
     """Whether a report describes an injury that is still open."""
-    if (status or "").strip().lower() in _HEALTHY_STATUSES:
+    from .injury_status import is_healthy
+    if is_healthy(status):
         return False
     now = now or datetime.now(UTC)
     reported = _parse_when(date)
