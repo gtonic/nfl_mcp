@@ -21,8 +21,8 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "fastmcp>=4.0.3",
-    "uvicorn>=0.52.4",
+    "fastmcp>=4.0.5",
+    "uvicorn>=0.53.0",
     "httpx>=0.28.1,<1",
     "beautifulsoup4>=4.15.0",
     "lxml>=6.1.3",
