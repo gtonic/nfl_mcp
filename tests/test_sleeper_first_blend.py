@@ -126,9 +126,10 @@ class TestEngine:
         assert wr["floor"] == round(wr["projected_points"] * (1 - projections._VOLATILITY["WR"]), 1)
         assert wr["blend_weights"] == {"model": 0.25, "sleeper": 0.75}
 
-        # Listed without points: pulled down to a quarter of ours.
+        # Listed without points: Sleeper does not expect him to play -> zero.
         assert qb["sleeper_projection"] == 0.0 and qb["projection_source"] == "sleeper_blend"
-        assert qb["projected_points"] == round(0.25 * qb["model_projection"], 1)
+        assert qb["model_projection"] > 0 and qb["projected_points"] == 0.0
+        assert qb["blend_weights"] == {"model": 0.0, "sleeper": 1.0}
 
         # Not in Sleeper's list at all: our model alone, and said so.
         assert te["projection_source"] == "model_only"

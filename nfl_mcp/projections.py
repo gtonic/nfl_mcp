@@ -981,7 +981,7 @@ async def _apply_sleeper_blend(projections: list[dict], inputs: list[dict],
             missing.append(proj.get("player") or "?")
             continue
         inj = float(bd.get("injury_mult", 1.0))
-        blended = sp.blend(ours, theirs, availability(proj.get("injury_status")), inj)
+        blended = sp.blend(ours, theirs, availability(proj.get("injury_status")), inj, status)
         vol = _VOLATILITY.get((proj.get("position") or "").upper(), 0.35)
         proj.update({
             "projected_points": blended,
@@ -989,7 +989,7 @@ async def _apply_sleeper_blend(projections: list[dict], inputs: list[dict],
             "ceiling": 0.0 if blended == 0 else round(blended * (1 + vol), 1),
             "sleeper_projection": theirs,
             "projection_source": "sleeper_blend",
-            "blend_weights": dict(sp.BLEND_WEIGHTS),
+            "blend_weights": sp.weights_for(status),
         })
         sources["sleeper_blend"] += 1
     warnings = []

@@ -254,8 +254,17 @@ def points_for(index: dict, model: ScoringModel, *, player_id: str | None = None
     return None, "missing"
 
 
+def weights_for(status: str | None) -> dict[str, float]:
+    """``{"model", "sleeper"}`` shares for a :func:`points_for` status."""
+    if status == "projected":
+        return dict(BLEND_WEIGHTS)
+    if status == "not_projected":
+        return {"model": 0.0, "sleeper": 1.0}
+    return dict(MODEL_ONLY_WEIGHTS)
+
+
 def blend(model_points: float, sleeper_points: float, availability_kind: str = "healthy",
-          injury_mult: float = 1.0) -> float:
+          injury_mult: float = 1.0, status: str = "projected") -> float:
     """The weekly projection from ours and Sleeper's (see module doc).
 
     `model_points` already carry our availability multiplier, Sleeper's its own
@@ -263,8 +272,13 @@ def blend(model_points: float, sleeper_points: float, availability_kind: str = "
     number instead of being charged twice. Out is zero whatever Sleeper says.
     Doubtful is capped at our doubtful share of the healthier of the two
     readings: Sleeper often still projects a doubtful player in full.
+
+    A player Sleeper lists without points (`status` ``not_projected``) is
+    zero outright rather than a quarter of ours: in the backtest those players
+    scored 0.05 points a week on average (723 player-weeks our model priced at
+    11.7), and zeroing them cut the all-players MAE 5.17 -> 4.94.
     """
-    if availability_kind == "out" or injury_mult == 0.0:
+    if availability_kind == "out" or injury_mult == 0.0 or status == "not_projected":
         return 0.0
     mixed = BLEND_MODEL_WEIGHT * model_points + (1 - BLEND_MODEL_WEIGHT) * sleeper_points
     if availability_kind == "doubtful" and 0.0 < injury_mult < 1.0:

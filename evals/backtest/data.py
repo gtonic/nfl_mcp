@@ -144,9 +144,15 @@ def load_games(season: int, use_cache: bool = True) -> dict:
         wind_raw = (row.get("wind") or "").strip()
         wind = _to_float(wind_raw) if wind_raw else None
         roof = (row.get("roof") or "").strip().lower()
-        info = {"wind": wind, "roof": roof}
+        # Closing Vegas line -> each side's implied team total (None without one).
+        try:
+            total, spread = float(row["total_line"]), float(row["spread_line"])
+            implied = {"home_team": (total + spread) / 2, "away_team": (total - spread) / 2}
+        except (KeyError, TypeError, ValueError):
+            implied = {}
         for side in ("home_team", "away_team"):
             team = _TEAM_FIX.get((row.get(side) or "").upper(), (row.get(side) or "").upper())
             if team:
-                out[(int(season), int(wk), team)] = info
+                out[(int(season), int(wk), team)] = {"wind": wind, "roof": roof,
+                                                     "implied": implied.get(side)}
     return out
