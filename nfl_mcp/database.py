@@ -1502,14 +1502,15 @@ class NFLDatabase:
         With ``season``/``week``: that week's report, read together with
         ``week + 1`` — a short-week team's NFL.com report is stored under the
         next week while Sleeper's counter still shows this one on Monday and
-        Tuesday (its ESPN notes land under this one). Without: days since this
+        Tuesday (its ESPN notes land under this one). Only for the current
+        week: a past week's lookup reads that week alone. Without: days since this
         practice week's Monday (the previous Tuesday on a Monday, so a Monday
         night team keeps its Thu-Sat report). Either way only the latest
         practice week among the rows is returned, so last week's Friday never
         passes for this week's Wednesday.
         """
         from .opportunity_tools import norm_name
-        from .practice_reports import latest_practice_week
+        from .practice_reports import latest_practice_week, reads_next_week
 
         name_key = norm_name(player_name)
         team = normalize_team(team)
@@ -1524,7 +1525,9 @@ class NFLDatabase:
                         WHERE name_key=? AND team=? AND season=? AND week IN (?, ?)
                         ORDER BY date ASC
                         """,
-                        (name_key, team, int(season), int(week), int(week) + 1),
+                        # week + 1 only for the current week (reads_next_week).
+                        (name_key, team, int(season), int(week),
+                         int(week) + 1 if reads_next_week(self, season, week) else int(week)),
                     )
                 else:
                     from .practice_reports import practice_week_start, to_eastern
@@ -2042,14 +2045,15 @@ class NFLDatabase:
         different player whose ESPN id happens to be the same number.
         """
         # Deferred: both modules pull in the wider tool stack.
-        from .injury_match import build_injury_index, find_report
+        from .injury_match import build_injury_index, find_report, team_names_from
         from .teams import normalize_team
 
         team = normalize_team(team_id)
         if not player_name or not team:
             return None
         rows = self.get_team_injuries_from_cache(team, max_age_hours)
-        return find_report({"full_name": player_name}, build_injury_index(rows), team)
+        return find_report({"full_name": player_name},
+                           build_injury_index(rows, team_names_from(self)), team)
 
     def add_injury_history(self, player_id: str, team_id: str, status: str, injury_type: str | None = None) -> bool:
         """Add entry to injury history for trend analysis.
@@ -2786,6 +2790,31 @@ class NFLDatabase:
                     athlete_dict = dict(row)
                     results[athlete_dict['id']] = athlete_dict
 
+        return results
+
+    def get_athletes_by_espn_ids(self, espn_ids: list[str]) -> dict[str, dict]:
+        """``{espn_id: athlete row}`` for the Sleeper athletes carrying these ESPN ids.
+
+        Sleeper's player payload (``raw``) names each player's ESPN id, which is
+        the one exact join between the two id spaces (see ``injury_match``).
+        """
+        wanted = {str(i) for i in espn_ids or [] if i}
+        if not wanted:
+            return {}
+        results: dict[str, dict] = {}
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT id, full_name, team_id, position, "
+                    "CAST(json_extract(raw, '$.espn_id') AS TEXT) AS espn_id "
+                    "FROM athletes WHERE json_extract(raw, '$.espn_id') IS NOT NULL"
+                )
+                for row in cursor.fetchall():
+                    d = dict(row)
+                    if d.get("espn_id") in wanted:
+                        results[d["espn_id"]] = d
+        except Exception as e:
+            logger.debug(f"get_athletes_by_espn_ids failed: {e}")
         return results
 
     def get_athletes_by_team(self, team_id: str) -> list[dict]:

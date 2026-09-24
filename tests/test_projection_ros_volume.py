@@ -82,7 +82,7 @@ class TestInheritedVolumeIsShared:
             values, {}, {}, index, 3, 1.0, _depth_map(values), _out("WR One"))
         bd = got["breakdown"]
         assert bd["own_base_ppg"] < bd["base_ppg"]
-        assert bd["inherited_from"] == {"WR One": "Out"}
+        assert bd["inherited_from"] == {"WR One": {"status": "Out"}}
 
 
 class TestRosInheritedVolume:

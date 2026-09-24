@@ -2558,18 +2558,16 @@ def _allow_uncached_injury_crawl(team_list) -> tuple[bool, str | None]:
     return False, None
 
 
-_HEALTHY_REPORT_STATUSES = frozenset({"active", "healthy", "probable", "fp"})
-
-
 def _is_healthy_report(row: dict) -> bool:
     """An injury-report row that says the player is healthy (severity 1).
 
     "Unknown" (ESPN sent no status) is kept: it is not a clean bill of health.
     """
-    status = str(row.get("injury_status") or "").strip().lower()
-    if status == "unknown":
+    from .injury_status import is_healthy, normalize
+    status = row.get("injury_status")
+    if normalize(status) == "Unknown":
         return False
-    if status in _HEALTHY_REPORT_STATUSES:
+    if is_healthy(status):
         return True
     sev = row.get("severity")
     return isinstance(sev, int | float) and sev <= 1
@@ -2641,7 +2639,7 @@ async def get_injury_trends(
     """
     from datetime import UTC, datetime, timedelta
 
-    from .injury_service import DEFAULT_SEVERITY, STATUS_SEVERITY
+    from .injury_service import DEFAULT_SEVERITY, STATUS_SEVERITY, status_severity
 
     try:
         hours = max(1, min(int(lookback_hours or 168), 24 * 30))
@@ -2659,11 +2657,11 @@ async def get_injury_trends(
         changes = []
         for row in rows:
             prev = row.get("previous_status")
-            new_sev = int(STATUS_SEVERITY.get(row.get("injury_status"), DEFAULT_SEVERITY))
+            new_sev = status_severity(row.get("injury_status")) or int(DEFAULT_SEVERITY)
             if prev is None:
                 row_direction, delta = "new", None
             else:
-                old_sev = int(STATUS_SEVERITY.get(prev, DEFAULT_SEVERITY))
+                old_sev = status_severity(prev) or int(DEFAULT_SEVERITY)
                 delta = new_sev - old_sev
                 # Same severity bucket with a different label (e.g. a changed
                 # body part) is a re-report, not a move in either direction.
@@ -2821,6 +2819,9 @@ async def get_gameday_inactives(
             "official_published_teams": published,
             "pending_teams": pending,
             "games": official.get("games") or {},
+            # Which feeds answered, and how current the Sleeper read was.
+            "sources_checked": official.get("sources_checked") or [],
+            "sleeper_freshness": official.get("sleeper_freshness"),
             "confirmed_active": [
                 {"player_name": r["player_name"], "team_id": r["team_id"], "note": r.get("note")}
                 for r in official.get("confirmed_active") or []

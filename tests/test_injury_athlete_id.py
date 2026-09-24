@@ -71,7 +71,8 @@ class TestEspnInjuryParsingProducesRecords:
         class MockClient:
             async def get(self, url, **kwargs):
                 for key, payload in responses.items():
-                    if key in url:
+                    # safe_espn_ref upgrades the feed's http refs to https.
+                    if key.split("://")[-1] in url:
                         return MockResponse(payload)
                 return MockResponse({"count": 0, "pageCount": 1, "items": []})
 
