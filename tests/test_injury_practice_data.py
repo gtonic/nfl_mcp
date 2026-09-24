@@ -311,36 +311,69 @@ class TestInactivesFromStoredAthletes:
     def _sleeper_calls(self, client):
         return [c for c in client.get.await_args_list if "sleeper" in c.args[0]]
 
-    @pytest.mark.asyncio
-    async def test_stored_athletes_are_read_instead_of_the_dump(self):
+    def _db(self, updated_at):
         db = MagicMock()
         db.get_week_kickoffs = MagicMock(return_value={"JAX": KICKOFF.isoformat()})
         db.get_athletes_by_team = MagicMock(return_value=[
-            {"id": "1", "team_id": "JAX", "raw": json.dumps(
+            {"id": "1", "team_id": "JAX", "updated_at": updated_at.isoformat(), "raw": json.dumps(
                 {"full_name": "A B", "team": "JAX", "injury_status": "Inactive"})},
-            {"id": "2", "team_id": "JAX", "raw": json.dumps(
+            {"id": "2", "team_id": "JAX", "updated_at": updated_at.isoformat(), "raw": json.dumps(
                 {"full_name": "C D", "team": "JAX", "injury_status": None})},
         ])
+        return db
+
+    @pytest.mark.asyncio
+    async def test_fresh_stored_athletes_are_read_instead_of_the_dump(self):
+        now = KICKOFF - timedelta(minutes=60)
         client = self._client()
-        out = await gi.get_official_inactives(db, 2026, 2, now=KICKOFF - timedelta(minutes=60),
-                                              client=client)
+        out = await gi.get_official_inactives(self._db(now - timedelta(minutes=10)), 2026, 2,
+                                              now=now, client=client)
         assert [r["player_name"] for r in out["inactives"]] == ["A B"]
         assert gi.SOURCE_SLEEPER in out["sources_checked"]
+        assert out["sleeper_freshness"]["source"] == "stored_athletes"
+        assert out["sleeper_freshness"]["age_minutes"] == 10.0
         assert self._sleeper_calls(client) == []
 
     @pytest.mark.asyncio
-    async def test_dump_fallback_is_fetched_once_a_day(self):
+    async def test_a_daily_copy_is_not_trusted_inside_the_window(self):
+        """Sleeper sets Inactive ~90 minutes before kickoff; this morning's
+        copy cannot show it, so the dump is fetched instead."""
+        now = KICKOFF - timedelta(minutes=60)
+        payload = {"9": {"full_name": "Late Scratch", "team": "JAX", "injury_status": "Inactive"}}
+        client = self._client(payload)
+        out = await gi.get_official_inactives(self._db(now - timedelta(hours=8)), 2026, 2,
+                                              now=now, client=client)
+        assert [r["player_name"] for r in out["inactives"]] == ["Late Scratch"]
+        assert out["sleeper_freshness"]["source"] == "sleeper_dump"
+        assert len(self._sleeper_calls(client)) == 1
+
+    @pytest.mark.asyncio
+    async def test_sleeper_not_claimed_when_nothing_fresh(self):
+        now = KICKOFF - timedelta(minutes=60)
+        client = self._client({})  # the dump fetch returns nothing usable
+        out = await gi.get_official_inactives(self._db(now - timedelta(hours=8)), 2026, 2,
+                                              now=now, client=client)
+        assert gi.SOURCE_SLEEPER not in out["sources_checked"]
+        assert out["sleeper_freshness"] is None
+        assert out["inactives"] == []
+
+    @pytest.mark.asyncio
+    async def test_dump_fallback_is_fetched_once_per_ttl(self):
         db = MagicMock()
         db.get_week_kickoffs = MagicMock(return_value={"JAX": KICKOFF.isoformat()})
         db.get_athletes_by_team = MagicMock(return_value=[])
         payload = {"1": {"full_name": "A B", "team": "JAX", "injury_status": "Inactive"}}
         client = self._client(payload)
         now = KICKOFF - timedelta(minutes=60)
-        for minutes in (0, 30):
+        for minutes in (0, 20):
             out = await gi.get_official_inactives(db, 2026, 2, now=now + timedelta(minutes=minutes),
                                                   client=client)
             assert [r["player_name"] for r in out["inactives"]] == ["A B"]
         assert len(self._sleeper_calls(client)) == 1
+        # Past the TTL the dump is fetched again.
+        await gi.get_official_inactives(db, 2026, 2, now=now + gi.SLEEPER_FRESH_TTL
+                                        + timedelta(minutes=1), client=client)
+        assert len(self._sleeper_calls(client)) == 2
 
 
 # 12 --------------------------------------------------------------------------

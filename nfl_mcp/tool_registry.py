@@ -2819,6 +2819,9 @@ async def get_gameday_inactives(
             "official_published_teams": published,
             "pending_teams": pending,
             "games": official.get("games") or {},
+            # Which feeds answered, and how current the Sleeper read was.
+            "sources_checked": official.get("sources_checked") or [],
+            "sleeper_freshness": official.get("sleeper_freshness"),
             "confirmed_active": [
                 {"player_name": r["player_name"], "team_id": r["team_id"], "note": r.get("note")}
                 for r in official.get("confirmed_active") or []
