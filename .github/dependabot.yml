@@ -21,3 +21,11 @@ updates:
       github-actions:
         patterns: ["*"]
     labels: ["dependencies", "ci"]
+
+  # Base image of the Dockerfile (python:3.13-slim)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "docker"]
