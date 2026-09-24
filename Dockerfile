@@ -12,7 +12,7 @@
 # ---------------------------------------------------------------------------
 
 # ---- Build stage -----------------------------------------------------------
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -49,7 +49,7 @@ COPY . .
 RUN pip install --no-cache-dir --no-deps -e . && pip check
 
 # ---- Runtime stage ---------------------------------------------------------
-FROM python:3.13-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # NFL_MCP_HOST: the server binds loopback by default; inside the container it
 # must listen on all interfaces so the published port reaches it. Publish it
