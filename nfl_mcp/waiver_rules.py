@@ -182,8 +182,9 @@ def waiver_status(
 
     Returns ``{on_waivers, reason, clears_at, clears_at_local, instant_add,
     claim_processes_at, claim_processes_at_local, in_time_for_kickoff,
-    estimated}``. ``claim_processes_at`` is when an add actually lands — now
-    for a free agent — and ``in_time_for_kickoff`` whether that is before this
+    estimated}``. ``claim_processes_at`` is when a claim actually lands — null
+    for a free agent, whose add is instant (``claim_processes_at_local``
+    "instant") — and ``in_time_for_kickoff`` whether that is before this
     week's game (None without a kickoff, False once it has started).
     """
     now = now or datetime.now(UTC)
@@ -222,14 +223,17 @@ def waiver_status(
         in_time = False
     else:
         in_time = processes < kickoff
+    instant = known and not holds
     return {
         "on_waivers": bool(holds) if known else None,
         "reason": reason,
         "clears_at": clears_at.isoformat() if clears_at else None,
         "clears_at_local": local_time(clears_at),
-        "instant_add": known and not holds,
-        "claim_processes_at": processes.isoformat() if processes else None,
-        "claim_processes_at_local": local_time(processes),
+        "instant_add": instant,
+        # A free agent is not claimed; "now" as a processing time read like a
+        # pending waiver run.
+        "claim_processes_at": None if instant else (processes.isoformat() if processes else None),
+        "claim_processes_at_local": "instant" if instant else local_time(processes),
         "in_time_for_kickoff": in_time,
         "estimated": True,
     }
@@ -380,6 +384,8 @@ def priority_strategy(
 
     status = waiver_status(league, kickoff=kickoff, previous_kickoff=previous_kickoff,
                            dropped_at=dropped_at, now=now)
+    if status["instant_add"]:
+        cost = 0  # a free-agent add uses no claim, so it costs no places
     wait_days = None
     wait_for = "until he clears"
     if status["clears_at"]:

@@ -191,6 +191,22 @@ def _outvalues(target: dict, drop: dict) -> bool:
     return _value_of(drop) == 0 and target.get("upgrade_points", 0.0) >= _MEANINGFUL_UPGRADE
 
 
+def _worth_text(p: dict, points: bool = False) -> str:
+    """"value N, P pts, R ROS" — the market value only when there is one: a
+    player the market does not price (a kicker, a deep bench body) read as
+    "value 0", which looked like a real price."""
+    parts = []
+    if p.get("value") is not None:
+        parts.append(f"value {int(p['value'])}")
+    else:
+        parts.append("no market value")
+    if points:
+        parts.append(f"{p.get('projected_points')} pts")
+    if _ros_of(p) is not None:
+        parts.append(f"{p['ros_total']} ROS")
+    return ", ".join(parts)
+
+
 def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
                set_starters: set[str], open_spots: int,
                locked_ids: set[str] | None = None) -> tuple[dict | None, str]:
@@ -215,12 +231,8 @@ def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
             return ({k: candidate.get(k) for k in (
                 "player_id", "name", "position", "projected_points", "value",
                 "ros_total")},
-                f"Drop {candidate['name']} (value {int(_value_of(candidate))}, "
-                f"{candidate.get('projected_points')} pts"
-                + (f", {candidate['ros_total']} ROS" if _ros_of(candidate) is not None else "")
-                + f") — worth less than {target['name']} (value {int(_value_of(target))}"
-                + (f", {target['ros_total']} ROS" if _ros_of(target) is not None else "")
-                + ").")
+                f"Drop {candidate['name']} ({_worth_text(candidate, points=True)}) — "
+                f"worth less than {target['name']} ({_worth_text(target) or 'more'}).")
         break  # the least-valuable bench player is worth more; the rest are too
     return None, (
         f"Nobody on your bench is worth less than {target['name']} rest-of-season "
@@ -474,10 +486,15 @@ async def get_waiver_targets(
         fmt = league_format_from_settings(league)
         values = await service.get_values(
             fmt["ppr"], fmt["num_qbs"], fmt["num_teams"], fmt["is_dynasty"])
+        # Scaled by this league's scoring beyond PPR, exactly as
+        # recommend_faab_bid does, so both tools quote one value per player.
+        model = fmt.get("scoring_model")
         for p in (*mine_scored, *pool_scored):
             hit = service.lookup(values, player_id=p.get("player_id"),
                                  name=p.get("name"), position=p.get("position"))
-            p["value"] = int(hit["value"]) if hit and hit.get("value") is not None else None
+            mult = model.value_multiplier(p.get("position")) if model is not None else 1.0
+            p["value"] = (int(round(float(hit["value"]) * mult))
+                          if hit and hit.get("value") is not None else None)
         values_ok = bool((values or {}).get("list"))
     except Exception as e:
         logger.warning(f"player values unavailable for waiver drops: {e}")
@@ -634,6 +651,17 @@ async def get_waiver_targets(
         target["drop"] = drop
         target["drop_note"] = note
 
+    # Worth a claim: what the waiver strategy says to act on (claim now / add
+    # now); in a FAAB league, a real lineup upgrade. Speculative adds and
+    # "wait"/"dont_bother" targets are listed but not counted as claims.
+    worth_claim = [
+        t for t in top
+        if ((t.get("waiver_strategy") or {}).get("recommendation") in ("claim_now", "add_now")
+            if t.get("waiver_strategy") is not None else t["verdict"] == "upgrade")
+    ]
+    claimed = {id(t) for t in worth_claim}
+    speculative = [t for t in top if id(t) not in claimed and t["verdict"] == "speculative"]
+
     my_position = (mine.get("settings") or {}).get("waiver_position")
     my_position = my_position if isinstance(my_position, int) and my_position > 0 else None
 
@@ -714,14 +742,25 @@ async def get_waiver_targets(
         # strategy weighs both — the same rule as recommend_faab_bid.
         "horizon": "this_week",
         "horizons_reported": ["this_week", "rest_of_season"],
+        # Why two players with the same ROS total can carry different ros_gain.
+        "ros_gain_explained": (
+            "ros_gain sums, week by week, how much he would raise your best lineup: "
+            "only the weeks he outscores the starter he would replace count. Two "
+            "players with equal ROS totals differ when their byes and good weeks "
+            "fall on different weeks relative to your current starter."
+        ),
         "method": (
             "free agents (nobody in the league rosters them) projected for the "
             "coming week in this league's scoring, ranked by how many points they "
             "add to your best legal starting lineup (FLEX included)"
         ),
+        "claims_worth_making": len(worth_claim),
+        "speculative_listed": len(speculative),
         "message": (
-            (f"{len(top)} claim(s) worth making from {len(pool_scored)} free agents "
-             f"in week {week}."
+            (f"{len(worth_claim)} worth a claim, {len(speculative)} speculative"
+             + (f", {len(top) - len(worth_claim) - len(speculative)} to wait on or skip"
+                if len(top) > len(worth_claim) + len(speculative) else "")
+             + f" (from {len(pool_scored)} free agents) in week {week}."
              if top else
              # An honest "nothing here" beats a ranked list of players who would
              # all make the lineup worse.

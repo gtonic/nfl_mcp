@@ -188,6 +188,10 @@ class TestWaiverTargets:
         weak = next(t for t in out["targets"] if t["name"] == "Free Weak WR")
         assert weak["verdict"] == "speculative"
         assert weak["trending_adds"] == 900
+        # A speculative add is listed but not counted as a claim worth making.
+        assert out["speculative_listed"] >= 1
+        assert out["claims_worth_making"] + out["speculative_listed"] <= len(out["targets"])
+        assert f"{out['claims_worth_making']} worth a claim" in out["message"]
 
     @pytest.mark.asyncio
     async def test_hype_alone_does_not_make_a_worse_player_a_claim(self, db, monkeypatch):

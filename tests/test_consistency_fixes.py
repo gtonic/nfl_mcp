@@ -372,3 +372,71 @@ class TestTradeFinderDepth:
         # Superflex: a QB fits two seats.
         assert not _over_depth(mine, {"position": "WR"}, {"position": "QB"},
                                {**slots, "SUPER_FLEX": 1})
+
+
+class TestFaabConsistency:
+    @pytest.mark.asyncio
+    async def test_non_faab_has_no_bid_and_gain_text_follows_horizons(self, monkeypatch):
+        from nfl_mcp import faab_tools as ft
+        from nfl_mcp import ros
+        from tests.test_waiver_horizons import _ros_mock, _Values
+        monkeypatch.setattr(ros, "ros_for_ids", _ros_mock(12.0))
+
+        async def _league(_):
+            return {"success": True, "league": {
+                "scoring_settings": {"rec": 0.5}, "total_rosters": 12,
+                "roster_positions": ["QB", "RB", "RB", "WR", "WR", "BN", "BN"],
+                "settings": {"type": 0, "waiver_type": 0}}}
+
+        async def _rosters(_):
+            return {"success": True, "rosters": [
+                {"roster_id": 7, "players": ["m1", "m2", "m3"], "players_enriched": []}]}
+
+        async def _state():
+            return {"success": True, "nfl_state": {"week": 3, "season": 2026}}
+
+        async def _empty(*a, **k):
+            return {"success": True, "trending_players": [], "transactions": []}
+
+        monkeypatch.setattr(ft, "get_league", _league)
+        monkeypatch.setattr(ft, "get_rosters", _rosters)
+        monkeypatch.setattr(ft, "get_nfl_state", _state)
+        monkeypatch.setattr(ft, "get_trending_players", _empty)
+        monkeypatch.setattr(ft, "get_transactions", _empty)
+        monkeypatch.setattr(ft, "get_values_service", lambda *_a, **_k: _Values())
+
+        class _DB:
+            pass
+
+        res = await ft.recommend_faab_bid("L", player_id="f1", my_roster_id=7, db=_DB())
+        rec = res["recommendation"]
+        assert rec["bid_pct"] is None and rec["range_pct"] is None
+        assert rec["range_absolute"] is None
+        assert rec["upgrade_basis"] == "lineup_points"
+        assert rec["horizons"]["ros_gain"] > 0
+        assert not any("not an upgrade" in w for w in rec["warnings"])
+        assert any("Lineup gain for you" in r for r in rec["reasoning"])
+        assert res["message"].startswith("Non-FAAB league")
+
+
+class TestWaiverWording:
+    def test_worth_text_omits_missing_value(self):
+        from nfl_mcp.waiver_target_tools import _worth_text
+        assert _worth_text({"value": None, "projected_points": 6.0}, points=True) == \
+            "no market value, 6.0 pts"
+        assert _worth_text({"value": 812.4}) == "value 812"
+
+    def test_free_agent_claim_is_instant_and_costs_nothing(self):
+        from datetime import UTC, datetime, timedelta
+
+        from nfl_mcp.waiver_rules import priority_strategy, waiver_status
+        now = datetime(2026, 9, 24, 12, tzinfo=UTC)
+        league = {"settings": {"waiver_type": 0}, "total_rosters": 12}
+        status = waiver_status(league, kickoff=now + timedelta(days=3), now=now)
+        assert status["instant_add"] is True
+        assert status["claim_processes_at"] is None
+        assert status["claim_processes_at_local"] == "instant"
+        assert status["in_time_for_kickoff"] is True
+        out = priority_strategy(league, {"settings": {"waiver_position": 3}}, worth="high",
+                                demand="low", kickoff=now + timedelta(days=3), now=now)
+        assert out["recommendation"] == "add_now" and out["claim_cost_places"] == 0
