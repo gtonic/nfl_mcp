@@ -31,21 +31,27 @@ async def load_roster_players(
     excluded, reserve (IR) players unless ``include_reserve``.
     """
     from . import sleeper_tools
-    from .briefing_tools import find_roster
     from .lineup_slots import starting_slot_list
+    from .sleeper_tools import find_roster
     from .week_context import current_season_week, week_opponents, week_schedule
 
     if week is None or season is None:
         current = await current_season_week(db)
         week = week or current["week"]
         season = season or current["season"]
-    league_resp, rosters_resp = await asyncio.gather(
-        sleeper_tools.get_league(league_id), sleeper_tools.get_rosters(league_id))
+    league_resp, roster_state = await asyncio.gather(
+        sleeper_tools.get_league(league_id), sleeper_tools.load_rosters(league_id, "lineup"))
     league = (league_resp or {}).get("league") or {}
-    rosters = (rosters_resp or {}).get("rosters") or []
-    base = {"league": league, "season": season, "week": week, "players": [], "starters": []}
+    rosters = roster_state["rosters"]
+    # A cached snapshot still says who is on the roster; it is flagged, not refused.
+    base = {"league": league, "season": season, "week": week, "players": [], "starters": [],
+            "stale": roster_state["stale"],
+            "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
+            "roster_warning": roster_state["warning"], "unknown_player_ids": []}
     if not league:
         return {**base, "error": f"Could not load league {league_id}."}
+    if roster_state["blocking_error"]:
+        return {**base, "error": roster_state["blocking_error"]}
     mine, error = find_roster(rosters, league_id, roster_id, user_id)
     if error:
         return {**base, "error": error}
@@ -61,6 +67,7 @@ async def load_roster_players(
     schedule = week_schedule(db, season, week) if db is not None else None
 
     players = []
+    unknown: list[str] = []
     for pid in ids:
         row = rows.get(pid) or {}
         team = normalize_team(row.get("team_id") or row.get("team"))
@@ -69,6 +76,9 @@ async def load_roster_players(
             position = "DEF"
         name = row.get("full_name") or (team if position == "DEF" else None)
         if not name or not team or not position:
+            # On the roster but not placeable from the athlete cache (a new
+            # signing, a free agent): the seat is taken, just not analysable.
+            unknown.append(pid)
             continue
         opponent = opponents.get(team) or ("BYE" if schedule is not None else "")
         players.append({
@@ -80,7 +90,7 @@ async def load_roster_players(
     # to one with the league's slot list; `starters` is the players only.
     return {**base, "roster": mine, "roster_id": mine["roster_id"], "players": players,
             "starters": [p for p in starters if p and p != "0"], "starters_raw": starters,
-            "error": None}
+            "unknown_player_ids": unknown, "error": None}
 
 
 __all__ = ["load_roster_players"]

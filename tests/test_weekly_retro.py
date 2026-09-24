@@ -72,6 +72,10 @@ def league(monkeypatch, db):
     ]}))
     monkeypatch.setattr(sleeper_tools, "get_matchups",
                         AsyncMock(return_value={"matchups": _matchups()}))
+    # Week 2 is the last fully played one (a later week is refused).
+    monkeypatch.setattr(retro_tools, "last_completed_week",
+                        AsyncMock(return_value={"season": 2026, "week": 2,
+                                                "source": "nfl_state"}))
 
 
 def _log(db, points: dict[str, float], week=2, now="2026-09-13T12:00:00+00:00", key=KEY):
@@ -323,3 +327,25 @@ class TestMigrationV15:
             assert versions[:2] == [14, 15]
 
 
+class TestUnplayedWeeks:
+    @pytest.mark.asyncio
+    async def test_a_week_not_yet_completed_is_refused(self, league, db):
+        out = await retro_tools.get_weekly_retro("L", roster_id=7, week=3, season=2026)
+        assert out["success"] is False
+        assert out["last_completed_week"] == 2
+        assert "has not been completed" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_past_season_week_is_not_refused(self, league, db):
+        _log(db, {"qb": 18.0})
+        out = await retro_tools.get_weekly_retro("L", roster_id=7, week=5, season=2025,
+                                                 include_calibration=False)
+        assert "has not been completed" not in str(out.get("error"))
+
+    @pytest.mark.asyncio
+    async def test_calibration_ignores_logged_future_weeks(self, db):
+        _log(db, {"qb": 18.0}, week=2)
+        _log(db, {"qb": 18.0}, week=3)
+        cal = await retro_tools.league_calibration(
+            db, "L", 2026, KEY, 2, matchups_by_week={2: _matchups()})
+        assert cal["weeks"] == [2]

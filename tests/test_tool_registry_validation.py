@@ -51,6 +51,7 @@ class TestToolRegistryValidation:
         assert callable(get_cbs_projections)
         assert callable(get_cbs_expert_picks)
 
+    @pytest.mark.usefixtures("current_week_2026")
     @pytest.mark.asyncio
     async def test_basic_functionality(self):
         """Test that tools can be called without throwing syntax errors."""

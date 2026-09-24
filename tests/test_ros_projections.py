@@ -320,9 +320,12 @@ class TestPlayoffSwingRematch:
         seen: list[list[tuple[int, int]]] = []
         real = pt._simulate
 
-        def _spy(teams, schedule, playoff_teams, num_sims, sd, rng):
+        forced_seen: list = []
+
+        def _spy(teams, schedule, playoff_teams, num_sims, sd, rng, **kw):
             seen.append(list(schedule))
-            return real(teams, schedule, playoff_teams, num_sims, sd, rng)
+            forced_seen.append(kw.get("forced"))
+            return real(teams, schedule, playoff_teams, num_sims, sd, rng, **kw)
 
         with contextlib.ExitStack() as stack:
             for name, fn in (("get_league", L), ("get_rosters", R), ("get_league_users", U),
@@ -331,10 +334,14 @@ class TestPlayoffSwingRematch:
             res = await pt.get_playoff_odds("123", num_sims=200, seed=1, my_roster_id=4)
 
         assert res["this_week_swing"]["opponent_roster_id"] == 5
-        full, win_rest = seen[0], seen[1]
-        assert len(win_rest) == len(full) - 1
-        # The week-14 rematch is still to be played.
-        assert (4, 5) in win_rest
+        full, win_sched = seen[0], seen[1]
+        # This week's game stays in the schedule with its winner pinned (so
+        # both teams keep their median-game draw); nothing else is decided.
+        assert win_sched == full
+        (idx, winner), = forced_seen[1].items()
+        assert winner == 4 and set(full[idx]) == {4, 5}
+        # The week-14 rematch is still to be played, unpinned.
+        assert full.count((4, 5)) + full.count((5, 4)) >= 2
 
 
 class TestTradeFinderRos:

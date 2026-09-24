@@ -28,6 +28,7 @@ from .roster_needs import lineup_gain, lineup_slots
 from .sleeper_tools import (
     active_enriched,
     availability_error,
+    find_roster,
     get_league,
     get_nfl_state,
     get_rosters,
@@ -178,6 +179,10 @@ def _priority_message(advice: str, name: str, tier: str, value: float, upgrade: 
             + f"{cost}{view}")
 
 
+# horizon_worth's label -> the bid model's upgrade score.
+_WORTH_SCORE = {"high": 1.0, "medium": 0.5, "low": 0.0}
+
+
 def _tier(pct: float) -> str:
     if pct >= 30:
         return "must_add"
@@ -280,10 +285,7 @@ async def recommend_faab_bid(
     replacement_value = 0.0
     my_roster = None
     if my_roster_id is not None:
-        for r in all_rosters:
-            if r.get("roster_id") == my_roster_id:
-                my_roster = r
-                break
+        my_roster, _ = find_roster(all_rosters, league_id, my_roster_id, None)
         if my_roster is not None:
             # The league's own slots, FLEX included, scored as the change in the
             # best starting lineup at market value. A fixed table (RB2/WR2/TE1,
@@ -347,13 +349,45 @@ async def recommend_faab_bid(
                 regular_weeks = int(settings.get("playoff_week_start") or 0) - 1
             except (TypeError, ValueError):
                 regular_weeks = 0
+            # The current week counts while it is still to be played:
+            # `regular - wk` said "0 weeks left" going into the last one.
+            from .week_context import week_is_final
+            current_done = bool(season) and week_is_final(db, int(season), int(wk)) is True
             weeks_left = max(0, (regular_weeks if regular_weeks > 0 else _FANTASY_REGULAR_WEEKS)
-                             - int(wk))
+                             - int(wk) + (0 if current_done else 1))
             if weeks_left <= 3:
                 timing_mult = 1.2  # spend it before playoffs
                 warnings.append("Few weeks left — spend aggressively if contending")
     except Exception:
         pass
+
+    has_roster = my_roster is not None
+    try:
+        wk_int = int(wk) if wk else None
+        season_int = int(season) if season else None
+    except (TypeError, ValueError):
+        wk_int = season_int = None
+
+    # Both horizons, this week and rest of season, in lineup points — the
+    # same computation and rule get_waiver_targets reports per target.
+    horizons = None
+    if has_roster and db is not None and wk_int and season_int:
+        horizons = await _horizon_gains(league, my_roster, target_id, season_int, wk_int, db)
+    if horizons and horizons.get("worth") is None:
+        horizons = None
+    # With projections, the lineup-point gain decides the upgrade (and so the
+    # tier and every sentence about it); market-value lineup math only speaks
+    # without them. They disagreed: "+0, depth, not an upgrade" next to a
+    # 20-point rest-of-season gain.
+    upgrade_basis = "market_value"
+    if horizons:
+        upgrade_basis = "lineup_points"
+        upgrade_score = _WORTH_SCORE[horizons["worth"]]
+        gains_nothing = not (horizons.get("week_gain") or 0) and not (horizons.get("ros_gain") or 0)
+        warnings = [w for w in warnings if "this is depth, not an upgrade" not in w]
+        if gains_nothing:
+            warnings.append(f"He would not start for you in any remaining week — depth, "
+                            f"not an upgrade at {position}")
 
     # --- Bid model ---
     base_pct = 100.0 * value_score * (0.5 + 0.5 * upgrade_score)
@@ -379,21 +413,6 @@ async def recommend_faab_bid(
     else:
         warnings.append("Not a FAAB league (waiver priority) — use your claim priority instead of a $ bid")
 
-    has_roster = my_roster is not None
-    try:
-        wk_int = int(wk) if wk else None
-        season_int = int(season) if season else None
-    except (TypeError, ValueError):
-        wk_int = season_int = None
-
-    # Both horizons, this week and rest of season, in lineup points — the
-    # same computation and rule get_waiver_targets reports per target.
-    horizons = None
-    if has_roster and db is not None and wk_int and season_int:
-        horizons = await _horizon_gains(league, my_roster, target_id, season_int, wk_int, db)
-    if horizons and horizons.get("worth") is None:
-        horizons = None
-
     priority_advice = None if is_faab else (
         horizons["worth"] if horizons else
         _priority_advice(tier, upgrade_score if has_roster else None))
@@ -417,7 +436,10 @@ async def recommend_faab_bid(
 
     reasoning = [
         f"Market value {int(target_value)} ({position} #{target.get('position_rank')})",
-        (f"Marginal upgrade for you: +{int(upgrade)} to your best starting lineup "
+        (f"Lineup gain for you: +{horizons['week_gain']} pts this week, "
+         f"+{horizons['ros_gain']} rest of season ({horizons['worth']})"
+         if horizons else
+         f"Marginal upgrade for you: +{int(upgrade)} to your best starting lineup "
          f"(he displaces {int(replacement_value)} of value)"
          if my_roster_id is not None else "No roster context — absolute value used"),
         f"League demand: {demand_label}",
@@ -429,11 +451,16 @@ async def recommend_faab_bid(
         "recommendation": {
             "player": target.get("name"),
             "position": position,
-            "bid_pct": bid_pct,
+            # FAAB only: a % of a budget the league does not have means nothing.
+            "bid_pct": bid_pct if is_faab else None,
             "bid_absolute": bid_absolute,
-            "range_pct": {"safe": round(bid_pct * 0.7, 1), "aggressive": round(min(_MAX_BID_PCT, bid_pct * 1.25), 1)},
-            "range_absolute": {"safe": safe_abs, "aggressive": aggressive_abs},
+            "range_pct": ({"safe": round(bid_pct * 0.7, 1),
+                           "aggressive": round(min(_MAX_BID_PCT, bid_pct * 1.25), 1)}
+                          if is_faab else None),
+            "range_absolute": {"safe": safe_abs, "aggressive": aggressive_abs} if is_faab else None,
             "tier": tier,
+            # What the upgrade (and so the tier) was judged on.
+            "upgrade_basis": upgrade_basis,
             # Non-FAAB only: how hard to spend a priority claim on him.
             "priority_advice": priority_advice,
             # Lineup gain this week and rest of season, and the combined

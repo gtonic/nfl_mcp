@@ -134,20 +134,10 @@ async def find_trade_targets(
     if roster_state["error"]:
         return create_success_response({"success": False, "error": roster_state["error"]})
     rosters = roster_state["rosters"]
-    if roster_id is None:
-        if not user_id:
-            return create_success_response({
-                "success": False,
-                "error": "Pass roster_id or user_id to identify which team to advise.",
-            })
-        mine = sleeper_tools.roster_of_user(rosters, user_id)
-    else:
-        mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
-    if not mine:
-        return create_success_response({
-            "success": False,
-            "error": f"No roster found in league {league_id} for the given identifier.",
-        })
+    mine, error = sleeper_tools.find_roster(rosters, league_id, roster_id, user_id,
+                                            purpose="advise")
+    if error:
+        return create_success_response({"success": False, "error": error})
     roster_id = mine["roster_id"]
 
     deadline = ros.trade_deadline_status(league.get("settings") or {}, week)
@@ -258,6 +248,7 @@ async def find_trade_targets(
 
     proposals = []
     evaluated = 0
+    skipped_depth = 0
     for other_id, their_scored in scored_by_roster.items():
         if other_id == roster_id or not their_scored:
             continue
@@ -265,6 +256,9 @@ async def find_trade_targets(
         for give in my_candidates:
             for receive in their_candidates:
                 if receive["position"] not in wanted:
+                    continue
+                if _over_depth(mine_scored, give, receive, whole_slots):
+                    skipped_depth += 1
                     continue
                 evaluated += 1
                 my_gain = swap_gain(mine_scored, whole_slots, give, receive)
@@ -303,7 +297,7 @@ async def find_trade_targets(
         if len(top) >= limit:
             break
 
-    levels = replacement_levels(mine_scored, fractional_slots)
+    levels = replacement_levels(mine_scored, fractional_slots, whole_slots)
 
     return sleeper_tools.mark_roster_staleness(create_success_response({
         "league": {
@@ -321,7 +315,10 @@ async def find_trade_targets(
         "proposals": top,
         # Every swap scored, not only the ones that survived.
         "candidates_considered": evaluated,
+        # Every mutual-gain swap vs the ones listed (best one per partner).
         "proposals_found": len(proposals),
+        "proposals_listed": len(top),
+        "skipped_over_depth": skipped_depth,
         "trade_deadline": deadline,
         "horizon": "week",
         # Kept out of every proposal, yours and theirs; see `_top_candidates`.
@@ -344,12 +341,33 @@ async def find_trade_targets(
             "either way — see skipped_injured; value them with analyze_trade.",
         ],
         "message": (
-            f"{len(top)} trade(s) that improve both rosters in week {week}."
+            f"{len(top)} trade(s) listed (best per partner, of {len(proposals)} found) "
+            f"that improve both rosters in week {week}."
             if top else
             f"No one-for-one trade improves both your roster and a partner's in "
             f"week {week} ({evaluated} candidate swaps checked)."
         ) + (f" {deadline['message']}" if deadline["urgent"] else ""),
     }), roster_state)
+
+
+# Bodies beyond the seats a position can take that are still worth holding.
+DEPTH_ALLOWANCE = 2
+
+
+def _over_depth(mine: list[dict], give: dict, receive: dict, whole_slots: dict[str, int]) -> bool:
+    """Whether taking ``receive`` for ``give`` piles up a position past need.
+
+    A 1-QB league roster that already holds three QBs has no use for a
+    fourth: allowed are the seats that can hold the position (its own and
+    any flex that takes it) plus ``DEPTH_ALLOWANCE``.
+    """
+    from .lineup_slots import slot_accepts
+    pos = receive.get("position")
+    if not pos or pos == give.get("position"):
+        return False
+    seats = sum(n for slot, n in whole_slots.items() if slot_accepts(slot, pos))
+    held = sum(1 for p in mine if p.get("position") == pos)
+    return held + 1 > seats + DEPTH_ALLOWANCE
 
 
 async def _team_names(sleeper_tools, league_id: str, rosters: list[dict]) -> dict[int, str]:
@@ -433,12 +451,16 @@ async def _find_ros(
 
     screened = []
     evaluated = 0
+    skipped_depth = 0
     for other_id, their_scored in scored_by_roster.items():
         if other_id == roster_id or not their_scored:
             continue
         for give in my_candidates:
             for receive in _top(their_scored):
                 if receive["position"] not in wanted:
+                    continue
+                if _over_depth(mine_scored, give, receive, whole_slots):
+                    skipped_depth += 1
                     continue
                 evaluated += 1
                 my_screen = swap_gain(mine_scored, whole_slots, give, receive)
@@ -491,10 +513,10 @@ async def _find_ros(
         if len(top) >= limit:
             break
 
-    levels = replacement_levels(mine_scored, fractional_slots)
+    levels = replacement_levels(mine_scored, fractional_slots, whole_slots)
     message = (
-        f"{len(top)} trade(s) that improve both rosters over weeks "
-        f"{weeks[0]}-{weeks[-1]}." if top else
+        f"{len(top)} trade(s) listed (best per partner, of {len(proposals)} found) "
+        f"that improve both rosters over weeks {weeks[0]}-{weeks[-1]}." if top else
         f"No one-for-one trade improves both your roster and a partner's over the "
         f"rest of the season ({evaluated} candidate swaps checked)."
     )
@@ -518,6 +540,8 @@ async def _find_ros(
         "candidates_considered": evaluated,
         "rescored_weekly": min(len(screened), MAX_WEEKLY_RESCORES),
         "proposals_found": len(proposals),
+        "proposals_listed": len(top),
+        "skipped_over_depth": skipped_depth,
         "minimum_gain": round(bar, 1),
         "schedule_unknown_weeks": meta["schedule_unknown_weeks"],
         "method": (

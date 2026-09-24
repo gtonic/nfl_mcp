@@ -186,9 +186,9 @@ class TestProjectionOnBye:
 class TestProjectPlayerTools:
     @pytest.mark.asyncio
     async def test_project_player_infers_the_week_and_sees_the_bye(self, db, monkeypatch):
-        async def _state():
-            return 2026, 5
-        monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _state)
+        async def _state(db=None):
+            return {"season": 2026, "week": 5, "source": "nfl_state"}
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
         with patch.object(pj, "get_projection_engine", return_value=_engine(db)):
             res = await pj.project_player("Star WR", "WR", "KC", db=db)
         assert res["week_inferred"] is True and (res["season"], res["week"]) == (2026, 5)

@@ -124,8 +124,11 @@ def _suggestion(row: dict, slot_list: list[str], positions: list[str]) -> str:
     for pos in positions:
         need = sum(1 for s in slot_list if normalize_slot(s) == pos) or 1
         have = row["available_by_position"].get(pos, 0)
+        # Enough bodies is not "thin depth": the slot is covered, just by a
+        # lower-projected backup (the lineup drop below says by how much).
         parts.append(f"only {have} {pos} available for {need} {pos} slot(s)" if have < need
-                     else f"{pos} depth is thin")
+                     else f"{pos} starter on bye — covered by {have} other {pos} "
+                          f"for {need} slot(s), at a lower projection")
     detail = "; ".join(parts) if parts else "the lineup drops"
     empty = f", {len(row['holes'])} slot(s) empty" if row["holes"] else ""
     add = " / ".join(positions) or "depth"
@@ -156,7 +159,7 @@ async def get_bye_week_plan(
 ) -> dict:
     """Week-by-week bye/depth plan for one roster (see module docstring)."""
     from . import ros, sleeper_tools
-    from .briefing_tools import find_roster
+    from .sleeper_tools import find_roster
     from .week_context import current_season_week
 
     db = db if db is not None else get_shared_db()
@@ -166,12 +169,14 @@ async def get_bye_week_plan(
         week = week or current["week"]
         season = season or current["season"]
 
-    league_resp, rosters_resp = await asyncio.gather(
-        sleeper_tools.get_league(league_id), sleeper_tools.get_rosters(league_id))
+    league_resp, roster_state = await asyncio.gather(
+        sleeper_tools.get_league(league_id), sleeper_tools.load_rosters(league_id, "lineup"))
     league = (league_resp or {}).get("league") or {}
     if not league:
         return create_success_response({"success": False, "error": f"Could not load league {league_id}."})
-    rosters = (rosters_resp or {}).get("rosters") or []
+    if roster_state["blocking_error"]:
+        return create_success_response({"success": False, "error": roster_state["blocking_error"]})
+    rosters = roster_state["rosters"]
     mine, error = find_roster(rosters, league_id, roster_id, user_id)
     if error:
         return create_success_response({"success": False, "error": error})
@@ -238,6 +243,9 @@ async def get_bye_week_plan(
         "reserve_counted": ir_names,
         "trade_deadline": ros.trade_deadline_status(league.get("settings") or {}, week),
         "schedule_unknown_weeks": [w for w in meta.get("schedule_unknown_weeks") or [] if w in weeks],
+        "stale": roster_state["stale"],
+        "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
+        "warnings": [roster_state["warning"]] if roster_state["warning"] else [],
         "method": (
             "Each week: best legal lineup from the league's slots on that week's "
             "rest-of-season projection (0 on byes and inside expected injury "

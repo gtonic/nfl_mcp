@@ -131,7 +131,8 @@ class TestFaabWeeksLeft:
         league["league"]["settings"]["playoff_week_start"] = 16
         rosters = {"success": True, "rosters": []}
         res = await _run(league_id="1", player_id="9509", league=league, rosters=rosters)
-        assert "5 regular-season weeks left" in res["recommendation"]["reasoning"]
+        # Week 10 is still to be played, so weeks 10-15 are left.
+        assert "6 regular-season weeks left" in res["recommendation"]["reasoning"]
 
 
 class TestWaiverTargetsAvailability:

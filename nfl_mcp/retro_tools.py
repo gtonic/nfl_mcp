@@ -215,8 +215,8 @@ async def get_weekly_retro(
 
     db = get_shared_db()
     week_source = "caller"
+    done = await last_completed_week(db)
     if week is None or season is None:
-        done = await last_completed_week(db)
         season = season or done["season"]
         week = week or done["week"]
         week_source = done["source"]
@@ -225,19 +225,33 @@ async def get_weekly_retro(
             "success": False, "season": season, "week": week,
             "error": "No completed week yet this season.",
         })
+    # A week still to be played (or in progress) has nothing to grade: its
+    # zeros read as busts and dragged the calibration down with them.
+    current_season = season == done["season"]
+    if current_season and week > done["week"]:
+        return create_success_response({
+            "success": False, "season": season, "week": week,
+            "last_completed_week": done["week"],
+            "error": (f"Week {week} has not been completed yet — the last fully played week "
+                      f"is {done['week']}. Pass week={done['week']} (or omit week)."
+                      if done["week"] >= 1 else
+                      f"Week {week} has not been completed yet — no week of {season} is final."),
+        })
+    calibration_through = min(week, done["week"]) if current_season else week
 
     # Independent reads, fetched together.
-    league_resp, rosters_resp, matchups_resp = await asyncio.gather(
+    league_resp, roster_state, matchups_resp = await asyncio.gather(
         sleeper_tools.get_league(league_id),
-        sleeper_tools.get_rosters(league_id),
+        sleeper_tools.load_rosters(league_id, "lineup"),
         sleeper_tools.get_matchups(league_id, week),
     )
     league = (league_resp or {}).get("league") or {}
     ppr = _scoring_ppr(league)
     # Only projections made under this league's own scoring are graded.
     key = scoring_key(league_scoring(league))
-    rosters = (rosters_resp or {}).get("rosters") or []
-    mine_roster, error = find_roster(rosters, league_id, roster_id, user_id)
+    rosters = roster_state["rosters"]
+    mine_roster, error = (None, roster_state["blocking_error"]) if roster_state["blocking_error"] \
+        else find_roster(rosters, league_id, roster_id, user_id)
     if error:
         return create_success_response({"success": False, "error": error})
     roster_id = mine_roster["roster_id"]
@@ -358,7 +372,8 @@ async def get_weekly_retro(
     if include_calibration:
         try:
             calibration = await league_calibration(
-                db, league_id, season, key, week, matchups_by_week={week: matchups})
+                db, league_id, season, key, calibration_through,
+                matchups_by_week={week: matchups})
         except Exception as e:  # additive; never fail the retro on it
             logger.debug(f"calibration unavailable: {e}")
 

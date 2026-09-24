@@ -11,8 +11,10 @@ Depth chart: `nfl_tools.get_depth_chart` (ESPN). Rosters + availability:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .opportunity_tools import norm_name
@@ -123,6 +125,34 @@ def _availability(player_id: str | None, rostered: dict[str, int], my_roster_id:
     return "yours" if rostered[player_id] == my_roster_id else "rostered_by_opponent"
 
 
+# Depth charts move a few times a week at most.
+DEPTH_CHART_TTL_SECONDS = 6 * 3600
+DEPTH_CHART_CONCURRENCY = 6
+_depth_chart_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def clear_depth_chart_cache() -> None:
+    _depth_chart_cache.clear()
+
+
+async def _depth_chart(nfl_tools, team: str, sem: asyncio.Semaphore) -> list[dict]:
+    """A team's depth chart, cached for ``DEPTH_CHART_TTL_SECONDS``; [] on failure
+    (a failure is not cached, so the next call retries)."""
+    hit = _depth_chart_cache.get(team)
+    if hit and time.monotonic() - hit[0] < DEPTH_CHART_TTL_SECONDS:
+        return hit[1]
+    async with sem:
+        try:
+            dc = await nfl_tools.get_depth_chart(team)
+        except Exception as e:
+            logger.debug(f"depth chart fetch failed for {team}: {e}")
+            return []
+    chart = (dc or {}).get("depth_chart") or []
+    if chart:
+        _depth_chart_cache[team] = (time.monotonic(), chart)
+    return chart
+
+
 @handle_http_errors(
     default_data={"league_id": None, "roster_id": None, "handcuffs": []},
     operation_name="mapping handcuffs",
@@ -180,7 +210,13 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
     athletes = db.get_athletes_by_ids(my_players)
     my_rbs = [a for a in athletes.values() if (a.get("position") or "").upper() == "RB"]
 
-    depth_cache: dict[str, list[dict]] = {}
+    # Every team's depth chart at once (bounded) and cached: one scrape per
+    # team, one after another, took ~25s for a full roster of RBs.
+    teams = sorted({(rb.get("team_id") or "").upper() for rb in my_rbs} - {""})
+    sem = asyncio.Semaphore(DEPTH_CHART_CONCURRENCY)
+    depth_cache: dict[str, list[dict]] = dict(zip(
+        teams, await asyncio.gather(*(_depth_chart(nfl_tools, t, sem) for t in teams)),
+        strict=True))
     team_athletes_cache: dict[str, list[dict]] = {}
     handcuffs: list[dict] = []
 
@@ -194,14 +230,6 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
             entry["match"] = "no_team"
             handcuffs.append(entry)
             continue
-
-        if team not in depth_cache:
-            try:
-                dc = await nfl_tools.get_depth_chart(team)
-                depth_cache[team] = dc.get("depth_chart") or []
-            except Exception as e:
-                logger.debug(f"depth chart fetch failed for {team}: {e}")
-                depth_cache[team] = []
 
         handcuff_name, method = handcuff_from_depth(depth_cache[team], starter or "")
         entry["match"] = method

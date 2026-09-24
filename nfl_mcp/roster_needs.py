@@ -53,13 +53,45 @@ def _whole_starters(slots: dict[str, float], position: str) -> int:
     return max(1, int(count + 1e-9))
 
 
+def _starters_from_lineup(projections: list[dict], whole_slots: dict[str, int]) -> dict[str, int]:
+    """How many players at each position win a seat in the best legal lineup.
+
+    FLEX seats go to whoever projects highest, as the league fills them: in a
+    two-FLEX league the RB3 who starts in a FLEX is a starter, not surplus —
+    flooring the fractional flex shares (2 + 2/3 -> 2 RBs) called him one.
+    """
+    counts = {pos: 0 for slot in whole_slots
+              for pos in (SLOT_ELIGIBILITY.get(slot) or {normalize_position(slot)})}
+    for p in starting_lineup(projections, whole_slots):
+        pos = normalize_position(p.get("position"))
+        counts[pos] = counts.get(pos, 0) + 1
+    return counts
+
+
+def _starters(projections: list[dict], slots: dict[str, float],
+              whole_slots: dict[str, int] | None) -> dict[str, int]:
+    """Starters per position: from the optimal lineup when the league's whole
+    slots are known, else the fractional-share approximation."""
+    if whole_slots:
+        from_lineup = _starters_from_lineup(projections, whole_slots)
+        # A position the league starts but this roster has nobody for keeps
+        # one seat (so the bar is 0, "anything is an upgrade").
+        return {pos: max(n, 1) if _whole_starters(slots, pos) or n else 0
+                for pos, n in from_lineup.items()}
+    positions = {(p.get("position") or "").upper() for p in projections}
+    return {pos: _whole_starters(slots, pos) for pos in positions}
+
+
 def replacement_levels(
-    projections: list[dict], slots: dict[str, float]
+    projections: list[dict], slots: dict[str, float],
+    whole_slots: dict[str, int] | None = None,
 ) -> dict[str, float]:
     """The projection of the weakest player who still starts, per position.
 
     That is the bar an addition has to clear: a WR4 on a roster that starts two
-    WRs changes nothing, however good he looks in isolation.
+    WRs changes nothing, however good he looks in isolation. Pass the league's
+    ``whole_slots`` (``lineup_slots``) so FLEX seats are allocated by projected
+    points rather than by flooring fractional shares.
     """
     levels: dict[str, float] = {}
     by_position: dict[str, list[float]] = {}
@@ -67,8 +99,9 @@ def replacement_levels(
         by_position.setdefault((p.get("position") or "").upper(), []).append(
             float(p.get("projected_points") or 0.0)
         )
+    starters_by_pos = _starters(projections, slots, whole_slots)
     for position, points in by_position.items():
-        starters = _whole_starters(slots, position)
+        starters = starters_by_pos.get(position, 0)
         if not starters:
             continue  # the league starts none (a K in a no-K league): no bar
         points.sort(reverse=True)
@@ -135,20 +168,23 @@ def lineup_bars(players: list[dict], slots: dict[str, int]) -> dict[str, float]:
 
 
 def surplus_players(
-    projections: list[dict], slots: dict[str, float], margin: float = 0.0
+    projections: list[dict], slots: dict[str, float], margin: float = 0.0,
+    whole_slots: dict[str, int] | None = None,
 ) -> list[dict]:
     """Players who do not win a starting slot but would elsewhere.
 
     These are the tradeable ones: moving a player who is already starting costs
-    the lineup directly, and moving one nobody would want buys nothing.
+    the lineup directly, and moving one nobody would want buys nothing. With
+    ``whole_slots`` a FLEX starter is a starter (see ``replacement_levels``).
     """
     surplus: list[dict] = []
     by_position: dict[str, list[dict]] = {}
     for p in projections:
         by_position.setdefault((p.get("position") or "").upper(), []).append(p)
 
+    starters_by_pos = _starters(projections, slots, whole_slots)
     for position, players in by_position.items():
-        starters = _whole_starters(slots, position)
+        starters = starters_by_pos.get(position, 0)
         if not starters:
             continue  # nobody starts one here, so there is nothing to move
         players.sort(key=lambda p: float(p.get("projected_points") or 0.0), reverse=True)

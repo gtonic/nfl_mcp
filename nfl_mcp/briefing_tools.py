@@ -29,6 +29,7 @@ from .lineup_slots import starting_slot_list, starting_slots
 from .practice_reports import lookup_practice, practice_fields
 from .projection_store import log_projections
 from .scoring import league_scoring
+from .sleeper_tools import find_roster  # also re-exported for older importers
 from .teams import normalize_team
 from .week_context import (
     BYE,
@@ -180,20 +181,6 @@ def _build_player(
     return player
 
 
-def find_roster(
-    rosters: list[dict], league_id: str, roster_id: int | None, user_id: str | None,
-) -> tuple[dict | None, str | None]:
-    """``(roster, None)`` for the roster asked about, or ``(None, error)``."""
-    if roster_id is None:
-        if not user_id:
-            return None, "Pass roster_id or user_id to identify which team to use."
-        from .sleeper_tools import roster_of_user
-        mine = roster_of_user(rosters, user_id)
-    else:
-        mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
-    if not mine:
-        return None, f"No roster found in league {league_id} for the given identifier."
-    return mine, None
 
 
 async def weather_by_team(season: int, week: int) -> dict[str, dict]:
@@ -258,9 +245,9 @@ async def get_weekly_briefing(
     #    each other, so they are fetched together rather than one after another.
     weather_task = asyncio.create_task(weather_by_team(season, week))
     try:
-        league_resp, rosters_resp, matchups_resp = await asyncio.gather(
+        league_resp, roster_state, matchups_resp = await asyncio.gather(
             sleeper_tools.get_league(league_id),
-            sleeper_tools.get_rosters(league_id),
+            sleeper_tools.load_rosters(league_id, "lineup"),
             sleeper_tools.get_matchups(league_id, week),
         )
     except BaseException:
@@ -276,8 +263,10 @@ async def get_weekly_briefing(
     num_teams = int(league.get("total_rosters") or 12)
 
     # 3) My roster and this week's opponent
-    rosters = (rosters_resp or {}).get("rosters") or []
-    mine, error = find_roster(rosters, league_id, roster_id, user_id)
+    # A cached snapshot still answers "who is on my team"; it is flagged, not refused.
+    rosters = roster_state["rosters"]
+    mine, error = (None, roster_state["blocking_error"]) if roster_state["blocking_error"] \
+        else find_roster(rosters, league_id, roster_id, user_id)
     if error:
         weather_task.cancel()
         return create_success_response({"success": False, "error": error})
@@ -534,7 +523,10 @@ async def get_weekly_briefing(
         # day-old injury report looks identical to one made against a fresh one
         # unless the age is stated.
         "data_freshness": freshness,
-        "stale_data_warnings": _staleness_warnings(freshness),
+        "stale_data_warnings": _staleness_warnings(freshness)
+        + ([roster_state["warning"]] if roster_state["warning"] else []),
+        "rosters_stale": roster_state["stale"],
+        "rosters_snapshot_age_seconds": roster_state["snapshot_age_seconds"],
         "points_so_far": points_so_far,
         "opponent_points_so_far": opponent_points_so_far,
         "win_probability_basis": (

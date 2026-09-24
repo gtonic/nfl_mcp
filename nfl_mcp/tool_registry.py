@@ -309,12 +309,12 @@ async def get_depth_chart(team_id: str) -> dict:
 
 
 @timing_decorator("get_team_player_stats", tool_type="nfl")
-async def get_team_player_stats(team_id: str, season: int | None = 2026, season_type: int | None = 2, limit: int | None = 50) -> dict:
+async def get_team_player_stats(team_id: str, season: int | None = None, season_type: int | None = 2, limit: int | None = 50) -> dict:
     """Season-to-date per-player stats for a team (Sleeper season totals).
 
     Parameters:
         team_id (str, required): Team abbreviation, any spelling (KC, WAS, LA).
-        season (int, default 2026): Season year.
+        season (int, default: current season): Season year.
         season_type (int, default 2): 1=Pre,2=Regular,3=Post.
         limit (int, default 50, range 1-100): Max players.
     Returns: {team_id, team_name, season, season_type, player_stats:[{player_id,
@@ -324,9 +324,9 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
     Example: get_team_player_stats(team_id="KC", season=2024, limit=25)
     """
     try:
-        season_i = int(season) if season is not None else 2026
+        season_i = int(season) if season is not None else None
     except Exception:
-        season_i = 2026
+        season_i = None
     try:
         season_type_i = int(season_type) if season_type is not None else 2
     except Exception:
@@ -339,20 +339,20 @@ async def get_team_player_stats(team_id: str, season: int | None = 2026, season_
 
 
 @timing_decorator("get_nfl_standings", tool_type="nfl")
-async def get_nfl_standings(season: int | None = 2026, season_type: int | None = 2, group: int | None = None) -> dict:
+async def get_nfl_standings(season: int | None = None, season_type: int | None = 2, group: int | None = None) -> dict:
     """Fetch NFL standings (league or conference) from ESPN Core API.
 
     Parameters:
-        season (int, default 2026): Season year.
+        season (int, default: current season): Season year.
         season_type (int, default 2): 1=Pre,2=Regular,3=Post.
         group (int, optional): 1=AFC,2=NFC, None=all.
     Returns: {standings:[...], season, season_type, group, count, success, error?}
     Example: get_nfl_standings(season=2024, group=1)
     """
     try:
-        season_i = int(season) if season is not None else 2026
+        season_i = int(season) if season is not None else None
     except Exception:
-        season_i = 2026
+        season_i = None
     try:
         season_type_i = int(season_type) if season_type is not None else 2
     except Exception:
@@ -365,19 +365,19 @@ async def get_nfl_standings(season: int | None = 2026, season_type: int | None =
 
 
 @timing_decorator("get_team_schedule", tool_type="nfl")
-async def get_team_schedule(team_id: str, season: int | None = 2026) -> dict:
+async def get_team_schedule(team_id: str, season: int | None = None) -> dict:
     """Fetch a team's schedule (Site API) including matchup context.
 
     Parameters:
         team_id (str, required): Team abbreviation, any spelling (KC, WAS, LA).
-        season (int, default 2026): Season year.
+        season (int, default: current season): Season year.
     Returns: {team_id, team_name, season, schedule:[...], count, success, error?}
     Example: get_team_schedule(team_id="KC", season=2024)
     """
     try:
-        season_i = int(season) if season is not None else 2026
+        season_i = int(season) if season is not None else None
     except Exception:
-        season_i = 2026
+        season_i = None
     return await nfl_tools.get_team_schedule(team_id=team_id, season=season_i)
 
 
@@ -2058,6 +2058,8 @@ async def get_start_sit_recommendation(
         return {"recommendation": None, "confidence": 0, "success": False,
                 "error": f"Could not resolve {player_name!r} to a team and position — pass team and position."}
     snap = lineup_tools.recent_snap_share(db, who["player_id"], season, week)
+    usage = lineup_tools.recent_usage(db, who["player_id"], who["position"], who["team"],
+                                      season, week)
     result = await lineup_optimizer_tools.get_start_sit_recommendation(
         player_name=who["name"] or player_name,
         position=who["position"].upper(),
@@ -2070,10 +2072,11 @@ async def get_start_sit_recommendation(
         league_id=league_id,
         season=season,
         week=week,
+        usage=usage,
     )
     if isinstance(result, dict):
         result["resolved"] = {"team": who["team"], "position": who["position"],
-                              "player_id": who["player_id"], "snap_percentage": snap}
+                              "player_id": who["player_id"], "snap_percentage": snap, **usage}
     return result
 
 
@@ -2328,10 +2331,18 @@ async def get_vegas_lines(
     import asyncio
 
     from .roster_context import load_roster_players
+    from .week_context import resolve_season_week
 
+    # The book publishes more than one week at once: without a week the games
+    # of two slates were mixed. Default to the current week, and say so.
+    week_inferred = False
+    if week is None:
+        season, week, week_inferred = await resolve_season_week(season, None)
     result = await vegas_tools.get_vegas_lines(teams=teams, week=week, season=season)
     if not isinstance(result, dict):
         return result
+    result.setdefault("week", week)
+    result["week_inferred"] = week_inferred
     if teams:
         valid = [t for t in teams[:8] if isinstance(t, str) and t.strip()]
         envs = await asyncio.gather(*(vegas_tools.get_game_environment(team=t) for t in valid),
@@ -2574,13 +2585,13 @@ def _is_healthy_report(row: dict) -> bool:
 
 
 async def _current_season_week() -> tuple[int | None, int | None]:
-    """Season and week from Sleeper's NFL state, (None, None) on failure."""
+    """Season and week via the canonical ``week_context.current_season_week``."""
+    from .week_context import current_season_week
     try:
-        state = await sleeper_tools.get_nfl_state()
-        st = (state or {}).get("nfl_state") or {}
-        return int(st.get("season") or 0) or None, int(st.get("week") or 0) or None
+        current = await current_season_week(get_db())
     except Exception:
         return None, None
+    return current["season"], current["week"]
 
 
 async def _attach_practice(injuries: list[dict]) -> dict:
@@ -2866,8 +2877,8 @@ async def _flag_my_starters(league_id, roster_id, week, inactives, confirmed_act
         mine = next((m for m in matchups if m.get("roster_id") == roster_id), None)
         starters = [str(p) for p in (mine or {}).get("starters") or [] if p and p != "0"]
         if not starters:
-            rosters = (await sleeper_tools.get_rosters(league_id) or {}).get("rosters") or []
-            roster = next((r for r in rosters if r.get("roster_id") == roster_id), None)
+            state = await sleeper_tools.load_rosters(league_id, "lineup")
+            roster, _ = sleeper_tools.find_roster(state["rosters"], league_id, roster_id, None)
             starters = [str(p) for p in (roster or {}).get("starters") or [] if p and p != "0"]
     except Exception as e:
         return {"error": f"could not load starters: {e}"}

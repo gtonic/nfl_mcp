@@ -333,8 +333,10 @@ def _injury_history(db, injury_index: dict, name: str | None, team: str) -> list
 async def _roster_players(league_id: str, roster_id: int, db) -> tuple[list[dict], str | None]:
     """``[{sleeper_id, name, position, team}]`` for a roster, or an error string."""
     from . import sleeper_tools
-    rosters = ((await sleeper_tools.get_rosters(league_id)) or {}).get("rosters") or []
-    mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
+    state = await sleeper_tools.load_rosters(league_id, "lineup")
+    if state["blocking_error"]:
+        return [], state["blocking_error"]
+    mine, _ = sleeper_tools.find_roster(state["rosters"], league_id, roster_id, None)
     if not mine:
         return [], f"No roster {roster_id} in league {league_id}"
     ids = [str(p) for p in (mine.get("players") or [])]

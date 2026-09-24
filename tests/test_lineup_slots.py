@@ -179,9 +179,9 @@ def offline_optimizer(monkeypatch):
                         lambda: lo.LineupOptimizer(db=None, auto_project=False,
                                                    defense_analyzer=_analyzer()))
 
-    async def _state():
-        return (2026, 4)
-    monkeypatch.setattr("nfl_mcp.nfl_tools.get_current_season_and_week", _state)
+    async def _state(db=None):
+        return {"season": 2026, "week": 4, "source": "nfl_state"}
+    monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
 
 
 def _e(name, position, points):

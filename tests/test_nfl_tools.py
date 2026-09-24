@@ -17,6 +17,17 @@ from nfl_mcp.nfl_tools import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _current_week(request, monkeypatch):
+    """Omitted seasons resolve via week_context; pin it offline to 2026 week 3."""
+    if request.cls is not None and request.cls.__name__ == "TestGetCurrentSeasonAndWeek":
+        return
+
+    async def _state(db=None):
+        return {"season": 2026, "week": 3, "source": "nfl_state"}
+    monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
+
+
 class TestGetNflNews:
     """Test get_nfl_news function."""
 
@@ -515,17 +526,20 @@ class TestGetCurrentSeasonAndWeek:
             assert week == 5
 
     @pytest.mark.asyncio
-    async def test_get_current_season_and_week_failure(self):
-        """Test season/week detection failure returns defaults."""
+    async def test_get_current_season_and_week_failure(self, monkeypatch):
+        """An outage falls back to schedule/calendar — never week 0."""
+        from nfl_mcp import week_context as wc
+        monkeypatch.setattr(wc, "_last_state", None)
+
         async def mock_get_nfl_state():
             raise Exception("API error")
 
         with patch('nfl_mcp.sleeper_tools.get_nfl_state', side_effect=mock_get_nfl_state):
             season, week = await get_current_season_and_week()
 
-            # Should return current year and week 0
-            assert season is not None
-            assert week == 0
+            expected = wc.infer_from_calendar()
+            assert (season, week) == expected
+            assert week >= 1
 
 
 class TestAuditHighFixes:

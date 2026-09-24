@@ -1,8 +1,9 @@
 """
 Tests for season defaults and year-agnostic functionality.
 
-This module verifies that the NFL MCP Server correctly uses 2026 as the
-default season across all tools and properly handles season detection.
+No tool hard-codes a season: an omitted season resolves to the current one via
+the canonical ``week_context.current_season_week`` (live NFL state, last good
+state, cached schedule, calendar), so an outage never lands on week 0.
 """
 import inspect
 from unittest.mock import AsyncMock, patch
@@ -14,120 +15,87 @@ _LIVE_STATE = {"success": True, "nfl_state": {"season": "2026", "week": 3}}
 
 
 class TestSeasonDefaults:
-    """Test that all season defaults are 2026, not 2025."""
+    """Season parameters default to None (the current season), never a literal year."""
 
-    def test_nfl_tools_team_player_stats_default_season(self):
-        """Verify get_team_player_stats defaults to season=2026."""
-        from nfl_mcp.nfl_tools import get_team_player_stats
-        sig = inspect.signature(get_team_player_stats)
-        season_param = sig.parameters['season']
-        assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
+    @pytest.mark.parametrize("module,name", [
+        ("nfl_mcp.nfl_tools", "get_team_player_stats"),
+        ("nfl_mcp.nfl_tools", "get_nfl_standings"),
+        ("nfl_mcp.nfl_tools", "get_team_schedule"),
+        ("nfl_mcp.nfl_tools", "get_league_leaders"),
+        ("nfl_mcp.tool_registry", "get_team_player_stats"),
+        ("nfl_mcp.tool_registry", "get_nfl_standings"),
+        ("nfl_mcp.tool_registry", "get_team_schedule"),
+        ("nfl_mcp.cbs_fantasy_tools", "get_cbs_projections"),
+    ])
+    def test_season_default_is_none(self, module, name):
+        import importlib
+        fn = getattr(importlib.import_module(module), name)
+        default = inspect.signature(fn).parameters["season"].default
+        assert default is None, f"{module}.{name}: hard-coded season default {default}"
 
-    def test_nfl_tools_standings_default_season(self):
-        """Verify get_nfl_standings defaults to season=2026."""
-        from nfl_mcp.nfl_tools import get_nfl_standings
-        sig = inspect.signature(get_nfl_standings)
-        season_param = sig.parameters['season']
-        assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
-
-    def test_nfl_tools_schedule_default_season(self):
-        """Verify get_team_schedule defaults to season=2026."""
-        from nfl_mcp.nfl_tools import get_team_schedule
-        sig = inspect.signature(get_team_schedule)
-        season_param = sig.parameters['season']
-        assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
-
-    def test_nfl_tools_league_leaders_default_season(self):
-        """Verify get_league_leaders defaults to season=2026."""
-        from nfl_mcp.nfl_tools import get_league_leaders
-        sig = inspect.signature(get_league_leaders)
-        season_param = sig.parameters['season']
-        assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
-
-    def test_tool_registry_team_player_stats_default_season(self):
-        """Verify tool_registry get_team_player_stats defaults to season=2026."""
-        from nfl_mcp.tool_registry import get_team_player_stats
-        sig = inspect.signature(get_team_player_stats)
-        season_param = sig.parameters['season']
-        assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
-
-    def test_tool_registry_standings_default_season(self):
-        """Verify tool_registry get_nfl_standings defaults to season=2026."""
-        from nfl_mcp.tool_registry import get_nfl_standings
-        sig = inspect.signature(get_nfl_standings)
-        season_param = sig.parameters['season']
-        assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
-
-    def test_tool_registry_schedule_default_season(self):
-        """Verify tool_registry get_team_schedule defaults to season=2026."""
-        from nfl_mcp.tool_registry import get_team_schedule
-        sig = inspect.signature(get_team_schedule)
-        season_param = sig.parameters['season']
-        assert season_param.default == 2026,             f"Expected default season 2026, got {season_param.default}"
-
-    def test_cbs_fantasy_projections_default_season(self):
-        """get_cbs_projections derives its default season from the calendar
-        (see tests/test_projection_ros_volume.py) instead of a hardcoded year."""
-        from nfl_mcp.cbs_fantasy_tools import get_cbs_projections
-        sig = inspect.signature(get_cbs_projections)
-        season_param = sig.parameters['season']
-        assert season_param.default is None,             f"Expected no hardcoded season, got {season_param.default}"
+    def test_no_literal_season_fallbacks(self):
+        import re
+        for path in ("nfl_mcp/nfl_tools.py", "nfl_mcp/tool_registry.py", "nfl_mcp/server.py"):
+            with open(path) as f:
+                content = f.read()
+            assert not re.search(r"(\bor |\belse |None = |int = |season = )20[2-9]\d\b", content), path
 
     def test_get_current_season_and_week_exists(self):
-        """Verify get_current_season_and_week function exists."""
         from nfl_mcp.nfl_tools import get_current_season_and_week
-        assert inspect.iscoroutinefunction(get_current_season_and_week),             "get_current_season_and_week should be async"
+        assert inspect.iscoroutinefunction(get_current_season_and_week)
 
     @pytest.mark.asyncio
-    async def test_get_current_season_and_week_returns_tuple(self):
-        """Verify get_current_season_and_week returns (season, week) tuple."""
+    async def test_get_current_season_and_week_reads_live_state(self, monkeypatch):
+        from nfl_mcp import week_context as wc
         from nfl_mcp.nfl_tools import get_current_season_and_week
+        monkeypatch.setattr(wc, "_last_state", None)
         with patch("nfl_mcp.sleeper_tools.get_nfl_state", AsyncMock(return_value=_LIVE_STATE)):
-            result = await get_current_season_and_week()
-        assert isinstance(result, tuple), f"Expected tuple, got {type(result)}"
-        assert len(result) == 2, f"Expected 2 elements, got {len(result)}"
-        season, week = result
-        assert season is None or isinstance(season, int),             f"Season should be int or None, got {type(season)}"
-        assert week is None or isinstance(week, int),             f"Week should be int or None, got {type(week)}"
+            assert await get_current_season_and_week() == (2026, 3)
 
     @pytest.mark.asyncio
-    async def test_get_current_season_and_week_returns_2026(self):
-        """Verify get_current_season_and_week returns 2026 as current season."""
-        from nfl_mcp.nfl_tools import get_current_season_and_week
-        with patch("nfl_mcp.sleeper_tools.get_nfl_state", AsyncMock(return_value=_LIVE_STATE)):
-            result = await get_current_season_and_week()
-        season, _ = result
-        assert season == 2026, f"Expected season 2026, got {season}"
+    async def test_omitted_season_resolves_to_current(self, monkeypatch):
+        from nfl_mcp import nfl_tools
+
+        async def _state(db=None):
+            return {"season": 2031, "week": 4, "source": "nfl_state"}
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
+        assert await nfl_tools._season_or_current(None) == 2031
+        assert await nfl_tools._season_or_current(2024) == 2024
 
 
 class TestSeasonFallback:
-    """Test fallback behavior when season is None."""
+    """An NFL-state outage falls back to the schedule/calendar, never week 0."""
 
     @pytest.mark.asyncio
-    async def test_get_current_season_and_week_handles_api_failure(self):
-        """Verify get_current_season_and_week handles API failures gracefully."""
-        # Mock the sleeper_tools import to raise an exception
-        import sys
-
+    async def test_outage_never_returns_week_zero(self, monkeypatch):
+        from nfl_mcp import week_context as wc
         from nfl_mcp.nfl_tools import get_current_season_and_week
-        original_module = sys.modules.get('nfl_mcp.sleeper_tools')
-        try:
-            # Remove from sys.modules to force reimport
-            if 'nfl_mcp.sleeper_tools' in sys.modules:
-                del sys.modules['nfl_mcp.sleeper_tools']
+        monkeypatch.setattr(wc, "_last_state", None)
+        with patch("nfl_mcp.sleeper_tools.get_nfl_state",
+                   AsyncMock(side_effect=RuntimeError("sleeper down"))):
+            season, week = await get_current_season_and_week()
+        assert (season, week) == wc.infer_from_calendar()
+        assert week >= 1
 
-            # Mock the import to raise exception
-            with patch.dict('sys.modules', {'nfl_mcp.sleeper_tools': None}):
-                # This will fail to import, but should still return fallback
-                result = await get_current_season_and_week()
-                season, _week = result
-                # Should fallback to current year when API fails
-                import datetime
-                assert season == datetime.datetime.now().year
-        finally:
-            # Restore original module
-            if original_module is not None:
-                sys.modules['nfl_mcp.sleeper_tools'] = original_module
+    @pytest.mark.asyncio
+    async def test_resolve_season_week_outage_uses_fallback_not_week_zero(self, monkeypatch):
+        from nfl_mcp import week_context as wc
+        monkeypatch.setattr(wc, "_last_state", None)
+        with patch("nfl_mcp.sleeper_tools.get_nfl_state",
+                   AsyncMock(side_effect=RuntimeError("sleeper down"))):
+            season, week, inferred = await wc.resolve_season_week(None, None)
+        assert inferred is True
+        assert season == wc.infer_from_calendar()[0]
+        assert week >= 1
+
+    @pytest.mark.asyncio
+    async def test_registry_helper_matches_canonical(self, monkeypatch):
+        from nfl_mcp import tool_registry
+
+        async def _state(db=None):
+            return {"season": 2026, "week": 7, "source": "schedule"}
+        monkeypatch.setattr("nfl_mcp.week_context.current_season_week", _state)
+        assert await tool_registry._current_season_week() == (2026, 7)
 
 
 class TestNoHardcoded2025:

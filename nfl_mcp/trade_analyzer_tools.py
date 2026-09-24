@@ -11,7 +11,13 @@ from collections import defaultdict
 
 from .errors import ErrorType, create_error_response, create_success_response
 from .player_values import get_values_service
-from .sleeper_tools import active_enriched, get_league, get_rosters, get_trending_players
+from .sleeper_tools import (
+    active_enriched,
+    get_league,
+    get_rosters,
+    get_trending_players,
+    load_rosters,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,12 +158,15 @@ class TradeAnalyzer:
 
         return max(value * multiplier, 0.0), value_source, market
 
-    def _calculate_positional_needs(self, roster: dict) -> dict[str, int]:
+    def _calculate_positional_needs(self, roster: dict,
+                                    roster_positions: list[str] | None = None) -> dict[str, int]:
         """
         Calculate positional needs based on roster composition.
 
         Args:
             roster: Roster data with players_enriched
+            roster_positions: the league's slots; a position no starting slot
+                takes (K in a no-kicker league) is left out
 
         Returns:
             Dict mapping position to need score (0-10, higher = more need)
@@ -180,7 +189,10 @@ class TradeAnalyzer:
         # statement. Removed rather than wired up: weighting need by who
         # currently starts would change trade recommendations, which is a
         # feature decision, not a bug fix.
+        from .lineup_slots import league_starts
         for pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
+            if not league_starts(roster_positions, pos):
+                continue
             total = position_counts.get(pos, 0)
 
             # More need if fewer players at position
@@ -346,15 +358,16 @@ async def analyze_trade(
             )
 
         # Fetch league rosters
-        rosters_result = await get_rosters(league_id)
-        if not rosters_result.get("success"):
+        # Who holds whom: a cached snapshot is usable, flagged stale.
+        roster_state = await load_rosters(league_id, "lineup", fetch=get_rosters)
+        if roster_state["blocking_error"]:
             return create_error_response(
-                f"Failed to fetch rosters: {rosters_result.get('error')}",
+                f"Failed to fetch rosters: {roster_state['blocking_error']}",
                 ErrorType.HTTP,
                 {"recommendation": None, "fairness_score": 0}
             )
 
-        rosters = rosters_result.get("rosters", [])
+        rosters = roster_state["rosters"]
 
         # Find the two rosters involved
         team1_roster = None
@@ -436,8 +449,9 @@ async def analyze_trade(
         analyzer = TradeAnalyzer()
 
         # Calculate positional needs
-        team1_needs = analyzer._calculate_positional_needs(team1_roster)
-        team2_needs = analyzer._calculate_positional_needs(team2_roster)
+        slots_list = league_obj.get("roster_positions")
+        team1_needs = analyzer._calculate_positional_needs(team1_roster, slots_list)
+        team2_needs = analyzer._calculate_positional_needs(team2_roster, slots_list)
 
         # Enrich and calculate values for players being traded
         team1_gives_enriched = []
@@ -499,7 +513,7 @@ async def analyze_trade(
         )
 
         # Generate warnings
-        warnings = []
+        warnings = [roster_state["warning"]] if roster_state["warning"] else []
         deadline = (ros_block or {}).get("trade_deadline") or {}
         if deadline.get("passed") or deadline.get("urgent"):
             warnings.append(deadline["message"])
@@ -519,7 +533,8 @@ async def analyze_trade(
             elif player.get("practice_status") == "DNP":
                 warnings.append(f"{name} has DNP status (injury concern)")
 
-        # Check for lopsided trades
+        # Check for lopsided trades (on market value; the headline below is
+        # the lineup impact when it is known).
         if fairness_score < 60:
             winner = "Team 1" if trade_details["team1_receives_adjusted_value"] > trade_details["team2_receives_adjusted_value"] else "Team 2"
             warnings.append(f"This trade appears significantly lopsided (favors {winner})")
@@ -560,9 +575,15 @@ async def analyze_trade(
             }
 
         verdict = _verdict(recommendation, fairness_score, ros_block)
+        # The headline is what the trade does to each lineup; market-value
+        # fairness is the secondary read. "unfair" next to "Both lineups
+        # improve" contradicted itself.
+        lineup_call = _lineup_call(ros_block)
 
         return create_success_response({
-            "recommendation": recommendation,
+            "recommendation": lineup_call or recommendation,
+            "recommendation_basis": "ros_lineup_impact" if lineup_call else "market_value",
+            "market_fairness": recommendation,
             "fairness_score": round(fairness_score, 2),
             # Plain-language call. Led by the rest-of-season lineup change when
             # it is known — that, not market value, is what a trade does to
@@ -599,6 +620,8 @@ async def analyze_trade(
             },
             "trade_details": trade_details,
             "warnings": warnings,
+            "stale": roster_state["stale"],
+            "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
             "league_id": league_id
         })
 
@@ -691,6 +714,23 @@ async def _ros_deltas(
 
 # Below this a rest-of-season lineup change is inside the noise.
 _ROS_NOISE_PER_WEEK = 0.5
+
+
+def _lineup_call(ros_block: dict | None) -> str | None:
+    """The trade's effect on both lineups as a label, or None without ROS."""
+    if not ros_block:
+        return None
+    t1, t2 = ros_block["team1"]["ros_points_delta"], ros_block["team2"]["ros_points_delta"]
+    bar = _ROS_NOISE_PER_WEEK * max(1, len(ros_block.get("weeks") or []))
+    if t1 >= bar and t2 >= bar:
+        return "both_lineups_improve"
+    if t1 >= bar > t2:
+        return "favors_team_1"
+    if t2 >= bar > t1:
+        return "favors_team_2"
+    if t1 <= -bar and t2 <= -bar:
+        return "neither_lineup_improves"
+    return "lineup_neutral"
 
 
 def _verdict(recommendation: str, fairness: float, ros_block: dict | None) -> str:
