@@ -8,6 +8,10 @@ on:
     - cron: "0 12 * * 2"   # Tuesdays 12:00 UTC (after the NFL week completes)
   workflow_dispatch: {}
 
+# Least privilege for the GITHUB_TOKEN; jobs that publish widen it locally.
+permissions:
+  contents: read
+
 jobs:
   projection-backtest:
     name: Projection accuracy backtest

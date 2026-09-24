@@ -67,8 +67,10 @@ assistant** and answers the question you actually asked.
 ## ⚡ 60-second start
 
 ```bash
-docker run --rm -p 9000:9000 ghcr.io/gtonic/nfl_mcp:latest
+docker run --rm -p 127.0.0.1:9000:9000 -v nfl-mcp-data:/data ghcr.io/gtonic/nfl_mcp:latest
 ```
+
+Publishing on `127.0.0.1` keeps the server off your network; the `nfl-mcp-data` volume keeps the warmed cache across restarts.
 
 Connect it to your assistant, then just ask:
 
@@ -78,6 +80,17 @@ Connect it to your assistant, then just ask:
 ```bash
 claude mcp add --transport http nfl-mcp http://localhost:9000/mcp/
 ```
+
+**Sharing it beyond your machine?** Set a token and send it as a bearer header (the server then rejects `/mcp` calls without it):
+```bash
+export NFL_MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+docker run --rm -p 9000:9000 -v nfl-mcp-data:/data \
+  -e NFL_MCP_AUTH_TOKEN -e NFL_MCP_ALLOWED_HOSTS=nfl.example.lan \
+  ghcr.io/gtonic/nfl_mcp:latest
+claude mcp add --transport http nfl-mcp http://localhost:9000/mcp/ \
+  --header "Authorization: Bearer $NFL_MCP_AUTH_TOKEN"
+```
+Requests whose `Host` isn't localhost/127.0.0.1/[::1] (plus `NFL_MCP_ALLOWED_HOSTS`) are refused, which blocks DNS-rebinding attacks from a browser.
 
 **Claude Desktop / Cursor** — bridge via [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
 ```json

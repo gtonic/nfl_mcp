@@ -30,11 +30,12 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-from . import tool_registry
+from . import http_security, tool_registry
 from .config_manager import get_config_manager
 from .database import NFLDatabase
 from .health import env_int as _env_int
 from .health import health_check as _health_check
+from .log_redaction import install_log_redaction
 
 
 def _load_dotenv(path: Path | None = None) -> int:
@@ -82,6 +83,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
+# httpx logs full request URLs at INFO (the Odds API key rides in the query
+# string): quiet it and mask secrets on every root handler.
+install_log_redaction()
 
 logger = logging.getLogger(__name__)
 
@@ -557,7 +561,14 @@ def create_app() -> FastMCP:
     # public ``lifespan=`` constructor argument. FastMCP composes it with the
     # transport's own (session-manager) lifespan, so main() no longer needs to
     # monkey-patch the ASGI app's internal ``router.lifespan_context``.
-    mcp = FastMCP(name="NFL MCP Server", lifespan=_create_prefetch_lifespan(nfl_db))
+    # Optional shared-secret bearer auth (NFL_MCP_AUTH_TOKEN): FastMCP enforces
+    # it on /mcp only; /health and /metrics decide for themselves below.
+    auth = http_security.build_auth()
+    mcp = FastMCP(
+        name="NFL MCP Server", lifespan=_create_prefetch_lifespan(nfl_db), auth=auth,
+    )
+    if auth is not None:
+        logger.info("Bearer auth enabled for /mcp (NFL_MCP_AUTH_TOKEN)")
 
     # --- Register all tools from the tool registry ---
     profile = tool_registry.tool_profile()
@@ -570,16 +581,22 @@ def create_app() -> FastMCP:
     # --- Fix #3: Mount extracted health endpoint (separate module) ---
     @mcp.custom_route("/health", methods=["GET"])
     async def _health_endpoint(request):  # type: ignore[assignment]
-        return await _health_check()
+        # Without a configured token everything is local and the full report
+        # is returned; with one, only a token holder sees the details.
+        detailed = auth is None or http_security.request_is_authenticated(request)
+        return await _health_check(detailed=detailed)
 
-    # Prometheus text exposition of the per-tool counters, opt-in because the
-    # endpoint is unauthenticated (NFL_MCP_METRICS=1).
+    # Prometheus text exposition of the per-tool counters, opt-in
+    # (NFL_MCP_METRICS=1); requires the bearer token when one is configured.
     if os.getenv("NFL_MCP_METRICS", "0").strip().lower() in ("1", "true", "yes", "on"):
         @mcp.custom_route("/metrics", methods=["GET"])
         async def _metrics_endpoint(request):  # type: ignore[assignment]
             from starlette.responses import PlainTextResponse
 
             from .metrics import get_metrics_collector
+
+            if auth is not None and not http_security.request_is_authenticated(request):
+                return PlainTextResponse("Unauthorized", status_code=401)
 
             return PlainTextResponse(
                 get_metrics_collector().get_prometheus_metrics(),
@@ -711,6 +728,33 @@ def _port_in_use(host: str, port: int) -> bool:
         return sock.connect_ex((probe_host, port)) == 0
 
 
+def build_http_app(app: FastMCP):
+    """The Streamable HTTP ASGI app for ``app``, with Host/Origin checks on.
+
+    FastMCP 4 serves the sessionless ``2026-07-28`` protocol out of the box via
+    mode negotiation. We additionally enable ``stateless_http`` so the
+    Streamable HTTP transport keeps NO server-side session state at all: every
+    request is self-contained, so the deployment can scale horizontally behind
+    a plain round-robin load balancer with no sticky sessions and no shared
+    session store. Set ``NFL_MCP_STATELESS_HTTP=0`` to fall back to the
+    session-based transport (e.g. for older, handshake-era clients).
+
+    ``host_origin_protection=True`` (strict) rejects any Host header outside
+    localhost/127.0.0.1/[::1] + ``NFL_MCP_ALLOWED_HOSTS`` (421) and any
+    ``Origin`` that is neither loopback, same-origin nor in
+    ``NFL_MCP_ALLOWED_ORIGINS`` (403) -- the DNS-rebinding defence. Clients
+    that send no Origin (Claude Code, curl, the Docker healthcheck) pass.
+    """
+    stateless_http = os.getenv("NFL_MCP_STATELESS_HTTP", "1") == "1"
+    return app.http_app(
+        path="/mcp",
+        stateless_http=stateless_http,
+        host_origin_protection=True,
+        allowed_hosts=http_security.allowed_hosts(),
+        allowed_origins=http_security.allowed_origins(),
+    )
+
+
 def main():
     """Main entry point for the server."""
     # Secrets such as ODDS_API_KEY live in a gitignored .env; load it here
@@ -721,6 +765,7 @@ def main():
     logging.getLogger().setLevel(
         getattr(logging, os.getenv("NFL_MCP_LOG_LEVEL", "INFO").upper(), logging.INFO)
     )
+    install_log_redaction()  # re-read NFL_MCP_HTTPX_LOG_LEVEL after .env
     _load_runtime_settings()
 
     # --- Fix #1: Explicitly initialize ConfigManager before anything else ---
@@ -751,17 +796,8 @@ def main():
     # itself via FastMCP's ``lifespan=`` constructor argument, see create_app).
     app = create_app()
 
-    # Build the MCP HTTP app under the ``/mcp`` path prefix.
-    #
-    # FastMCP 4 serves the sessionless ``2026-07-28`` protocol out of the box via
-    # mode negotiation. We additionally enable ``stateless_http`` so the
-    # Streamable HTTP transport keeps NO server-side session state at all: every
-    # request is self-contained, so the deployment can scale horizontally behind
-    # a plain round-robin load balancer with no sticky sessions and no shared
-    # session store. Set ``NFL_MCP_STATELESS_HTTP=0`` to fall back to the
-    # session-based transport (e.g. for older, handshake-era clients).
-    stateless_http = os.getenv("NFL_MCP_STATELESS_HTTP", "1") == "1"
-    mcp_http = app.http_app(path="/mcp", stateless_http=stateless_http)
+    # Build the MCP HTTP app under the ``/mcp`` path prefix (see build_http_app).
+    mcp_http = build_http_app(app)
 
     # Run with uvicorn. Host/port are configurable so a local run can coexist
     # with a containerised instance instead of silently losing the bind race:
@@ -770,7 +806,10 @@ def main():
     # and fail with an actionable message naming the occupied address.
     import uvicorn
 
-    host = os.getenv("NFL_MCP_HOST", "0.0.0.0")
+    # Loopback by default: the server has no auth unless NFL_MCP_AUTH_TOKEN is
+    # set, so it must not be reachable from the network by accident. The
+    # Docker image sets NFL_MCP_HOST=0.0.0.0 (publish it as 127.0.0.1:9000).
+    host = os.getenv("NFL_MCP_HOST", "127.0.0.1")
     try:
         port = int(os.getenv("NFL_MCP_PORT", "9000"))
     except ValueError:

@@ -474,14 +474,53 @@ async def crawl_url(url: str, max_length: int | None = 10000) -> dict:
 # ATHLETE TOOLS
 # =============================================================================
 
+# Minimum age of the athletes table before fetch_athletes re-downloads the
+# ~5 MB Sleeper dump (the prefetch loop refreshes it daily on its own).
+_ATHLETES_MIN_REFRESH_SECONDS = 6 * 60 * 60
+
+
+def _seconds_since(iso_ts: str | None) -> float | None:
+    from datetime import UTC, datetime
+
+    if not iso_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(iso_ts))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - ts).total_seconds()
+
+
 @timing_decorator("fetch_athletes", tool_type="athlete")
 async def fetch_athletes() -> dict:
     """Fetch all NFL players from Sleeper API and store in database.
 
-    Returns: {athletes_count, last_updated, success, error?}
+    Rate-limited: when the stored athletes are younger than 6h the call
+    returns the cached state (cached=true, note) without re-downloading.
+
+    Returns: {athletes_count, last_updated, cached?, note?, success, error?}
     Example: fetch_athletes()
     """
-    return await athlete_tools.fetch_athletes(get_db())
+    db = get_db()
+    try:
+        last_updated = db.get_last_updated() if db is not None else None
+    except Exception:
+        last_updated = None
+    age = _seconds_since(last_updated)
+    if age is not None and 0 <= age < _ATHLETES_MIN_REFRESH_SECONDS:
+        return {
+            "athletes_count": db.get_athlete_count(),
+            "last_updated": last_updated,
+            "cached": True,
+            "note": (
+                f"Athletes were refreshed {int(age // 60)} min ago; refreshes are "
+                f"limited to once per {_ATHLETES_MIN_REFRESH_SECONDS // 3600}h"
+            ),
+            "success": True,
+        }
+    return await athlete_tools.fetch_athletes(db)
 
 
 @timing_decorator("lookup_athlete", tool_type="athlete")
@@ -2429,6 +2468,9 @@ async def get_injury_report(
         use_cache_val = bool(use_cache) if use_cache is not None else True
         team_list = teams or team_ids
         results = []
+        rate_note = None
+        if not use_cache_val and not player_ids:
+            use_cache_val, rate_note = _allow_uncached_injury_crawl(team_list)
 
         if player_ids:
             async with InjuryAggregator(db=get_db()) as aggregator:
@@ -2478,6 +2520,7 @@ async def get_injury_report(
             "cache_used": use_cache_val,
             "practice_week": practice_week,
             "healthy_excluded": healthy_excluded,
+            **({"note": rate_note} if rate_note else {}),
             "success": True
         }
 
@@ -2489,6 +2532,30 @@ async def get_injury_report(
             "success": False,
             "error": str(e)
         }
+
+
+# use_cache=False re-crawls ESPN (one request per team + one per injury):
+# honour it at most once per window per team set, else serve the cache.
+_INJURY_UNCACHED_MIN_INTERVAL_SECONDS = 15 * 60
+_last_uncached_injury_crawl: dict[str, float] = {}
+
+
+def _allow_uncached_injury_crawl(team_list) -> tuple[bool, str | None]:
+    """(use_cache, note): whether this use_cache=False call must use the cache."""
+    import time
+
+    key = ",".join(sorted(str(t).upper() for t in team_list)) if team_list else "*"
+    now = time.monotonic()
+    last = _last_uncached_injury_crawl.get(key)
+    if last is not None and now - last < _INJURY_UNCACHED_MIN_INTERVAL_SECONDS:
+        wait_min = int((_INJURY_UNCACHED_MIN_INTERVAL_SECONDS - (now - last)) // 60) + 1
+        return True, (
+            "use_cache=False ignored: a fresh crawl ran less than "
+            f"{_INJURY_UNCACHED_MIN_INTERVAL_SECONDS // 60} min ago; served cached "
+            f"reports (fresh crawl allowed again in ~{wait_min} min)"
+        )
+    _last_uncached_injury_crawl[key] = now
+    return False, None
 
 
 _HEALTHY_REPORT_STATUSES = frozenset({"active", "healthy", "probable", "fp"})

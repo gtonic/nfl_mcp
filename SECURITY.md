@@ -41,10 +41,14 @@ which:
   normalized and checked, so `http://2130706433/` or `http://[::1]/` are
   rejected too;
 - re-validates **every redirect hop** (redirects are followed manually, up to
-  5 hops) so a public URL cannot `302` its way into the private network.
+  5 hops) so a public URL cannot `302` its way into the private network;
+- only targets ports 80/443, runs under a 20 s total time budget, requests
+  `Accept-Encoding: identity` and inflates any compressed body itself with a
+  bounded decoder, so a small gzip bomb cannot expand past the byte cap
+  (`NFL_MCP_CRAWL_MAX_BYTES`, default 2 MB).
 
-**Opt-in bypass:** set `NFL_MCP_ALLOW_PRIVATE_URLS=1` (also `true`/`yes`/`on`)
-only when the server runs in a trusted, isolated network and you intentionally
+**Opt-in bypass:** set `NFL_MCP_ALLOW_PRIVATE_URLS=1` (also `true`/`yes`/`on`;
+this also lifts the port restriction) only when the server runs in a trusted, isolated network and you intentionally
 need to crawl internal hosts.
 
 **Residual risk (DNS rebinding):** validation resolves DNS and then httpx
@@ -55,9 +59,16 @@ link-local destinations.
 
 ## Network exposure and authentication
 
-The MCP HTTP transport currently has **no built-in authentication** — anyone
-who can reach the listening port can invoke every tool (including `crawl_url`).
-Until token-based auth lands, do **not** expose the port to untrusted networks:
-bind it to `localhost`, or place it behind a reverse proxy / API gateway that
-enforces auth and network policy. Adding an optional bearer-token gate at the
-transport layer is planned as a follow-up.
+The server binds `127.0.0.1` by default (the Docker image binds `0.0.0.0`
+inside the container — publish it as `-p 127.0.0.1:9000:9000`). Every request's
+`Host` must be localhost/127.0.0.1/[::1] or listed in `NFL_MCP_ALLOWED_HOSTS`
+(421 otherwise), and a present `Origin` must be loopback, same-origin or listed
+in `NFL_MCP_ALLOWED_ORIGINS` (403 otherwise) — this blocks DNS-rebinding
+attacks from a web page against a local server.
+
+Authentication is opt-in: set `NFL_MCP_AUTH_TOKEN` and `/mcp` requires
+`Authorization: Bearer <token>` (constant-time comparison); `/metrics` too, and
+`/health` returns only status/version without it. Without a token anyone who
+can reach the port can invoke every tool (including `crawl_url`), so set one
+before exposing the port beyond localhost, and terminate TLS in a reverse proxy
+when crossing an untrusted network.

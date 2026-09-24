@@ -401,6 +401,22 @@ def _ip_is_disallowed(ip: "ipaddress._BaseAddress") -> bool:
     )
 
 
+# Ports a user-supplied URL may target. Anything else (Redis on 6379, an
+# admin UI on 8080, ...) is a classic SSRF pivot even on a public address.
+ALLOWED_URL_PORTS = frozenset({80, 443})
+
+
+def _port_reason(parsed: urllib.parse.ParseResult) -> str | None:
+    """Why the URL's port is refused, or None when it is allowed."""
+    try:
+        port = parsed.port
+    except ValueError:
+        return "Malformed URL port"
+    if port is None or port in ALLOWED_URL_PORTS:
+        return None
+    return f"Blocked port {port} (only 80/443 are allowed)"
+
+
 def resolve_host_addresses(hostname: str) -> list:
     """
     Resolve a hostname to the list of unique IP addresses it maps to.
@@ -447,13 +463,17 @@ async def resolve_safe_url(url):
     if not is_valid_url(url):
         return False, "URL must start with http:// or https://", None, []
     try:
-        hostname = urllib.parse.urlparse(url).hostname
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname
     except Exception:
         return False, "Malformed URL", None, []
     if not hostname:
         return False, "URL has no host", None, []
     if allow_private_urls():
         return True, None, hostname, []
+    port_reason = _port_reason(parsed)
+    if port_reason:
+        return False, port_reason, hostname, []
     try:
         ipaddress.ip_address(hostname)
     except ValueError:
@@ -498,6 +518,10 @@ def is_safe_public_url(url):
     if allow_private_urls():
         return True, None
 
+    port_reason = _port_reason(parsed)
+    if port_reason:
+        return False, port_reason
+
     # If the host is an IP literal, check it directly; otherwise resolve DNS
     # and check every address it maps to.
     try:
@@ -512,6 +536,29 @@ def is_safe_public_url(url):
             return False, f"Could not resolve host: {hostname}"
 
     return _check_candidates(hostname, candidates)
+
+
+def safe_espn_ref(ref: object) -> str | None:
+    """An ESPN ``$ref``/``href`` link, forced to https, or None if off-ESPN.
+
+    The Core API hands back ``http://`` follow-up links; they are fetched
+    with our headers, so only ``espn.com`` / ``*.espn.com`` hosts are
+    followed (over TLS, default port) -- a tampered or unexpected payload
+    cannot point the server at an arbitrary host.
+    """
+    if not isinstance(ref, str) or not ref:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(ref)
+        host = (parts.hostname or "").lower().rstrip(".")
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or port not in (None, 80, 443):
+        return None
+    if host != "espn.com" and not host.endswith(".espn.com"):
+        return None
+    return urllib.parse.urlunsplit(("https", host, parts.path, parts.query, ""))
 
 
 # Parameter Validation Limits - now loaded from ConfigManager
