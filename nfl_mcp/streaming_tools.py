@@ -257,13 +257,19 @@ def _needs_defense(positions: list[str]) -> bool:
     return any(p.upper() in DEFENSE_POSITIONS for p in positions)
 
 
-async def _rostered_ids(league_id: str) -> tuple[set, bool]:
-    """Return (set of rostered player_ids, rosters_available)."""
+async def _rostered_ids(league_id: str) -> tuple[set, bool, str | None]:
+    """``(rostered player_ids, rosters usable for availability, why not)``.
+
+    Reserve and taxi players are owned too. A snapshot too old to say who is
+    still a free agent is not used for availability at all.
+    """
     from . import sleeper_tools
-    resp = await sleeper_tools.get_rosters(league_id)
-    rosters = resp.get("rosters") or []
-    rostered = {str(pid) for r in rosters for pid in (r.get("players") or [])}
-    return rostered, bool(rosters)
+    state = await sleeper_tools.load_rosters(league_id, "availability")
+    if state["blocking_error"]:
+        return set(), False, state["blocking_error"]
+    rostered = {str(pid) for r in state["rosters"]
+                for key in ("players", "reserve", "taxi") for pid in (r.get(key) or [])}
+    return rostered, bool(state["rosters"]), state["warning"]
 
 
 def _unit_availability(position: str, team: str, rostered: set, db) -> dict:
@@ -347,7 +353,20 @@ async def get_streaming_options(
             f"weeks_ahead must be between 1 and {_MAX_LOOKAHEAD}", default_data
         )
 
+    positions_given = bool(positions)
     positions = [p.upper() for p in (positions or DEFAULT_STREAM_POSITIONS)]
+    skipped_positions: list[str] = []
+    if league_id and not positions_given:
+        # A league with no K (or no DEF) slot has no use for kicker streamers.
+        from . import sleeper_tools
+        from .lineup_slots import league_starts
+        try:
+            league = ((await sleeper_tools.get_league(league_id)) or {}).get("league") or {}
+        except Exception:
+            league = {}
+        skipped_positions = [p for p in positions
+                             if not league_starts(league.get("roster_positions"), p)]
+        positions = [p for p in positions if p not in skipped_positions]
     weeks = [w for w in range(start_week, start_week + weeks_ahead) if w <= _WEEK_MAX]
 
     analyzer = matchup_tools.get_defense_analyzer()
@@ -372,8 +391,9 @@ async def get_streaming_options(
     # Optional free-agent availability from the league's rosters.
     availability_active = False
     rostered: set = set()
+    roster_note = None
     if league_id:
-        rostered, rosters_ok = await _rostered_ids(league_id)
+        rostered, rosters_ok, roster_note = await _rostered_ids(league_id)
         availability_active = rosters_ok
 
     from .projections import _scoring_for
@@ -409,7 +429,12 @@ async def get_streaming_options(
     if _needs_offense(positions) and not off_rankings:
         notes.append("No offense rankings available at all — DST/K could not be scored.")
     if league_id and not availability_active:
-        notes.append(f"Could not load rosters for league {league_id} — availability not annotated.")
+        notes.append(f"Could not load rosters for league {league_id} — availability not annotated"
+                     + (f" ({roster_note})" if roster_note else "") + ".")
+    elif roster_note:
+        notes.append(roster_note)
+    if skipped_positions:
+        notes.append(f"Skipped {', '.join(skipped_positions)}: the league has no starting slot for it.")
     notes.append("K accuracy improves with the weather/wind factor (planned).")
 
     return create_success_response({
@@ -421,6 +446,7 @@ async def get_streaming_options(
         "offense_source_season": off_season,
         "offense_is_fallback": off_fb,
         "availability_active": availability_active,
+        "skipped_positions": skipped_positions,
         "scoring_used": model.summary(),
         "streaming_options": streaming_options,
         "stream_score_explained": (

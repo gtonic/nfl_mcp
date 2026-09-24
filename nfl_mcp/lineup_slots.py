@@ -119,6 +119,18 @@ def starting_slots(roster_positions: Iterable[str] | None) -> dict[str, int]:
     return slots
 
 
+def league_starts(roster_positions: Iterable[str] | None, position: str | None) -> bool:
+    """Whether any starting slot of the league can hold a ``position`` player.
+
+    With no ``roster_positions`` at all (league not loaded) this answers True:
+    nothing is known to rule the position out.
+    """
+    slots = starting_slot_list(roster_positions)
+    if not slots:
+        return True
+    return any(slot_accepts(slot, position) for slot in slots)
+
+
 def starting_slot_list(roster_positions: Iterable[str] | None) -> list[str]:
     """The starting slots in the league's own order (which is Sleeper's
     ``starters`` order), canonicalised."""

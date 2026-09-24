@@ -11,7 +11,14 @@ from collections import defaultdict
 
 from .errors import ErrorType, create_error_response, create_success_response
 from .lineup_slots import slot_accepts, starting_slots
-from .sleeper_tools import active_enriched, get_league_users, get_matchups, get_rosters
+from .sleeper_tools import (
+    active_enriched,
+    get_league_users,
+    get_matchups,
+    get_rosters,
+    load_rosters,
+    mark_roster_staleness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -531,15 +538,17 @@ async def analyze_opponent(
             )
 
         # Fetch league rosters
-        rosters_result = await get_rosters(league_id)
-        if not rosters_result.get("success"):
+        # A cached snapshot still says who the opponent rosters; it is
+        # flagged stale rather than failing the whole analysis.
+        roster_state = await load_rosters(league_id, "lineup", fetch=get_rosters)
+        if roster_state["blocking_error"]:
             return create_error_response(
-                f"Failed to fetch rosters: {rosters_result.get('error')}",
+                f"Failed to fetch rosters: {roster_state['blocking_error']}",
                 ErrorType.HTTP,
                 {"vulnerability_score": 0}
             )
 
-        rosters = rosters_result.get("rosters", [])
+        rosters = roster_state["rosters"]
 
         # Find the opponent's roster
         opponent_roster = None
@@ -631,6 +640,7 @@ async def analyze_opponent(
             "starters_source": "matchup" if starters is not None else "roster",
         }
 
+        mark_roster_staleness(response_data, roster_state)
         return create_success_response(response_data)
 
     except Exception as e:

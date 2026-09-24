@@ -167,3 +167,83 @@ class TestStartSitWording:
         _, _, reasons = opt.calculate_confidence(a)
         assert any("Did not practice: DNP" in r for r in reasons)
         assert not any("Limited practice: DNP" in r for r in reasons)
+
+
+class TestPlayoffMedian:
+    @pytest.mark.asyncio
+    async def test_median_league_ppg_is_points_over_weeks(self):
+        from nfl_mcp import playoff_tools as pt
+        from tests.test_lineup_league_fixes import _pairs, _pt_patches
+        rosters = [{"roster_id": i, "owner_id": f"u{i}",
+                    "settings": {"wins": 12, "losses": 12, "ties": 0, "fpts": 1200}}
+                   for i in range(1, 5)]
+        with _pt_patches(rosters, lambda w: _pairs([(1, 2), (3, 4)]),
+                         league_settings={"league_average_match": 1}):
+            out = await pt.get_playoff_odds("L", num_sims=200, seed=1, my_roster_id=1)
+        assert {o["actual_ppg"] for o in out["odds"]} == {100.0}
+        swing = out["this_week_swing"]
+        assert swing["if_win_pct"] >= swing["if_lose_pct"]
+
+    def test_forced_winner_keeps_both_in_the_median_pool(self):
+        import random
+
+        from nfl_mcp import playoff_tools as pt
+        teams = [{"roster_id": i, "wins": 0, "points": 0, "mean": m}
+                 for i, m in ((1, 100), (2, 200), (3, 50), (4, 10))]
+        out = pt._simulate(teams, [(1, 2), (3, 4)], 2, 200, 1.0, random.Random(1),
+                           median_weeks=[5, 5], forced={0: 1})
+        # 1 is pinned to beat 2 and takes the higher score of the pair: both
+        # still sit in the median pool, so 1 (2 wins) and 2 (1 win, more
+        # points than 3) make it.
+        assert out[1]["playoff_pct"] == 100.0 and out[2]["playoff_pct"] == 100.0
+
+
+class TestStreamingLeagueSlots:
+    @pytest.mark.asyncio
+    async def test_old_snapshot_is_not_used_for_availability(self, monkeypatch):
+        from nfl_mcp import streaming_tools
+        monkeypatch.setattr(sleeper_tools, "get_rosters", AsyncMock(return_value={
+            "success": False, "stale": True, "snapshot_age_seconds": 90000,
+            "rosters": [{"roster_id": 1, "players": ["BUF"]}]}))
+        rostered, ok, why = await streaming_tools._rostered_ids("L")
+        assert ok is False and why and rostered == set()
+
+    @pytest.mark.asyncio
+    async def test_reserve_and_taxi_count_as_rostered(self, monkeypatch):
+        from nfl_mcp import streaming_tools
+        monkeypatch.setattr(sleeper_tools, "get_rosters", AsyncMock(return_value={
+            "success": True, "rosters": [{"roster_id": 1, "players": ["a"],
+                                          "reserve": ["b"], "taxi": ["c"]}]}))
+        rostered, ok, _ = await streaming_tools._rostered_ids("L")
+        assert ok and rostered == {"a", "b", "c"}
+
+    def test_league_starts(self):
+        from nfl_mcp.lineup_slots import league_starts
+        slots = ["QB", "RB", "WR", "FLEX", "DEF", "BN"]
+        assert not league_starts(slots, "K")
+        assert league_starts(slots, "DST") and league_starts(slots, "WR")
+        assert league_starts(None, "K")
+
+
+class TestTradeHeadline:
+    def test_lineup_call_leads(self):
+        from nfl_mcp.trade_analyzer_tools import _lineup_call
+        both = {"team1": {"ros_points_delta": 20.0}, "team2": {"ros_points_delta": 15.0},
+                "weeks": [5, 6]}
+        assert _lineup_call(both) == "both_lineups_improve"
+        assert _lineup_call(None) is None
+
+    def test_needs_only_for_positions_the_league_starts(self):
+        from nfl_mcp.trade_analyzer_tools import TradeAnalyzer
+        needs = TradeAnalyzer()._calculate_positional_needs(
+            {"players_enriched": []}, ["QB", "RB", "WR", "TE", "FLEX", "BN"])
+        assert "K" not in needs and "DEF" not in needs and "QB" in needs
+
+
+def test_bye_suggestion_does_not_call_covered_qb_thin():
+    from nfl_mcp.bye_week_tools import _suggestion
+    row = {"week": 7, "on_bye": [{"player": "QB One", "role": "starter", "position": "QB"}],
+           "available_by_position": {"QB": 1}, "holes": [], "projected_total": 100,
+           "full_strength_total": 115, "bye_cost": 15}
+    text = _suggestion(row, ["QB", "RB"], ["QB"])
+    assert "depth is thin" not in text and "covered by 1 other QB" in text

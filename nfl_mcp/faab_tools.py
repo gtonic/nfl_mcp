@@ -28,6 +28,7 @@ from .roster_needs import lineup_gain, lineup_slots
 from .sleeper_tools import (
     active_enriched,
     availability_error,
+    find_roster,
     get_league,
     get_nfl_state,
     get_rosters,
@@ -280,10 +281,7 @@ async def recommend_faab_bid(
     replacement_value = 0.0
     my_roster = None
     if my_roster_id is not None:
-        for r in all_rosters:
-            if r.get("roster_id") == my_roster_id:
-                my_roster = r
-                break
+        my_roster, _ = find_roster(all_rosters, league_id, my_roster_id, None)
         if my_roster is not None:
             # The league's own slots, FLEX included, scored as the change in the
             # best starting lineup at market value. A fixed table (RB2/WR2/TE1,

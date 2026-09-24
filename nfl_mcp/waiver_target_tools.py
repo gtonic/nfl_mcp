@@ -340,20 +340,10 @@ async def get_waiver_targets(
             "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
         })
     rosters = roster_state["rosters"]
-    if roster_id is None:
-        if not user_id:
-            return create_success_response({
-                "success": False,
-                "error": "Pass roster_id or user_id to identify which team to advise.",
-            })
-        mine = sleeper_tools.roster_of_user(rosters, user_id)
-    else:
-        mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
-    if not mine:
-        return create_success_response({
-            "success": False,
-            "error": f"No roster found in league {league_id} for the given identifier.",
-        })
+    mine, error = sleeper_tools.find_roster(rosters, league_id, roster_id, user_id,
+                                            purpose="advise")
+    if error:
+        return create_success_response({"success": False, "error": error})
     roster_id = mine["roster_id"]
 
     # Everything anyone rosters is off the table — including other teams' IR and

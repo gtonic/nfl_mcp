@@ -134,20 +134,10 @@ async def find_trade_targets(
     if roster_state["error"]:
         return create_success_response({"success": False, "error": roster_state["error"]})
     rosters = roster_state["rosters"]
-    if roster_id is None:
-        if not user_id:
-            return create_success_response({
-                "success": False,
-                "error": "Pass roster_id or user_id to identify which team to advise.",
-            })
-        mine = sleeper_tools.roster_of_user(rosters, user_id)
-    else:
-        mine = next((r for r in rosters if r.get("roster_id") == roster_id), None)
-    if not mine:
-        return create_success_response({
-            "success": False,
-            "error": f"No roster found in league {league_id} for the given identifier.",
-        })
+    mine, error = sleeper_tools.find_roster(rosters, league_id, roster_id, user_id,
+                                            purpose="advise")
+    if error:
+        return create_success_response({"success": False, "error": error})
     roster_id = mine["roster_id"]
 
     deadline = ros.trade_deadline_status(league.get("settings") or {}, week)
