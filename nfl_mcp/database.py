@@ -2969,6 +2969,9 @@ AthleteDatabase = NFLDatabase
 
 
 _shared_db: NFLDatabase | None = None
+# Whether ``_shared_db`` was registered by ``set_shared_db`` (the server's
+# instance) rather than built lazily here from ``NFL_MCP_DB_PATH``.
+_shared_db_injected = False
 _shared_db_lock = threading.Lock()
 
 
@@ -2978,9 +2981,10 @@ def _default_db_path() -> Path:
 
 def set_shared_db(db: NFLDatabase | None) -> None:
     """Register ``db`` as the process-wide instance returned by ``get_shared_db``."""
-    global _shared_db
+    global _shared_db, _shared_db_injected
     with _shared_db_lock:
         _shared_db = db
+        _shared_db_injected = db is not None
 
 
 def get_shared_db() -> NFLDatabase:
@@ -2988,24 +2992,34 @@ def get_shared_db() -> NFLDatabase:
 
     Constructing an ``NFLDatabase`` per call opens a fresh connection pool and
     re-runs the schema check every time; tool code shares one instance instead.
-    The instance is rebuilt if ``NFL_MCP_DB_PATH`` now points elsewhere (tests
-    point it at a temp file per test).
+    An instance registered with ``set_shared_db`` always wins. A lazily built
+    one is rebuilt if ``NFL_MCP_DB_PATH`` now points elsewhere (tests point it
+    at a temp file per test), and the old one is closed rather than leaked.
     """
     global _shared_db
     path = _default_db_path()
+    stale = None
     with _shared_db_lock:
         db = _shared_db
+        if db is not None and _shared_db_injected:
+            return db
         if db is None or Path(getattr(db, "db_path", path)) != path:
-            db = NFLDatabase(str(path))
+            stale, db = db, NFLDatabase(str(path))
             _shared_db = db
-        return db
+    if stale is not None:
+        try:
+            stale.close()
+        except Exception:
+            pass
+    return db
 
 
 def reset_shared_db() -> None:
     """Close and forget the shared instance (used by the test suite)."""
-    global _shared_db
+    global _shared_db, _shared_db_injected
     with _shared_db_lock:
         db, _shared_db = _shared_db, None
+        _shared_db_injected = False
     if db is not None:
         try:
             db.close()

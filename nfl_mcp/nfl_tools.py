@@ -432,8 +432,8 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
     team_id_upper = _espn_team(team_id)
 
     # Try cache first (if advanced enrichment is enabled)
-    from .sleeper_tools import ADVANCED_ENRICH_ENABLED
-    if ADVANCED_ENRICH_ENABLED:
+    from .sleeper_enrichment import advanced_enrich_enabled
+    if advanced_enrich_enabled():  # read now: .env loads after this module imports
         try:
             from .database import get_nfl_database
             nfl_db = get_nfl_database()
@@ -924,8 +924,8 @@ async def get_team_schedule(team_id: str, season: int | None = None) -> dict:
     team_id_upper = _espn_team(team_id)
 
     # Try cache first (if advanced enrichment is enabled)
-    from .sleeper_tools import ADVANCED_ENRICH_ENABLED
-    if ADVANCED_ENRICH_ENABLED:
+    from .sleeper_enrichment import advanced_enrich_enabled
+    if advanced_enrich_enabled():  # read now: .env loads after this module imports
         try:
             from .database import get_nfl_database
             nfl_db = get_nfl_database()

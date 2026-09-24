@@ -47,7 +47,7 @@ class TestTeamCodesReachEspnCanonical:
     @pytest.mark.parametrize("given,sent", [("WAS", "WSH"), ("la", "LAR"), ("JAC", "JAX")])
     async def test_schedule(self, given, sent):
         client = _client({"team": {"displayName": "x"}, "events": []})
-        with patch("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", False), \
+        with patch("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", False), \
              patch("nfl_mcp.nfl_tools.create_http_client", return_value=client):
             result = await get_team_schedule(given, 2026)
         assert f"/teams/{sent}/schedule" in _url(client)
@@ -56,7 +56,7 @@ class TestTeamCodesReachEspnCanonical:
     @pytest.mark.asyncio
     async def test_injuries(self):
         client = _client({"items": []})
-        with patch("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", False), \
+        with patch("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", False), \
              patch("nfl_mcp.nfl_tools.create_http_client", return_value=client):
             result = await get_team_injuries("was")
         assert "/teams/WSH/injuries" in _url(client)
@@ -81,7 +81,7 @@ class TestTeamCodesReachEspnCanonical:
             ], "status": {"type": {"name": "STATUS_SCHEDULED"}}}],
         }
         client = _client({"team": {"displayName": "Commanders"}, "events": [event]})
-        with patch("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", False), \
+        with patch("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", False), \
              patch("nfl_mcp.nfl_tools.create_http_client", return_value=client):
             result = await get_team_schedule("WAS", 2026)
         game = result["schedule"][0]
@@ -134,7 +134,7 @@ class TestTeamInjuriesAreCurrent:
         listing = {"items": [{"$ref": u} for u in details]}
         url = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/KC/injuries?limit=200"
         client = _client(by_url={url: listing, **details, **athletes})
-        with patch("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", False), \
+        with patch("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", False), \
              patch("nfl_mcp.nfl_tools.create_http_client", return_value=client):
             result = await get_team_injuries("KC", limit=10)
 
@@ -155,7 +155,7 @@ class TestTeamInjuriesAreCurrent:
         listing = {"items": [{"$ref": u} for u in details]}
         url = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/KC/injuries?limit=200"
         client = _client(by_url={url: listing, **details})
-        with patch("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", False), \
+        with patch("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", False), \
              patch("nfl_mcp.nfl_tools.create_http_client", return_value=client):
             result = await get_team_injuries("KC", limit=1)
         assert [i["player_name"] for i in result["injuries"]] == ["Hurt Guy"]
@@ -171,7 +171,7 @@ class TestTeamInjuriesAreCurrent:
             {"player_id": "3", "player_name": "C", "injury_status": None,
              "date_reported": _iso(3)},
         ]
-        with patch("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", True), \
+        with patch("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", True), \
              patch("nfl_mcp.database.get_nfl_database", return_value=db):
             result = await get_team_injuries("KC")
         assert result["cache_source"] == "database"
@@ -192,7 +192,7 @@ class TestScheduleByeWeekOnBothPaths:
     async def test_cache_path_returns_bye_week(self):
         db = MagicMock()
         db.get_team_schedule_from_cache.return_value = self._weeks(bye=7)
-        with patch("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", True), \
+        with patch("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", True), \
              patch("nfl_mcp.database.get_nfl_database", return_value=db):
             result = await get_team_schedule("was", 2026)
         assert result["cache_source"] == "database"
@@ -203,7 +203,7 @@ class TestScheduleByeWeekOnBothPaths:
     async def test_partial_cache_has_no_bye_guess(self):
         db = MagicMock()
         db.get_team_schedule_from_cache.return_value = self._weeks(bye=7)[:3]
-        with patch("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", True), \
+        with patch("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", True), \
              patch("nfl_mcp.database.get_nfl_database", return_value=db):
             result = await get_team_schedule("KC", 2026)
         assert result["bye_week"] is None
@@ -213,7 +213,7 @@ class TestScheduleByeWeekOnBothPaths:
         events = [{"id": str(w), "week": {"number": w}, "competitions": []}
                   for w in range(1, 19) if w != 11]
         client = _client({"team": {"displayName": "Chiefs"}, "events": events})
-        with patch("nfl_mcp.sleeper_tools.ADVANCED_ENRICH_ENABLED", False), \
+        with patch("nfl_mcp.sleeper_enrichment.ADVANCED_ENRICH_ENABLED", False), \
              patch("nfl_mcp.nfl_tools.create_http_client", return_value=client):
             result = await get_team_schedule("KC", 2026)
         assert result["bye_week"] == 11

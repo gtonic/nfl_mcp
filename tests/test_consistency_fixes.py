@@ -247,3 +247,80 @@ def test_bye_suggestion_does_not_call_covered_qb_thin():
            "full_strength_total": 115, "bye_cost": 15}
     text = _suggestion(row, ["QB", "RB"], ["QB"])
     assert "depth is thin" not in text and "covered by 1 other QB" in text
+
+
+class TestCircuitBreakerProbe:
+    @pytest.mark.asyncio
+    async def test_cancel_during_backoff_releases_the_probe(self, monkeypatch):
+        import asyncio
+
+        import httpx
+
+        from nfl_mcp import retry_utils as ru
+        breaker = ru.get_circuit_breaker("test_cancel_probe")
+        breaker.reset()
+        breaker.state = ru.CircuitState.OPEN
+        breaker.last_failure_time = 0  # timeout long past -> next call is the probe
+
+        async def _flaky():
+            raise httpx.ConnectError("down")
+
+        task = asyncio.create_task(ru.retry_with_backoff(
+            _flaky, max_retries=3, initial_delay=10, circuit_breaker_name="test_cancel_probe"))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert breaker.state == ru.CircuitState.HALF_OPEN
+        assert breaker._probe_in_flight is False
+        assert breaker.allow_request() is True
+
+    def test_a_lost_probe_times_out(self, monkeypatch):
+        from nfl_mcp import retry_utils as ru
+        breaker = ru.CircuitBreaker("lost_probe")
+        breaker.state = ru.CircuitState.HALF_OPEN
+        breaker._probe_in_flight = True
+        breaker._probe_started = 0.0
+        assert breaker.allow_request() is True
+        assert breaker.allow_request() is False  # the new probe is in flight
+
+    def test_json_decode_error_is_retryable(self):
+        import json
+
+        from nfl_mcp import retry_utils as ru
+        assert ru.is_retryable_error(json.JSONDecodeError("x", "<html>", 0))
+        assert not ru.is_retryable_error(ValueError("bad input"))
+
+
+class TestSharedDb:
+    def test_injected_instance_wins_over_env_path(self, monkeypatch, tmp_path):
+        from nfl_mcp import database
+        injected = database.NFLDatabase(str(tmp_path / "injected.db"))
+        database.set_shared_db(injected)
+        try:
+            monkeypatch.setenv("NFL_MCP_DB_PATH", str(tmp_path / "other.db"))
+            assert database.get_shared_db() is injected
+        finally:
+            database.reset_shared_db()
+
+    def test_rebuild_closes_the_old_instance(self, monkeypatch, tmp_path):
+        from nfl_mcp import database
+        database.reset_shared_db()
+        monkeypatch.setenv("NFL_MCP_DB_PATH", str(tmp_path / "a.db"))
+        first = database.get_shared_db()
+        closed = []
+        monkeypatch.setattr(first, "close", lambda: closed.append(True))
+        monkeypatch.setenv("NFL_MCP_DB_PATH", str(tmp_path / "b.db"))
+        second = database.get_shared_db()
+        assert second is not first and closed == [True]
+        database.reset_shared_db()
+
+
+def test_advanced_enrich_is_read_at_call_time(monkeypatch):
+    from nfl_mcp import sleeper_enrichment
+    monkeypatch.setattr(sleeper_enrichment, "ADVANCED_ENRICH_ENABLED", False)
+    monkeypatch.setenv("NFL_MCP_ADVANCED_ENRICH", "1")
+    assert sleeper_enrichment.advanced_enrich_enabled() is True
+    import pathlib
+    src = pathlib.Path("nfl_mcp/nfl_tools.py").read_text()
+    assert "import ADVANCED_ENRICH_ENABLED" not in src

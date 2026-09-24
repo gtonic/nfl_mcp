@@ -8,6 +8,7 @@ This module provides:
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -50,11 +51,15 @@ class CircuitBreaker:
         self.success_count = 0
         self.last_failure_time: float | None = None
         self._probe_in_flight = False
+        self._probe_started: float | None = None
 
         # Configuration from environment
         self.failure_threshold = int(os.getenv("NFL_MCP_CIRCUIT_FAILURE_THRESHOLD", "5"))
         self.timeout = int(os.getenv("NFL_MCP_CIRCUIT_TIMEOUT", "60"))
         self.success_threshold = int(os.getenv("NFL_MCP_CIRCUIT_SUCCESS_THRESHOLD", "2"))
+        # A probe that never reports back (lost task, bug) must not pin the
+        # breaker in HALF_OPEN: after this long another caller may probe.
+        self.probe_timeout = int(os.getenv("NFL_MCP_CIRCUIT_PROBE_TIMEOUT", "120"))
 
     def allow_request(self) -> bool:
         """Whether a call may go out now (and, when HALF_OPEN, claim the probe).
@@ -74,13 +79,18 @@ class CircuitBreaker:
             self.success_count = 0
             self._probe_in_flight = False
         if self._probe_in_flight:
-            return False
+            started = self._probe_started
+            if started is None or time.time() - started < self.probe_timeout:
+                return False
+            logger.warning(f"[Circuit Breaker {self.name}] Probe timed out; allowing a new one")
         self._probe_in_flight = True
+        self._probe_started = time.time()
         return True
 
     def release_probe(self) -> None:
         """End a probe without a verdict (the call failed for a non-host reason)."""
         self._probe_in_flight = False
+        self._probe_started = None
 
     def _on_success(self):
         """Handle successful call."""
@@ -162,8 +172,14 @@ def is_retryable_error(exc: BaseException) -> bool:
     """Transport failures and 5xx/429 answers are worth retrying (and count
     against the host's breaker); anything else — a 404, a parse error, a bug
     in the caller — would fail the same way again and says nothing about
-    whether the host is up."""
-    if isinstance(exc, (httpx.TransportError, ConnectionError, TimeoutError, RetryableHTTPStatus)):
+    whether the host is up.
+
+    A JSON decode error after a successful transport is the exception: it is
+    an HTML error/maintenance page served with a 200, which is the host's
+    fault and usually transient.
+    """
+    if isinstance(exc, (httpx.TransportError, ConnectionError, TimeoutError, RetryableHTTPStatus,
+                        json.JSONDecodeError)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return is_retryable_status(exc.response.status_code)
@@ -239,50 +255,53 @@ async def retry_with_backoff(
         raise CircuitBreakerError(f"Circuit breaker {circuit_breaker_name} is OPEN, skipping attempt")
 
     last_exception: BaseException | None = None
+    # Whether the breaker got a verdict (success/failure/release). Anything
+    # else leaving this function — a cancellation during the backoff sleep
+    # included, which an ``except Exception`` never sees — releases the probe,
+    # or a HALF_OPEN breaker would reject every later call.
+    settled = False
+    try:
+        for attempt in range(max_retries + 1):
+            try:
+                if asyncio.iscoroutinefunction(func):
+                    result = await func(*args, **kwargs)
+                else:
+                    result = func(*args, **kwargs)
+            except Exception as e:
+                if not is_retryable_error(e):
+                    # Not the host's fault: no retry, no breaker failure.
+                    raise
+                last_exception = e
 
-    for attempt in range(max_retries + 1):
-        try:
-            if asyncio.iscoroutinefunction(func):
-                result = await func(*args, **kwargs)
-            else:
-                result = func(*args, **kwargs)
-        except Exception as e:
-            if not is_retryable_error(e):
-                # Not the host's fault: no retry, no breaker failure.
-                if circuit_breaker:
-                    circuit_breaker.release_probe()
-                raise
-            last_exception = e
+                # Don't retry on last attempt. The breaker records ONE failure per
+                # logical call, after retries are exhausted — counting every attempt
+                # would open it after a single flaky call (4 attempts >= 5 - 1).
+                if attempt >= max_retries:
+                    logger.error(
+                        f"[Retry] Failed after {attempt + 1} attempts: {type(e).__name__}: {e}"
+                    )
+                    if circuit_breaker:
+                        circuit_breaker._on_failure()
+                        settled = True
+                    break
 
-            # Don't retry on last attempt. The breaker records ONE failure per
-            # logical call, after retries are exhausted — counting every attempt
-            # would open it after a single flaky call (4 attempts >= 5 - 1).
-            if attempt >= max_retries:
-                logger.error(
-                    f"[Retry] Failed after {attempt + 1} attempts: {type(e).__name__}: {e}"
+                delay = min(initial_delay * (exponential_base ** attempt), max_delay)
+                logger.warning(
+                    f"[Retry] Attempt {attempt + 1}/{max_retries + 1} failed: "
+                    f"{type(e).__name__}: {e}. Retrying in {delay:.2f}s..."
                 )
-                if circuit_breaker:
-                    circuit_breaker._on_failure()
-                break
+                await asyncio.sleep(delay)
+                continue
 
-            delay = min(initial_delay * (exponential_base ** attempt), max_delay)
-            logger.warning(
-                f"[Retry] Attempt {attempt + 1}/{max_retries + 1} failed: "
-                f"{type(e).__name__}: {e}. Retrying in {delay:.2f}s..."
-            )
-            await asyncio.sleep(delay)
-            continue
-        except BaseException:
-            # Cancelled mid-call: a claimed probe must not stay claimed forever.
             if circuit_breaker:
-                circuit_breaker.release_probe()
-            raise
-
-        if circuit_breaker:
-            circuit_breaker._on_success()
-        if attempt > 0:
-            logger.info(f"[Retry] Success on attempt {attempt + 1}/{max_retries + 1}")
-        return result
+                circuit_breaker._on_success()
+                settled = True
+            if attempt > 0:
+                logger.info(f"[Retry] Success on attempt {attempt + 1}/{max_retries + 1}")
+            return result
+    finally:
+        if circuit_breaker and not settled:
+            circuit_breaker.release_probe()
 
     # All retries exhausted
     raise last_exception
