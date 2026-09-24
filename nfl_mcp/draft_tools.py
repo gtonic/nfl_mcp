@@ -56,21 +56,33 @@ def replacement_baselines(num_teams: int, superflex: bool) -> dict[str, int]:
     }
 
 
-# Statuses that actually cost a drafted player games. Everything else is shown
-# but not priced -- see _injury_multiplier for why "Questionable" is excluded.
+# Statuses that actually cost a drafted player games, keyed on the canonical
+# status (see injury_status) so "Injured Reserve", "Sus" and "Reserve/PUP" price
+# like "IR", "Suspended" and "PUP". Any other status that rules a player out
+# (Out, Inactive, NA, DNR, Reserve) takes _DRAFT_OUT_MULT. Everything else is
+# shown but not priced -- see _injury_multiplier for why "Questionable" is
+# excluded.
 _INJURY_MULTIPLIERS = {
-    "OUT": 0.35,
     "IR": 0.30,
     "PUP": 0.45,
-    "SUSPENDED": 0.50,
-    "DOUBTFUL": 0.65,
+    "NFI": 0.45,
+    "Suspended": 0.50,
+    "Doubtful": 0.65,
 }
+_DRAFT_OUT_MULT = 0.35
 
-# Only these reach the drafter. The feed also carries "Active" rows whose note is
-# routine camp chatter ("held out of Thursday's preseason opener"); surfacing
-# those put a two-line block under nearly every suggestion, which is the last
-# thing you want on a 90-second clock.
-_NOTABLE_INJURY_STATUSES = frozenset(_INJURY_MULTIPLIERS) | {"QUESTIONABLE"}
+
+def _is_notable_injury(status: str | None) -> bool:
+    """Only these reach the drafter.
+
+    The feed also carries "Active" rows whose note is routine camp chatter
+    ("held out of Thursday's preseason opener"); surfacing those put a two-line
+    block under nearly every suggestion, which is the last thing you want on a
+    90-second clock.
+    """
+    from . import injury_status
+    return (_injury_multiplier(status) < 1.0
+            or injury_status.normalize(status) == "Questionable")
 
 
 def _norm_name(s: str | None) -> str:
@@ -96,7 +108,11 @@ def _injury_multiplier(status: str | None) -> float:
     first-round talent down the board for nothing. It is surfaced to the drafter
     instead, who can read the note and judge in seconds.
     """
-    return _INJURY_MULTIPLIERS.get((status or "").strip().upper(), 1.0)
+    from . import injury_status
+    canonical = injury_status.normalize(status)
+    if canonical in _INJURY_MULTIPLIERS:
+        return _INJURY_MULTIPLIERS[canonical]
+    return _DRAFT_OUT_MULT if injury_status.availability(status) == "out" else 1.0
 
 
 def draft_currency(p: dict) -> float:
@@ -477,7 +493,7 @@ async def _injury_index(db=None) -> dict[str, dict]:
         key = _norm_name(inj.get("player_name"))
         if not key:
             continue
-        if (inj.get("injury_status") or "").strip().upper() not in _NOTABLE_INJURY_STATUSES:
+        if not _is_notable_injury(inj.get("injury_status")):
             continue
         # Keep the most severe record if a name appears more than once.
         prev = index.get(key)

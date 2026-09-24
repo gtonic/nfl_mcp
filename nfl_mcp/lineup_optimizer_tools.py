@@ -172,9 +172,13 @@ class PlayerAnalysis:
     unit_matchup: dict | None = None
     threshold_scale: float = 1.0
 
-    # Sleeper's projection priced in the league's scoring — a second opinion,
-    # never the number decisions are made on (see `sleeper_projections`).
+    # Sleeper's projection priced in the league's scoring. `projected_points`
+    # is the Sleeper-first blend of it and our model (`model_projection`);
+    # `disagreement` compares the two (see `sleeper_projections`).
     sleeper_projection: float | None = None
+    model_projection: float | None = None
+    projection_source: str | None = None
+    blend_weights: dict | None = None
     consensus: float | None = None
     disagreement: bool = False
     projection_gap: float | None = None
@@ -223,6 +227,9 @@ class PlayerAnalysis:
             "opponent_implied_total": self.opponent_implied_total,
             "unit_matchup": self.unit_matchup,
             "sleeper_projection": self.sleeper_projection,
+            "model_projection": self.model_projection,
+            "projection_source": self.projection_source,
+            "blend_weights": self.blend_weights,
             "consensus": self.consensus,
             "disagreement": self.disagreement,
             "projection_gap": self.projection_gap,
@@ -625,7 +632,11 @@ class LineupOptimizer:
         """
         unit = analysis.unit_matchup
         if (analysis.position not in UNIT_POSITIONS or pp.get("vegas_active")
-                or not unit or unit.get("projected_points") is None):
+                or not unit or unit.get("projected_points") is None
+                # The engine already priced the offense read into its model
+                # part and blended it with Sleeper's; replacing it here would
+                # throw the blend away.
+                or pp.get("projection_source") == "sleeper_blend"):
             return
         inj = (pp.get("breakdown") or {}).get("injury_mult", 1.0)
         projected = round(unit["projected_points"] * inj, 1)
@@ -653,7 +664,10 @@ class LineupOptimizer:
         # No projection at all (0 without a reason) is not a number to compare;
         # a zero because he is ruled out is.
         ruled_out = availability(analysis.injury_status) == "out"
-        ours = analysis.projected_points if (analysis.projected_points or ruled_out) else None
+        # Our model's own number, not the blend (which is mostly Sleeper's).
+        own = (analysis.model_projection if analysis.model_projection is not None
+               else analysis.projected_points)
+        ours = own if (own or ruled_out) else None
         op = second_opinion(ours, theirs, ruled_out=ruled_out)
         analysis.sleeper_projection = op["sleeper_projection"]
         analysis.consensus = op["consensus"]
@@ -861,6 +875,9 @@ class LineupOptimizer:
                     analysis.projected_points = pp["projected_points"]
                     analysis.floor = pp["floor"]
                     analysis.ceiling = pp["ceiling"]
+                    analysis.model_projection = pp.get("model_projection")
+                    analysis.projection_source = pp.get("projection_source")
+                    analysis.blend_weights = pp.get("blend_weights")
                     analysis.base_source = (pp.get("breakdown") or {}).get("base_source")
                     analysis.implied_total = pp.get("implied_total") if pp.get("vegas_active") else None
                     analysis.opponent_implied_total = (
@@ -872,9 +889,11 @@ class LineupOptimizer:
         await self._second_opinion(analysis, player_id, scoring, season, week)
         extra_reasons = self._unit_reasons(analysis) if analysis.position in UNIT_POSITIONS else []
         if analysis.disagreement:
+            own = (analysis.model_projection if analysis.model_projection is not None
+                   else analysis.projected_points)
             extra_reasons.append(
                 f"🔍 Sleeper projects {analysis.sleeper_projection} vs our "
-                f"{analysis.projected_points} — the two disagree, worth a look")
+                f"model's {own} — the two disagree, worth a look")
 
         # Calculate confidence and decision
         confidence, confidence_level, reasoning = self.calculate_confidence(
@@ -1116,9 +1135,12 @@ async def get_start_sit_recommendation(
             "floor": analysis.floor,
             "ceiling": analysis.ceiling,
             "base_source": analysis.base_source,
-            # Second opinion: Sleeper's projection in this league's scoring.
-            # The decision above is made on `projected_points` alone.
+            # `projected_points` is the Sleeper-first blend of Sleeper's
+            # projection (in this league's scoring) and our model's.
             "sleeper_projection": analysis.sleeper_projection,
+            "model_projection": analysis.model_projection,
+            "projection_source": analysis.projection_source,
+            "blend_weights": analysis.blend_weights,
             "consensus": analysis.consensus,
             "disagreement": analysis.disagreement,
             "projection_gap": analysis.projection_gap,

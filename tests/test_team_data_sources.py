@@ -113,21 +113,21 @@ class TestTeamInjuriesAreCurrent:
 
     @pytest.mark.asyncio
     async def test_api_path_drops_active_and_last_season(self):
-        base = "http://espn/injuries/"
+        base = "https://sports.core.api.espn.com/injuries/"
         details = {
             base + "1": {"status": "Questionable", "date": _iso(2),
-                         "athlete": {"$ref": "http://espn/athletes/1"}},
+                         "athlete": {"$ref": "https://sports.core.api.espn.com/athletes/1"}},
             base + "2": {"status": "Active", "date": _iso(1),
-                         "athlete": {"$ref": "http://espn/athletes/2"}},
+                         "athlete": {"$ref": "https://sports.core.api.espn.com/athletes/2"}},
             base + "3": {"status": "Injured Reserve", "date": _iso(60),
                          "details": {"returnDate": (datetime.now(UTC) + timedelta(days=40)).date().isoformat()},
-                         "athlete": {"$ref": "http://espn/athletes/3"}},
+                         "athlete": {"$ref": "https://sports.core.api.espn.com/athletes/3"}},
             base + "4": {"status": "Out", "date": _iso(400),
                          "details": {"returnDate": "2025-02-15"},
-                         "athlete": {"$ref": "http://espn/athletes/4"}},
+                         "athlete": {"$ref": "https://sports.core.api.espn.com/athletes/4"}},
         }
         athletes = {
-            f"http://espn/athletes/{i}": {"id": str(i), "displayName": f"Player {i}",
+            f"https://sports.core.api.espn.com/athletes/{i}": {"id": str(i), "displayName": f"Player {i}",
                                            "position": {"abbreviation": "WR"}}
             for i in range(1, 5)
         }
@@ -143,12 +143,12 @@ class TestTeamInjuriesAreCurrent:
         assert result["resolved_excluded"] == 2
         # A resolved report costs no athlete lookup.
         fetched = [c.args[0] for c in client.get.await_args_list]
-        assert "http://espn/athletes/2" not in fetched
-        assert "http://espn/athletes/4" not in fetched
+        assert "https://sports.core.api.espn.com/athletes/2" not in fetched
+        assert "https://sports.core.api.espn.com/athletes/4" not in fetched
 
     @pytest.mark.asyncio
     async def test_limit_applies_after_filtering(self):
-        base = "http://espn/injuries/"
+        base = "https://sports.core.api.espn.com/injuries/"
         details = {base + str(i): {"status": "Active", "date": _iso(1)} for i in range(5)}
         details[base + "9"] = {"status": "Out", "date": _iso(1),
                                "athlete": {"displayName": "Hurt Guy"}}

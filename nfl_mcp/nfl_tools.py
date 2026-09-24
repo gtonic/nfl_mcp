@@ -15,6 +15,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .config import LIMITS, LONG_TIMEOUT, create_http_client, get_http_headers, validate_limit
+from .config import safe_espn_ref as _safe_espn_ref
 from .errors import (
     ErrorType,
     create_error_response,
@@ -39,8 +40,8 @@ def _espn_team(team_id: str) -> str:
 
 # ESPN's team injury list is each player's *latest* report ever filed, so most
 # of it is players who are healthy again ("Active") and a tail of reports from
-# earlier seasons. Neither is an injury.
-_HEALTHY_STATUSES = frozenset({"active", "healthy"})
+# earlier seasons. Neither is an injury. "Healthy" is the shared vocabulary's
+# (injury_status): Active, Probable, FP.
 # A report this old is from a previous season unless it names a return date
 # still ahead (a season-ending IR placement filed in the summer).
 _STALE_REPORT_DAYS = 180
@@ -64,7 +65,8 @@ def _parse_when(value: Any) -> datetime | None:
 def _is_current_injury(status: str | None, date: Any, return_date: Any = None,
                        now: datetime | None = None) -> bool:
     """Whether a report describes an injury that is still open."""
-    if (status or "").strip().lower() in _HEALTHY_STATUSES:
+    from .injury_status import is_healthy
+    if is_healthy(status):
         return False
     now = now or datetime.now(UTC)
     reported = _parse_when(date)
@@ -511,6 +513,9 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
             detail = item
             ref = item.get('$ref') if isinstance(item, dict) else None
             if ref and not (isinstance(item, dict) and item.get('status')):
+                ref = _safe_espn_ref(ref)
+                if ref is None:
+                    return None
                 try:
                     r = await client.get(ref, headers=headers)
                     r.raise_for_status()
@@ -536,7 +541,7 @@ async def get_team_injuries(team_id: str, limit: int | None = 50) -> dict:
 
             # Athlete: dereference when given as a $ref, else read inline.
             athlete = detail.get('athlete', {}) or {}
-            a_ref = athlete.get('$ref') if isinstance(athlete, dict) else None
+            a_ref = _safe_espn_ref(athlete.get('$ref')) if isinstance(athlete, dict) else None
             if a_ref:
                 try:
                     ar = await client.get(a_ref, headers=headers)
@@ -1210,6 +1215,7 @@ async def get_league_leaders(category: str, season: int | None = None, season_ty
         cache_stats = {"hits": 0, "misses": 0}
 
         async def _fetch_json(url: str, client, headers, cache: dict[str, Any]) -> Any:
+            url = _safe_espn_ref(url)
             if not url:
                 return None
             if url in cache:

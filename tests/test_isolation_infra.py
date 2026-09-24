@@ -220,7 +220,7 @@ def _html_response(body: bytes):
     async def _aiter():
         yield body
 
-    resp.aiter_bytes = _aiter
+    resp.aiter_raw = _aiter
     resp.aclose = AsyncMock()
     client = MagicMock()
     client.build_request = MagicMock(side_effect=lambda method, url, **kw: url)

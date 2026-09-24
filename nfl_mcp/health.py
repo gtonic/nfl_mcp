@@ -98,8 +98,12 @@ def _get_tool_profile() -> dict[str, Any]:
         return {"profile": None, "count": None, "error": str(e)}
 
 
-async def health_check() -> JSONResponse:
+async def health_check(detailed: bool = True) -> JSONResponse:
     """Health check endpoint for monitoring server status.
+
+    ``detailed=False`` (an unauthenticated caller while ``NFL_MCP_AUTH_TOKEN``
+    is set) returns only ``status``/``service``/``version`` -- same status
+    code, so the Docker HEALTHCHECK keeps working without the token.
 
     Status: ``healthy`` (200); ``degraded`` (200) while any upstream circuit
     breaker is open/half-open; ``unhealthy`` (503) only when the database
@@ -143,6 +147,12 @@ async def health_check() -> JSONResponse:
         name for name, cb in circuit_breakers.items()
         if (cb or {}).get("state") in ("open", "half_open")
     )
+
+    if not detailed:
+        return JSONResponse(
+            {"status": status, "service": "NFL MCP Server", "version": version},
+            status_code=status_code,
+        )
 
     return JSONResponse(
         {

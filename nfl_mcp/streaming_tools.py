@@ -249,6 +249,30 @@ async def unit_matchup(position: str, team: str, opponent: str, season: int | No
     }
 
 
+def _blend_unit_week(position: str, team: str, week_row: dict, sleeper_weeks: dict,
+                     model) -> None:
+    """Blend one streaming week's K/DEF points with Sleeper's, in place.
+
+    Keeps the schedule projection as ``model_projection``; a bye, a week with
+    no schedule number or no Sleeper row for the team stays model-only.
+    """
+    from . import sleeper_projections as sp
+    ours = week_row.get("projected_points")
+    week_row["model_projection"] = ours
+    week_row["projection_source"] = "bye" if week_row.get("on_bye") else "model_only"
+    index = sleeper_weeks.get(week_row.get("week")) or {}
+    if ours is None or week_row.get("on_bye") or not index.get("by_id"):
+        return
+    code = normalize_team(team) or team
+    row = (index.get("by_def") or {}).get(code) if position in DEFENSE_UNIT_POSITIONS \
+        else (index.get("by_k") or {}).get(code)
+    if not row:
+        return
+    theirs = sp.price_stats(row["stats"], model)
+    week_row.update({"sleeper_projection": theirs, "projection_source": "sleeper_blend",
+                     "projected_points": sp.blend(float(ours), theirs)})
+
+
 def _needs_offense(positions: list[str]) -> bool:
     return any(p.upper() in ("DST", "DEF", "K") for p in positions)
 
@@ -400,6 +424,18 @@ async def get_streaming_options(
     from .scoring import resolve_scoring
     model = resolve_scoring(await _scoring_for(scoring, league_id))
 
+    # Sleeper's K/DEF projections for the window, blended in as the weekly
+    # engine does (see `sleeper_projections.blend`): the same number start/sit
+    # shows. Weeks Sleeper has not published stay model-only.
+    sleeper_weeks: dict[int, dict] = {}
+    if any(p in DEFENSE_UNIT_POSITIONS or p == "K" for p in positions):
+        from . import sleeper_projections as sp
+        for w in weeks:
+            try:
+                sleeper_weeks[w] = await sp.fetch_week_projections(season, w)
+            except Exception as e:  # the schedule projection must still answer
+                logger.debug(f"Sleeper K/DEF projections unavailable for wk{w}: {e}")
+
     streaming_options: dict[str, list[dict]] = {}
     for pos, teams in scores.items():
         rows = [{"team": team, **data} for team, data in teams.items()]
@@ -408,6 +444,7 @@ async def get_streaming_options(
                 pts = []
                 for w in r["weeks"]:
                     w["projected_points"] = unit_points(pos, w, model)
+                    _blend_unit_week(pos, r["team"], w, sleeper_weeks, model)
                     if w["projected_points"] is not None:
                         pts.append(w["projected_points"])
                 r["projected_points"] = round(sum(pts) / len(pts), 1) if pts else None

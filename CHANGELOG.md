@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Weekly projections are Sleeper-first.** `projected_points` is now
+  `0.25 × our model + 0.75 × Sleeper's projection` (priced in the league's
+  scoring) in every tool — project_players, start/sit, analyze_lineup, the
+  briefing, waiver targets, trade tools, ROS's current week and K/DEF
+  streaming — through one code path. Backtest (2023-25, weeks 3+, n≈8k, truth
+  priced in the same scoring): MAE 5.69 (old model) → 5.39, Spearman 0.51 →
+  0.565; start/sit "higher projection wins" at an 8+ point gap 80% → 86%.
+  Each projection reports `model_projection`, `sleeper_projection`,
+  `blend_weights` and `projection_source` (`sleeper_blend` / `model_only` /
+  `bye`); without a Sleeper number the model alone is used, with a warning.
+- A player Sleeper lists without points (benched, inactive) projects 0 when
+  his team is published; Out and byes are 0 regardless; questionable only
+  discounts our part; doubtful is capped.
+- Our weekly model regresses the opportunity rate toward the rank bucket
+  (2 games-equivalent, as ROS does): early-season 2-game samples no longer
+  inflate it (Kenneth Walker week 3: 31.6 → ~20 blended).
+- QB volume: pass attempts shrink 3 pseudo-games toward 30.6, pass-per-attempt
+  prior 0.43, 8-game lookback (QB weekly bias +0.30 → −0.01; ROS top-12 QB
+  MAE 3.75 → 3.25).
+- Floor/ceiling widths re-measured around the blend (QB 0.47, RB 0.62, WR
+  0.68, TE 0.71, K 0.58, DEF 0.78); kicker tiers follow measured means (no
+  9.5 peak at 24-28); QB rank buckets 4-8 / 9-12 lowered to 19 / 17.
+- Sleeper second opinion: `consensus` is the blend, `disagreement` compares our
+  model with Sleeper.
+
+### Fixed
+- Evals scored truth with nflverse `fantasy_points_ppr` (INT −2, dropped
+  fumbles / 2-pt columns, 2025 interceptions read as 0) while the model
+  predicts Sleeper defaults; truth is now priced by `ScoringModel` on the full
+  stat line.
+
+### Added
+- `evals/backtest/sleeper_blend.py`: model vs Sleeper vs blend, weight sweep,
+  band coverage and start/sit accuracy; Sleeper history fetched once and
+  cached (network on first run).
+
 ## [0.9.0] - 2026-09-23
 
 0.8.5 fixed how start/sit ranked players. This release fixes what they were

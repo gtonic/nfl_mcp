@@ -73,6 +73,9 @@ class DatabaseConnectionPool:
             conn.execute("PRAGMA journal_mode=WAL")
             # Set reasonable timeout for busy database
             conn.execute("PRAGMA busy_timeout=30000")  # 30 seconds
+            # Truncate the WAL back to <=16 MB after checkpoints instead of
+            # leaving it at its high-water mark.
+            conn.execute("PRAGMA journal_size_limit=16777216")
 
             return conn
         except Exception as e:
@@ -216,7 +219,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
 
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 15
+    CURRENT_SCHEMA_VERSION = 16
 
     def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
@@ -256,9 +259,16 @@ class NFLDatabase:
             current_version = row[0] if row else 0
 
             # Run migrations
+            self._vacuum_after_migration = False
             self._run_migrations(conn, current_version)
 
             conn.commit()
+            if self._vacuum_after_migration:
+                # Give the pruned snapshot pages back to the filesystem (once).
+                try:
+                    conn.execute("VACUUM")
+                except sqlite3.Error as e:
+                    logger.warning(f"VACUUM after migration failed: {e}")
 
     def _run_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Run database migrations from the current version to the latest."""
@@ -291,6 +301,7 @@ class NFLDatabase:
             13: self._migration_v13_defense_rankings_flags,
             14: self._migration_v14_real_practice_reports,
             15: self._migration_v15_projection_log_and_checks,
+            16: self._migration_v16_snapshot_dedup,
         }
 
     def _migration_v1_initial_schema(self, conn: sqlite3.Connection) -> None:
@@ -706,6 +717,41 @@ class NFLDatabase:
             """
         )
 
+    # Snapshot tables and the columns identifying one logical snapshot.
+    _SNAPSHOT_KEYS = {
+        "roster_snapshots": ("league_id",),
+        "matchup_snapshots": ("league_id", "week"),
+        "transaction_snapshots": ("league_id", "week"),
+    }
+
+    def _migration_v16_snapshot_dedup(self, conn: sqlite3.Connection) -> None:
+        """Migration v16: payload hashes on snapshots + one-time prune.
+
+        Every roster/matchup call appended a ~177 KB row although readers only
+        ever load the newest one per key (~118 MB of a 152 MB DB). Saves now
+        skip identical payloads (``payload_hash``) and keep a few rows per
+        key; this prunes the backlog down to the newest row per key.
+        """
+        for table, keys in self._SNAPSHOT_KEYS.items():
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if "payload_hash" not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN payload_hash TEXT")
+            partition = ", ".join(keys)
+            deleted = conn.execute(
+                f"""
+                DELETE FROM {table} WHERE id NOT IN (
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER (
+                            PARTITION BY {partition} ORDER BY fetched_at DESC, id DESC
+                        ) AS rn FROM {table}
+                    ) WHERE rn = 1
+                )
+                """
+            ).rowcount
+            if deleted:
+                logger.info(f"[Migration v16] Pruned {deleted} superseded rows from {table}")
+                self._vacuum_after_migration = True
+
     def _migration_v12_player_values(self, conn: sqlite3.Connection) -> None:
         """Migration v12: Consensus player market values (FantasyCalc) for trades & drafts.
 
@@ -847,15 +893,54 @@ class NFLDatabase:
     # ------------------------------------------------------------------
     # Roster snapshot helpers
     # ------------------------------------------------------------------
+    # Rows kept per snapshot key (league[/week]); readers use only the newest.
+    SNAPSHOT_ROWS_PER_KEY = 3
+
+    def _save_snapshot(self, conn, table: str, key: dict, payload_json: str, fetched_at: str) -> None:
+        """Insert a snapshot unless it equals the newest one for ``key``.
+
+        An unchanged payload only refreshes the newest row's ``fetched_at`` (so
+        staleness checks still see a fresh fetch); a changed one is inserted
+        and rows beyond ``SNAPSHOT_ROWS_PER_KEY`` for the key are dropped.
+        """
+        import hashlib
+
+        payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        where = " AND ".join(f"{col}=?" for col in key)
+        params = tuple(key.values())
+        latest = conn.execute(
+            f"SELECT id, payload_hash FROM {table} WHERE {where} "
+            "ORDER BY fetched_at DESC, id DESC LIMIT 1",
+            params,
+        ).fetchone()
+        if latest is not None and latest[1] == payload_hash:
+            conn.execute(f"UPDATE {table} SET fetched_at=? WHERE id=?", (fetched_at, latest[0]))
+            return
+        cols = ", ".join((*key, "payload_json", "payload_hash", "fetched_at"))
+        marks = ", ".join("?" * (len(key) + 3))
+        conn.execute(
+            f"INSERT INTO {table} ({cols}) VALUES ({marks})",
+            (*params, payload_json, payload_hash, fetched_at),
+        )
+        conn.execute(
+            f"""
+            DELETE FROM {table} WHERE {where} AND id NOT IN (
+                SELECT id FROM {table} WHERE {where}
+                ORDER BY fetched_at DESC, id DESC LIMIT ?
+            )
+            """,
+            (*params, *params, self.SNAPSHOT_ROWS_PER_KEY),
+        )
+
     def save_roster_snapshot(self, league_id: str, rosters) -> None:
         """Persist latest roster payload snapshot (JSON serialized)."""
         try:
             import datetime
             import json
             with self._pool.get_connection() as conn:
-                conn.execute(
-                    "INSERT INTO roster_snapshots (league_id, payload_json, fetched_at) VALUES (?,?,?)",
-                    (league_id, json.dumps(rosters), datetime.datetime.now(datetime.UTC).isoformat())
+                self._save_snapshot(
+                    conn, "roster_snapshots", {"league_id": league_id}, json.dumps(rosters),
+                    datetime.datetime.now(datetime.UTC).isoformat(),
                 )
                 conn.commit()
         except Exception as e:
@@ -892,9 +977,9 @@ class NFLDatabase:
             import datetime
             import json
             with self._pool.get_connection() as conn:
-                conn.execute(
-                    "INSERT INTO transaction_snapshots (league_id, week, payload_json, fetched_at) VALUES (?,?,?,?)",
-                    (league_id, week, json.dumps(transactions), datetime.datetime.now(datetime.UTC).isoformat())
+                self._save_snapshot(
+                    conn, "transaction_snapshots", {"league_id": league_id, "week": week},
+                    json.dumps(transactions), datetime.datetime.now(datetime.UTC).isoformat(),
                 )
                 conn.commit()
         except Exception as e:
@@ -936,9 +1021,9 @@ class NFLDatabase:
             import datetime
             import json
             with self._pool.get_connection() as conn:
-                conn.execute(
-                    "INSERT INTO matchup_snapshots (league_id, week, payload_json, fetched_at) VALUES (?,?,?,?)",
-                    (league_id, week, json.dumps(matchups), datetime.datetime.now(datetime.UTC).isoformat())
+                self._save_snapshot(
+                    conn, "matchup_snapshots", {"league_id": league_id, "week": week},
+                    json.dumps(matchups), datetime.datetime.now(datetime.UTC).isoformat(),
                 )
                 conn.commit()
         except Exception as e:
@@ -1417,14 +1502,15 @@ class NFLDatabase:
         With ``season``/``week``: that week's report, read together with
         ``week + 1`` — a short-week team's NFL.com report is stored under the
         next week while Sleeper's counter still shows this one on Monday and
-        Tuesday (its ESPN notes land under this one). Without: days since this
+        Tuesday (its ESPN notes land under this one). Only for the current
+        week: a past week's lookup reads that week alone. Without: days since this
         practice week's Monday (the previous Tuesday on a Monday, so a Monday
         night team keeps its Thu-Sat report). Either way only the latest
         practice week among the rows is returned, so last week's Friday never
         passes for this week's Wednesday.
         """
         from .opportunity_tools import norm_name
-        from .practice_reports import latest_practice_week
+        from .practice_reports import latest_practice_week, reads_next_week
 
         name_key = norm_name(player_name)
         team = normalize_team(team)
@@ -1439,7 +1525,9 @@ class NFLDatabase:
                         WHERE name_key=? AND team=? AND season=? AND week IN (?, ?)
                         ORDER BY date ASC
                         """,
-                        (name_key, team, int(season), int(week), int(week) + 1),
+                        # week + 1 only for the current week (reads_next_week).
+                        (name_key, team, int(season), int(week),
+                         int(week) + 1 if reads_next_week(self, season, week) else int(week)),
                     )
                 else:
                     from .practice_reports import practice_week_start, to_eastern
@@ -1957,14 +2045,15 @@ class NFLDatabase:
         different player whose ESPN id happens to be the same number.
         """
         # Deferred: both modules pull in the wider tool stack.
-        from .injury_match import build_injury_index, find_report
+        from .injury_match import build_injury_index, find_report, team_names_from
         from .teams import normalize_team
 
         team = normalize_team(team_id)
         if not player_name or not team:
             return None
         rows = self.get_team_injuries_from_cache(team, max_age_hours)
-        return find_report({"full_name": player_name}, build_injury_index(rows), team)
+        return find_report({"full_name": player_name},
+                           build_injury_index(rows, team_names_from(self)), team)
 
     def add_injury_history(self, player_id: str, team_id: str, status: str, injury_type: str | None = None) -> bool:
         """Add entry to injury history for trend analysis.
@@ -2701,6 +2790,31 @@ class NFLDatabase:
                     athlete_dict = dict(row)
                     results[athlete_dict['id']] = athlete_dict
 
+        return results
+
+    def get_athletes_by_espn_ids(self, espn_ids: list[str]) -> dict[str, dict]:
+        """``{espn_id: athlete row}`` for the Sleeper athletes carrying these ESPN ids.
+
+        Sleeper's player payload (``raw``) names each player's ESPN id, which is
+        the one exact join between the two id spaces (see ``injury_match``).
+        """
+        wanted = {str(i) for i in espn_ids or [] if i}
+        if not wanted:
+            return {}
+        results: dict[str, dict] = {}
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT id, full_name, team_id, position, "
+                    "CAST(json_extract(raw, '$.espn_id') AS TEXT) AS espn_id "
+                    "FROM athletes WHERE json_extract(raw, '$.espn_id') IS NOT NULL"
+                )
+                for row in cursor.fetchall():
+                    d = dict(row)
+                    if d.get("espn_id") in wanted:
+                        results[d["espn_id"]] = d
+        except Exception as e:
+            logger.debug(f"get_athletes_by_espn_ids failed: {e}")
         return results
 
     def get_athletes_by_team(self, team_id: str) -> list[dict]:

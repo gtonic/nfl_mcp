@@ -1165,6 +1165,10 @@ async def get_draft_traded_picks(draft_id: str) -> dict:
 # Player dump caching (large ~5MB) - cache in memory to reduce calls.
 _PLAYERS_CACHE = {"data": None, "fetched_at": 0}
 _PLAYERS_CACHE_TTL = 60 * 60 * 12  # 12 hours
+# Even force_refresh re-downloads the ~5 MB dump at most this often: Sleeper
+# asks clients to pull it about once a day, and a looping agent must not
+# hammer it.
+_PLAYERS_MIN_REFRESH_SECONDS = 60 * 60 * 6  # 6 hours
 
 @handle_http_errors(
     default_data={"players": {}, "cached": False},
@@ -1178,15 +1182,21 @@ async def fetch_all_players(force_refresh: bool = False) -> dict:
     """
     import time as _time
     now = _time.time()
-    if (
-        not force_refresh and _PLAYERS_CACHE["data"] is not None and
-        now - _PLAYERS_CACHE["fetched_at"] < _PLAYERS_CACHE_TTL
+    age = now - _PLAYERS_CACHE["fetched_at"]
+    if _PLAYERS_CACHE["data"] is not None and (
+        age < _PLAYERS_MIN_REFRESH_SECONDS or (not force_refresh and age < _PLAYERS_CACHE_TTL)
     ):
-        return create_success_response({
+        payload = {
             "players": {},  # not returning the large blob again intentionally
             "cached": True,
-            "ttl_remaining": int(_PLAYERS_CACHE_TTL - (now - _PLAYERS_CACHE["fetched_at"]))
-        })
+            "ttl_remaining": int(_PLAYERS_CACHE_TTL - age)
+        }
+        if force_refresh:
+            payload["note"] = (
+                f"force_refresh ignored: the player dump was fetched {int(age // 60)} min ago; "
+                f"refreshes are limited to once per {_PLAYERS_MIN_REFRESH_SECONDS // 3600}h"
+            )
+        return create_success_response(payload)
 
     headers = get_http_headers("sleeper_league")
     url = "https://api.sleeper.app/v1/players/nfl"

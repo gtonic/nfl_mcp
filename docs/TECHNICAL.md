@@ -34,19 +34,25 @@ entrypoint module `nfl_mcp.server`). A non-MCP health endpoint lives at
 open; `open_circuit_breakers` names it) or `unhealthy` (503, the database check
 failed). Set `NFL_MCP_METRICS=1` to also expose Prometheus counters at
 `GET /metrics`. Startup cache warm-up runs in the background, so both answer
-as soon as the process is up.
+as soon as the process is up. With `NFL_MCP_AUTH_TOKEN` set, `/health` without
+the token returns only `status`/`service`/`version` (same status code, so the
+Docker HEALTHCHECK keeps working) and `/metrics` requires the token.
+
+A local run binds **127.0.0.1** by default (`NFL_MCP_HOST` to change it); the
+Docker image sets `NFL_MCP_HOST=0.0.0.0` so the published port reaches it —
+publish it as `-p 127.0.0.1:9000:9000` unless you also set a token.
 
 ```bash
 # Local
 python -m nfl_mcp.server
 
 # Docker — published image (CI publishes to GHCR on push to main and on tags)
-docker run --rm -p 9000:9000 ghcr.io/gtonic/nfl_mcp:latest
+docker run --rm -p 127.0.0.1:9000:9000 -v nfl-mcp-data:/data ghcr.io/gtonic/nfl_mcp:latest
 # ...or pin a version tag, e.g. ghcr.io/gtonic/nfl_mcp:0.6.0
 
 # Docker — build locally
 docker build -t nfl-mcp-server .
-docker run --rm -p 9000:9000 nfl-mcp-server
+docker run --rm -p 127.0.0.1:9000:9000 -v nfl-mcp-data:/data nfl-mcp-server
 
 # Taskfile
 task run          # run locally
@@ -54,16 +60,14 @@ task run-docker   # run in Docker
 task all          # full pipeline
 ```
 
-The SQLite database is only a **cache** (athletes, schedules, enrichment). It
-lives inside the container and repopulates from the source APIs on demand (e.g.
-`fetch_athletes` or background prefetch), so losing it on restart is harmless —
-**no volume required**. If you'd rather *not* re-warm on every restart, set
-`NFL_MCP_DB_PATH` to a path on a mounted volume to persist it:
+The SQLite database is only a **cache** (athletes, schedules, enrichment) and
+repopulates from the source APIs on demand. The image stores it at
+`NFL_MCP_DB_PATH=/data/nfl_data.db` on a declared `VOLUME /data`; mount a named
+volume there to keep the warmed cache across container re-creation:
 
 ```bash
 docker volume create nfl-mcp-data
-docker run -d --name nfl-mcp -p 9000:9000 \
-  -e NFL_MCP_DB_PATH=/data/nfl_data.db \
+docker run -d --name nfl-mcp -p 127.0.0.1:9000:9000 \
   -v nfl-mcp-data:/data \
   ghcr.io/gtonic/nfl_mcp:latest
 ```
@@ -78,7 +82,7 @@ directory would need to be writable by that uid.
 Recommended production start with enrichment + cache warming:
 
 ```bash
-docker run -d --name nfl-mcp -p 9000:9000 \
+docker run -d --name nfl-mcp -p 127.0.0.1:9000:9000 -v nfl-mcp-data:/data \
   -e NFL_MCP_ADVANCED_ENRICH=1 \   # real snap%/usage enrichment (in-season)
   -e NFL_MCP_PREFETCH=1 \          # warm caches in the background
   -e ODDS_API_KEY=your_key_here \  # optional: live Vegas lines (the-odds-api.com)
@@ -91,6 +95,10 @@ curl -s http://localhost:9000/health | jq .status   # -> "healthy"
 ```bash
 claude mcp add --transport http nfl-mcp http://localhost:9000/mcp/
 # then in a session:  /mcp   (verify "nfl-mcp" is connected and lists tools)
+
+# with NFL_MCP_AUTH_TOKEN set on the server:
+claude mcp add --transport http nfl-mcp http://localhost:9000/mcp/ \
+  --header "Authorization: Bearer $NFL_MCP_AUTH_TOKEN"
 ```
 
 **Claude Desktop / Cursor / other stdio clients** — bridge via
@@ -154,6 +162,12 @@ variables take precedence.
 | `NFL_MCP_NFL_NEWS_MAX` | Max NFL news items. |
 | `NFL_MCP_SERVER_VERSION` | Server version string reported by `/health`. |
 | `NFL_MCP_LOG_LEVEL` | `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` (default `INFO`). |
+| `NFL_MCP_HOST` / `NFL_MCP_PORT` | Bind address/port (default `127.0.0.1:9000`; the Docker image sets `0.0.0.0`). |
+| `NFL_MCP_AUTH_TOKEN` | Shared secret. When set, `/mcp` requires `Authorization: Bearer <token>` (constant-time compare, 401 otherwise), `/metrics` too; `/health` answers everyone but shows details only with the token. Unset = no auth (loopback use). |
+| `NFL_MCP_ALLOWED_HOSTS` | Extra `Host` header values (comma list, `*` wildcards, e.g. `nfl-mcp,*.lan`) on top of `localhost,127.0.0.1,::1`. Other hosts get 421 (DNS-rebinding guard). Needed when clients reach the server by another name (compose service name, LAN hostname, reverse proxy). |
+| `NFL_MCP_ALLOWED_ORIGINS` | Extra browser origins (comma list). A request whose `Origin` is present and neither loopback, same-origin nor listed gets 403. Non-browser clients send no `Origin`. |
+| `NFL_MCP_HTTPX_LOG_LEVEL` | Level for the httpx/httpcore loggers (default `WARNING`; at `INFO` they log every request URL). API keys and bearer tokens are masked in all log output regardless. |
+| `NFL_MCP_CRAWL_MAX_BYTES` | Byte cap on a `crawl_url` body after decompression (default 2 MB). |
 
 ### Config file (`config.yml`)
 
@@ -229,7 +243,40 @@ Robust endpoints (`get_rosters`, `get_transactions`, `get_matchups`) retry with
 backoff and, on total failure, return the most recent cached snapshot with
 `success=false` but usable data. Snapshot metadata: `retries_used`, `stale`,
 `failure_reason`, `snapshot_fetched_at`, `snapshot_age_seconds` (present but
-`null` on a fresh success).
+`null` on a fresh success). Snapshot writes skip a payload identical to the
+newest one for its league(/week) (only its `fetched_at` is refreshed) and keep at
+most 3 rows per key; schema v16 pruned the backlog to the newest row per key.
+
+### Weekly projections (Sleeper-first)
+
+Every tool that projects a week — `project_players`, start/sit,
+`analyze_lineup`, the briefing, waiver targets, trade tools, ROS's current
+week — goes through one path, `ProjectionEngine.project_many`, so the same
+player gets the same number everywhere:
+
+```
+projected_points = 0.25 × model_projection + 0.75 × sleeper_projection
+model_projection = regressed_rate(opportunity, rank_bucket, games)   # k = 2
+                   × matchup × Vegas environment × usage × injury/practice
+```
+
+- `sleeper_projection` is Sleeper's projected stat line priced with the
+  league's `ScoringModel` (`sleeper_projections.price_stats`).
+- Byes and Out are 0. Questionable discounts only our quarter (Sleeper's line
+  already carries its own injury read); Doubtful is capped at 35% of the
+  healthier reading. A player Sleeper lists without points (benched,
+  inactive) projects 0 — but only when Sleeper has published his team.
+- No Sleeper number (outage, off-season, unlisted player): the model alone,
+  `projection_source: "model_only"` plus a warning. Each projection carries
+  `model_projection`, `sleeper_projection`, `blend_weights` and
+  `projection_source` (`sleeper_blend` / `model_only` / `bye`); floor and
+  ceiling are `mean × (1 ± volatility)` around the blend, calibrated to ~68%.
+- Streaming blends each week's K/DEF schedule projection with Sleeper's team
+  K/DEF the same way. ROS later weeks stay on our model (per-game rate =
+  the same regressed rate): Sleeper publishes future weeks, but there is no
+  point-in-time history to backtest a ROS blend on.
+- The weight is reproducible: `python -m evals.backtest.sleeper_blend`
+  (fetches and caches Sleeper's projection history on first run).
 
 ## Eval suite (`evals/`)
 
@@ -271,10 +318,22 @@ Redis for production). Configurable via `rate_limits.default_requests_per_minute
 Input validation (SQL/XSS/command-injection/path-traversal detection), content
 sanitization, parameterized SQL, request timeouts, and SSRF protection on
 `crawl_url` (DNS-resolving private/link-local/metadata blocking + per-hop
-redirect validation). The MCP transport has **no built-in auth** — do not expose
-the port to untrusted networks; bind to localhost or place it behind an
-authenticating reverse proxy. Full details and reporting policy in
-[SECURITY.md](../SECURITY.md).
+redirect validation, ports 80/443 only, a 20 s total budget, and bounded
+decompression so a gzip bomb cannot inflate past the byte cap). ESPN `$ref`
+follow-up links are fetched over https and only on `*.espn.com`.
+
+Transport: the server binds loopback by default and validates `Host`/`Origin`
+on every request (DNS-rebinding guard, `NFL_MCP_ALLOWED_HOSTS` /
+`NFL_MCP_ALLOWED_ORIGINS`). Auth is **opt-in** via `NFL_MCP_AUTH_TOKEN` (bearer
+token on `/mcp`); set it before exposing the port beyond localhost, and put TLS
+in front (reverse proxy) when crossing an untrusted network. Secrets
+(`apiKey=`/`api_key=` query params, bearer tokens) are masked in logs.
+
+Upstream politeness: `fetch_athletes` and `fetch_all_players(force_refresh=True)`
+re-download at most every 6 h, `get_injury_report(use_cache=False)` re-crawls at
+most every 15 min per team set (otherwise cached data plus a `note`), and
+concurrent Vegas refreshes share one Odds API call. Full details and reporting
+policy in [SECURITY.md](../SECURITY.md).
 
 ## Development
 

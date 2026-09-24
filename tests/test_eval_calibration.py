@@ -51,8 +51,10 @@ class TestReliability:
 
 
 class TestActualPoints:
-    def test_half_ppr_backs_the_reception_value_out_of_the_nflverse_total(self):
-        record = {"ppr": 20.0, "receptions": 6.0}
+    def test_truth_is_priced_from_the_stat_line_in_the_models_scoring(self):
+        # 6 catches, 80 yards, a TD: 6 + 8 + 6. nflverse's total is ignored.
+        record = {"position": "WR", "ppr": 99.0, "receptions": 6.0, "targets": 8.0,
+                  "receiving_yards": 80.0, "receiving_tds": 1.0}
         assert actual_points(record, 1.0) == 20.0
         assert actual_points(record, 0.5) == 17.0
         assert actual_points(record, 0.0) == 14.0

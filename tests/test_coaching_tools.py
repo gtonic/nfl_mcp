@@ -296,8 +296,8 @@ class TestGetCoachingStaffResolution:
 
     @pytest.mark.asyncio
     async def test_resolves_head_coach_without_position_field(self):
-        coach_ref = "http://espn/v2/nfl/coaches/17533"
-        team_ref = "http://espn/v2/nfl/teams/25"
+        coach_ref = "https://sports.core.api.espn.com/v2/nfl/coaches/17533"
+        team_ref = "https://sports.core.api.espn.com/v2/nfl/teams/25"
 
         def make(payload):
             m = MagicMock()
@@ -342,8 +342,8 @@ class TestGetCoachingStaffResolution:
 
     @pytest.mark.asyncio
     async def test_enriches_coordinators_from_wikipedia(self):
-        coach_ref = "http://espn/v2/nfl/coaches/17533"
-        team_ref = "http://espn/v2/nfl/teams/25"
+        coach_ref = "https://sports.core.api.espn.com/v2/nfl/coaches/17533"
+        team_ref = "https://sports.core.api.espn.com/v2/nfl/teams/25"
 
         def make(payload):
             m = MagicMock()

@@ -314,7 +314,7 @@ class TestMigrationV15:
             with db._pool.get_connection() as conn:
                 conn.execute("DROP TABLE projection_log")
                 conn.execute("DROP TABLE league_checks")
-                conn.execute("DELETE FROM schema_version WHERE version = 15")
+                conn.execute("DELETE FROM schema_version WHERE version >= 15")
                 conn.commit()
             db.close()
             again = NFLDatabase(path)
@@ -324,7 +324,7 @@ class TestMigrationV15:
                 versions = [r[0] for r in conn.execute(
                     "SELECT version FROM schema_version WHERE version >= 14 ORDER BY version")]
             assert {"projection_log", "league_checks"} <= names
-            assert versions == [14, 15]
+            assert versions[:2] == [14, 15]
 
 
 class TestUnplayedWeeks:

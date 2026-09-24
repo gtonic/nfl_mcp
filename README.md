@@ -42,7 +42,7 @@ assistant** and answers the question you actually asked.
 - **Rehearse first** — run 100 mock drafts from your slot before you're on the clock.
 
 **📊 Every week**
-- **Start/sit with automatic projections** — no manual point entry. `value × matchup × Vegas game-script × usage × injury & practice`, priced in **your league's own Sleeper scoring settings** (not just PPR / half-PPR presets), with floor/ceiling and a transparent breakdown. **Decided on projected points**, with a verdict scaled to the model's own error, so a half-point difference is reported as a coin flip rather than an edge.
+- **Start/sit with automatic projections** — no manual point entry. **Sleeper-first:** `0.25 × our model + 0.75 × Sleeper's projection`, where our model is `opportunity (regressed early-season) × matchup × Vegas game-script × usage × injury & practice` and falls back alone (labelled `model_only`) when Sleeper has no number; both priced in **your league's own Sleeper scoring settings** (not just PPR / half-PPR presets), with floor/ceiling and a transparent breakdown. **Decided on projected points**, with a verdict scaled to the model's own error, so a half-point difference is reported as a coin flip rather than an edge.
 - **A real matchup edge** — which defense a player actually feasts on, from real weekly results (not a stale rankings page).
 - **Streaming planner** — the best DST / K / QB / TE to stream over the next 1-3 weeks (soft defense, weak opposing offense, strong own offense).
 - **Weather / wind** — fade passing and kickers in the ugly-weather games (wind ≥ 15 mph), dome games flagged neutral.
@@ -67,8 +67,10 @@ assistant** and answers the question you actually asked.
 ## ⚡ 60-second start
 
 ```bash
-docker run --rm -p 9000:9000 ghcr.io/gtonic/nfl_mcp:latest
+docker run --rm -p 127.0.0.1:9000:9000 -v nfl-mcp-data:/data ghcr.io/gtonic/nfl_mcp:latest
 ```
+
+Publishing on `127.0.0.1` keeps the server off your network; the `nfl-mcp-data` volume keeps the warmed cache across restarts.
 
 Connect it to your assistant, then just ask:
 
@@ -78,6 +80,17 @@ Connect it to your assistant, then just ask:
 ```bash
 claude mcp add --transport http nfl-mcp http://localhost:9000/mcp/
 ```
+
+**Sharing it beyond your machine?** Set a token and send it as a bearer header (the server then rejects `/mcp` calls without it):
+```bash
+export NFL_MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+docker run --rm -p 9000:9000 -v nfl-mcp-data:/data \
+  -e NFL_MCP_AUTH_TOKEN -e NFL_MCP_ALLOWED_HOSTS=nfl.example.lan \
+  ghcr.io/gtonic/nfl_mcp:latest
+claude mcp add --transport http nfl-mcp http://localhost:9000/mcp/ \
+  --header "Authorization: Bearer $NFL_MCP_AUTH_TOKEN"
+```
+Requests whose `Host` isn't localhost/127.0.0.1/[::1] (plus `NFL_MCP_ALLOWED_HOSTS`) are refused, which blocks DNS-rebinding attacks from a browser.
 
 **Claude Desktop / Cursor** — bridge via [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
 ```json

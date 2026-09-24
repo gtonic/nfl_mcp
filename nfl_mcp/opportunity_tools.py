@@ -244,7 +244,7 @@ def opportunity_base_for(
     name: str,
     position: str,
     week: int,
-    lookback: int = opportunity.DEFAULT_LOOKBACK,
+    lookback: int | None = None,
     min_games: int = 2,
     ppr: float = opportunity.FULL_PPR,
     extra_volume: dict[str, float] | None = None,

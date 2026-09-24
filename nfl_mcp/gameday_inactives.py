@@ -14,8 +14,11 @@ What the feeds carry, checked on 2026-09-23 against week 2:
   Commanders", "Seumalo (shoulder) is active for Sunday's game". Dated, per
   player, and covering every fantasy-relevant question mark. Primary.
 - Sleeper's player feed: ``injury_status == "Inactive"`` when Sleeper sets it.
-  Read too (from the stored athletes, else a once-a-day download of the
-  dump), but it was not seen in any live payload so far.
+  Read too, but it was not seen in any live payload so far. Sleeper sets it
+  around kickoff, so a daily copy cannot answer: the stored athletes count only
+  when refreshed within ``SLEEPER_FRESH_TTL``, else the dump is downloaded (at
+  most once per ``SLEEPER_FRESH_TTL`` per process, only inside a window). When
+  neither is fresh, Sleeper is not listed in ``sources_checked``.
 
 A note only counts for the game it was posted around (from three hours before
 kickoff to the end of the game); anything older is last week's.
@@ -139,30 +142,44 @@ def parse_sleeper_inactives(players: dict, teams: set[str]) -> list[dict]:
     return out
 
 
-# Process cache of the full Sleeper player dump (~5 MB), for when the stored
-# athletes cannot answer: (fetched_at, players).
-_SLEEPER_DUMP_TTL = timedelta(days=1)
+# How old a Sleeper read may be inside an inactives window. Inactive is set
+# ~90 minutes before kickoff; a daily snapshot misses it. Also the dump's
+# refetch interval: Sleeper asks for the ~5 MB dump to be pulled sparingly, and
+# this only runs inside a window (a few hours a week).
+SLEEPER_FRESH_TTL = timedelta(minutes=30)
+# Process cache of the full Sleeper player dump: (fetched_at, players).
+_SLEEPER_DUMP_TTL = SLEEPER_FRESH_TTL
 _sleeper_dump: tuple[datetime, dict] | None = None
 
 
-def _stored_sleeper_players(db, teams: set[str]) -> dict:
-    """``{id: raw Sleeper player}`` for the teams, from the stored athletes.
+def _stored_sleeper_players(db, teams: set[str],
+                            fresh_since: datetime | None = None) -> tuple[dict, datetime | None]:
+    """``({id: raw Sleeper player}, oldest updated_at)`` for the teams, from
+    the stored athletes.
 
     The athletes table holds Sleeper's player payload in ``raw``, refreshed by
-    the prefetch; reading it replaces downloading the whole dump on every call
-    inside an inactives window.
+    the prefetch. With ``fresh_since``, a team whose rows are older does not
+    count (``({}, None)``): a stale copy would miss a gameday Inactive.
     """
     import json
 
     if db is None or not hasattr(db, "get_athletes_by_team"):
-        return {}
+        return {}, None
     players: dict = {}
+    oldest: datetime | None = None
     for team in teams:
         try:
             rows = db.get_athletes_by_team(team)
         except Exception:
             continue
-        for row in rows if isinstance(rows, list) else []:
+        rows = rows if isinstance(rows, list) else []
+        stamps = [parse_kickoff(r.get("updated_at")) for r in rows if isinstance(r, dict)]
+        stamps = [t for t in stamps if t is not None]
+        if fresh_since is not None and (not stamps or min(stamps) < fresh_since):
+            return {}, None
+        if stamps:
+            oldest = min(stamps) if oldest is None else min(oldest, min(stamps))
+        for row in rows:
             raw = row.get("raw") if isinstance(row, dict) else None
             if isinstance(raw, str):
                 try:
@@ -172,30 +189,40 @@ def _stored_sleeper_players(db, teams: set[str]) -> dict:
             if isinstance(raw, dict) and row.get("id"):
                 # The stored team is canonical; the raw one can be WAS/OAK.
                 players[str(row["id"])] = {**raw, "team": row.get("team_id") or raw.get("team")}
-    return players
+    return players, oldest
 
 
-async def _sleeper_players(db, teams: set[str], client, now: datetime) -> dict | None:
-    """Sleeper players for the window teams: stored athletes first, else the
-    full dump, fetched at most once a day per process. None when neither is
-    available."""
+async def _sleeper_players(db, teams: set[str], client,
+                           now: datetime) -> tuple[dict | None, dict | None]:
+    """``(players, freshness)`` for the window teams: stored athletes when
+    refreshed within ``SLEEPER_FRESH_TTL``, else the dump (cached for the same
+    TTL). ``(None, None)`` when neither is fresh -- the caller must then not
+    claim Sleeper was checked."""
     global _sleeper_dump
-    stored = _stored_sleeper_players(db, teams)
+    stored, as_of = _stored_sleeper_players(db, teams, fresh_since=now - SLEEPER_FRESH_TTL)
     if stored:
-        return stored
+        return stored, _freshness("stored_athletes", as_of, now)
     if _sleeper_dump and timedelta(0) <= now - _sleeper_dump[0] < _SLEEPER_DUMP_TTL:
-        return _sleeper_dump[1]
+        return _sleeper_dump[1], _freshness("sleeper_dump", _sleeper_dump[0], now)
     from .config import get_http_headers
     resp = await client.get(SLEEPER_PLAYERS_URL, headers=get_http_headers("sleeper_players"),
                             timeout=30.0)
     if resp.status_code != 200:
-        return None
+        return None, None
     players = resp.json()
-    if not isinstance(players, dict):
-        return None
-    if players:
-        _sleeper_dump = (now, players)
-    return players
+    if not isinstance(players, dict) or not players:
+        return None, None
+    _sleeper_dump = (now, players)
+    return players, _freshness("sleeper_dump", now, now)
+
+
+def _freshness(source: str, as_of: datetime | None, now: datetime) -> dict:
+    """How current the Sleeper read was, for the response."""
+    return {
+        "source": source,
+        "as_of": as_of.isoformat() if as_of else None,
+        "age_minutes": round((now - as_of).total_seconds() / 60, 1) if as_of else None,
+    }
 
 
 async def _week_kickoffs(db, season: int, week: int, client) -> dict[str, str]:
@@ -237,7 +264,7 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
     own = client is None
     client = client or create_http_client()
     result = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": [],
-              "sources_checked": []}
+              "sources_checked": [], "sleeper_freshness": None}
     try:
         if own:
             await client.__aenter__()
@@ -262,7 +289,8 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
         except Exception as e:
             logger.warning(f"[Inactives] ESPN notes failed: {e}")
         try:
-            players = await _sleeper_players(db, window, client, now)
+            players, freshness = await _sleeper_players(db, window, client, now)
+            result["sleeper_freshness"] = freshness
             if players is not None:
                 seen = {(norm_name(r["player_name"]), r["team_id"]) for r in result["inactives"]}
                 for row in parse_sleeper_inactives(players, window):

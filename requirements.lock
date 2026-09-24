@@ -37,7 +37,7 @@ cffi==2.1.0
     # via cryptography
 click==8.4.2
     # via uvicorn
-cryptography==49.0.0
+cryptography==50.0.1
     # via
     #   authlib
     #   joserfc
@@ -65,11 +65,11 @@ h11==0.16.0
     #   uvicorn
 httpcore==1.0.9
     # via httpx
-httpcore2==2.9.1
+httpcore2==2.13.1
     # via httpx2
 httpx==0.28.1
     # via -r requirements.txt
-httpx2==2.9.1
+httpx2==2.13.1
     # via
     #   fastmcp-slim
     #   mcp

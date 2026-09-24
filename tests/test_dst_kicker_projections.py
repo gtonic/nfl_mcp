@@ -33,10 +33,12 @@ class TestDefenseBase:
 
 class TestKickerBase:
     def test_rises_with_scoring_but_flattens_at_the_top(self):
-        # A team expected to score 30 trades field goals for touchdowns, which
-        # pays the kicker one point instead of three.
+        # Measured 2025 means: 6.2 / 7.9 / 8.7 / 8.6 / 8.8 by implied band. A
+        # team expected to score 30 trades field goals for touchdowns, so the
+        # top is flat rather than the old 9.5 peak at 24-28.
         assert kicker_base(19.0) < kicker_base(26.0)
-        assert kicker_base(30.0) < kicker_base(26.0)
+        assert abs(kicker_base(30.0) - kicker_base(26.0)) <= 0.2
+        assert kicker_base(22.0) == kicker_base(26.0)
 
     def test_low_scoring_team_is_penalised(self):
         assert kicker_base(15.0) < kicker_base(22.0)
@@ -90,7 +92,7 @@ class TestEngineWiring:
             values_index={}, rankings={}, lines=lines,
         )
         assert result["breakdown"]["base_source"] == "team_total"
-        assert result["projected_points"] == 9.5
+        assert result["projected_points"] == 8.7
 
     @pytest.mark.asyncio
     async def test_fallback_lines_do_not_fabricate_a_signal(self, monkeypatch):
