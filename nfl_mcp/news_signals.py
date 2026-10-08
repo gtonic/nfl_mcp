@@ -9,15 +9,23 @@ another carry after his fumble", "the two backs are 'gonna rotate'",
 the lead back". This reads them with a small rule-based classifier
 (:data:`PATTERNS`, phrase lists, negation-aware) into flags:
 
-    benched                 lost his job / no more touches after a mistake
+    benched                 lost his job / the work: benched, no more touches
+                            after a fumble, "watched X dominate touches",
+                            snaps that dwindled
     committee               a rotation, a split backfield, a timeshare
-    lead_role               the lead back, the starter, the primary option
+    lead_role               the lead back, the starter, the primary option,
+                            "dominated the touches"
     limited_snaps           a snap count, eased back in, a managed workload
     week_to_week            an injury measured in weeks, not days
-    designated_to_return    a reserve-list player whose window has opened
+    designated_to_return    a reserve-list (IR / PUP / NFI) player whose
+                            21-day window opened / who was activated
+    practice_progress       back at practice ("resumed practicing",
+                            "returned to practice") -- this week's news
     expected_to_play        will play despite the injury tag
     unlikely_to_play        "not expected to play"
-    ruled_out               ruled out / won't play this week
+    ruled_out               ruled out / won't play / inactive with an injury
+    inactive_healthy_scratch  "(coach's decision) inactive", a healthy
+                            scratch -- reported only (a backup's routine)
 
 Each flag keeps its source snippet, the report date and a recency weight
 (``0.5 ** (age_days / HALF_LIFE_DAYS)``; nothing older than
@@ -25,7 +33,13 @@ Each flag keeps its source snippet, the report date and a recency weight
 about -- the nearest player name before the phrase, among the team's names,
 else the blurb's own player -- so "Keenum ... backup role after Johnson said
 Tyson Bagent will start" is a lead role for Bagent, not for Keenum, and a
-teammate's blurb that names him counts for him too.
+teammate's blurb that names him counts for him too; a role named as a title
+("bell-cow running back Jonathan Taylor") is the named player's. A phrase
+inside a condition ("if Hall can't go, Allen would be the lead back", "if
+he's not cleared to play") is ``conditional``: a conditional lead role
+counts at ``CONDITIONAL_WEIGHT`` (the handcuff's path to the job), the other
+conditional role and availability flags not at all. Precision / recall on
+hand-labelled stored sentences: ``python -m evals.news_classifier_eval``.
 
 Since schema v19 the blurbs are not only the injury table's one line per
 player: every item of the news sources (`news_sources`: ESPN's fantasy
@@ -41,7 +55,8 @@ summaries with no accuracy record yet to tell them apart. Availability flags
 (``expected_to_play`` / ``unlikely_to_play`` / ``ruled_out``) are about one
 game: only items since the week rolled over (:func:`week_start`, Tuesday)
 count, and only the newest of them ("unlikely" Wednesday, "expected to play"
-Friday: expected to play). Each flag carries its ``source``, ``url`` and
+Friday: expected to play); ``practice_progress`` and
+``inactive_healthy_scratch`` are this week's too (``GAME_FLAGS``). Each flag carries its ``source``, ``url`` and
 ``snippet``.
 
 What the flags change (:func:`adjustment`) is deliberately small and only
@@ -81,31 +96,68 @@ MAX_AGE_DAYS = 10.0
 UNDATED_WEIGHT = 0.5
 
 # Flag -> regexes (case-insensitive). Ordered so a more specific flag wins
-# the same span (see `_classify_sentence`).
+# the same span (see `classify`). Measured against the hand-labelled
+# sentences in ``tests/fixtures/news_labels.jsonl``
+# (``python -m evals.news_classifier_eval``; thresholds in
+# ``tests/test_news_classifier_eval.py``).
+_DAY = r"(?:sunday|monday|thursday|saturday|friday|tonight|this week|week \d+)"
 PATTERNS: dict[str, tuple[str, ...]] = {
+    # A healthy scratch: inactive by the coach's choice, not an injury.
+    # For a backup (the third QB, the fifth receiver) it is every week's
+    # routine; reported, never priced (the gameday inactive list,
+    # `gameday_inactives`, settles a starter's game).
+    "inactive_healthy_scratch": (
+        r"\bhealthy scratch\b",
+        r"\(coach's decision\)",
+    ),
     "ruled_out": (
-        r"\bruled out\b(?! for the (?:rest|remainder))",
+        r"(?<!prior to being )(?<!before being )\bruled out\b"
+        r"(?! for the (?:rest|remainder))(?! of bounds)",
         r"\b(?:won't|will not) play\b",
-        r"\bwill miss (?:sunday|monday|thursday|saturday|this week|week \d+|the team's)",
+        rf"\bwill miss (?:{_DAY}|the team's|another|(?:a|his|their) (?:second|third|fourth|fifth|"
+        r"sixth|\w+ straight|\w+ consecutive))",
+        # "Mims (foot) is listed as inactive": inactive with an injury.
+        r"\((?!coach)[^)]{2,40}\)\s+(?:(?:is|was|will be|has been)\s+)?(?:listed as\s+)?inactive\b",
+        r"\binactive status has (?:now )?been confirmed\b",
     ),
     "unlikely_to_play": (
         r"\b(?:not|isn't|is not|aren't|unlikely) (?:expected |likely |going |set )?to (?:play|suit up)\b",
         r"\b(?:only )?an? (?:outside|slim|small|long-?shot) (?:chance|shot) (?:to|of|at) "
         r"(?:play|suit|go)",
+        # "likely to miss a second straight game" -- not "several weeks"
+        # (week_to_week's) nor "unlikely to miss".
+        r"(?<!un)(?<!not )\blikely to (?:sit out|miss)\b(?!\s+(?:multiple|several|a few|a couple|"
+        r"significant|extended|time|the rest|the remainder|\w+ weeks|weeks))",
+        r"\bmore likely than not (?:to |he will |that he will )?(?:sit out|miss)\b",
+        rf"\bwill likely (?:sit out|miss) (?:{_DAY}|the|his|a|another)\b",
     ),
     "expected_to_play": (
-        r"\b(?:expected|set|on track|slated|poised|cleared|plans?|good|ready) to (?:play|suit up|go)\b",
-        r"\bwill play\b",
+        r"(?<!before being )(?<!after being )\b(?:expected|set|on track|slated|poised|cleared|"
+        r"plans?|good|ready) to (?:play|suit up|go)\b",
+        r"\bwill play\b(?!\s+(?:week \d+\s+)?with)",
         r"\bcleared (?:from |out of )?(?:the )?concussion protocol\b",
+        r"\bin the clear for\b",
+        r"\bbe able to (?:play|suit up|go)\b",
+        rf"\b(?:likely|should|will) be ready (?:to go\b|for (?:{_DAY}|the|his|this))",
+        r"\bexpect (?:him|[a-z'\-]+) to (?:play|suit up)\b",
+        r"\bbetter than (?:50/50|a coin flip) to (?:play|suit up)\b",
+        r"\bon track to avoid an? (?:injury )?designation\b",
+        rf"\b(?:poised|set|expected|on track|slated) to return (?:to action|to the lineup|{_DAY})",
     ),
     "benched": (
         r"\bbenched\b",
-        r"\b(?:didn't|did not|never|wouldn't|would not) (?:get|see|receive|record|touch) "
+        r"\b(?:didn't|did not|never|wouldn't|would not) (?:get|see|receive|touch) "
         r"(?:another|a single|any more|any other|the ball again)",
+        r"\b(?:didn't|did not|never) see the field (?:again|the rest of|after|from that point)",
+        r"\bsaw his (?:snaps|playing time|role|work(?:load)?|touches|carries) "
+        r"(?:dwindle|shrink|diminish|decrease|drop|evaporate|disappear)",
+        # "lost a fumble ... and watched Monangai dominate touches": the
+        # watcher lost the work (the teammate's lead role is the next phrase).
+        r"\bwatched\b(?=\s+(?-i:(?:[A-Z][\w'.\-]+\s+){1,2})(?:dominate|take over|handle|soak up|get))",
+        r"\b(?:lost|losing) (?:work|snaps|carries|touches|playing time|his role) (?:to|after)\b",
+        r"\b(?:pulled|yanked|sat down) (?:after|following) (?:his|a) (?:lost )?(?:fumble|drop|turnover)",
         r"\bdemoted\b",
         r"\blost (?:his|the) (?:starting|lead|top|no\. 1|first-team) (?:job|role|spot|gig)\b",
-        r"\bhealthy scratch\b",
-        r"\(coach's decision\)",
     ),
     "committee": (
         r"\bcommittee\b",
@@ -116,6 +168,7 @@ PATTERNS: dict[str, tuple[str, ...]] = {
         r"\b1a\b",
         r"\bhot hand\b",
         r"\bplatoon\b",
+        r"\bceded (?:[\w-]+ ){0,4}(?:reps|carries|snaps|touches|work)\b",
     ),
     "lead_role": (
         r"\blead (?:back|role|runner|rusher|ball ?carrier)\b",
@@ -127,40 +180,94 @@ PATTERNS: dict[str, tuple[str, ...]] = {
         r"\bwill (?:start|be the starter)\b",
         r"\bnamed (?:the )?starter\b",
         r"\b(?:trending toward|in line for|line up for) (?:the |a )?start\b",
+        r"\bmake the (?:week \d+ )?start\b",
         r"\bprimary (?:ball ?carrier|back|option|target|receiver)\b",
+        r"\bdominat(?:e|es|ed|ing) (?:the )?(?:touches|carries|backfield (?:work|touches|snaps)|"
+        r"work(?:load)?|looks|targets|snaps)\b",
     ),
     "limited_snaps": (
         r"\blimited (?:snaps|snap count|workload|role|reps|number of snaps)\b",
-        r"\bsnap count\b",
+        r"\bon a (?:snap|pitch) count\b",
         r"\bpitch count\b",
+        r"\b(?:snap count|workload|snaps|reps) (?:will be |is |could be |may be |being )?"
+        r"(?:managed|monitored|limited|restricted)\b",
+        r"\bmanag(?:e|ed|ing) (?:his|their) (?:snaps|workload|reps|snap count)\b",
+        r"\b(?:well )?(?:under|less than) a full workload\b",
         r"\beas(?:e|ed|ing) (?:\w+ )?back\b",
-        r"\bworkload (?:will be |is |could be )?(?:managed|monitored|limited)\b",
     ),
     "week_to_week": (
-        # Not a workload that varies "from week to week".
-        r"(?<!from )(?<!vary )(?<!varies )(?<!varied )\bweek[- ]to[- ]week\b",
+        # An injury measured in weeks -- not a workload that varies "from
+        # week to week", a "week-to-week role", "more day-to-day than week-to-week".
+        r"(?<!from )(?<!vary )(?<!varies )(?<!varied )(?<!than )(?<!elevated )(?<!significant )"
+        r"\bweek[- ]to[- ]week\b(?!\s+(?:role|basis|value|production|usage|floor|outlook|fantasy|"
+        r"option|start|play|consistency|volatility|output))",
         r"\bmiss(?:es|ing)?\s+(?:multiple|several|a few|a couple(?: of)?)\s+"
         r"(?:more\s+)?(?:games|weeks)\b",
     ),
+    # A reserve-list (IR / PUP / NFI) player whose return has begun: the
+    # 21-day practice window opened, designated to return, activated. Not a
+    # plain "returned to practice" -- that is `practice_progress`.
     "designated_to_return": (
-        r"designated (?:for|to) return",
-        r"return(?:ed|s)? to practice",
-        r"practice window",
+        r"\bdesignated (?:[\w'.\-()/,]+ ){0,4}(?:for|to) return\b",
+        r"\bpractice window\b",
+        r"\bactivated (?:[\w'.\-]+ ){0,3}(?:from|off) (?:the )?(?:injured reserve|ir\b|pup\b|nfi\b|"
+        r"physically unable|reserve)",
+        r"\breinstated (?:[\w'.\-]+ ){0,3}(?:from|off) (?:the )?(?:injured reserve|ir\b|pup\b|nfi\b|"
+        r"reserve)",
+    ),
+    # Back at practice after missing it ("resumed practicing", "returned to
+    # practice"): this week's injury news, not a reserve-list return.
+    "practice_progress": (
+        r"\b(?:returned|returns) to (?:practice|the practice field)\b",
+        r"\bresum(?:ed|es) (?:practicing|practice|on-field work|working out|team drills)\b",
+        r"\bback at practice\b",
     ),
 }
 # Flags a negation just before the phrase cancels ("won't be benched",
-# "isn't expected to start", "hasn't been ruled out"). `unlikely_to_play`
-# carries its negation in the phrase itself.
+# "isn't expected to start", "hasn't been ruled out", "has yet to be ruled
+# out"). `unlikely_to_play` carries its negation in the phrase itself.
 NEGATABLE = {"benched", "committee", "lead_role", "limited_snaps", "expected_to_play",
-             "week_to_week", "ruled_out"}
+             "week_to_week", "ruled_out", "designated_to_return", "practice_progress",
+             "inactive_healthy_scratch"}
 # A lead role the sentence only asks about ("to get a sense of who among
 # the duo will be Chicago's lead runner") is not one.
 _QUESTION_RE = re.compile(r"\b(?:who|whether|which|wonder(?:s|ed|ing)?)\b[^.;]*$", re.I)
-_NEGATION_RE = re.compile(r"(?:\b(?:not|no|never|without)\b|n't\b)[^.;,]{0,25}$", re.I)
+_NEGATION_RE = re.compile(r"(?:\b(?:not|no|never|without|yet to)\b|n't\b)[^.;,]{0,25}$", re.I)
 _COMPILED = {flag: tuple(re.compile(p, re.I) for p in pats) for flag, pats in PATTERNS.items()}
-# The designated-to-return phrases, shared with the returning-teammate logic
-# (`projections._teammate_return_games`).
+
+# Conditionals: "if Hall can't go, Allen would be the lead back", "Warren
+# could be primed for a workhorse role", "if he's not cleared to play". A
+# hit in one is marked ``conditional``: build_index keeps a conditional
+# lead role at CONDITIONAL_WEIGHT (the handcuff's path to the job) and drops
+# the other conditional role / availability flags. A snap count "if he
+# suits up" is still a snap count: limited_snaps, week_to_week and the
+# reserve / practice flags are read whatever the condition.
+CONDITIONAL_FLAGS = {"lead_role", "committee", "benched", "ruled_out", "unlikely_to_play",
+                     "expected_to_play", "inactive_healthy_scratch"}
+CONDITIONAL_KEEP = {"lead_role"}
+CONDITIONAL_WEIGHT = 0.5
+# "if" / "unless" / "in the event" / "assuming" before the phrase -- not an
+# indirect question ("it's unclear if", "to see if").
+_IF_BEFORE_RE = re.compile(
+    r"(?<!unclear )(?<!unknown )(?<!see )(?<!wonder )(?<!determine )(?<!sure )(?<!clear )"
+    r"(?<!know )(?<!tell )(?<!ask )(?<!even )"
+    r"\b(?:if|unless|in the event|assuming|should (?:he|[A-Z][a-z]+) (?:miss|sit|be))\b", re.I)
+# "would"/"could"/"potentially" before the phrase in its clause: with an
+# "if" after it ("... a workhorse role if Spears is ruled out"), or right
+# before it ("would put Thompson on track to play").
+_MODAL_RE = re.compile(r"\b(?:would|could|might|potentially)\b", re.I)
+_MODAL_NEAR_RE = re.compile(r"\b(?:would|could|might)\b[^,;]{0,40}$", re.I)
+_IF_AFTER_RE = re.compile(r"\b(?:if|unless|should he)\b", re.I)
+_CLAUSE_SPLIT_RE = re.compile(r"[;:]|\s--\s|,\s(?:but|and|while|though|although)\s", re.I)
+
+# The designated-to-return phrases (strict: a reserve-list return), and the
+# cues that a player who is out is on his way back: those plus a plain
+# return to practice. `projections._teammate_return_games` reads the second
+# for a teammate who is unavailable (Out / IR), where "returned to
+# practice" is the window opening; `value_trajectory` reads the flags.
 DESIGNATED_RE = re.compile("|".join(PATTERNS["designated_to_return"]), re.I)
+RETURN_CUE_RE = re.compile("|".join(PATTERNS["designated_to_return"]
+                                    + PATTERNS["practice_progress"]), re.I)
 
 # What a flag moves, at full recency weight. ``model_mult`` is on our
 # model's share of the blend only (see module doc); ``confidence`` is added
@@ -179,12 +286,17 @@ EFFECTS: dict[str, dict[str, float]] = {
     "unlikely_to_play": {"model_mult": 1.0, "confidence": -5},
     "ruled_out": {"model_mult": 1.0, "confidence": -5},
     "designated_to_return": {"model_mult": 1.0, "confidence": 0},
+    "practice_progress": {"model_mult": 1.0, "confidence": 0},
+    "inactive_healthy_scratch": {"model_mult": 1.0, "confidence": 0},
 }
 # Flags whose multiplier `role_shift`'s lost role already prices (the model
 # reweights its volume from the break week): confidence only then.
 ROLE_LOSS_FLAGS = {"benched", "committee"}
 # Availability flags: they say nothing about a player already listed Out.
 AVAILABILITY_FLAGS = {"expected_to_play", "unlikely_to_play", "ruled_out"}
+# Flags about one week's game (read from this week's items only): the
+# availability flags, a return to practice, a healthy scratch.
+GAME_FLAGS = AVAILABILITY_FLAGS | {"practice_progress", "inactive_healthy_scratch"}
 MIN_MODEL_MULT = 0.80
 MAX_CONFIDENCE_SWING = 10
 
@@ -271,18 +383,55 @@ def _subject(before: str, owner: str, names: dict[str, str | None],
     return last
 
 
+_TITLE_NAME_RE = re.compile(r"\s+(?:running back\s+|RB\s+|back\s+)?"
+                            r"((?-i:[A-Z][\w.'\-]+))(?:\s+((?-i:[A-Z][\w.'\-]+)))?")
+
+
+def _title_subject(after: str, names: dict[str, str | None]) -> str | None:
+    """A role named as a title before the player ("bell-cow running back
+    Jonathan Taylor", "lead back Breece Hall"): the player right after it."""
+    m = _TITLE_NAME_RE.match(after)
+    if not m:
+        return None
+    first, last = m.group(1).rstrip("."), (m.group(2) or "").rstrip(".")
+    if last and names.get(f"{first} {last}".lower()):
+        return names[f"{first} {last}".lower()]
+    for word in (last, first):
+        key = re.sub(r"'s?$", "", (word or "").lower())
+        if key and names.get(key):
+            return names[key]
+    return None
+
+
+def _conditional(sentence: str, start: int, end: int) -> bool:
+    """Whether the phrase at ``sentence[start:end]`` is inside a condition
+    (see ``CONDITIONAL_FLAGS``)."""
+    before, after = sentence[:start], sentence[end:]
+    if _IF_BEFORE_RE.search(before):
+        return True
+    clause = _CLAUSE_SPLIT_RE.split(before)[-1]
+    if _MODAL_NEAR_RE.search(clause):
+        return True
+    next_clause = _CLAUSE_SPLIT_RE.split(after)[0]
+    return bool(_MODAL_RE.search(clause) and _IF_AFTER_RE.search(next_clause))
+
+
 def classify(text: str | None, owner: str = "", names: dict[str, str | None] | None = None,
              owner_last: str = "") -> list[dict]:
-    """``[{flag, about, snippet}]`` for one blurb.
+    """``[{flag, about, snippet, conditional?}]`` for one blurb.
 
     `owner` is the key of the player the blurb is filed under (his last name
     `owner_last`); `names` maps his teammates' last names to their keys
     (None for a name two of them share), for attribution. Without `names`
     everything is the owner's; a clause about an ambiguous name is dropped.
+    A role named as a title ("bell-cow running back Jonathan Taylor") is the
+    named player's. A hit inside a condition ("if Hall can't go, Allen would
+    be the lead back") carries ``conditional: True`` (``CONDITIONAL_FLAGS``);
+    an unconditional hit of the same flag and player replaces it.
     """
     names = names or {}
     out: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    seen: dict[tuple[str, str], dict] = {}
     text = _QUOTES_RE.sub("", (text or "").replace("\u2019", "'"))
     for sentence in _SENTENCE_RE.split(text):
         taken: list[tuple[int, int]] = []
@@ -304,12 +453,23 @@ def classify(text: str | None, owner: str = "", names: dict[str, str | None] | N
                     else:
                         flag_out = flag
                     taken.append((m.start(), m.end()))
-                    about = _subject(before, owner, names, owner_last)
-                    if about is None or (flag_out, about) in seen:
+                    about = None
+                    if flag_out == "lead_role":
+                        about = _title_subject(sentence[m.end():], names)
+                    about = about or _subject(before, owner, names, owner_last)
+                    if about is None:
                         continue
-                    seen.add((flag_out, about))
-                    out.append({"flag": flag_out, "about": about,
-                                "snippet": sentence.strip()[:240]})
+                    conditional = (flag_out in CONDITIONAL_FLAGS
+                                   and _conditional(sentence, m.start(), m.end()))
+                    prior = seen.get((flag_out, about))
+                    if prior is not None and (conditional or not prior.get("conditional")):
+                        continue
+                    hit = {"flag": flag_out, "about": about, "snippet": sentence.strip()[:240],
+                           **({"conditional": True} if conditional else {})}
+                    if prior is not None:
+                        out.remove(prior)
+                    seen[(flag_out, about)] = hit
+                    out.append(hit)
     return out
 
 
@@ -431,11 +591,17 @@ def build_index(rows: list[dict] | None, now: datetime | None = None,
         when = _parse_date(r.get("date_reported"))
         last_week = when is not None and when < rollover
         for hit in classify(text, owner, by_team.get(team), _last_name(name)):
-            if hit["flag"] in AVAILABILITY_FLAGS and last_week:
+            if hit["flag"] in GAME_FLAGS and last_week:
                 continue  # about last week's game
+            conditional = bool(hit.get("conditional"))
+            if conditional and hit["flag"] not in CONDITIONAL_KEEP:
+                continue  # "if he's not cleared to play"
             source = r.get("source") or r.get("sources") or "injury_report"
             index.setdefault((hit["about"], team), []).append({
-                "flag": hit["flag"], "weight": weight, "snippet": hit["snippet"],
+                "flag": hit["flag"],
+                "weight": round(weight * CONDITIONAL_WEIGHT, 3) if conditional else weight,
+                "snippet": hit["snippet"],
+                **({"conditional": True} if conditional else {}),
                 "date_reported": r.get("date_reported"),
                 "source": source if isinstance(source, str) else str(source),
                 **({"url": r["url"]} if r.get("url") else {}),

@@ -47,6 +47,30 @@ async def _check_database() -> dict[str, Any]:
         return {"healthy": False, "error": str(e)}
 
 
+async def _news_freshness() -> dict[str, Any]:
+    """``{news: {updated_at, age_hours, sources, warnings?}}``: the news
+    fetch's per-source health (`news_sources.health_summary`), bounded like
+    the database check. {} without a database."""
+    from .tool_registry import get_db
+
+    nfl_db = get_db()
+    if nfl_db is None or not hasattr(nfl_db, "get_news_health"):
+        return {}
+
+    def read() -> dict[str, Any]:
+        news = nfl_db.get_news_health()
+        if not isinstance(news, dict) or not news.get("sources"):
+            return {}
+        newest = max((s.get("fetched_at") or "" for s in news["sources"].values()),
+                     default="") or None
+        return {"news": {"updated_at": newest, **news}}
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(read), timeout=_DB_CHECK_TIMEOUT_SECONDS)
+    except Exception as e:
+        return {"news": {"error": str(e) or type(e).__name__}}
+
+
 def _overall_status(db_health: dict[str, Any], circuit_breakers: dict[str, Any]) -> tuple[str, int]:
     """``unhealthy``/503 only when the DB is down; an open breaker (an upstream
     API failing) is ``degraded``/200 -- the server still answers from cache."""
@@ -115,6 +139,10 @@ async def health_check(detailed: bool = True) -> JSONResponse:
     - Circuit breaker states
     - Rate limiter status
     - Prefetch status
+    - ``data_freshness.news``: each news source's health (ok / degraded /
+      failing, why, last success / error, failure streak, backoff). A
+      failing news source does not change ``status`` (the other sources and
+      the cache still answer); it is listed under ``warnings``.
     """
     from starlette.responses import JSONResponse
 
@@ -165,6 +193,7 @@ async def health_check(detailed: bool = True) -> JSONResponse:
             "open_circuit_breakers": open_breakers,
             "prefetch": _get_prefetch_config(),
             "tools": _get_tool_profile(),
+            "data_freshness": await _news_freshness(),
         },
         status_code=status_code,
     )

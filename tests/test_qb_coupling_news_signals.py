@@ -43,7 +43,7 @@ class TestClassify:
         ("Rice (hamstring) is expected to play Sunday.", "expected_to_play"),
         ("Adams is not expected to play Sunday.", "unlikely_to_play"),
         ("Overshown (hamstring) has been ruled out for Thursday's game.", "ruled_out"),
-        ("Bentley (coach's decision) is inactive for Sunday's game.", "benched"),
+        ("Bentley (coach's decision) is inactive for Sunday's game.", "inactive_healthy_scratch"),
     ])
     def test_phrases(self, text, flag):
         assert flag in _flags(text)

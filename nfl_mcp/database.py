@@ -237,7 +237,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
 
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 19
+    CURRENT_SCHEMA_VERSION = 20
 
     def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
@@ -323,6 +323,7 @@ class NFLDatabase:
             17: self._migration_v17_return_dates_freshness_signal_history,
             18: self._migration_v18_projection_accuracy,
             19: self._migration_v19_player_news,
+            20: self._migration_v20_news_source_health,
         }
 
     def _migration_v1_initial_schema(self, conn: sqlite3.Connection) -> None:
@@ -969,6 +970,51 @@ class NFLDatabase:
                 error TEXT
             )
             """
+        )
+
+    # Per-source health of the news fetch (`news_sources.assess`).
+    NEWS_HEALTH_COLUMNS = (
+        ("health", "TEXT"),                 # ok | degraded | failing
+        ("detail", "TEXT"),                 # why it is not ok
+        ("parsed_items", "INTEGER"),        # items the parser read from the first page
+        ("expected_items", "INTEGER"),      # items a page normally has
+        ("consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_success_at", "TEXT"),
+        ("last_error_at", "TEXT"),
+        ("last_error", "TEXT"),
+        ("next_attempt_at", "TEXT"),        # backoff: no fetch before this
+    )
+
+    def _migration_v20_news_source_health(self, conn: sqlite3.Connection) -> None:
+        """Migration v20: per-source health in ``news_fetch_state``.
+
+        NBC and CBS are HTML scrapes: a markup change parses to zero items
+        from a 200 response and looked like a quiet news day. Each fetch now
+        records its health (ok / degraded / failing, with the reason), the
+        items parsed against the items a page has, the last success and
+        error, and the failure streak with the time before which the source
+        is not fetched again (exponential backoff).
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS news_fetch_state (
+                source TEXT PRIMARY KEY,
+                fetched_at TEXT NOT NULL,
+                newest_published TEXT,
+                items INTEGER,
+                written INTEGER,
+                status TEXT,
+                error TEXT
+            )
+            """
+        )
+        have = {r[1] for r in conn.execute("PRAGMA table_info(news_fetch_state)")}
+        for column, decl in self.NEWS_HEALTH_COLUMNS:
+            if column not in have:
+                conn.execute(f"ALTER TABLE news_fetch_state ADD COLUMN {column} {decl}")
+        conn.execute(
+            """UPDATE news_fetch_state SET last_success_at = fetched_at
+               WHERE status = 'ok' AND last_success_at IS NULL"""
         )
 
     # Kickoffs are stored in UTC; shifted by the EST offset every kickoff
@@ -2343,25 +2389,50 @@ class NFLDatabase:
 
     def record_news_fetch(self, source: str, items: int, written: int,
                           newest_published: str | None = None, status: str = "ok",
-                          error: str | None = None) -> None:
-        """Remember a news source's fetch (freshness, incremental paging).
-        A failed fetch keeps the last good ``newest_published``."""
+                          error: str | None = None, *, health: str | None = None,
+                          detail: str | None = None, parsed_items: int | None = None,
+                          expected_items: int | None = None,
+                          consecutive_failures: int | None = None,
+                          next_attempt_at: str | None = None,
+                          at: str | None = None) -> None:
+        """Remember a news source's fetch (freshness, incremental paging,
+        health). A failed fetch keeps the last good ``newest_published`` and
+        ``last_success_at``; a good one keeps ``last_error_at`` / ``last_error``."""
+        now = at or datetime.now(UTC).isoformat()
+        failed = status != "ok" or health == "failing"
+        health = health or ("failing" if failed else "ok")
+        failures = consecutive_failures if consecutive_failures is not None else (1 if failed else 0)
         try:
             with self._pool.get_connection() as conn:
                 conn.execute(
                     """
                     INSERT INTO news_fetch_state(source, fetched_at, newest_published,
-                                                 items, written, status, error)
-                    VALUES(?,?,?,?,?,?,?)
+                                                 items, written, status, error, health, detail,
+                                                 parsed_items, expected_items,
+                                                 consecutive_failures, last_success_at,
+                                                 last_error_at, last_error, next_attempt_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(source) DO UPDATE SET
                         fetched_at=excluded.fetched_at,
                         newest_published=COALESCE(excluded.newest_published,
                                                   news_fetch_state.newest_published),
                         items=excluded.items, written=excluded.written,
-                        status=excluded.status, error=excluded.error
+                        status=excluded.status, error=excluded.error,
+                        health=excluded.health, detail=excluded.detail,
+                        parsed_items=excluded.parsed_items,
+                        expected_items=excluded.expected_items,
+                        consecutive_failures=excluded.consecutive_failures,
+                        last_success_at=COALESCE(excluded.last_success_at,
+                                                 news_fetch_state.last_success_at),
+                        last_error_at=COALESCE(excluded.last_error_at,
+                                               news_fetch_state.last_error_at),
+                        last_error=COALESCE(excluded.last_error, news_fetch_state.last_error),
+                        next_attempt_at=excluded.next_attempt_at
                     """,
-                    (source, datetime.now(UTC).isoformat(), newest_published, items,
-                     written, status, error),
+                    (source, now, newest_published, items, written, status, error, health,
+                     detail, parsed_items, expected_items, failures,
+                     None if failed else now, now if failed else None,
+                     (error or detail) if failed else None, next_attempt_at),
                 )
                 conn.commit()
         except Exception as e:
@@ -3492,7 +3563,20 @@ class NFLDatabase:
                 except (TypeError, ValueError):
                     age = None
             out[label] = {"updated_at": newest, "age_hours": age}
+        news = self.get_news_health()
+        if news.get("sources"):
+            out["news"].update(news)
         return out
+
+    def get_news_health(self) -> dict:
+        """``{sources: {source: health}, warnings?}`` of the news fetch
+        (`news_sources.health_summary`); {} without the table."""
+        from .news_sources import health_summary
+        try:
+            return health_summary(self.get_news_fetch_state())
+        except Exception as e:
+            logger.debug(f"news health unavailable: {e}")
+            return {}
 
     def get_last_updated(self) -> str | None:
         """

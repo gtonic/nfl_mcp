@@ -44,6 +44,26 @@ athlete cache has not seen yet). Unresolved items are counted, not stored.
 Items are deduplicated per source on content (`content_hash`: source,
 player, normalized text); across sources they are merged at read time
 (`merge_timeline`). `ingest_news` is the ``data_refresh`` scope ``news``.
+
+Source health (schema v20, ``news_fetch_state``). NBC and CBS are HTML
+scrapes: a redesign answers 200 and parses to nothing, which looked like a
+quiet news day. Every selector the parsers use is in one table
+(`NBC_SELECTORS`, `CBS_SELECTORS`; fallbacks after the primary), and each
+fetch is assessed (`assess`): ``ok``; ``degraded`` -- a fallback selector or
+feed was needed (NBC's page parsing to nothing reads its RSS feed instead:
+headline and one-line note, no analysis or team), fewer items than a page
+has, part of the requests failed; ``failing`` -- an error, or a 200 page that
+parsed to nothing (`ParserBroken`). A failing source is not fetched again
+for `backoff_delay` (30 min doubling to 12 h, stored, so a restart keeps
+it); the first fetch after the wait is the probe. The other sources always
+run. `health_summary` is what ``/health`` (``data_freshness.news``),
+``get_data_freshness`` (briefing, refresh_data) and `get_player_news` show,
+with a warning per enabled source that is not ok. NBC exposes no usable
+feed besides that RSS (the Atom feed is empty; ``/api/`` and GraphQL are
+disallowed in robots.txt), so the HTML stays the primary.
+
+Sources are switched with ``NFL_MCP_NEWS_SOURCES`` (`enabled_sources`):
+``-nbc`` drops one, ``espn_fantasy,cbs`` keeps a list, ``none`` stops them.
 """
 from __future__ import annotations
 
@@ -95,6 +115,8 @@ NBC_NEWS_URL = "https://www.nbcsports.com/fantasy/football/player-news"
 # Pages per poll (10 items each, ~50 a day in season), and on the first poll.
 NBC_MAX_PAGES = 3
 NBC_FIRST_PAGES = 12
+# The fallback when the HTML page parses to nothing (`fetch_nbc`).
+NBC_RSS_URL = "https://www.nbcsports.com/fantasy/football/player-news.rss"
 
 # --- CBS ----------------------------------------------------------------
 CBS_NEWS_URL = "https://www.cbssports.com/fantasy/football/players/news/all/"
@@ -132,10 +154,18 @@ def _env_int(name: str, default: int) -> int:
 
 
 def enabled_sources() -> tuple[str, ...]:
-    """``NFL_MCP_NEWS_SOURCES`` (comma list), else every source."""
+    """The news sources to poll, from ``NFL_MCP_NEWS_SOURCES``: unset or
+    empty is every source; a comma list (``espn_fantasy,cbs``) those only;
+    ``-name`` entries (``-nbc``) every source but those; ``none`` none."""
     raw = os.getenv("NFL_MCP_NEWS_SOURCES", "")
-    wanted = tuple(s.strip().lower() for s in raw.split(",") if s.strip())
-    return tuple(s for s in SOURCES if s in wanted) if wanted else SOURCES
+    entries = [s.strip().lower() for s in raw.split(",") if s.strip()]
+    if not entries:
+        return SOURCES
+    if "none" in entries:
+        return ()
+    off = {e[1:] for e in entries if e.startswith("-")}
+    on = {e for e in entries if not e.startswith("-")}
+    return tuple(s for s in SOURCES if (s in on if on else True) and s not in off)
 
 
 def position_group(position: str | None) -> str | None:
@@ -228,27 +258,80 @@ def parse_espn_news(payload: dict | None) -> list[dict]:
     return out
 
 
-def parse_nbc(html: str | None) -> list[dict]:
-    """Raw items from an NBC Sports / Rotoworld player-news page."""
+# --- Markup contracts ---------------------------------------------------
+# Every CSS selector the HTML parsers use, in one place: a redesign is an
+# edit here. Each entry is tried in order and the first that matches wins;
+# a fallback (any but the first) that was needed is reported, and the
+# source's health reads "degraded" (`assess`). The contract tests
+# (``tests/fixtures/news_html``) hold a trimmed copy of each page.
+NBC_SELECTORS: dict[str, tuple[str, ...]] = {
+    "post": ("li.PlayerNewsModuleList-item div.PlayerNewsPost", "div.PlayerNewsPost",
+             "article[class*='PlayerNews']"),
+    "first_name": (".PlayerNewsPost-firstName",),
+    "last_name": (".PlayerNewsPost-lastName",),
+    "name_link": (".PlayerNewsPost-name a", "h2 a"),
+    "headline": (".PlayerNewsPost-headline", "h3"),
+    "analysis": (".PlayerNewsPost-analysis", "[class*='nalysis']"),
+    "author": (".PlayerNewsPost-author", "[class*='uthor']"),
+    "date": (".PlayerNewsPost-date[data-date]", "[data-date]", "time[datetime]"),
+    "share": ("[data-share-url]",),
+    "team": (".PlayerNewsPost-team-abbr",),
+    "position": (".PlayerNewsPost-position",),
+}
+CBS_SELECTORS: dict[str, tuple[str, ...]] = {
+    "item": ("ul.player-news-by-sport > li", "ul.player-news-by-sport li",
+             "li:has(.player-news-desc)"),
+    "who": (".players-annotated p", "[class*='players'] p"),
+    "desc": (".player-news-desc", "[class*='news-desc']"),
+    "title": ("h4 a", "h4", "h3 a"),
+    "paragraphs": (".latest-updates p", "[class*='updates'] p"),
+}
+
+
+def _select(node, key: str, table: dict, used: set) -> list:
+    """All matches of the first of ``table[key]``'s selectors that matches;
+    a fallback needed is added to `used`."""
+    for i, sel in enumerate(table[key]):
+        found = node.select(sel)
+        if found:
+            if i:
+                used.add(key)
+            return found
+    return []
+
+
+def _select_one(node, key: str, table: dict, used: set):
+    found = _select(node, key, table, used)
+    return found[0] if found else None
+
+
+def parse_nbc_page(html: str | None) -> tuple[list[dict], dict]:
+    """``(items, stats)`` from an NBC Sports / Rotoworld player-news page.
+
+    ``stats``: ``{containers, parsed, fallbacks}`` -- the post elements
+    found, the items read from them, the selectors that needed a fallback
+    (`NBC_SELECTORS`)."""
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html or "", "html.parser")
+    used: set[str] = set()
+    posts = _select(soup, "post", NBC_SELECTORS, used)
     out = []
-    for post in soup.select("li.PlayerNewsModuleList-item div.PlayerNewsPost"):
-        first = post.select_one(".PlayerNewsPost-firstName")
-        last = post.select_one(".PlayerNewsPost-lastName")
+    for post in posts:
+        first = _select_one(post, "first_name", NBC_SELECTORS, used)
+        last = _select_one(post, "last_name", NBC_SELECTORS, used)
         name = clean_text(" ".join(t.get_text(" ", strip=True) for t in (first, last) if t))
         if not name:
-            link = post.select_one(".PlayerNewsPost-name a")
+            link = _select_one(post, "name_link", NBC_SELECTORS, used)
             name = clean_text(link.get_text(" ", strip=True)) if link else ""
-        headline = post.select_one(".PlayerNewsPost-headline")
-        analysis = post.select_one(".PlayerNewsPost-analysis")
+        headline = _select_one(post, "headline", NBC_SELECTORS, used)
+        analysis = _select_one(post, "analysis", NBC_SELECTORS, used)
         if analysis is not None:
-            for author in analysis.select(".PlayerNewsPost-author"):
+            for author in _select(analysis, "author", NBC_SELECTORS, set()):
                 author.decompose()
-        date = post.select_one(".PlayerNewsPost-date")
-        share = post.select_one("[data-share-url]")
-        team = post.select_one(".PlayerNewsPost-team-abbr")
-        pos = post.select_one(".PlayerNewsPost-position")
+        date = _select_one(post, "date", NBC_SELECTORS, used)
+        share = _select_one(post, "share", NBC_SELECTORS, used)
+        team = _select_one(post, "team", NBC_SELECTORS, used)
+        pos = _select_one(post, "position", NBC_SELECTORS, used)
         if not name or headline is None:
             continue
         url = share.get("data-share-url") if share else None
@@ -260,8 +343,51 @@ def parse_nbc(html: str | None) -> list[dict]:
             "headline": clean_text(headline.get_text(" ", strip=True)),
             "text": clean_text(analysis.get_text(" ", strip=True)) if analysis else "",
             "url": url or NBC_NEWS_URL,
-            "published_at": _iso(date.get("data-date")) if date else None,
+            "published_at": _iso(date.get("data-date") or date.get("datetime")) if date else None,
         })
+    return out, {"containers": len(posts), "parsed": len(out), "fallbacks": sorted(used)}
+
+
+def parse_nbc(html: str | None) -> list[dict]:
+    """Raw items from an NBC Sports / Rotoworld player-news page."""
+    return parse_nbc_page(html)[0]
+
+
+# The player in an RSS headline: "DeVonta Smith (hamstring) sits out ...",
+# "Rico Dowdle (toe) limited ...", "Commanders waive RB Kaytron Allen" (no
+# match: a team leads).
+_RSS_NAME_RE = re.compile(
+    r"^\s*([A-Z][\w.'\-]+(?:\s+[A-Z][\w.'\-]+){1,3}?)\s*\(")
+
+
+def parse_nbc_rss(xml: str | None) -> list[dict]:
+    """Raw items from NBC's player-news RSS (``player-news.rss``): the
+    fallback when the HTML page parses to nothing. Ten items, the headline
+    and the one-line note only -- no analysis, team or position, so a name
+    maps only when it is unique league-wide (`resolve_player`)."""
+    from email.utils import parsedate_to_datetime
+    from xml.etree import ElementTree
+    try:
+        root = ElementTree.fromstring(xml or "")
+    except ElementTree.ParseError:
+        return []
+    out = []
+    for item in root.iter("item"):
+        title = clean_text(item.findtext("title"))
+        desc = clean_text((item.findtext("description") or "").replace("&apos;", "'"))
+        link = (item.findtext("link") or "").strip()
+        m = _RSS_NAME_RE.match(title) or _RSS_NAME_RE.match(desc)
+        if not m:
+            continue
+        try:
+            published = parsedate_to_datetime(item.findtext("pubDate") or "").astimezone(
+                UTC).isoformat(timespec="seconds")
+        except (TypeError, ValueError):
+            published = None
+        out.append({"source": "nbc", "source_id": link.rstrip("/").rsplit("/", 1)[-1] or None,
+                    "name": m.group(1), "team": None, "position": None,
+                    "headline": desc or title, "text": "", "url": link or NBC_NEWS_URL,
+                    "published_at": published})
     return out
 
 
@@ -278,23 +404,26 @@ def _cbs_time(text: str | None, now: datetime) -> str | None:
     return (now - delta).astimezone(UTC).isoformat(timespec="seconds")
 
 
-def parse_cbs(html: str | None, now: datetime | None = None) -> list[dict]:
-    """Raw items from CBS's fantasy player-news page (``ul.player-news-by-sport``)."""
+def parse_cbs_page(html: str | None, now: datetime | None = None) -> tuple[list[dict], dict]:
+    """``(items, stats)`` from CBS's fantasy player-news page (``stats`` as
+    in :func:`parse_nbc_page`; selectors in `CBS_SELECTORS`)."""
     from bs4 import BeautifulSoup
     now = now or datetime.now(UTC)
     soup = BeautifulSoup(html or "", "html.parser")
+    used: set[str] = set()
+    items = _select(soup, "item", CBS_SELECTORS, used)
     out = []
-    for li in soup.select("ul.player-news-by-sport > li"):
-        who = li.select_one(".players-annotated p")
+    for li in items:
+        who = _select_one(li, "who", CBS_SELECTORS, used)
         link = who.find("a") if who else None
         label = who.find("span") if who else None
-        desc = li.select_one(".player-news-desc")
+        desc = _select_one(li, "desc", CBS_SELECTORS, used)
         if not link or desc is None:
             continue
         pos, _, team = (label.get_text(" ", strip=True) if label else "").partition("|")
-        title = desc.select_one("h4 a") or desc.select_one("h4")
+        title = _select_one(desc, "title", CBS_SELECTORS, used)
         paragraphs = [clean_text(p.get_text(" ", strip=True))
-                      for p in desc.select(".latest-updates p")]
+                      for p in _select(desc, "paragraphs", CBS_SELECTORS, used)]
         paragraphs = [p for p in paragraphs if p]
         href = title.get("href") if title is not None and title.name == "a" else None
         out.append({
@@ -309,7 +438,104 @@ def parse_cbs(html: str | None, now: datetime | None = None) -> list[dict]:
             "url": (CBS_BASE + href) if href and href.startswith("/") else (href or CBS_NEWS_URL),
             "published_at": _cbs_time((desc.find("time") or li).get_text(" ", strip=True), now),
         })
-    return out
+    return out, {"containers": len(items), "parsed": len(out), "fallbacks": sorted(used)}
+
+
+def parse_cbs(html: str | None, now: datetime | None = None) -> list[dict]:
+    """Raw items from CBS's fantasy player-news page (``ul.player-news-by-sport``)."""
+    return parse_cbs_page(html, now)[0]
+
+
+# ---------------------------------------------------------------------------
+# Source health
+# ---------------------------------------------------------------------------
+
+class ParserBroken(RuntimeError):
+    """A page answered 200 and parsed to nothing: the markup changed."""
+
+
+# Items a first page has (NBC: 10 posts a page, CBS: 10 notes); fewer than
+# MIN_PARSED_SHARE of them read is a degraded parser, none a broken one.
+EXPECTED_ITEMS = {"nbc": 10, "cbs": 10}
+MIN_PARSED_SHARE = 0.5
+# A failing source (an error, or a parser that read nothing) is not fetched
+# again for BACKOFF_BASE_MINUTES x 2^(failures-1), at most BACKOFF_MAX_HOURS
+# (30 min, 1 h, 2 h, ... 12 h) -- a circuit breaker kept in the database, so
+# a restart does not reset it. The first fetch after the wait is the probe:
+# a success closes it (the streak back to 0), a failure doubles the wait.
+BACKOFF_BASE_MINUTES = 30
+BACKOFF_MAX_HOURS = 12
+
+
+def backoff_delay(failures: int) -> timedelta:
+    """How long a source with `failures` consecutive failures waits."""
+    if failures <= 0:
+        return timedelta(0)
+    minutes = BACKOFF_BASE_MINUTES * 2 ** min(failures - 1, 16)
+    return min(timedelta(minutes=minutes), timedelta(hours=BACKOFF_MAX_HOURS))
+
+
+def assess(source: str, info: dict) -> tuple[str, str | None]:
+    """``(health, detail)`` of a fetch that did not raise: ``ok`` or
+    ``degraded`` (a fallback selector or feed was needed, fewer items parsed
+    than a page has, part of the requests failed)."""
+    problems = []
+    parse = info.get("parse") or {}
+    expected = EXPECTED_ITEMS.get(source)
+    if info.get("fallback_feed"):
+        problems.append(f"the HTML page parsed to 0 items; read the {info['fallback_feed']} "
+                        "instead (headline and one-line note only)")
+    elif expected and parse:
+        parsed = int(parse.get("parsed") or 0)
+        if parsed < expected * MIN_PARSED_SHARE:
+            problems.append(f"parsed {parsed} of {expected} items on the first page "
+                            "(markup changed?)")
+        containers = int(parse.get("containers") or 0)
+        if containers and parsed < containers:
+            problems.append(f"{containers - parsed} of {containers} posts could not be read")
+    if parse.get("fallbacks"):
+        problems.append("fallback selector(s) used for " + ", ".join(parse["fallbacks"]))
+    if info.get("failed_requests"):
+        problems.append(f"{info['failed_requests']} of {info.get('requests')} requests failed")
+    return ("degraded", "; ".join(problems)) if problems else ("ok", None)
+
+
+def health_summary(state: dict[str, dict] | None, now: datetime | None = None) -> dict:
+    """``{sources: {source: {...}}, warnings?: [...]}`` from the
+    ``news_fetch_state`` rows: each source's health and why, the last
+    success and error, the failure streak and the backoff; one warning per
+    enabled source that is not ok."""
+    now = now or datetime.now(UTC)
+    enabled = set(enabled_sources())
+    sources, warnings = {}, []
+    for source, st in sorted((state or {}).items()):
+        health = st.get("health") or ("ok" if st.get("status") == "ok" else "failing")
+        next_at = _iso(st.get("next_attempt_at"))
+        waiting = bool(next_at and next_at > now.isoformat())
+        success = _iso(st.get("last_success_at"))
+        entry = {
+            "label": SOURCE_LABELS.get(source, source), "health": health,
+            "enabled": source in enabled, "fetched_at": st.get("fetched_at"),
+            "last_success_at": st.get("last_success_at"),
+            "success_age_hours": round((now - datetime.fromisoformat(success))
+                                       .total_seconds() / 3600, 1) if success else None,
+            "last_error_at": st.get("last_error_at"),
+            "consecutive_failures": int(st.get("consecutive_failures") or 0),
+            "parsed_items": st.get("parsed_items"), "expected_items": st.get("expected_items"),
+            "newest_item": st.get("newest_published"),
+            **({"detail": st["detail"]} if st.get("detail") else {}),
+            **({"last_error": st["last_error"]} if st.get("last_error") else {}),
+            **({"next_attempt_at": next_at, "backing_off": True} if waiting else {}),
+        }
+        sources[source] = entry
+        if health != "ok" and entry["enabled"]:
+            why = st.get("detail") or st.get("error") or st.get("last_error") or "unknown error"
+            warnings.append(
+                f"{entry['label']} is {health}: {why}"
+                + (f" ({entry['consecutive_failures']} failures in a row; next attempt "
+                   f"{next_at})" if waiting else "")
+                + ("; its items are missing until it recovers" if health == "failing" else ""))
+    return {"sources": sources, **({"warnings": warnings} if warnings else {})}
 
 
 # ---------------------------------------------------------------------------
@@ -551,34 +777,73 @@ async def fetch_espn(client, db, first: bool, since: datetime) -> tuple[list[dic
 
 async def fetch_nbc(client, newest_seen: str | None, since: datetime,
                     max_pages: int | None = None) -> tuple[list[dict], dict]:
-    """NBC pages, newest first, until a page reaches `newest_seen` / `since`."""
+    """NBC pages, newest first, until a page reaches `newest_seen` / `since`.
+
+    The first page is the contract check: when it answers 200 and parses
+    to nothing (or answers an error), the RSS feed (`NBC_RSS_URL`) is read
+    instead -- ``fallback_feed`` in the info, health "degraded" -- and when
+    that is empty too, `ParserBroken` / the HTTP error is raised."""
     pages = max_pages or (_env_int("NFL_MCP_NEWS_NBC_PAGES", NBC_MAX_PAGES) if newest_seen
                           else _env_int("NFL_MCP_NEWS_NBC_FIRST_PAGES", NBC_FIRST_PAGES))
     floor = max(newest_seen or "", since.isoformat())
     items: list[dict] = []
     read = 0
+    first_stats: dict = {}
     for page in range(1, pages + 1):
         url = NBC_NEWS_URL if page == 1 else f"{NBC_NEWS_URL}?p={page}"
         r = await client.get(url, headers=_headers())
         if page > 1 and r.status_code >= 400:
             break
-        r.raise_for_status()
+        if page == 1 and r.status_code >= 400:
+            return await _nbc_rss_fallback(client, since, f"HTTP {r.status_code}")
         read += 1
-        got = parse_nbc(r.text)
+        got, stats = parse_nbc_page(r.text)
+        if page == 1:
+            first_stats = stats
+            if not got:
+                return await _nbc_rss_fallback(
+                    client, since, "parser broken: 0 items parsed from a 200 response "
+                                   f"({stats['containers']} post elements found)", first_stats)
         items += got
         dated = [i["published_at"] for i in got if i.get("published_at")]
         if not got or (dated and min(dated) < floor):
             break
     cutoff = since.isoformat()
     return ([i for i in items if (i.get("published_at") or cutoff) >= cutoff],
-            {"pages": read, "requests": read})
+            {"pages": read, "requests": read, "parse": {
+                **first_stats, "expected": EXPECTED_ITEMS["nbc"]}})
+
+
+async def _nbc_rss_fallback(client, since: datetime, why: str,
+                            stats: dict | None = None) -> tuple[list[dict], dict]:
+    """The RSS items when the HTML page failed (`fetch_nbc`); raises with
+    `why` when the feed has nothing either."""
+    try:
+        r = await client.get(NBC_RSS_URL, headers=_headers())
+        r.raise_for_status()
+        got = parse_nbc_rss(r.text)
+    except Exception as e:
+        logger.debug(f"news: NBC RSS fallback failed: {e}")
+        got = []
+    if not got:
+        raise ParserBroken(why) if why.startswith("parser") else RuntimeError(f"NBC page 1: {why}")
+    logger.warning(f"[News] nbc: {why}; read the RSS feed instead ({len(got)} items)")
+    cutoff = since.isoformat()
+    return ([i for i in got if (i.get("published_at") or cutoff) >= cutoff],
+            {"pages": 1, "requests": 2, "fallback_feed": "RSS feed", "html_problem": why,
+             "parse": {**(stats or {}), "parsed": 0, "expected": EXPECTED_ITEMS["nbc"]}})
 
 
 async def fetch_cbs(client, now: datetime) -> tuple[list[dict], dict]:
-    """CBS's first page (see the module doc)."""
+    """CBS's first page (see the module doc); `ParserBroken` when a 200
+    response parses to nothing."""
     r = await client.get(CBS_NEWS_URL, headers=_headers())
     r.raise_for_status()
-    return parse_cbs(r.text, now), {"pages": 1, "requests": 1}
+    got, stats = parse_cbs_page(r.text, now)
+    if not got:
+        raise ParserBroken("parser broken: 0 items parsed from a 200 response "
+                           f"({stats['containers']} item elements found)")
+    return got, {"pages": 1, "requests": 1, "parse": {**stats, "expected": EXPECTED_ITEMS["cbs"]}}
 
 
 def _newest(rows: list[dict]) -> str | None:
@@ -587,23 +852,35 @@ def _newest(rows: list[dict]) -> str | None:
 
 async def ingest_news(db, sources: list[str] | tuple[str, ...] | None = None,
                       days: int = LOOKBACK_DAYS, now: datetime | None = None,
-                      client=None) -> dict:
+                      client=None, ignore_backoff: bool = False) -> dict:
     """Poll the sources, map the items to players, store the new ones.
 
-    ``{fetched, written, unresolved, sources: {source: {fetched, resolved,
-    unresolved, written, newest_published, duration_s, status, error?}}}``.
-    A failing source is reported and recorded; the others still run.
+    ``{fetched, written, unresolved, sources: {source: {status, health,
+    detail?, fetched, resolved, unresolved, written, newest_published,
+    duration_s, error?, consecutive_failures?, next_attempt_at?}}}``. A
+    failing source is reported, recorded (health, failure streak, backoff:
+    `backoff_delay`) and skipped (``status: "backoff"``) until its wait is
+    over (`ignore_backoff` overrides); the others still run.
     """
     now = now or datetime.now(UTC)
     since = now - timedelta(days=days)
-    wanted = [s for s in (sources or enabled_sources()) if s in SOURCES]
+    wanted = [s for s in (sources if sources is not None else enabled_sources()) if s in SOURCES]
     state = db.get_news_fetch_state() if hasattr(db, "get_news_fetch_state") else {}
     own = client is None
     client = client or _client()
+    stamp = now.isoformat()
     try:
         async def run(source: str) -> tuple[str, dict]:
             started = time.monotonic()
-            seen = (state.get(source) or {}).get("newest_published")
+            prev = state.get(source) or {}
+            seen = prev.get("newest_published")
+            wait_until = _iso(prev.get("next_attempt_at"))
+            if not ignore_backoff and wait_until and wait_until > stamp:
+                return source, {"status": "backoff", "health": prev.get("health") or "failing",
+                                "consecutive_failures": int(prev.get("consecutive_failures") or 0),
+                                "next_attempt_at": wait_until,
+                                "error": prev.get("last_error") or prev.get("error"),
+                                "duration_s": 0.0}
             try:
                 if source == "espn_fantasy":
                     items, info = await fetch_espn(client, db, not seen, since)
@@ -618,16 +895,36 @@ async def ingest_news(db, sources: list[str] | tuple[str, ...] | None = None,
                 rows, unresolved = await asyncio.to_thread(map_items, db, items, roster, now)
                 written = await asyncio.to_thread(db.upsert_player_news, rows)
                 newest = _newest(rows)
-                await asyncio.to_thread(db.record_news_fetch, source, len(items), written, newest)
-                return source, {"status": "ok", "fetched": len(items), "resolved": len(rows),
+                health, detail = assess(source, info)
+                parse = info.get("parse") or {}
+                await asyncio.to_thread(
+                    db.record_news_fetch, source, len(items), written, newest, "ok", None,
+                    health=health, detail=detail, parsed_items=parse.get("parsed"),
+                    expected_items=parse.get("expected"), consecutive_failures=0,
+                    next_attempt_at=None, at=stamp)
+                if health != "ok":
+                    logger.warning(f"[News] {source} degraded: {detail}")
+                info = {k: v for k, v in info.items() if k not in ("parse", "html_problem")}
+                return source, {"status": "ok", "health": health,
+                                **({"detail": detail} if detail else {}),
+                                "fetched": len(items), "resolved": len(rows),
                                 "unresolved": len(unresolved), "written": written,
-                                "newest_published": newest or seen, **info,
-                                "duration_s": round(time.monotonic() - started, 1)}
+                                "newest_published": newest or seen,
+                                **({"parsed_items": parse.get("parsed"),
+                                    "expected_items": parse.get("expected")} if parse else {}),
+                                **info, "duration_s": round(time.monotonic() - started, 1)}
             except Exception as e:
-                logger.warning(f"[News] {source} failed: {e}")
-                await asyncio.to_thread(db.record_news_fetch, source, 0, 0, None, "error",
-                                        str(e)[:300])
-                return source, {"status": "error", "error": str(e)[:300],
+                failures = int(prev.get("consecutive_failures") or 0) + 1
+                next_at = (now + backoff_delay(failures)).isoformat(timespec="seconds")
+                error = str(e)[:300] or type(e).__name__
+                logger.warning(f"[News] {source} failed ({failures} in a row; next attempt "
+                               f"{next_at}): {error}")
+                await asyncio.to_thread(
+                    db.record_news_fetch, source, 0, 0, None, "error", error,
+                    health="failing", detail=error, consecutive_failures=failures,
+                    next_attempt_at=next_at, at=stamp)
+                return source, {"status": "error", "health": "failing", "error": error,
+                                "consecutive_failures": failures, "next_attempt_at": next_at,
                                 "duration_s": round(time.monotonic() - started, 1)}
 
         results = dict(await asyncio.gather(*(run(s) for s in wanted)))
@@ -635,7 +932,7 @@ async def ingest_news(db, sources: list[str] | tuple[str, ...] | None = None,
         if own:
             await client.aclose()
     ok = [r for r in results.values() if r["status"] == "ok"]
-    if wanted and not ok:
+    if wanted and not ok and any(r["status"] == "error" for r in results.values()):
         raise RuntimeError("; ".join(f"{s}: {r.get('error')}" for s, r in results.items()))
     return {"fetched": sum(r.get("fetched", 0) for r in ok),
             "written": sum(r.get("written", 0) for r in ok),

@@ -436,7 +436,9 @@ sentence; it is the decision.
 - **`get_player_news`**: One merged news timeline per player, with the news flags the projections read.
   - Sources: ESPN's fantasy player feed (RotoWire notes), NBC Sports / Rotoworld, CBS (stored by `refresh_data(scope=["news"])` / the prefetch loop) plus the current injury blurb; a note several sources carry is one entry.
   - Parameters: `players` (names or Sleeper ids, up to 30), `days` (default 7, 1-30), `league_id` (optional: resolves shared names to the rostered player; alone, lists every rostered QB/RB/WR/TE/K with news)
-  - Returns: players [{name, player_id, team, position, injury_status, items, news_flags [{flag, weight, snippet, date_reported, source, url}], news_adjustment, timeline [{published_at, headline, text, source, url, sources, flags}]}], unresolved, sources (fetch freshness per source), warnings
+  - Returns: players [{name, player_id, team, position, injury_status, items, news_flags [{flag, weight, snippet, date_reported, source, url, conditional?}], news_adjustment, timeline [{published_at, headline, text, source, url, sources, flags}]}], unresolved, sources (fetch freshness and health per source: ok / degraded / failing, detail, consecutive_failures, next_attempt_at), warnings (a stale store, a source that is not ok)
+  - Flags: benched, committee, lead_role, limited_snaps, week_to_week, designated_to_return (IR/PUP/NFI window opened or activated), practice_progress (back at practice), expected_to_play, unlikely_to_play, ruled_out, inactive_healthy_scratch (reported only). A flag inside a condition is `conditional` (a conditional lead role counts at half weight; others not at all); a timeline entry shows it as `lead_role?`.
+  - Switching a source off is one env line on the server: `NFL_MCP_NEWS_SOURCES=-nbc` (all but NBC), `=espn_fantasy` (ESPN only), `=none`.
 
 ### 15. Opponent & Season Strategy (2 tools)
 
@@ -600,7 +602,7 @@ The server supports extensive configuration via environment variables:
 - `NFL_MCP_PREFETCH_ATHLETES_INTERVAL`: Athletes refresh interval in seconds (default: 86400)
 - `NFL_MCP_PREFETCH_NEWS`: Poll player news during prefetch (0 or 1, default: 1)
 - `NFL_MCP_PREFETCH_NEWS_INTERVAL` / `NFL_MCP_PREFETCH_NEWS_GAMEDAY_INTERVAL`: news poll interval in seconds (default: 2700 / 900 in the game-day windows)
-- `NFL_MCP_NEWS_SOURCES`: comma list of news sources (`espn_fantasy`, `nbc`, `cbs`; default all)
+- `NFL_MCP_NEWS_SOURCES`: news sources (`espn_fantasy`, `nbc`, `cbs`; default all): a comma list keeps those, `-name` drops one (`-nbc`), `none` stops them
 - `NFL_MCP_NEWS_NBC_PAGES` / `NFL_MCP_NEWS_NBC_FIRST_PAGES`: NBC pages per poll (default 3; 12 on the first poll)
 
 #### Logging

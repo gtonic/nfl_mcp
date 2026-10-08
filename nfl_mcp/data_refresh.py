@@ -136,8 +136,13 @@ async def _refresh_news(db, season: int, week: int) -> dict:
     ESPN's fantasy feed, NBC Sports / Rotoworld and CBS, into ``player_news``."""
     from .news_sources import ingest_news
     out = await ingest_news(db)
+    warnings = [f"{s}: {r['health']} -- {r.get('detail') or r.get('error') or ''}".rstrip(" -")
+                + (f" (backing off until {r['next_attempt_at']})" if r.get("next_attempt_at")
+                   else "")
+                for s, r in out["sources"].items() if r.get("health") not in (None, "ok")]
     return {"fetched": out["fetched"], "written": out["written"],
-            "unresolved": out["unresolved"], "sources": out["sources"]}
+            "unresolved": out["unresolved"], "sources": out["sources"],
+            **({"warnings": warnings} if warnings else {})}
 
 
 _REFRESHERS = {
