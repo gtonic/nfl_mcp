@@ -75,6 +75,16 @@ DEFAULT_LOOKBACK = 6
 # ROS top-12 QB MAE 3.75 -> 3.31. RB/WR/TE did not improve and keep the plain
 # six-game window.
 QB_LOOKBACK = 8
+# Change-point aware recency: once `role_shift` has found the week a smaller
+# role started, the games from that week on count this many times their linear
+# recency weight. Plain 1..n weights left a back benched in week 4 priced
+# mostly on weeks 1-3 (the new role was 4/10 of the weight; at 1.5x it is 1/2).
+# Only the expected *volume* is reweighted — efficiency per opportunity is the
+# player's, whatever his role. evals/backtest/sleeper_blend.py --role-shift
+# (2023-25), model MAE on the role_down rows: 5.520 -> 5.507 at 1.5 (RB 5.394
+# -> 5.359), 5.508 at 2, 5.523 at 3. On a gained role it only hurt (5.797 ->
+# 5.862), which is why `role_shift` asks for it on a lost role alone.
+POST_BREAK_WEIGHT = 1.5
 QB_ATTEMPTS_PRIOR = 30.6
 QB_ATTEMPTS_PSEUDO_GAMES = 3.0
 OPPORTUNITY_POSITIONS = ("QB", "RB", "WR", "TE")
@@ -115,6 +125,14 @@ def _weighted_mean(values: list[float], weights: list[float]) -> float:
     return sum(v * w for v, w in zip(weights, values, strict=False)) / tw if tw else 0.0
 
 
+def recency_weights(games: list[dict], break_week: int | None = None) -> list[float]:
+    """Oldest .. newest -> 1 .. n, games from `break_week` on scaled up by
+    `POST_BREAK_WEIGHT` (see there). `games` sorted by week."""
+    return [float(i) * (POST_BREAK_WEIGHT if break_week is not None
+                        and g.get("week", 0) >= break_week else 1.0)
+            for i, g in enumerate(games, start=1)]
+
+
 def _shrunk_rate(total_points: float, total_volume: float, prior: float, k: float) -> float:
     """Player's points-per-opportunity, shrunk toward the position prior."""
     return (total_points + k * prior) / (total_volume + k)
@@ -127,6 +145,7 @@ def project_opportunity(
     ppr: float = FULL_PPR,
     extra_volume: dict[str, float] | None = None,
     scoring: ScoringModel | None = None,
+    break_week: int | None = None,
 ) -> float | None:
     """Expected fantasy points for the next game from trailing opportunity.
 
@@ -147,6 +166,9 @@ def project_opportunity(
         scoring: the league's full scoring model. When given it wins over
             `ppr` (its own reception value is used); omitted, Sleeper's
             defaults at `ppr`.
+        break_week: the first week of a new role (``role_shift.classify``).
+            Games from it on weigh `POST_BREAK_WEIGHT` times their recency
+            weight in the expected volume. None: plain linear recency.
 
     Returns expected points, or None if the position/data can't be projected.
     """
@@ -163,8 +185,7 @@ def project_opportunity(
         lookback = QB_LOOKBACK if pos == "QB" else DEFAULT_LOOKBACK
     games = sorted(prior_games, key=lambda g: g.get("week", 0))[-lookback:]
     n = len(games)
-    # Recency weights: oldest .. newest -> 1 .. n.
-    weights = list(range(1, n + 1))
+    weights = recency_weights(games, break_week)
 
     exp_carries = _weighted_mean([g.get("carries", 0.0) for g in games], weights) \
         + extra.get("carries", 0.0)

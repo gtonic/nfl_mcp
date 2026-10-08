@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Trend-aware projections.** New `role_shift` module reads the last one or
+  two played weeks against the ones before (snap, carries and target share,
+  red-zone opportunities; byes and missed weeks skipped) and classifies
+  `role_up` / `role_down` / `stable` / `insufficient_data`. A lost role
+  multiplies Sleeper's share of the blend (RB/WR, bounded 0.80–1.0) and
+  weights the model's volume from the break week; a gained role is flagged
+  only. Projections carry `role_trend`, `role_multiplier`, `role_flags`
+  ("carries share 57%→28% (week 4)"). Backtest (2023-25, n≈8k): blend MAE
+  5.387 → 5.379, on the role_down rows 5.408 → 5.357.
+- **Returning teammates.** A teammate ahead of a player (or one who shared his
+  role) who missed some of his recent games and is back or due back no longer
+  leaves the player's inflated volume projected forward: from the teammate's
+  return — this week, or in ROS from his expected return (report text,
+  designated-to-return, reserve minimum) — half the rate comes from their
+  games together. `breakdown.returning_teammates`, `deflated_volume`,
+  `deflated_base_ppg`; ROS reports `returning_teammates` and
+  `per_game_until_return`. An out teammate whose absence is already in the
+  player's trailing games no longer adds vacated volume on top. Backtest on
+  the 1.7k affected rows: model MAE 5.26 → 5.15, blend 4.90 → 4.87.
+- **Practice on the blend.** A questionable player's practice week now also
+  discounts Sleeper's share (`breakdown.practice_blend_mult`: one DNP 0.90,
+  DNP on two or more days 0.75, LP after FP 0.95); our share keeps its own
+  practice multiplier, so nothing is charged twice. A DNP week moves the
+  blend to ~0.72 of healthy instead of ~0.91. Heuristic (no practice
+  history to backtest).
+
 ### Changed
 - **Weekly projections are Sleeper-first.** `projected_points` is now
   `0.25 × our model + 0.75 × Sleeper's projection` (priced in the league's

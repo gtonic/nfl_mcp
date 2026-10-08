@@ -148,27 +148,42 @@ def build_name_index(logs: dict[str, dict]) -> dict[str, dict]:
 VACATED_VOLUME_SHARE = 0.5
 
 
+def prior_games(
+    name_index: dict[str, dict],
+    name: str,
+    week: int,
+    exclude_weeks: set[int] | frozenset[int] | None = None,
+) -> list[dict]:
+    """His games before `week`, oldest first, without `exclude_weeks` (the
+    weeks a returning teammate missed, see ``projections._returning_teammates``)."""
+    entry = name_index.get(norm_name(name))
+    if not entry:
+        return []
+    skip = exclude_weeks or ()
+    return sorted((g for g in entry["games"] if g["week"] < week and g["week"] not in skip),
+                  key=lambda g: g.get("week", 0))
+
+
 def trailing_volume(
     name_index: dict[str, dict],
     name: str,
     week: int,
     lookback: int = opportunity.DEFAULT_LOOKBACK,
+    exclude_weeks: set[int] | frozenset[int] | None = None,
+    break_week: int | None = None,
 ) -> dict[str, float] | None:
     """Recency-weighted trailing volume for a player, or None without data.
 
     Leak-free in the same way as the projection: only games before `week`.
     Returns None when the player has no prior games at all, which is the normal
     case for someone who has been out all season — and the reason this cannot
-    manufacture volume out of an absence.
+    manufacture volume out of an absence. `exclude_weeks` / `break_week` as in
+    `opportunity_base_for`.
     """
-    entry = name_index.get(norm_name(name))
-    if not entry:
+    games = prior_games(name_index, name, week, exclude_weeks)[-lookback:]
+    if not games:
         return None
-    prior = [g for g in entry["games"] if g["week"] < week]
-    if not prior:
-        return None
-    games = sorted(prior, key=lambda g: g.get("week", 0))[-lookback:]
-    weights = list(range(1, len(games) + 1))
+    weights = opportunity.recency_weights(games, break_week)
     return {
         field: opportunity._weighted_mean([g.get(field, 0.0) for g in games], weights)
         for field in ("targets", "carries", "attempts")
@@ -180,6 +195,7 @@ def usage_sample(
     name: str,
     week: int,
     lookback: int = opportunity.DEFAULT_LOOKBACK,
+    exclude_weeks: set[int] | frozenset[int] | None = None,
 ) -> dict | None:
     """How much real usage history backs a player's projection, and how steady.
 
@@ -189,13 +205,9 @@ def usage_sample(
     less certain projection than one that sits at 6 every week. None without
     prior games.
     """
-    entry = name_index.get(norm_name(name))
-    if not entry:
+    games = prior_games(name_index, name, week, exclude_weeks)[-lookback:]
+    if not games:
         return None
-    prior = [g for g in entry["games"] if g["week"] < week]
-    if not prior:
-        return None
-    games = sorted(prior, key=lambda g: g.get("week", 0))[-lookback:]
     volumes = [
         float(g.get("targets", 0.0) or 0.0) + float(g.get("carries", 0.0) or 0.0)
         + float(g.get("attempts", 0.0) or 0.0)
@@ -249,8 +261,15 @@ def opportunity_base_for(
     ppr: float = opportunity.FULL_PPR,
     extra_volume: dict[str, float] | None = None,
     scoring: ScoringModel | None = None,
+    exclude_weeks: set[int] | frozenset[int] | None = None,
+    break_week: int | None = None,
 ) -> float | None:
     """Opportunity projection for a player (by name) usable as a projection base.
+
+    `exclude_weeks` leaves games out of his history: the weeks a teammate who
+    is back now did not play, whose volume was never his to keep.
+    `break_week` is the first week of a smaller role (`role_shift`), weighted
+    up in the expected volume.
 
     Returns None when the player isn't found, the position isn't a skill/QB
     position, or there aren't enough prior games — callers then fall back.
@@ -258,12 +277,12 @@ def opportunity_base_for(
     entry = name_index.get(norm_name(name))
     if not entry or (position or "").upper() not in opportunity.OPPORTUNITY_POSITIONS:
         return None
-    prior = [g for g in entry["games"] if g["week"] < week]
+    prior = prior_games(name_index, name, week, exclude_weeks)
     if len(prior) < min_games:
         return None
     return opportunity.project_opportunity(
         prior, position, lookback=lookback, ppr=ppr, extra_volume=extra_volume,
-        scoring=scoring,
+        scoring=scoring, break_week=break_week,
     )
 
 

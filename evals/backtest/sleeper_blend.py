@@ -24,6 +24,21 @@ METHOD (leak-free, walk-forward)
     ``--include-dnp`` adds the weeks a relevant player's team played without
     him (truth 0): the population a start/sit decision actually faces.
 
+    ``--role-shift`` also prices every row the way the live engine does once
+    ``role_shift`` finds a new role: the model's volume weighted from the
+    break week (``opportunity.POST_BREAK_WEIGHT``) and Sleeper's share times
+    the role multiplier. The read uses nflverse carries / target share only —
+    the backtest has no snap or red-zone history, which live rows add.
+
+    ``--returning`` prices the returning-teammate deflation
+    (``projections._returning_teammates``) on the rows it applies to: a
+    same-team, same-position teammate ranked ahead (previous-season rank) or
+    who took half the player's volume in their games together, who missed
+    some of his trailing games and plays this week — the backtest's stand-in
+    for "back from injury", which live reads off the report. The model keeps
+    ``RETURNING_KEEP_WEIGHT`` of its rate, the rest is the rate over the games
+    together (the rank prior with none).
+
     Reported: MAE / bias / Spearman per position for model-raw (no
     regression), model, Sleeper and the live blend, a sweep of the model
     weight, band coverage at the live volatility (and the width that would
@@ -39,6 +54,8 @@ DATA
 RUN
     python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025
     python -m evals.backtest.sleeper_blend --seasons 2025 --include-dnp
+    python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025 --role-shift
+    python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025 --returning
 """
 
 from __future__ import annotations
@@ -51,11 +68,14 @@ from collections import defaultdict
 
 import httpx
 
+from nfl_mcp import role_shift, usage_trends
 from nfl_mcp import sleeper_projections as sp
 from nfl_mcp.matchup_tools import attach_prior_season, compute_defense_rankings, matchup_ratio
 from nfl_mcp.opportunity import project_opportunity
 from nfl_mcp.projections import (
     _VOLATILITY,
+    RETURNING_KEEP_WEIGHT,
+    RETURNING_MIN_VOLUME_RATIO,
     _environment_mult,
     _ranking_entry,
     base_ppg,
@@ -105,8 +125,46 @@ def load_sleeper_week(season: int, week: int, use_cache: bool = True) -> dict:
     return sp._index(rows)
 
 
+def _role_read(gs: list[dict], pos: str, team: str, week: int,
+               team_carries: dict, teams_played: dict) -> dict:
+    """``role_shift.classify`` on the weeks before `week`, as production reads
+    them (``usage_trends.week_row``), nflverse shares only."""
+    by_week = {g["week"]: g for g in gs}
+    weeks = range(max(1, week - role_shift.LOOKBACK_WEEKS), week)
+    rows = [usage_trends.week_row(w, by_week.get(w), None, team, team_carries,
+                                  teams_played.get(w)) for w in weeks]
+    return role_shift.classify(rows, pos)
+
+
+def _volume(g: dict) -> float:
+    return g["targets"] + g["carries"] + g.get("attempts", 0.0)
+
+
+def _returning_weeks(pid: str, prior: list[dict], week: int, team: str, pos: str,
+                     mates: dict[str, dict[int, dict]], ranks: dict) -> set[int]:
+    """His trailing weeks a teammate who plays `week` missed (see module doc)."""
+    window = [g["week"] for g in prior[-6:]]
+    mine = {g["week"]: g for g in prior}
+    out: set[int] = set()
+    for mate, games in mates.items():
+        if mate == pid or week not in games:
+            continue
+        missed = [w for w in window if w not in games]
+        together = [w for w in mine if w in games]
+        if not missed or not together:
+            continue
+        ahead = ranks.get(mate) is not None and (
+            ranks.get(pid) is None or ranks[mate] < ranks[pid])
+        shares = sum(_volume(games[w]) for w in together) >= \
+            RETURNING_MIN_VOLUME_RATIO * sum(_volume(mine[w]) for w in together)
+        if ahead or shares:
+            out |= set(missed)
+    return out
+
+
 def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
-                  min_trailing: float = 5.0, include_dnp: bool = False) -> list[dict]:
+                  min_trailing: float = 5.0, include_dnp: bool = False,
+                  with_role: bool = False, with_returning: bool = False) -> list[dict]:
     samples: list[dict] = []
     for season in seasons:
         records = load_season(season)
@@ -116,9 +174,15 @@ def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
         prior_final = compute_defense_rankings(_weekly_allowed(prev), season - 1)
         by_player: dict[str, list[dict]] = defaultdict(list)
         teams_played: dict[int, set] = defaultdict(set)
+        team_carries: dict[tuple[str, int], float] = defaultdict(float)
+        # (team, position) -> {player: {week: game for that team}}
+        rooms: dict[tuple[str, str], dict[str, dict[int, dict]]] = defaultdict(
+            lambda: defaultdict(dict))
         for r in records:
             by_player[r["player_id"]].append(r)
             teams_played[r["week"]].add(r["team"])
+            team_carries[(r["team"], r["week"])] += r["carries"]
+            rooms[(r["team"], r["position"])][r["player_id"]][r["week"]] = r
         rankings: dict[int, dict] = {}
         sleeper: dict[int, dict] = {}
         for pid, gs in by_player.items():
@@ -153,11 +217,35 @@ def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
                 model = regressed_rate(opp, base_ppg(pos, ranks.get(pid)), n) * mf * env
                 theirs, status = sp.points_for(sleeper[week], TRUTH_SCORING,
                                                name=gs[0]["player"], team=team)
-                samples.append({
+                sample = {
                     "season": season, "week": week, "position": pos, "played": game is not None,
                     "model_raw": opp * mf * env, "model": model, "sleeper": theirs,
                     "sleeper_status": status, "actual": game["ppr"] if game else 0.0,
-                })
+                }
+                if with_role:
+                    role = _role_read(gs, pos, team, week, team_carries, teams_played)
+                    opp_role = (project_opportunity(prior, pos,
+                                                    break_week=role["reweight_from_week"])
+                                if role["reweight_from_week"] else opp)
+                    sample.update({
+                        "role_trend": role["role_trend"],
+                        "role_mult": role["role_multiplier"],
+                        "model_role": regressed_rate(opp_role, base_ppg(pos, ranks.get(pid)), n)
+                        * mf * env,
+                    })
+                if with_returning and game is not None:
+                    missed = _returning_weeks(pid, prior, week, team, pos,
+                                              rooms[(team, pos)], ranks)
+                    kept = [g for g in prior if g["week"] not in missed]
+                    prior_ppg = base_ppg(pos, ranks.get(pid))
+                    kept_rate = (regressed_rate(project_opportunity(kept, pos), prior_ppg,
+                                                min(len(kept), 6)) if kept else prior_ppg)
+                    full_rate = model / (mf * env) if mf * env else 0.0
+                    if missed and kept_rate < full_rate:
+                        sample["model_returning"] = (
+                            RETURNING_KEEP_WEIGHT * full_rate
+                            + (1 - RETURNING_KEEP_WEIGHT) * kept_rate) * mf * env
+                samples.append(sample)
     return samples
 
 
@@ -190,6 +278,66 @@ def _pairwise(rows: list[dict], predict) -> dict[str, float]:
                 tally[label][0] += hi["actual"] > lo["actual"]
                 tally[label][1] += 1
     return {lab: tally[lab][0] / tally[lab][1] for _, lab in edges if tally[lab][1]}
+
+
+def _blend_role(s: dict, w: float) -> float:
+    """The live engine's blend once a role shift is priced: the change-point
+    weighted model, and Sleeper's share times the role multiplier."""
+    if s["sleeper_status"] == "not_projected":
+        return 0.0
+    return w * s["model_role"] + (1 - w) * s["sleeper"] * s["role_mult"]
+
+
+def report_role(samples: list[dict]) -> None:
+    w = sp.BLEND_MODEL_WEIGHT
+    matched = [s for s in samples if s["sleeper"] is not None and "role_mult" in s]
+    counts = defaultdict(int)
+    for s in matched:
+        counts[s["role_trend"]] += 1
+    print("\nRole shift (nflverse shares only): " + ", ".join(
+        f"{k} {v}" for k, v in sorted(counts.items())))
+    print("MAE / bias: blend -> blend with role shift (all rows | shifted rows)")
+    for pos in (*_POSITIONS, "ALL"):
+        rows = [s for s in matched if pos in ("ALL", s["position"])]
+        moved = [s for s in rows if s["role_trend"] in ("role_up", "role_down")]
+        cells = []
+        for subset in (rows, moved):
+            if not subset:
+                cells.append("n=0")
+                continue
+            act = [s["actual"] for s in subset]
+            before = [_blend(s, w) for s in subset]
+            after = [_blend_role(s, w) for s in subset]
+            cells.append(f"n={len(subset):5d} {mae(before, act):5.3f} {bias(before, act):+5.2f}"
+                         f" -> {mae(after, act):5.3f} {bias(after, act):+5.2f}")
+        print(f"  {pos:3s} " + " | ".join(cells))
+    for trend in ("role_up", "role_down"):
+        rows = [s for s in matched if s["role_trend"] == trend]
+        if rows:
+            act = [s["actual"] for s in rows]
+            print(f"  {trend} n={len(rows)}: model {mae([s['model'] for s in rows], act):.3f}"
+                  f" -> {mae([s['model_role'] for s in rows], act):.3f} | blend "
+                  f"{mae([_blend(s, w) for s in rows], act):.3f} -> "
+                  f"{mae([_blend_role(s, w) for s in rows], act):.3f}")
+
+
+def report_returning(samples: list[dict]) -> None:
+    w = sp.BLEND_MODEL_WEIGHT
+    rows = [s for s in samples if "model_returning" in s and s["sleeper"] is not None]
+    print(f"\nReturning teammate (keep weight {RETURNING_KEEP_WEIGHT}): n={len(rows)} rows")
+    print("MAE / bias, affected rows: model -> deflated | blend -> deflated")
+    for pos in (*_POSITIONS, "ALL"):
+        sub = [s for s in rows if pos in ("ALL", s["position"])]
+        if not sub:
+            continue
+        act = [s["actual"] for s in sub]
+        model, deflated = [s["model"] for s in sub], [s["model_returning"] for s in sub]
+        before = [_blend(s, w) for s in sub]
+        after = [0.0 if s["sleeper_status"] == "not_projected"
+                 else w * s["model_returning"] + (1 - w) * s["sleeper"] for s in sub]
+        print(f"  {pos:3s} n={len(sub):5d} model {mae(model, act):5.3f} {bias(model, act):+5.2f}"
+              f" -> {mae(deflated, act):5.3f} {bias(deflated, act):+5.2f} | blend "
+              f"{mae(before, act):5.3f} -> {mae(after, act):5.3f}")
 
 
 def report(samples: list[dict]) -> None:
@@ -243,8 +391,18 @@ def main() -> None:
     ap.add_argument("--start-week", type=int, default=3)
     ap.add_argument("--include-dnp", action="store_true",
                     help="also score weeks a relevant player's team played without him (truth 0)")
+    ap.add_argument("--role-shift", action="store_true",
+                    help="also price the role-shift read the live engine applies")
+    ap.add_argument("--returning", action="store_true",
+                    help="also price the returning-teammate deflation")
     args = ap.parse_args()
-    report(build_samples(args.seasons, args.start_week, include_dnp=args.include_dnp))
+    samples = build_samples(args.seasons, args.start_week, include_dnp=args.include_dnp,
+                            with_role=args.role_shift, with_returning=args.returning)
+    report(samples)
+    if args.role_shift:
+        report_role(samples)
+    if args.returning:
+        report_returning(samples)
 
 
 if __name__ == "__main__":

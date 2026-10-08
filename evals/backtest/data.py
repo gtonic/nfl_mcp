@@ -105,6 +105,10 @@ def load_season(season: int, use_cache: bool = True) -> list[dict]:
             record[field] = _to_float(
                 next((row[c] for c in cols if row.get(c) not in (None, "")), None))
         record["targets"], record["carries"] = targets, carries
+        # nflverse's own target share (0-1), for the role-shift read; None when
+        # blank, as production parses it.
+        share = row.get("target_share")
+        record["target_share"] = _to_float(share) if share not in (None, "", "NA") else None
         record["ppr"] = TRUTH_SCORING.game_points(record, pos)
         records.append(record)
     logger.info("Loaded %d REG records for %s", len(records), season)

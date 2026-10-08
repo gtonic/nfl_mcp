@@ -37,6 +37,11 @@ fantasy-playoff window (``playoff_points``, from the league's
 - Inherited volume: a backup's weekly base can include a share of an absent
   starter's volume; later weeks carry it only for that starter's expected
   absence and are otherwise priced on the backup's own volume.
+- Returning teammates: the reverse. A backup whose recent games came while a
+  higher-valued teammate was out keeps that bigger rate only until the
+  teammate's expected return (``returning_teammates`` in the weekly
+  breakdown); from then on he is priced on the games they played together
+  (``deflated_base_ppg``), regressed toward the rank prior like any base.
 - K / DEF: later weeks are priced per opponent off the offense read the weekly
   engine falls back to (``streaming_tools.unit_matchup``).
 """
@@ -378,6 +383,31 @@ def _inherited(proj: dict, today: date | None = None) -> tuple[float, int]:
     return round(bump, 2), games
 
 
+def _returning(proj: dict, per_game: float, position: str,
+               model) -> tuple[float | None, int, list[dict]]:
+    """``(per_game_after_return, games_until_return, teammates)``.
+
+    The weekly base carries the weeks a returning teammate missed. From his
+    expected return (the longest one when several are due back; 0 when he is
+    back this week) the player keeps `projections.RETURNING_KEEP_WEIGHT` of
+    `per_game` and the rest is the rate from the games they played together.
+    ``(None, 0, [])`` without a returning teammate.
+    """
+    from .projections import RETURNING_KEEP_WEIGHT, base_ppg
+
+    bd = proj.get("breakdown") or {}
+    deflated = bd.get("deflated_base_ppg")
+    due = list(bd.get("returning_teammates") or [])
+    if deflated is None or not due or bd.get("base_source") != "opportunity":
+        return None, 0, []
+    prior = base_ppg(position, bd.get("position_rank"), scoring=model)
+    kept = regressed_rate(float(deflated), prior, int(bd.get("deflated_games") or 0)) \
+        * float(bd.get("usage_mult") or 1.0)
+    after = RETURNING_KEEP_WEIGHT * per_game + (1 - RETURNING_KEEP_WEIGHT) * kept
+    games = max(int(r.get("games_until_return") or 0) for r in due)
+    return round(after, 2), games, due
+
+
 def _matchup(position: str, opponent: str, rankings: dict, analyzer,
              ppr: float = 1.0) -> tuple[float, str]:
     """The weekly engine's matchup pricing: the continuous factor when the
@@ -525,6 +555,12 @@ async def ros_projections(
         rate_src = rate_proj.get(key) or proj
         per_game, source, prior_weight = _per_game(rate_src, p["position"], model)
         inherited, inherited_games = _inherited(rate_src, today)
+        # A teammate due back: the inflated rate until his return, the rate
+        # from their games together after it (reported as per_game).
+        after, returning_games, returning = _returning(rate_src, per_game, p["position"], model)
+        deflation = 0.0
+        if after is not None and after < per_game:
+            deflation, per_game = round(per_game - after, 2), after
         injury = p.get("injury") or {}
         absent, absence_reason = expected_absence(
             injury.get("status"), injury.get("description"), injury.get("return_date"), today,
@@ -563,7 +599,8 @@ async def ros_projections(
                     reason = f"{tier} matchup"
             else:
                 mult, tier = _matchup(p["position"], opponent, rankings, analyzer, model.rec)
-                rate = per_game + (inherited if game_no - 1 < inherited_games else 0.0)
+                rate = (per_game + (inherited if game_no - 1 < inherited_games else 0.0)
+                        + (deflation if game_no - 1 < returning_games else 0.0))
                 points = round(rate * mult, 2)
                 if not opponent:
                     reason = "schedule unknown — counted as playing"
@@ -597,6 +634,12 @@ async def ros_projections(
             "injury_window": absence_reason,
             "weekly_points": {row["week"]: row["points"] for row in weekly},
         }
+        if deflation:
+            # Who is due back, and the per-game rate he loses from then on.
+            entry["returning_teammates"] = [
+                {"name": r["name"], "expected_return_week": r.get("expected_return_week")}
+                for r in returning]
+            entry["per_game_until_return"] = round(per_game + deflation, 2)
         if include_weekly:
             entry["weekly"] = weekly
         out.append(entry)
