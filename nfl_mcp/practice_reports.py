@@ -210,16 +210,35 @@ def parse_nfl_com_report(html: str, season: int) -> list[dict]:
 
 def nfl_com_reports(rows: list[dict], season: int, week: int,
                     now: datetime | None = None,
-                    previous: dict[str, dict[str, str]] | None = None) -> list[dict]:
+                    previous: dict[str, dict[str, str]] | None = None,
+                    stored: dict[str, dict[str, dict[str, str]]] | None = None,
+                    game_dates: dict[str, date] | None = None) -> list[dict]:
     """Date the parsed NFL.com rows and shape them for ``upsert_practice_status``.
 
-    ``previous`` maps team -> {name_key: status} for the team's most recent
-    *earlier* stored day. A team whose whole report is identical to it is the
-    previous day's report still on the page (published late), so it is skipped
-    rather than stored twice under two days. The cost is a genuinely identical
-    report on consecutive days being recorded once.
+    The page carries no report date, so a team's snapshot is dated by the
+    clock (``report_day``), corrected with what is already stored:
+
+    ``stored`` maps team -> {date: {name_key: status}} for the week's stored
+    NFL.com days. Before the publication cutoff the clock says "yesterday",
+    but a team that posts early already shows *today's* report: a snapshot
+    that differs from yesterday's stored report is today's and is dated today
+    -- it used to overwrite yesterday's row (Brock Bowers' Thursday LP became
+    Friday's DNP, 2026-09-26). A snapshot identical to the latest earlier
+    stored day is that day's report still on the page (published late) and is
+    skipped rather than stored twice under two days; the cost is a genuinely
+    identical report on consecutive days being recorded once. ``previous``
+    (team -> {name_key: status} of the latest earlier day) is the same check
+    for callers without ``stored``.
+
+    ``game_dates`` (team -> this week's game date, from the schedule): a team
+    whose page shows another game is not this week's report -- the next
+    week's page still shows the last one on Monday and Tuesday, and its final
+    report was re-stored under the new week. Without a schedule entry, a game
+    already played is skipped for the same reason.
     """
     now = now or datetime.now(UTC)
+    et = to_eastern(now)
+    before_cutoff = et.hour < REPORT_CUTOFF_HOUR_ET
     by_team: dict[str, list[dict]] = {}
     for row in rows:
         if row.get("practice_status"):
@@ -227,11 +246,19 @@ def nfl_com_reports(rows: list[dict], season: int, week: int,
     out: list[dict] = []
     for team, team_rows in by_team.items():
         gd = team_rows[0].get("game_date")
-        day = report_day(now, date.fromisoformat(gd) if gd else None)
-        if day is None:
+        game_date = date.fromisoformat(gd) if gd else None
+        expected = (game_dates or {}).get(team)
+        if game_date and (game_date != expected if expected else game_date < et.date()):
             continue
         snapshot = {norm_name(r["player_name"]): r["practice_status"] for r in team_rows}
-        prior = (previous or {}).get(team)
+        days = (stored or {}).get(team) or {}
+        day = report_day(now, game_date)
+        if before_cutoff and _published_early(snapshot, day, days, et.date(), game_date):
+            day = et.date()
+        if day is None:
+            continue
+        earlier = [d for d in days if d < day.isoformat()]
+        prior = days[max(earlier)] if earlier else (previous or {}).get(team)
         if prior and prior == snapshot:
             continue
         for r in team_rows:
@@ -245,6 +272,36 @@ def nfl_com_reports(rows: list[dict], season: int, week: int,
                 "estimated": False, "source": SOURCE_NFL_COM,
             })
     return out
+
+
+def _is_report_day(day: date, game_date: date | None) -> bool:
+    """Whether ``day`` can carry a report for a game on ``game_date``."""
+    if game_date is None:
+        return day.weekday() != 6
+    return game_date - timedelta(days=4) <= day <= last_report_day(game_date)
+
+
+def _published_early(snapshot: dict[str, str], day: date | None,
+                     stored_days: dict[str, dict[str, str]], today: date,
+                     game_date: date | None) -> bool:
+    """Whether a snapshot taken before the cutoff already shows today's report.
+
+    Before the cutoff the clock attributes the page to yesterday. It is
+    today's when today can carry a report and either yesterday's report is
+    stored and differs from the page, or yesterday cannot carry one at all
+    (the week's first report day: the page cannot be an earlier report).
+    """
+    if not _is_report_day(today, game_date):
+        return False
+    yesterday = today - timedelta(days=1)
+    if day is None:
+        return not _is_report_day(yesterday, game_date) and game_date is not None
+    if day != yesterday:
+        return False  # clamped onto the final report day
+    stored = stored_days.get(day.isoformat())
+    # Players on the page only: a stored day can hold rows of an earlier,
+    # longer version of the same report.
+    return bool(stored) and any(stored.get(k) != v for k, v in snapshot.items())
 
 
 # ---------------------------------------------------------------------------
@@ -510,8 +567,9 @@ async def fetch_practice_reports(season: int, week: int, db=None, client=None,
                     logger.warning(f"[Practice] NFL.com reg{wk}: HTTP {resp.status_code}")
                     continue
                 rows = parse_nfl_com_report(resp.text, season)
-                previous = _previous_days(db, season, wk, now)
-                reports.extend(nfl_com_reports(rows, season, wk, now=now, previous=previous))
+                reports.extend(nfl_com_reports(
+                    rows, season, wk, now=now, stored=_stored_days(db, season, wk),
+                    game_dates=_game_dates(db, season, wk)))
             except Exception as e:
                 logger.warning(f"[Practice] NFL.com reg{wk} failed: {e}")
         try:
@@ -552,16 +610,32 @@ def _after_previous_game(db, season: int, week: int) -> dict[str, date]:
     return out
 
 
-def _previous_days(db, season: int, week: int, now: datetime) -> dict[str, dict[str, str]]:
-    """team -> {name_key: status} for each team's latest stored NFL.com day
-    before today's report day."""
-    if db is None or not hasattr(db, "get_team_practice_days"):
+def _stored_days(db, season: int, week: int) -> dict[str, dict[str, dict[str, str]]]:
+    """team -> {date: {name_key: status}} for the week's stored NFL.com days."""
+    if db is None or not hasattr(db, "get_team_practice_snapshots"):
         return {}
     try:
-        return db.get_team_practice_days(season, week, before=report_day(now, None),
-                                         source=SOURCE_NFL_COM) or {}
+        return db.get_team_practice_snapshots(season, week, source=SOURCE_NFL_COM) or {}
     except Exception:
         return {}
+
+
+def _game_dates(db, season: int, week: int) -> dict[str, date]:
+    """team -> its game date (US Eastern) in ``week``, from the cached schedule."""
+    if db is None or not hasattr(db, "get_week_kickoffs"):
+        return {}
+    from .game_clock import parse_kickoff
+    try:
+        kickoffs = db.get_week_kickoffs(int(season), int(week)) or {}
+    except Exception:
+        return {}
+    out: dict[str, date] = {}
+    for team, kickoff in kickoffs.items():
+        ko = parse_kickoff(kickoff)
+        code = normalize_team(team)
+        if ko and code:
+            out[code] = to_eastern(ko).date()
+    return out
 
 
 # In-process throttle for on-demand refreshes from tools.

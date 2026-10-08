@@ -115,9 +115,23 @@ class TestExpectedAbsence:
         assert ros.expected_absence("Sus", "serving a 6-game suspension")[0] == 6
 
     def test_return_date_wins(self):
-        weeks, _ = ros.expected_absence("IR", return_date="2026-10-14",
+        weeks, _ = ros.expected_absence("Out", return_date="2026-10-14",
                                         today=date(2026, 9, 23))
         assert weeks == 3
+        weeks, _ = ros.expected_absence("IR", return_date="2026-11-14",
+                                        today=date(2026, 9, 23))
+        assert weeks == 8
+
+    def test_return_date_never_cuts_the_reserve_minimum(self):
+        # ESPN puts next week's game on many IR reports.
+        weeks, reason = ros.expected_absence("IR", return_date="2026-10-14",
+                                             today=date(2026, 9, 23))
+        assert weeks == ros.IR_MIN_WEEKS and "earlier" in reason
+        # Three weeks served: the date may govern again.
+        weeks, _ = ros.expected_absence("IR", return_date="2026-09-27",
+                                        today=date(2026, 9, 23),
+                                        placed_on=date(2026, 9, 1))
+        assert weeks == 1
 
 
 class TestRosProjections:

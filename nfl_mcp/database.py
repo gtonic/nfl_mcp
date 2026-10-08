@@ -6,6 +6,7 @@ the Sleeper API and teams information from ESPN API, providing caching and looku
 Features connection pooling, health checks, optimized indexing and migration support.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -26,6 +27,23 @@ logger = logging.getLogger(__name__)
 # service assumes for an unrecognised designation (injury_service.DEFAULT_SEVERITY,
 # QUESTIONABLE).
 _DEFAULT_SEVERITY = 2
+
+# What a report a complete crawl no longer lists is cleared to (not news).
+CLEARED_REPORT_TEXT = "No longer on the injury report"
+
+# Signal history (practice rows, news blurbs) is kept at least this long, and
+# never inside the current season.
+SIGNAL_HISTORY_DAYS = 365
+# The NFL league year turns in March; a season's history starts with training
+# camp. Before March a date belongs to the previous calendar year's season.
+SEASON_ROLLOVER_MONTH = 3
+SEASON_START_MONTH = 7
+
+
+def season_start(now: datetime) -> datetime:
+    """Start (July 1, UTC) of the NFL season ``now`` falls in."""
+    year = now.year if now.month >= SEASON_ROLLOVER_MONTH else now.year - 1
+    return datetime(year, SEASON_START_MONTH, 1, tzinfo=UTC)
 
 
 @dataclass
@@ -219,7 +237,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
 
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 16
+    CURRENT_SCHEMA_VERSION = 17
 
     def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
@@ -302,6 +320,7 @@ class NFLDatabase:
             14: self._migration_v14_real_practice_reports,
             15: self._migration_v15_projection_log_and_checks,
             16: self._migration_v16_snapshot_dedup,
+            17: self._migration_v17_return_dates_freshness_signal_history,
         }
 
     def _migration_v1_initial_schema(self, conn: sqlite3.Connection) -> None:
@@ -752,6 +771,121 @@ class NFLDatabase:
                 logger.info(f"[Migration v16] Pruned {deleted} superseded rows from {table}")
                 self._vacuum_after_migration = True
 
+    def _migration_v17_return_dates_freshness_signal_history(self, conn: sqlite3.Connection) -> None:
+        """Migration v17: ESPN return dates, schedule freshness, signal history.
+
+        - ``player_injuries.return_date`` / ``injury_history.return_date``:
+          ESPN's estimated return (``details.returnDate``), which the crawl
+          used to drop, so ROS priced every absence from the designation alone.
+        - ``schedule_games.updated_at``: the schedule had no timestamp, so its
+          age could not be reported. Existing rows stay NULL ("unknown") until
+          the next schedule fetch rewrites them.
+        - ``practice_report_history`` / ``injury_news_history``: append-only,
+          deduplicated on content. The live tables keep one practice row per
+          player and day and one blurb per player, so the practice and news
+          weights had nothing to be backtested against.
+        """
+        for table, column in (("player_injuries", "return_date"),
+                              ("injury_history", "return_date"),
+                              ("schedule_games", "updated_at")):
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS practice_report_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name_key TEXT NOT NULL DEFAULT '',
+                team TEXT NOT NULL DEFAULT '',
+                player_id TEXT NOT NULL DEFAULT '',
+                date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                player_name TEXT,
+                game_status TEXT,
+                season INTEGER,
+                week INTEGER,
+                recorded_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_practice_history_content
+               ON practice_report_history(name_key, team, player_id, date, status, source)"""
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS injury_news_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content_hash TEXT NOT NULL UNIQUE,
+                player_id TEXT NOT NULL,
+                team_id TEXT,
+                player_name TEXT,
+                injury_status TEXT,
+                text TEXT NOT NULL,
+                date_reported TEXT,
+                return_date TEXT,
+                source TEXT,
+                recorded_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_injury_news_history_player
+               ON injury_news_history(player_id, recorded_at)"""
+        )
+        self._repair_practice_weeks(conn)
+        # Seed the history with what the live tables hold now.
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO practice_report_history(
+                name_key, team, player_id, date, status, source,
+                player_name, game_status, season, week, recorded_at)
+            SELECT name_key, team, player_id, date, status, COALESCE(source, ''),
+                   player_name, game_status, season, week, updated_at
+            FROM player_practice_status
+            """
+        )
+        news = [self._news_history_row(dict(row), row["sources"] or "[]", row["updated_at"])
+                for row in conn.execute("SELECT * FROM player_injuries")]
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO injury_news_history(
+                content_hash, player_id, team_id, player_name, injury_status,
+                text, date_reported, return_date, source, recorded_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            [r for r in news if r],
+        )
+
+    # Kickoffs are stored in UTC; shifted by the EST offset every kickoff
+    # (13:00 ET to 20:30 ET) lands on its US Eastern date.
+    _KICKOFF_TO_ET_DATE = "date(s.kickoff, '-5 hours')"
+
+    def _repair_practice_weeks(self, conn: sqlite3.Connection) -> None:
+        """Give NFL.com practice rows back the week of the game they report.
+
+        On Monday and Tuesday the next week's page still shows the last
+        week's final report, and the fetch stored it under the new week --
+        overwriting the week of the existing rows (618 of them in the live
+        database). The game date each row carries says which week it was.
+        """
+        match = f"""
+            FROM schedule_games s
+            WHERE s.season = player_practice_status.season
+              AND s.team = player_practice_status.team
+              AND {self._KICKOFF_TO_ET_DATE} = player_practice_status.game_date
+        """
+        fixed = conn.execute(
+            f"""
+            UPDATE player_practice_status SET week = (SELECT s.week {match})
+            WHERE source = 'nfl.com' AND game_date IS NOT NULL
+              AND EXISTS (SELECT 1 {match} AND s.week != player_practice_status.week)
+            """
+        ).rowcount
+        if fixed:
+            logger.info(f"[Migration v17] Moved {fixed} practice rows back to their game's week")
+
     def _migration_v12_player_values(self, conn: sqlite3.Connection) -> None:
         """Migration v12: Consensus player market values (FantasyCalc) for trades & drafts.
 
@@ -868,8 +1002,10 @@ class NFLDatabase:
                     "last_team_update": last_team_update,
                     "schema_version": self.CURRENT_SCHEMA_VERSION
                 })
-
-                return pool_health
+            # Per-feed age (injuries, practice, athletes, schedule, snaps), read
+            # after the connection above is back in the pool.
+            pool_health["data_freshness"] = self.get_data_freshness()
+            return pool_health
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
             pool_health.update({
@@ -1106,6 +1242,7 @@ class NFLDatabase:
         snapshot_days: int = 7,
         practice_days: int = 30,
         injury_history_days: int = 90,
+        signal_history_days: int = SIGNAL_HISTORY_DAYS,
     ) -> dict[str, int]:
         """Prune the append-only tables, then checkpoint the WAL.
 
@@ -1119,6 +1256,11 @@ class NFLDatabase:
           sees the true previous status and a stable player's next change is
           not reported as a first sighting.
 
+        - ``practice_report_history`` / ``injury_news_history``: calibration
+          data, read by no tool. Kept ``signal_history_days`` and never pruned
+          inside the current NFL season (see ``season_start``), so a whole
+          season is always there to backtest against.
+
         Season-keyed stats (snaps, usage, schedule, defense) are not touched:
         they are bounded per season and read by season.
         """
@@ -1126,6 +1268,8 @@ class NFLDatabase:
         now = datetime.now(UTC)
         practice_cutoff = (now - timedelta(days=practice_days)).isoformat()
         history_cutoff = (now - timedelta(days=injury_history_days)).isoformat()
+        signal_cutoff = min(now - timedelta(days=signal_history_days),
+                            season_start(now)).isoformat()
         try:
             with self._pool.get_connection() as conn:
                 deleted["player_practice_status"] = conn.execute(
@@ -1149,6 +1293,10 @@ class NFLDatabase:
                     """,
                     (history_cutoff, history_cutoff),
                 ).rowcount
+                for table in ("practice_report_history", "injury_news_history"):
+                    deleted[table] = conn.execute(
+                        f"DELETE FROM {table} WHERE recorded_at < ?", (signal_cutoff,)
+                    ).rowcount
                 conn.commit()
                 # Fold the WAL back into the main file so it does not stay at its
                 # high-water mark after a large delete.
@@ -1252,6 +1400,7 @@ class NFLDatabase:
         """
         if not games:
             return 0
+        now = datetime.now(UTC).isoformat()
         processed = 0
         with self._pool.get_connection() as conn:
             try:
@@ -1267,15 +1416,17 @@ class NFLDatabase:
                     raw = g.get("raw", {})
                     conn.execute(
                         """
-                        INSERT INTO schedule_games(season, week, team, opponent, is_home, kickoff, raw)
-                        VALUES(?,?,?,?,?,?, json(?))
+                        INSERT INTO schedule_games(
+                            season, week, team, opponent, is_home, kickoff, raw, updated_at)
+                        VALUES(?,?,?,?,?,?, json(?), ?)
                         ON CONFLICT(season, week, team) DO UPDATE SET
                             opponent=excluded.opponent,
                             is_home=excluded.is_home,
                             kickoff=excluded.kickoff,
-                            raw=excluded.raw
+                            raw=excluded.raw,
+                            updated_at=excluded.updated_at
                         """,
-                        (season, week, team, opponent, is_home, kickoff, json.dumps(raw)),
+                        (season, week, team, opponent, is_home, kickoff, json.dumps(raw), now),
                     )
                     processed += 1
                 conn.commit()
@@ -1483,6 +1634,20 @@ class NFLDatabase:
                         ),
                     )
                     processed += cur.rowcount
+                    # Every distinct (player, day, status, source) is kept, also
+                    # when the live row above refused it (a lower-ranked source)
+                    # or later replaces it: the backtest needs what was known when.
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO practice_report_history(
+                            name_key, team, player_id, date, status, source,
+                            player_name, game_status, season, week, recorded_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (name_key, team, player_id, date_str, status, source or "",
+                         r.get("player_name"), r.get("game_status"), r.get("season"),
+                         r.get("week"), now),
+                    )
                 conn.commit()
                 return processed
             except Exception as e:
@@ -1575,6 +1740,29 @@ class NFLDatabase:
         for r in rows:
             if r["date"] == latest[r["team"]]:
                 out.setdefault(r["team"], {})[r["name_key"]] = r["status"]
+        return out
+
+    def get_team_practice_snapshots(
+        self, season: int, week: int, source: str | None = None
+    ) -> dict[str, dict[str, dict[str, str]]]:
+        """``team -> {date: {name_key: status}}`` for every stored day of one
+        week -- what the snapshot dating in ``practice_reports`` compares a
+        fresh page against."""
+        try:
+            with self._pool.get_connection() as conn:
+                params: list = [int(season), int(week)]
+                sql = ("SELECT team, name_key, date, status FROM player_practice_status"
+                       " WHERE season=? AND week=?")
+                if source:
+                    sql += " AND source=?"
+                    params.append(source)
+                rows = conn.execute(sql, params).fetchall()
+        except Exception as e:
+            logger.debug(f"get_team_practice_snapshots failed: {e}")
+            return {}
+        out: dict[str, dict[str, dict[str, str]]] = {}
+        for r in rows:
+            out.setdefault(r["team"], {}).setdefault(r["date"], {})[r["name_key"]] = r["status"]
         return out
 
     def get_latest_practice_status(self, player_id: str, max_age_hours: int = 72) -> dict | None:
@@ -1777,6 +1965,7 @@ class NFLDatabase:
                     )
                 }
                 history_rows = []
+                news_rows = []
 
                 processed = 0
                 for inj in injuries:
@@ -1792,7 +1981,8 @@ class NFLDatabase:
                     )
                     if prior.get(key) != new_state:
                         history_rows.append(
-                            (player_id, key[1], new_state[0], new_state[1], now)
+                            (player_id, key[1], new_state[0], new_state[1], now,
+                             inj.get("return_date"))
                         )
 
                     # Handle sources as JSON array
@@ -1806,8 +1996,8 @@ class NFLDatabase:
                             player_id, player_name, team_id, position,
                             injury_status, injury_type, injury_description,
                             game_status, severity, confidence, sources,
-                            date_reported, updated_at
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            date_reported, return_date, updated_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(player_id, team_id) DO UPDATE SET
                             player_name=CASE WHEN excluded.player_name IN ('', 'Unknown')
                                 THEN player_name ELSE excluded.player_name END,
@@ -1820,6 +2010,7 @@ class NFLDatabase:
                             confidence=excluded.confidence,
                             sources=excluded.sources,
                             date_reported=excluded.date_reported,
+                            return_date=excluded.return_date,
                             updated_at=excluded.updated_at
                         """,
                         (
@@ -1835,10 +2026,14 @@ class NFLDatabase:
                             inj.get("confidence", 50),
                             sources,
                             inj.get("date_reported"),
+                            inj.get("return_date"),
                             now
                         )
                     )
                     processed += 1
+                    news = self._news_history_row(inj, sources, now)
+                    if news:
+                        news_rows.append(news)
 
                 if prune_missing:
                     history_rows.extend(self._clear_missing_injuries(
@@ -1848,19 +2043,51 @@ class NFLDatabase:
                     conn.executemany(
                         """
                         INSERT INTO injury_history(
-                            player_id, team_id, injury_status, injury_type, recorded_at
-                        ) VALUES(?,?,?,?,?)
+                            player_id, team_id, injury_status, injury_type, recorded_at,
+                            return_date
+                        ) VALUES(?,?,?,?,?,?)
                         """,
                         history_rows,
                     )
                     logger.info(
                         f"upsert_injuries: {len(history_rows)} status change(s) recorded"
                     )
+                if news_rows:
+                    # Content-deduplicated: the same blurb on every crawl is one row.
+                    conn.executemany(
+                        """
+                        INSERT OR IGNORE INTO injury_news_history(
+                            content_hash, player_id, team_id, player_name, injury_status,
+                            text, date_reported, return_date, source, recorded_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        news_rows,
+                    )
                 conn.commit()
                 return processed
         except Exception as e:
             logger.error(f"upsert_injuries failed: {e}")
             return 0
+
+    @staticmethod
+    def _news_history_row(inj: dict, sources, now: str) -> tuple | None:
+        """An ``injury_news_history`` row for a report's blurb, or None.
+
+        Deduplicated on (player, text, date reported, source): the blurb is the
+        signal ``news_signals`` reads, and its date is what ages it.
+        """
+        text = (inj.get("injury_description") or "").strip()
+        player_id = inj.get("player_id")
+        if not text or text == CLEARED_REPORT_TEXT or not player_id:
+            return None
+        source = sources if isinstance(sources, str) else json.dumps(sources)
+        digest = hashlib.sha1(
+            "\x1f".join((str(player_id), text, str(inj.get("date_reported") or ""),
+                          source)).encode("utf-8")
+        ).hexdigest()
+        return (digest, str(player_id), inj.get("team_id", ""), inj.get("player_name"),
+                inj.get("injury_status"), text, inj.get("date_reported"),
+                inj.get("return_date"), source, now)
 
     @staticmethod
     def _clear_missing_injuries(
@@ -1888,13 +2115,12 @@ class NFLDatabase:
                 """
                 UPDATE player_injuries
                 SET injury_status='Active', injury_type=NULL, game_status=NULL,
-                    severity=1, injury_description='No longer on the injury report',
-                    updated_at=?
+                    severity=1, injury_description=?, return_date=NULL, updated_at=?
                 WHERE player_id=? AND team_id=?
                 """,
-                (now, player_id, team_id),
+                (CLEARED_REPORT_TEXT, now, player_id, team_id),
             )
-            history.append((player_id, team_id, "Active", None, now))
+            history.append((player_id, team_id, "Active", None, now, None))
         if history:
             logger.info(f"upsert_injuries: {len(history)} report(s) cleared as no longer listed")
         return history
@@ -1916,7 +2142,8 @@ class NFLDatabase:
                     """
                     SELECT player_id, player_name, team_id, position,
                            injury_status, injury_type, injury_description,
-                           game_status, severity, confidence, sources, updated_at
+                           game_status, severity, confidence, sources,
+                           date_reported, return_date, updated_at
                     FROM player_injuries
                     """
                 )
@@ -1957,7 +2184,7 @@ class NFLDatabase:
                     SELECT player_id, player_name, team_id, position,
                            injury_status, injury_type, injury_description,
                            game_status, severity, confidence, sources,
-                           date_reported, updated_at
+                           date_reported, return_date, updated_at
                     FROM player_injuries
                     WHERE team_id=? AND updated_at >= ?
                     ORDER BY updated_at DESC
@@ -2024,7 +2251,7 @@ class NFLDatabase:
                     SELECT player_id, player_name, team_id, position,
                            injury_status, injury_type, injury_description,
                            game_status, severity, confidence, sources,
-                           date_reported, updated_at
+                           date_reported, return_date, updated_at
                     FROM player_injuries
                     WHERE player_id=? AND updated_at >= ?
                     ORDER BY updated_at DESC
@@ -2113,7 +2340,8 @@ class NFLDatabase:
             with self._pool.get_connection() as conn:
                 cur = conn.execute(
                     """
-                    SELECT player_id, team_id, injury_status, injury_type, recorded_at
+                    SELECT player_id, team_id, injury_status, injury_type, recorded_at,
+                           return_date
                     FROM injury_history
                     WHERE player_id=?
                     ORDER BY recorded_at DESC
@@ -2912,6 +3140,8 @@ class NFLDatabase:
             "injuries": ("player_injuries", "updated_at"),
             "athletes": ("athletes", "updated_at"),
             "practice_status": ("player_practice_status", "updated_at"),
+            "schedule": ("schedule_games", "updated_at"),
+            "snaps": ("player_week_stats", "updated_at"),
         }
         now = datetime.now(UTC)
         out: dict[str, dict] = {}

@@ -123,7 +123,8 @@ _MAX_DROP_CANDIDATES = 5
 # keep score (0-1, relative to the roster) moves by `_DROP_ROLE_WEIGHT` per
 # unit, so a bench player in a shrinking role (a lost target share, a
 # committee, week-to-week) surfaces ahead of one in a settled role.
-# Heuristic, not backtested (no history of the news text).
+# Heuristic, not backtested yet (news text history: `injury_news_history`,
+# `evals/backtest/signal_history.py`).
 _ROLE_SECURITY_POINTS = 0.75
 _DROP_ROLE_WEIGHT = 0.08
 

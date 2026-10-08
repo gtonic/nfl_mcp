@@ -325,7 +325,7 @@ class TestSnapshotDedup:
                     "INSERT INTO matchup_snapshots (league_id, week, payload_json, fetched_at) VALUES (?,?,?,?)",
                     ("L1", 1 + i % 2, f'[{i}]', f"2026-09-2{i}T00:00:00+00:00"),
                 )
-            conn.execute("DELETE FROM schema_version WHERE version = 16")
+            conn.execute("DELETE FROM schema_version WHERE version >= 16")
             conn.commit()
         db.close()
         again = NFLDatabase(path)

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from enum import IntEnum
 
 from . import injury_status
@@ -54,6 +55,7 @@ class InjuryReport:
     confidence: int = 50  # 0-100
     sources: list[str] = field(default_factory=lambda: ["ESPN"])
     date_reported: str | None = None
+    return_date: str | None = None  # ESPN's estimated return, YYYY-MM-DD
 
     def to_dict(self) -> dict:
         """Convert to dictionary for database storage."""
@@ -70,6 +72,7 @@ class InjuryReport:
             "confidence": self.confidence,
             "sources": self.sources,
             "date_reported": self.date_reported,
+            "return_date": self.return_date,
         }
 
 
@@ -583,6 +586,7 @@ class InjuryAggregator:
                 confidence=_confidence,
                 sources=["ESPN"],
                 date_reported=data.get("date"),
+                return_date=parse_return_date(data),
             )
         except TimeoutError:
             logger.debug(f"[InjuryAggregator] Timeout fetching injury detail: {url}")
@@ -794,6 +798,7 @@ class InjuryAggregator:
                     confidence=inj.get("confidence", 50),
                     sources=inj.get("sources", ["ESPN"]),
                     date_reported=inj.get("date_reported"),
+                    return_date=inj.get("return_date"),
                 ))
 
         return all_cached
@@ -920,6 +925,7 @@ class InjuryAggregator:
                     confidence=cached.get("confidence", 50),
                     sources=cached.get("sources", ["ESPN"]),
                     date_reported=cached.get("date_reported"),
+                    return_date=cached.get("return_date"),
                 )
 
         # If we have team_id, fetch that team's injuries
@@ -951,6 +957,28 @@ async def get_injury_reports(
     async with InjuryAggregator(db=db) as aggregator:
         injuries = await aggregator.fetch_all_injuries(teams, use_cache)
         return [inj.to_dict() for inj in injuries]
+
+
+def parse_return_date(item: dict | None) -> str | None:
+    """ESPN's estimated return date for an injury item, as ``YYYY-MM-DD``.
+
+    The Core API puts it in ``details.returnDate`` ("2026-10-11"); a
+    top-level ``returnDate`` is accepted too. A timestamp is cut to its date;
+    anything unparseable is None rather than a string ROS cannot read.
+    """
+    if not isinstance(item, dict):
+        return None
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    raw = details.get("returnDate") or item.get("returnDate")
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw.strip().replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        try:
+            return date.fromisoformat(raw.strip()[:10]).isoformat()
+        except ValueError:
+            return None
 
 
 def _game_status(details: dict) -> str | None:
