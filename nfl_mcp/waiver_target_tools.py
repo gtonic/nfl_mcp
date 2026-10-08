@@ -31,7 +31,7 @@ from .errors import create_success_response
 from .game_clock import game_lock, parse_kickoff, week_games
 from .injury_match import build_injury_index, injury_for_row, misses_this_week
 from .lineup_slots import starting_slot_list
-from .player_pool import playing_options
+from .player_pool import playing_options, unsigned_free_agents
 from .player_values import get_values_service
 from .roster_needs import (
     lineup_bars,
@@ -436,6 +436,10 @@ async def get_waiver_targets(
         [row for row in position_rows if row["id"] not in taken and _is_claimable(row)],
         reference=position_rows,
     )
+    # Players without an NFL team cannot be projected (no game), so they are
+    # not ranked -- by design -- but the fantasy-relevant ones are named, so
+    # their absence is not read as "nobody worth adding" (or as "rostered").
+    unsigned = unsigned_free_agents(position_rows, taken, wanted)
     injury_index = build_injury_index(db.get_all_current_injuries())
     pool_inputs = [
         p for row in pool_rows if (p := _to_projection_input(row, opponents, injury_index))
@@ -737,6 +741,14 @@ async def get_waiver_targets(
         "data_freshness": freshness,
         "stale_data_warnings": _staleness_warnings(freshness),
         "positions_considered": sorted(wanted),
+        # Unrostered players with no NFL team (released / unsigned), not
+        # ranked: they score nothing until a team signs them.
+        "unsigned_free_agents": unsigned,
+        **({"unsigned_note": (
+            f"{len(unsigned)} fantasy-relevant player(s) without an NFL team are free agents "
+            "here but not ranked (no game to project until a team signs them): "
+            + ", ".join(f"{u['name']} ({u['position']})" for u in unsigned))}
+           if unsigned else {}),
         "vegas_active": vegas_active,
         "stale": roster_state["stale"],
         "snapshot_age_seconds": roster_state["snapshot_age_seconds"],

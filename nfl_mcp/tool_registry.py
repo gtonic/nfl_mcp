@@ -27,6 +27,7 @@ from . import (
     nfl_tools,
     opponent_analysis_tools,
     opportunity_tools,
+    ownership_tools,
     player_values,
     playoff_tools,
     projections,
@@ -194,6 +195,7 @@ def _registered_tools() -> list[Callable]:
         # Waiver Wire Analysis Tools (New from main)
         get_waiver_log,
         get_waiver_targets,
+        get_player_ownership,
         audit_ir_slots,
         recommend_faab_bid,
         get_handcuff_map,
@@ -3337,6 +3339,49 @@ async def find_trade_targets(
         week=week, season=season, positions=positions, limit=limit,
         horizon=horizon, max_package_size=max_package_size,
     )
+
+
+@timing_decorator("get_player_ownership", tool_type="waiver")
+async def get_player_ownership(league_id: str, players: list[str]) -> dict:
+    """Who has these players in a league: rostered (by whom, IR/taxi), free agent or on waivers.
+
+    Use this — not search_athletes / get_rosters by hand — for "is X a free
+    agent?", "who owns X?", "can I pick up X?". Names are resolved INCLUDING
+    players without an NFL team (released / unsigned veterans: Tyreek Hill had
+    no team and was still rostered), so a teamless player is never reported as
+    a free agent just because the name lookup missed him. A name that matches
+    nobody is listed under `unresolved`, never as a free agent; two exact-name
+    fantasy players are flagged `ambiguous` with every candidate (and where
+    each is rostered).
+
+    Parameters:
+        league_id: Sleeper league id
+        players: player names (up to 25), e.g. ["Tyreek Hill", "Zay Flowers"]
+
+    Returns: {
+        players [{query, name, player_id, position, team ("FA" without an NFL
+            team), status ("rostered" | "free_agent" | "on_waivers" |
+            "unrostered" = waiver state unknown), roster_id, owner, team_name,
+            slot (starter/bench/ir/taxi), on_ir, on_taxi, waiver_timing
+            {on_waivers, reason, clears_at_local, instant_add,
+            claim_processes_at_local, in_time_for_kickoff, estimated},
+            ambiguous, candidates}],
+        unresolved [{name, reason}], summary, waiver_rules, stale,
+        snapshot_age_seconds, warnings, success
+    }
+    Rosters are the shared fresh copy (old Sleeper CDN copies bypassed); a
+    snapshot too old to say who is available returns success=false. Waiver
+    timing is the same estimate get_waiver_targets uses; the league app is the
+    authority.
+
+    Example: get_player_ownership(league_id="123", players=["Tyreek Hill", "Zay Flowers"])
+    """
+    league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+    if isinstance(players, str):
+        players = [players]
+    players = [validate_string_input(p, 'player_name', max_length=100, required=True)
+               for p in (players or []) if isinstance(p, str) and p.strip()]
+    return await ownership_tools.get_player_ownership(league_id=league_id, players=players)
 
 
 @timing_decorator("audit_ir_slots", tool_type="waiver")

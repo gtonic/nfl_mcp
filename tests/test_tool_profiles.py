@@ -12,7 +12,7 @@ import pytest
 
 from nfl_mcp import tool_registry
 
-EXPECTED = {"season": 56, "full": 73, "offseason": 44}
+EXPECTED = {"season": 57, "full": 74, "offseason": 45}
 
 
 def expected(profile: str) -> int:
@@ -56,6 +56,8 @@ def test_profile_membership():
     assert not season & (tool_registry.DRAFT_TOOLS | tool_registry.COACHING_TOOLS
                          | tool_registry.ADMIN_TOOLS)
     assert "get_draft_board" in offseason and "get_coaching_staff" in offseason
+    # Ownership is a question in every season phase (dynasty off-season too).
+    assert "get_player_ownership" in season and "get_player_ownership" in offseason
     assert not offseason & tool_registry.IN_SEASON_TOOLS
     full = {t.__name__ for t in tool_registry.get_all_tools("full")}
     assert season | offseason <= full

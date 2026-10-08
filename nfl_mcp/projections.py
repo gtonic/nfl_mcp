@@ -1107,8 +1107,22 @@ class ProjectionEngine:
             from .practice_reports import lookup_practice
             return (lookup_practice(db, name, team) or {}).get("latest")
 
+        def _practice_week(name: str, team: str) -> dict | None:
+            """A player's practice line this week (`practice_reports.summarize`),
+            stored days plus the day his current report blurb names."""
+            from .opportunity_tools import norm_name
+            from .practice_reports import lookup_practice_with_note
+            row = reports.get((norm_name(name), team)) or {}
+            try:
+                return lookup_practice_with_note(db, name, team, row.get("injury_description"),
+                                                 row.get("date_reported"))
+            except Exception as e:  # context only
+                logger.debug(f"practice week unavailable for {name}: {e}")
+                return None
+
         _get.detail = _detail
         _get.practice = _practice
+        _get.practice_week = _practice_week
         # The report text's role / availability signals, every player's
         # (`news_signals`); empty without a database.
         try:
@@ -1289,7 +1303,8 @@ def _attach_context(projections: list[dict], depth: dict, status_of, opp_index: 
                     sleeper_ranks: dict | None = None) -> None:
     """Quarterback coupling and news flags on each projection, in place.
 
-    Sets ``qb_context`` (a WR/TE whose starting QB is Out/Doubtful,
+    Sets ``qb_context`` (a WR/TE whose starting QB is Out/Doubtful, or
+    Questionable without practising,
     `qb_coupling.receiver_context`), ``teammate_context`` (a QB whose top
     pass catchers are out, `qb_coupling.catchers_context`), ``news_flags``
     and ``news_adjustment`` (`news_signals`), the multipliers the blend
@@ -1322,8 +1337,17 @@ def _context_one(proj: dict, depth: dict, status_of, opp_index: dict, week: int 
         if ctx:
             # ROS carries the model multiplier through the starter's absence.
             from .ros import _starter_absence
-            ctx["games_out"] = _starter_absence(
-                _absence_detail(status_of, ctx["starter"], team), season_week=week)
+            detail = _absence_detail(status_of, ctx["starter"], team)
+            ctx["games_out"] = _starter_absence(detail, season_week=week)
+            if not ctx["games_out"] and ctx.get("applied"):
+                # Questionable / Doubtful, but the report expects more than
+                # this week ("could miss multiple games", "week-to-week"):
+                # ROS keeps the cut for that long.
+                games, phrase = qb_coupling.multi_game_absence(
+                    detail, news_signals.signals_for(news_index, ctx["starter"], team))
+                if games:
+                    ctx["games_out"] = games
+                    ctx["reason"] += f"; {phrase} per the report — cut kept {games} games in ROS"
             proj["qb_context"] = ctx
             bd["qb_model_mult"] = ctx["model_mult"]
             bd["qb_sleeper_mult"] = ctx["sleeper_mult"]

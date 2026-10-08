@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
 
 from .teams import normalize_team
 
@@ -114,3 +115,48 @@ def playing_options(rows: list[dict], reference: list[dict] | None = None) -> li
                 continue
         kept.append(row)
     return kept
+
+
+# A player without an NFL team (released, unsigned) can be a free agent worth
+# knowing about -- Tyreek Hill had no team and was still rostered in a league
+# -- but he has no game to project, so the waiver ranking leaves him out.
+# These say which of them to name instead of excluding them silently: a skill
+# position, still active, recent news (Sleeper keeps writing it for players
+# teams are working out) and a market rank a manager would recognise.
+UNSIGNED_POSITIONS = frozenset({"QB", "RB", "WR", "TE"})
+UNSIGNED_MAX_SEARCH_RANK = 300
+UNSIGNED_NEWS_DAYS = 30
+UNSIGNED_LIMIT = 8
+
+
+def unsigned_free_agents(rows: list[dict], taken: set[str] | None = None,
+                         positions=None, now: float | None = None,
+                         limit: int = UNSIGNED_LIMIT) -> list[dict]:
+    """``[{name, position, player_id, search_rank, news_updated}]``: fantasy-
+    relevant players with no NFL team that nobody in `taken` rosters, best
+    market rank first. Pure apart from the clock."""
+    now = time.time() if now is None else now
+    wanted = {p.upper() for p in positions} if positions else UNSIGNED_POSITIONS
+    out = []
+    for row in rows or []:
+        position = (row.get("position") or "").upper()
+        if (position not in UNSIGNED_POSITIONS or position not in wanted
+                or normalize_team(row.get("team_id") or row.get("team"))
+                or str(row.get("id")) in (taken or set())):
+            continue
+        raw = raw_of(row)
+        status = (row.get("status") or raw.get("status") or "").lower()
+        if raw.get("active") is False or status not in ("active", ""):
+            continue
+        try:
+            rank = int(raw.get("search_rank") or 0)
+            news = float(raw.get("news_updated") or 0) / 1000
+        except (TypeError, ValueError):
+            continue
+        if not 0 < rank <= UNSIGNED_MAX_SEARCH_RANK or now - news > UNSIGNED_NEWS_DAYS * 86400:
+            continue
+        out.append({"name": row.get("full_name"), "position": position,
+                    "player_id": str(row.get("id")), "search_rank": rank,
+                    "news_updated": datetime.fromtimestamp(news, UTC).date().isoformat()})
+    out.sort(key=lambda r: r["search_rank"])
+    return out[:limit]

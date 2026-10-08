@@ -101,6 +101,26 @@ _GAMES_RE = re.compile(r"(\d{1,2})[- ]game(?:s)?\s+suspension|suspended\s+(\d{1,
 # shortest reading of it (`news_signals` flags the same phrase).
 _WEEK_TO_WEEK_RE = re.compile(r"\bweek[- ]to[- ]week\b", re.I)
 WEEK_TO_WEEK_GAMES = 2
+# "Could miss multiple games" (Rapoport on Lamar Jackson, week 5 2026) says
+# the same as week-to-week, and is priced the same.
+_MULTI_GAME_RE = re.compile(
+    r"\bmiss(?:es|ing)?\s+(?:multiple|several|a few|a couple(?: of)?|some)\s+"
+    r"(?:more\s+)?(?:games|weeks|contests)\b|\bmulti(?:ple)?[- ]week\b|\bmulti[- ]game\b",
+    re.I)
+
+
+def multi_game_phrase(text: str | None) -> str | None:
+    """"week-to-week" / "multiple games" when the report text says the
+    absence runs past this week, else None. Any status: a Questionable
+    quarterback "could miss multiple games" is read the same way
+    (`qb_coupling`)."""
+    if not text:
+        return None
+    if _WEEK_TO_WEEK_RE.search(text):
+        return "week-to-week"
+    if _MULTI_GAME_RE.search(text):
+        return "multiple games"
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -264,8 +284,9 @@ def expected_absence(
         n = max(weeks)
         if 0 < n <= LAST_NFL_WEEK and n > base:
             return n, f"{status}: {n} weeks per the report"
-    if base < WEEK_TO_WEEK_GAMES and _WEEK_TO_WEEK_RE.search(text):
-        return WEEK_TO_WEEK_GAMES, f"{status}: week-to-week per the report"
+    phrase = multi_game_phrase(text)
+    if base < WEEK_TO_WEEK_GAMES and phrase:
+        return WEEK_TO_WEEK_GAMES, f"{status}: {phrase} per the report"
     return base, reason
 
 

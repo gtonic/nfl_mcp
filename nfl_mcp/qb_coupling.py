@@ -39,6 +39,20 @@ gain is the quarterback, not shrinkage. A starter-grade backup (n=80) cost
 nothing (1.069), and tight ends gained: TE with a backup scored 1.17 of the
 blend (n=228; more check-downs), so they are flagged, never cut.
 
+A Questionable starter used to cost nothing, whatever the week looked like
+(Lamar Jackson, week 5 2026: Questionable, DNP Wednesday and Thursday,
+"only an outside chance to play" -- Zay Flowers still projected 14.1 with no
+context). ``starter_sit_weight`` reads how likely the starter is to sit:
+Questionable with ``QUESTIONABLE_DNP_DAYS`` DNP days ending on a DNP (or a
+recent "ruled out" / "unlikely to play" report and no limited or full day
+since) counts like Doubtful; a limited or full latest practice is no cut.
+The practice line is `practice_reports.summarize` of the stored days plus
+the day the starter's current report blurb names. When the report text says
+he will miss more than this week ("multiple games", "week-to-week";
+`multi_game_absence`) ROS keeps the cut for that long. Not backtested: the
+backtest has no practice history (its "out" is a realised non-start), so
+these rows are not in it and its numbers do not move.
+
 ``catchers_context`` is the inverse, for a QB: his top two pass catchers by
 market value (WR/TE) Out or Doubtful. The backtest found no effect worth
 pricing -- QBs whose top-two catcher sat (n=191) scored 1.035 of the blend
@@ -85,8 +99,30 @@ RECEIVER_MULT: dict[str, dict[str, float]] = {
 }
 MIN_MULT = 0.80
 MAX_MULT = 1.0
+# How likely the starter is to sit, as the weight his absence's multiplier
+# counts at (`starter_sit_weight`). Out / IR / suspended: all of it.
+OUT_WEIGHT = 1.0
 # A doubtful starter sits most weeks; the multiplier counts at this weight.
 DOUBTFUL_WEIGHT = 0.75
+# Questionable alone is a coin flip that usually plays: no cut.
+QUESTIONABLE_WEIGHT = 0.0
+# Questionable with no practice all week reads like Doubtful: did not
+# practise on at least QUESTIONABLE_DNP_DAYS report days, the latest of them
+# included (Lamar Jackson, week 5 2026: Questionable, DNP Wed and Thu,
+# "only an outside chance to play"). A limited or full latest day is no cut.
+QUESTIONABLE_DNP_DAYS = 2
+QUESTIONABLE_DNP_WEIGHT = DOUBTFUL_WEIGHT
+# Questionable with a recent report that he will not / is unlikely to play
+# (`news_signals` flags, at recency weight >= SIT_FLAG_MIN_WEIGHT) and no
+# practice line that says otherwise: the same weight.
+QUESTIONABLE_NEWS_WEIGHT = DOUBTFUL_WEIGHT
+SIT_FLAGS = ("ruled_out", "unlikely_to_play")
+# A recent "expected to play" keeps a Questionable starter uncut whatever his
+# practice line (a veteran's rest days, a walkthrough week).
+PLAY_FLAGS = ("expected_to_play",)
+SIT_FLAG_MIN_WEIGHT = 0.5
+# Practice statuses that say he is working (no cut while Questionable).
+_PRACTISING = ("LP", "FP", "REST")
 # Pass attempts that make a quarterback's game one he played in.
 QB_PLAYED_ATTEMPTS = 10
 # The inverse (a QB's top-two pass catchers out): flagged, not priced -- see
@@ -157,6 +193,68 @@ def _kind(status: str | None) -> str:
     return availability(status)
 
 
+def _recent(flags: list[dict] | None, wanted: tuple[str, ...]) -> list[dict]:
+    return [f for f in flags or [] if f.get("flag") in wanted
+            and float(f.get("weight") or 0.0) >= SIT_FLAG_MIN_WEIGHT]
+
+
+def _dnp_days(practice: dict | None) -> list[str]:
+    return [d.get("day") or d.get("date") for d in (practice or {}).get("days") or []
+            if d.get("status") == "DNP"]
+
+
+def starter_sit_weight(status: str | None, practice: dict | None = None,
+                       flags: list[dict] | None = None) -> dict:
+    """``{weight, basis, detail}``: how much of the backup's multiplier a
+    receiver takes, from the starter's status, this week's practice line
+    (`practice_reports.summarize`) and his report-text flags
+    (`news_signals.signals_for`).
+
+    Out / IR / suspended: ``OUT_WEIGHT``; Doubtful: ``DOUBTFUL_WEIGHT``;
+    Questionable: ``QUESTIONABLE_DNP_WEIGHT`` with ``QUESTIONABLE_DNP_DAYS``
+    DNP days ending on a DNP, ``QUESTIONABLE_NEWS_WEIGHT`` with a recent
+    "ruled out" / "unlikely to play" and no limited or full latest day, else
+    ``QUESTIONABLE_WEIGHT``. ``basis`` is "status", "practice" or "news".
+    Pure."""
+    kind = _kind(status)
+    if kind == "out":
+        return {"weight": OUT_WEIGHT, "basis": "status", "detail": None}
+    if kind == "doubtful":
+        return {"weight": DOUBTFUL_WEIGHT, "basis": "status", "detail": None}
+    none = {"weight": QUESTIONABLE_WEIGHT if kind == "questionable" else 0.0,
+            "basis": "status", "detail": None}
+    if kind != "questionable" or _recent(flags, PLAY_FLAGS):
+        return none
+    days = (practice or {}).get("days") or []
+    latest = days[-1].get("status") if days else None
+    if latest in _PRACTISING:
+        return none
+    dnp = _dnp_days(practice)
+    if latest == "DNP" and len(dnp) >= QUESTIONABLE_DNP_DAYS:
+        return {"weight": QUESTIONABLE_DNP_WEIGHT, "basis": "practice",
+                "detail": "DNP " + "/".join(dnp)}
+    sit = _recent(flags, SIT_FLAGS)
+    if sit:
+        word = sit[0]["flag"].replace("_", " ")
+        return {"weight": QUESTIONABLE_NEWS_WEIGHT, "basis": "news",
+                "detail": (f"DNP {'/'.join(dnp)}, " if dnp else "") + f"report: {word}"}
+    return none
+
+
+def multi_game_absence(detail: dict | None,
+                       flags: list[dict] | None = None) -> tuple[int, str | None]:
+    """``(games, phrase)`` for a starter the report expects to miss more than
+    this week while he is only Questionable / Doubtful ("could miss multiple
+    games", "week-to-week"; `ros.multi_game_phrase`, or a recent
+    ``week_to_week`` news flag). ``(0, None)`` otherwise: an Out starter's
+    absence is `ros.expected_absence`'s."""
+    from .ros import WEEK_TO_WEEK_GAMES, multi_game_phrase
+    phrase = multi_game_phrase((detail or {}).get("description"))
+    if not phrase and _recent(flags, ("week_to_week",)):
+        phrase = "week-to-week"
+    return (WEEK_TO_WEEK_GAMES, phrase) if phrase else (0, None)
+
+
 def _with_share(opp_index: dict | None, name: str, starter: str, week: int | None) -> float | None:
     """Share of his trailing games the starter played; None without logs."""
     if not opp_index or not week:
@@ -176,8 +274,9 @@ def receiver_context(depth: dict, team: str, position: str, name: str, status_of
                      sleeper_ranks: dict | None = None) -> dict | None:
     """``{starter, starter_status, backup, backup_rank, backup_tier,
     backup_tier_source, with_starter_share, sleeper_mult, model_mult,
-    applied, reason}`` for a WR/TE whose starting QB is Out or Doubtful;
-    None otherwise.
+    applied, reason, starter_sit_weight, starter_sit_basis, starter_practice}``
+    for a WR/TE whose starting QB is Out, Doubtful, or Questionable without
+    practising (`starter_sit_weight`); None otherwise.
 
     `qb_order` is ``{team: [QB names in depth-chart order]}`` (Sleeper's
     ``depth_chart_order``), which names the backup when the market does not
@@ -192,18 +291,37 @@ def receiver_context(depth: dict, team: str, position: str, name: str, status_of
     starter = qbs[0]["name"]
     status = status_of(starter, team)
     kind = _kind(status)
-    if kind not in ("out", "doubtful"):
+    if kind not in ("out", "doubtful", "questionable"):
+        return None
+    # The starter's practice line and report flags, when the lookup has them
+    # (`projections._status_lookup`): a Questionable starter who has not
+    # practised all week is priced like a Doubtful one.
+    practice = flags = None
+    if kind == "questionable":
+        week_of = getattr(status_of, "practice_week", None)
+        practice = week_of(starter, team) if callable(week_of) else None
+        from . import news_signals
+        flags = news_signals.signals_for(getattr(status_of, "news", None), starter, team)
+    sit = starter_sit_weight(status, practice, flags)
+    weight = sit["weight"]
+    if weight <= 0:
         return None
     backup = _pick_backup(qbs, (qb_order or {}).get(team) or [], team, status_of)
     rank, source = backup_rank((backup or {}).get("name"), team,
                                (backup or {}).get("position_rank"), sleeper_ranks)
     tier = qb_tier(rank)
-    weight = 1.0 if kind == "out" else DOUBTFUL_WEIGHT
     full = RECEIVER_MULT[position][tier]
     mult = round(max(MIN_MULT, min(MAX_MULT, 1.0 - (1.0 - full) * weight)), 3)
     share = _with_share(opp_index, name, starter, week)
     who = backup["name"] if backup else "an unnamed backup"
-    ctx = {"starter": starter, "starter_status": status, "backup": (backup or {}).get("name"),
+    # "Lamar Jackson Questionable, DNP Wed/Thu — 75% weight"
+    head = f"{starter} {status}" + (f", {sit['detail']}" if sit["detail"] else "")
+    if weight < OUT_WEIGHT:
+        head += f" — {round(weight * 100)}% weight"
+    ctx = {"starter": starter, "starter_status": status,
+           "starter_sit_weight": weight, "starter_sit_basis": sit["basis"],
+           **({"starter_practice": (practice or {}).get("pattern")} if practice else {}),
+           "backup": (backup or {}).get("name"),
            "backup_rank": rank, "backup_tier": tier, "backup_tier_source": source,
            "backup_sleeper_rank": sleeper_rank_of((backup or {}).get("name"), team,
                                                   sleeper_ranks),
@@ -219,13 +337,13 @@ def receiver_context(depth: dict, team: str, position: str, name: str, status_of
         basis = {TIER_SOURCE_MARKET: f"market QB{rank}",
                  TIER_SOURCE_SLEEPER: f"Sleeper's QB{rank} this week",
                  TIER_SOURCE_NONE: "unranked by the market"}[source]
-        ctx["reason"] = (f"{starter} {status} — {who} ({tier.replace('_', '-')} backup, "
+        ctx["reason"] = (f"{head}: {who} ({tier.replace('_', '-')} backup, "
                          f"{basis}) throwing: x{mult}")
     elif position == "TE":
-        ctx["reason"] = (f"{starter} {status} — {who} throwing; tight ends hold their "
+        ctx["reason"] = (f"{head}: {who} throwing; tight ends hold their "
                          "volume with a backup (backtest), not cut")
     else:
-        ctx["reason"] = f"{starter} {status} — {who} is a starter-grade backup, not cut"
+        ctx["reason"] = f"{head}: {who} is a starter-grade backup, not cut"
     return ctx
 
 

@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`get_player_ownership(league_id, players)`** (all profiles: season 57,
+  full 74, offseason 45 tools). Per name: `player_id`, `team` ("FA" without
+  an NFL team) and `status` — `rostered` (roster_id, owner, team_name, slot
+  incl. IR / taxi), `free_agent` / `on_waivers` with `waiver_timing` (the
+  game-lock / clear-day estimate `get_waiver_targets` uses; a teamless player
+  has no game lock, only a recent drop holds him), or `unrostered` when the
+  lock cannot be told. Names resolve with `lineup_tools.name_candidates(...,
+  include_free_agents=True)` — players without an NFL team count, fantasy
+  positions first, two exact-name fantasy players are `ambiguous` with every
+  candidate and its roster — and a name matching nobody is `unresolved`, never
+  a free agent. Rosters are the shared fresh copy (#252); a snapshot too old
+  for availability is an error. An ad-hoc check had called Tyreek Hill (no
+  NFL team) a free agent in both leagues because the name lookup was filtered
+  on team; he is rostered in both.
+- **Unsigned free agents named in `get_waiver_targets`.** Players without an
+  NFL team stay out of the ranking (no game to project), but the
+  fantasy-relevant ones (skill position, active, news in the last 30 days,
+  Sleeper rank <= 300; `player_pool.unsigned_free_agents`) are listed under
+  `unsigned_free_agents` with an `unsigned_note`, instead of vanishing.
 - **Signal history (schema v17).** `practice_report_history` keeps every
   distinct practice row (player, day, status, source — also those the live
   table refuses or later replaces) and `injury_news_history` every distinct
@@ -163,6 +182,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model with Sleeper.
 
 ### Fixed
+- **QB coupling for a Questionable starter who is not practising.** Receivers
+  were cut only for an Out / IR / suspended (full) or Doubtful (75%) starting
+  QB; Lamar Jackson (Questionable, DNP Wednesday and Thursday, "only an
+  outside chance to play") left Zay Flowers at 14.7 with no `qb_context`.
+  `qb_coupling.starter_sit_weight` now reads status + this week's practice
+  line + report flags: Questionable with `QUESTIONABLE_DNP_DAYS` (2) DNP days
+  ending on a DNP, or a recent "ruled out" / "unlikely to play" with no
+  limited / full day since, counts at `QUESTIONABLE_DNP_WEIGHT` /
+  `QUESTIONABLE_NEWS_WEIGHT` (= Doubtful's 0.75); Questionable with a
+  limited / full latest day (or a recent "expected to play") is no cut;
+  Doubtful / Out unchanged. The practice line is the stored days plus the day
+  the current report blurb names (`practice_reports.lookup_practice_with_note`),
+  since the table lags the ESPN note. `qb_context` reports
+  `starter_sit_weight`, `starter_sit_basis`, `starter_practice` and a reason
+  ("Lamar Jackson Questionable, DNP Wed/Thu — 75% weight: Tyler Huntley (low
+  backup, …) throwing: x0.902"); Flowers 14.7 → 13.3. When the report says
+  "multiple games" / "week-to-week" (`ros.multi_game_phrase`, or a
+  `week_to_week` news flag) the cut persists in ROS for
+  `WEEK_TO_WEEK_GAMES`. The backtest (`sleeper_blend.py --qb-coupling`) is
+  unchanged — it has no practice history, so these rows are not in it.
+- Practice / news text: "remained absent from practice", "missed practice",
+  "was out of practice" are DNP in ESPN notes; "could miss multiple games"
+  is `week_to_week` (and two games for an Out player in
+  `ros.expected_absence`); "only an outside chance to play" is
+  `unlikely_to_play`.
 - **Stale roster right after a trade.** Sleeper serves `/rosters` through
   Cloudflare (`s-maxage=300, stale-while-revalidate=300`; matchups and
   transactions `s-maxage=60`), so a "live" fetch could return a copy up to ten
