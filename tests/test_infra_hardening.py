@@ -118,7 +118,7 @@ class TestOutboundRateLimits:
     @pytest.mark.parametrize("host,name", [
         ("api.sleeper.app", "sleeper"),
         ("site.api.espn.com", "espn"),
-        ("sports.core.api.espn.com", "espn"),
+        ("sports.core.api.espn.com", "espn_core"),
         ("api.the-odds-api.com", "odds_api"),
         ("github.com", "nflverse"),
         ("release-assets.githubusercontent.com", "nflverse"),

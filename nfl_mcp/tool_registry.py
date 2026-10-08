@@ -161,6 +161,7 @@ def _registered_tools() -> list[Callable]:
         lookup_athlete,
         search_athletes,
         get_athletes_by_team,
+        refresh_data,
 
         # Sleeper API Tools - Basic
         get_league,
@@ -523,6 +524,54 @@ async def fetch_athletes() -> dict:
     return await athlete_tools.fetch_athletes(db)
 
 
+@timing_decorator("refresh_data", tool_type="admin")
+async def refresh_data(
+    scope: list[str] | None = None,
+    force: bool = False,
+    background: bool = False,
+    job_id: str | None = None,
+) -> dict:
+    """Refresh cached feeds NOW — when injuries/athletes/practice data are stale.
+
+    The background prefetch stops while the host sleeps; tools then label their
+    data stale (`data_freshness`, `stale` warnings). This runs the same fetchers
+    the prefetch uses and writes the same way (injury reports pruned only for
+    completely crawled teams), even when NFL_MCP_ADVANCED_ENRICH is off.
+
+    Parameters:
+        scope: any of "injuries", "practice", "athletes", "schedule", "snaps"
+            (default ["injuries", "practice"])
+        force: refresh even a feed younger than its minimum age
+            (15 min for injuries/practice, 6h for athletes)
+        background: start the refresh and return a job_id at once — an injury
+            crawl is ~1900 ESPN requests and takes a few minutes
+        job_id: poll a background refresh (other parameters are ignored)
+
+    Returns: {
+        job_id, status (running|done|error), season, week,
+        scopes {scope: {status (ok|error|skipped_fresh|already_running),
+                fetched, written, duration_s, error?}},
+        freshness_before, freshness {feed: {updated_at, age_hours}},
+        duration_s, success
+    }
+
+    Example: refresh_data(scope=["injuries", "athletes"])
+    Example: refresh_data(scope=["injuries"], background=True) then
+             refresh_data(job_id="...")
+    """
+    from . import data_refresh
+
+    if job_id is not None:
+        try:
+            job_id = validate_string_input(job_id, 'job_id', max_length=32, required=True)
+        except ValueError as e:
+            return {"success": False, "error": f"Invalid input: {e!s}"}
+    if isinstance(scope, str):
+        scope = [s for s in scope.replace(",", " ").split() if s]
+    return await data_refresh.refresh_data(
+        scope=scope, force=bool(force), background=bool(background), job_id=job_id, db=get_db())
+
+
 @timing_decorator("lookup_athlete", tool_type="athlete")
 def lookup_athlete(athlete_id: str) -> dict:
     """Look up an athlete by their ID.
@@ -626,19 +675,26 @@ async def get_transactions(league_id: str, week: int | None = None, round: int |
     claims in" — do not report the absence of claims from this tool. The league
     app is the only place pending claims are visible.
 
+    Sleeper files the Wednesday waiver run under the PREVIOUS leg: on the
+    Wednesday of week 5 that morning's claims are in leg 4 and leg 5 is still
+    empty. For the current week (or no week) this tool therefore merges the
+    previous leg in, deduped by transaction_id; each row keeps Sleeper's `leg`
+    and the response lists `legs` and `leg_note`. A past week is read alone.
+
     Parameters:
         league_id (str, required): Sleeper league id.
-        week (int, required): NFL week (alias: `round`).
-    Returns: {transactions: [...], week, count, success, error?}
+        week (int, optional): NFL week (alias: `round`); default the current week.
+    Returns: {transactions: [...], week, legs?, count, success, error?}
     """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
         # Accept either week or deprecated round
         effective_week = week if week is not None else round
-        if effective_week is None:
-            raise ValueError("week (or round) is required")
-        effective_week = validate_numeric_input(effective_week, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=True)
-        return await sleeper_tools.get_transactions(league_id, round=effective_week, week=effective_week)
+        if effective_week is not None:
+            effective_week = validate_numeric_input(
+                effective_week, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=True)
+        return await sleeper_tools.get_transactions(
+            league_id, round=effective_week, week=effective_week, include_previous_leg=None)
     except ValueError as e:
         return {"transactions": [], "week": week, "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
 
@@ -2207,8 +2263,11 @@ async def analyze_lineup(
     Returns: {
         lineup_grade (A-F), lineup_efficiency_pct, total_projected,
         optimal_projected, optimal_lineup [{slot, player, position,
-        projected_points}], suggested_changes [{bench_in, bench_out, slot,
-        gain, reason}], locked_players, weak_spots, starters {slot: [...]},
+        projected_points}], suggested_changes [{action (fill|swap), bench_in,
+        bench_out, slot (where bench_in starts), out_slot, empty_slot,
+        moves [{player, from_slot, to_slot}], gain, reason}],
+        marginal_changes (swaps the optimum makes that gain < 2 pts),
+        locked_players, weak_spots, starters {slot: [...]},
         bench [...], empty_slots, roster_id, success
     }
 

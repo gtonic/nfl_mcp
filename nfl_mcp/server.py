@@ -189,6 +189,22 @@ def _athletes_refresh_every_n_cycles() -> int:
     return max(1, round(PREFETCH_ATHLETES_INTERVAL_SECONDS / max(1, PREFETCH_INTERVAL_SECONDS)))
 
 
+def _athletes_overdue(nfl_db: NFLDatabase) -> bool:
+    """Whether the stored athletes are older than the refresh interval.
+
+    The cycle count alone stalls while the host sleeps (the loop's wait runs on
+    the monotonic clock, which stops with it): athletes were seen 43h old.
+    The table's own timestamp is wall-clock, so it catches up on the first
+    cycle after waking.
+    """
+    try:
+        age = (nfl_db.get_data_freshness().get("athletes") or {}).get("age_hours")
+        return age is not None and float(age) * 3600 >= PREFETCH_ATHLETES_INTERVAL_SECONDS
+    except Exception as e:
+        logger.debug(f"athletes freshness unavailable: {e}")
+        return False
+
+
 async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
     """Background loop to prefetch weekly schedule and player snaps to warm caches.
 
@@ -493,7 +509,8 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
 
         # Periodic athletes cache refresh (default daily) so player
         # names/teams/positions stay current as roster moves happen.
-        if PREFETCH_ATHLETES and cycle_count % _athletes_refresh_every_n_cycles() == 0:
+        if PREFETCH_ATHLETES and (cycle_count % _athletes_refresh_every_n_cycles() == 0
+                                  or _athletes_overdue(nfl_db)):
             await _refresh_athletes(nfl_db, tag=f"Prefetch Cycle #{cycle_count}")
 
         logger.info(f"[Prefetch Cycle #{cycle_count}] Next cycle in {PREFETCH_INTERVAL_SECONDS}s")

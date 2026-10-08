@@ -151,7 +151,7 @@ variables take precedence.
 | `NFL_MCP_DB_PATH` | Path to the SQLite cache file (default `nfl_data.db`, relative to the working dir). Point it at a mounted volume — e.g. `/data/nfl_data.db` — to persist the warmed cache across restarts. |
 | `NFL_MCP_ALLOW_PRIVATE_URLS` | `1` lets `crawl_url` reach private/loopback addresses. Off by default (SSRF protection — see [SECURITY.md](../SECURITY.md)). |
 | `NFL_MCP_PREFETCH` | `1` enables background data prefetch (cache warming). |
-| `NFL_MCP_TOOL_PROFILE` | Which tools are registered: `season` (default, 55 tools — no draft, coaching, admin cache refreshes, `get_league_leaders`, `get_cbs_expert_picks`), `offseason` (43 — draft and coaching, no in-season-only tools) or `full` (all 72). Logged at startup and reported by `/health` under `tools`. |
+| `NFL_MCP_TOOL_PROFILE` | Which tools are registered: `season` (default, 56 tools — no draft, coaching, admin cache refreshes, `get_league_leaders`, `get_cbs_expert_picks`), `offseason` (44 — draft and coaching, no in-season-only tools) or `full` (all 73). Logged at startup and reported by `/health` under `tools`. |
 | `NFL_MCP_PREFETCH_INTERVAL` | Prefetch interval, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SNAPS_TTL` | Snap-data TTL, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SCHEDULE_WEEKS` | Weeks of schedule to prefetch (default 4). |
@@ -312,6 +312,14 @@ Additional scheduled/on-demand workflows: `evals.yml`, `contracts.yml`,
 Built-in per-endpoint outbound rate limiting (in-memory for development; use
 Redis for production). Configurable via `rate_limits.default_requests_per_minute`
 / `NFL_MCP_RATE_LIMIT_DEFAULT`, with rate-limit status reporting.
+
+Outbound requests are paced per host (`config._HOST_RATE_LIMITERS`), each
+overridable with `NFL_MCP_<NAME>_RATE_LIMIT`. ESPN's core API
+(`sports.core.api.espn.com`, limiter `espn_core`, 600/min) is separate from the
+site API (`espn`, 120/min): an injury crawl is one request per listed report
+(~1900), which at 120/min took 16–30 minutes. The crawl also seeds its
+athlete-name cache from the stored injury reports, so a fresh process no longer
+fetches an ESPN athlete page per report.
 
 ## Security
 

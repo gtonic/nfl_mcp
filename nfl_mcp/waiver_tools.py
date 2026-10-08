@@ -207,8 +207,9 @@ async def get_waiver_log(league_id: str, round: int | None = None, dedupe: bool 
         - error: Error message (if any)
     """
     try:
-        # Get raw transaction data
-        transactions_result = await get_transactions(league_id, round)
+        # The current week includes the previous leg: Sleeper files the
+        # Wednesday waiver run there (see sleeper_transactions.get_transactions).
+        transactions_result = await get_transactions(league_id, round, include_previous_leg=None)
 
         if not transactions_result.get('success'):
             return create_error_response(
@@ -239,6 +240,7 @@ async def get_waiver_log(league_id: str, round: int | None = None, dedupe: bool 
                 "unique_transactions": len(unique_transactions),
                 "league_id": league_id,
                 "round": round,
+                "legs": transactions_result.get("legs"),
                 "deduplication_enabled": True,
                 "failed_claims": failed_claims,
                 "failed_claims_count": len(failed_claims),
@@ -252,6 +254,7 @@ async def get_waiver_log(league_id: str, round: int | None = None, dedupe: bool 
                 "unique_transactions": total_waiver_count,
                 "league_id": league_id,
                 "round": round,
+                "legs": transactions_result.get("legs"),
                 "deduplication_enabled": False,
                 "failed_claims": failed_claims,
                 "failed_claims_count": len(failed_claims),
@@ -290,7 +293,7 @@ async def check_re_entry_status(league_id: str, round: int | None = None) -> dic
     """
     try:
         # Get raw transaction data
-        transactions_result = await get_transactions(league_id, round)
+        transactions_result = await get_transactions(league_id, round, include_previous_leg=None)
 
         if not transactions_result.get('success'):
             return create_error_response(

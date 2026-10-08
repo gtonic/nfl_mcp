@@ -1556,6 +1556,113 @@ async def compare_players_for_slot(
     })
 
 
+def _settle_seats(seats: list[tuple[str, PlayerAnalysis | None]],
+                  best: list[PlayerAnalysis | None],
+                  open_seats: list[int]) -> list[PlayerAnalysis | None]:
+    """Same lineup, fewest moves: a starter the optimum merely shuffled to
+    another seat goes back to his own when the two seats can trade occupants.
+
+    The assignment is exact on points but indifferent to *where* equal lineups
+    seat a player; left alone, two WRs trading WR1/WR2 read as a move the
+    manager has to make.
+    """
+    best = list(best)
+    open_set = set(open_seats)
+    home = {id(a): i for i, (_, a) in enumerate(seats) if a is not None}
+    changed = True
+    while changed:
+        changed = False
+        for k in open_seats:
+            s = best[k]
+            j = home.get(id(s)) if s is not None else None
+            if j is None or j == k or j not in open_set:
+                continue
+            other = best[j]
+            if not slot_accepts(seats[j][0], s.position):
+                continue
+            if other is not None and not slot_accepts(seats[k][0], other.position):
+                continue
+            # Each trade seats one starter at home for good, so this ends.
+            best[j], best[k] = s, other
+            changed = True
+    return best
+
+
+def _lineup_changes(seats: list[tuple[str, PlayerAnalysis | None]],
+                    best: list[PlayerAnalysis | None]) -> list[dict]:
+    """The moves that turn the set lineup into `best`, one entry per newcomer.
+
+    Each bench player the optimum starts takes a seat; whoever held it either
+    shifts to his own optimal seat (a move) or is benched (a swap), and a seat
+    that was empty ends the chain (a fill). Following the chain keeps every
+    step legal: an RB who starts at FLEX while the FLEX WR shifts into the
+    empty WR seat is "move the WR FLEX→WR, start the RB at FLEX" — never "fill
+    WR with the RB" — and each swap is paired with the starter it displaces,
+    not with whoever happens to sort next to it.
+    """
+    starting = {id(a) for _, a in seats if a is not None}
+    seat_in_best = {id(b): i for i, b in enumerate(best) if b is not None}
+    newcomers = sorted(
+        (i for i, b in enumerate(best) if b is not None and id(b) not in starting),
+        key=lambda i: best[i].projected_points, reverse=True,
+    )
+    changes = []
+    for k0 in newcomers:
+        bench_in, in_slot = best[k0], seats[k0][0]
+        moves: list[dict] = []
+        benched: PlayerAnalysis | None = None
+        k = k0
+        # A newcomer's seat is nobody's destination, so the chain cannot
+        # cycle; the bound is only a guard.
+        for _ in range(len(seats)):
+            held = seats[k][1]
+            nxt = seat_in_best.get(id(held)) if held is not None else None
+            if nxt is None:
+                benched = held
+                break
+            moves.append({"player": held.player_name,
+                          "from_slot": seats[k][0], "to_slot": seats[nxt][0]})
+            k = nxt
+        end_slot = seats[k][0]
+        steps = "".join(f"move {m['player']} {m['from_slot']}→{m['to_slot']}, " for m in moves)
+        if benched is None:
+            how = (f": {steps}start {bench_in.player_name} at {in_slot}" if moves
+                   else f" with {bench_in.player_name}")
+            changes.append({
+                "action": "fill",
+                "bench_in": bench_in.player_name,
+                "bench_in_points": bench_in.projected_points,
+                "bench_out": None,
+                "bench_out_points": 0.0,
+                "slot": in_slot,
+                "out_slot": None,
+                "empty_slot": end_slot,
+                "moves": moves,
+                "gain": round(bench_in.projected_points, 1),
+                "reason": f"Fill empty {end_slot}{how} ({bench_in.projected_points} projected)",
+            })
+            continue
+        # Points, not confidence; the caller decides whether it clears the noise.
+        gain = bench_in.projected_points - benched.projected_points
+        reason = f"{bench_in.player_name} projects {round(gain, 1)} more points"
+        if moves:
+            reason += (f"; {steps}start {bench_in.player_name} at {in_slot}, "
+                       f"bench {benched.player_name} ({end_slot})")
+        changes.append({
+            "action": "swap",
+            "bench_in": bench_in.player_name,
+            "bench_in_points": bench_in.projected_points,
+            "bench_out": benched.player_name,
+            "bench_out_points": benched.projected_points,
+            "slot": in_slot,
+            "out_slot": end_slot,
+            "moves": moves,
+            "gain": round(gain, 1),
+            "reason": reason,
+        })
+    return changes
+
+
 @handle_http_errors(
     default_data={"analysis": None},
     operation_name="analyzing lineup"
@@ -1603,7 +1710,10 @@ async def analyze_full_lineup(
         Dictionary containing:
         - starters: Analysis of each starting position
         - bench: Analysis of bench players
-        - suggested_changes: Swaps that turn the set lineup into the optimal one
+        - suggested_changes: Fills and swaps that turn the set lineup into the
+          optimal one, each with the starter `moves` (slot to slot) it needs
+        - marginal_changes: swaps the optimum makes that gain less than
+          MEANINGFUL_SWAP_GAIN (inside the projection noise)
         - optimal_lineup / optimal_projected: the best legal lineup and its total
         - lineup_grade: Overall grade (A-F), from the share of optimal points started
         - total_projected: Sum of projected points for starters
@@ -1773,67 +1883,21 @@ async def analyze_full_lineup(
          "game_status": a.game_status, "starting": False}
         for a in bench_analysis if a.locked
     ]
+    best = _settle_seats(seats, best, open_seats)
     optimal_total = sum(a.projected_points for a in best if a is not None)
-    starting = {id(a) for _, a in seats if a is not None}
-    best_ids = {id(a) for a in best if a is not None}
-    ins = sorted(
-        ((key, a) for key, a in zip((k for k, _ in seats), best, strict=True)
-         if a is not None and id(a) not in starting),
-        key=lambda t: t[1].projected_points, reverse=True,
-    )
-    outs = sorted(
-        ((key, a) for key, a in seats if a is not None and id(a) not in best_ids),
-        key=lambda t: t[1].projected_points,
-    )
-    # Filling an empty seat costs nobody. A player the optimum puts straight
-    # into an empty seat fills it; any empty seat filled by shifting a starter
-    # takes one of the remaining newcomers (the others shift over for him).
-    empty_keys = [key for key, a in seats if a is None]
-    fills: list[tuple[str, PlayerAnalysis]] = []
-    for (key, a), b in zip(seats, best, strict=True):
-        if a is None and b is not None and id(b) not in starting:
-            fills.append((key, b))
-            empty_keys.remove(key)
-    filled_ids = {id(b) for _, b in fills}
-    ins = [(k, b) for k, b in ins if id(b) not in filled_ids]
-    filled_by_shift = sum(1 for (_, a), b in zip(seats, best, strict=True)
-                          if a is None and b is not None and id(b) in starting)
-    for _ in range(min(filled_by_shift, len(empty_keys), max(0, len(ins) - len(outs)))):
-        key, b = ins.pop(0)
-        fills.append((empty_keys.pop(0), b))
-    for slot_key, filler in fills:
-        suggested_changes.append({
-            "action": "fill",
-            "bench_in": filler.player_name,
-            "bench_in_points": filler.projected_points,
-            "bench_out": None,
-            "bench_out_points": 0.0,
-            "slot": slot_key,
-            "out_slot": None,
-            "gain": round(filler.projected_points, 1),
-            "reason": f"Fill empty {slot_key} with {filler.player_name} "
-                      f"({filler.projected_points} projected)",
-        })
-    for (in_slot, bench_in), (out_slot, bench_out) in zip(ins, outs, strict=False):
-        # Points, not confidence, and wide enough to sit outside the noise.
-        gain = bench_in.projected_points - bench_out.projected_points
-        if gain < MEANINGFUL_SWAP_GAIN:
-            continue
-        reason = f"{bench_in.player_name} projects {round(gain, 1)} more points"
-        if normalize_slot(in_slot) != normalize_slot(out_slot):
-            reason += (f"; he starts at {in_slot} and the others shift to "
-                       f"free {bench_out.player_name}'s {out_slot} seat")
-        suggested_changes.append({
-            "action": "swap",
-            "bench_in": bench_in.player_name,
-            "bench_in_points": bench_in.projected_points,
-            "bench_out": bench_out.player_name,
-            "bench_out_points": bench_out.projected_points,
-            "slot": in_slot,
-            "out_slot": out_slot,
-            "gain": round(gain, 1),
-            "reason": reason,
-        })
+    marginal_changes = []
+    for change in _lineup_changes(seats, best):
+        # Fills cost nobody and are always made. A swap has to clear the
+        # projection's noise to be *suggested*; a smaller one is still listed,
+        # as marginal, so the changes always add up to `optimal_lineup` (a 9.5
+        # bench player over an 8.7 FLEX used to vanish at 99% efficiency while
+        # the optimal lineup quietly started him).
+        if change["action"] == "swap" and change["gain"] < MEANINGFUL_SWAP_GAIN:
+            change["reason"] += (f" — within projection noise (< {MEANINGFUL_SWAP_GAIN} pts), "
+                                 "a coin flip")
+            marginal_changes.append(change)
+        else:
+            suggested_changes.append(change)
     optimal_lineup_out = [
         {"slot": key, "player": a.player_name, "position": a.position,
          "projected_points": a.projected_points}
@@ -1871,6 +1935,8 @@ async def analyze_full_lineup(
         "starters": starters_analysis,
         "bench": [a.to_dict() for a in bench_analysis],
         "suggested_changes": suggested_changes[:5],  # Top 5 changes
+        # Swaps the optimum makes that gain less than MEANINGFUL_SWAP_GAIN.
+        "marginal_changes": marginal_changes,
         "optimal_lineup": optimal_lineup_out,
         "optimal_projected": round(optimal_total, 1),
         # Whose game has started: fixed where they are, never part of a
@@ -1892,5 +1958,6 @@ async def analyze_full_lineup(
         "scoring": scoring,
         "message": (f"Lineup Grade: {grade} | {efficiency:.0f}% of available points started "
                     f"| {len(suggested_changes)} change(s) suggested"
+                    + (f" | {len(marginal_changes)} marginal" if marginal_changes else "")
                     + (f" | {len(locked_players)} locked (game started)" if locked_players else ""))
     })

@@ -10,6 +10,7 @@ import logging
 from collections import defaultdict
 
 from .errors import ErrorType, create_error_response, create_success_response
+from .lineup_slots import normalize_position
 from .player_values import get_values_service
 from .sleeper_tools import (
     active_enriched,
@@ -30,6 +31,12 @@ ESTIMATED_REPLACEMENT_VALUE = 150.0
 # the waiver wire also sells. Such pieces count at this share of their value.
 # This is what makes "one stud for two lesser players" favour the stud side.
 DEPTH_DISCOUNT = 0.5
+
+# Positional need is reported on a 0..NEED_SCALE scale.
+NEED_SCALE = 10
+# A received player at maximum fit (every point he scores raises the
+# receiver's lineup) adds this share of his value to the fairness sum.
+MAX_FIT_BONUS = 0.20
 
 
 def _fairness_value(player: dict) -> float:
@@ -234,7 +241,9 @@ class TradeAnalyzer:
         team1_gives: list[dict],
         team2_gives: list[dict],
         team1_needs: dict[str, int],
-        team2_needs: dict[str, int]
+        team2_needs: dict[str, int],
+        team1_ros_delta: float | None = None,
+        team2_ros_delta: float | None = None,
     ) -> tuple[str, float, dict]:
         """
         Evaluate trade fairness based on player values and positional needs.
@@ -244,6 +253,9 @@ class TradeAnalyzer:
             team2_gives: List of players team 2 is giving up
             team1_needs: Team 1's positional needs
             team2_needs: Team 2's positional needs
+            team1_ros_delta / team2_ros_delta: each side's rest-of-season
+                lineup change, when known; a side at or below 0 gets no
+                positional-fit bonus
 
         Returns:
             Tuple of (recommendation, fairness_score, details)
@@ -258,18 +270,29 @@ class TradeAnalyzer:
         # Positional fit: receiving a player at a position of need is worth more
         # to that team. Scale proportionally to the player's value (up to +20% at
         # maximum need) so it stays meaningful next to real market values.
+        #
+        # With the rest-of-season lineup known, fit is the received player's
+        # own lineup gain (``lineup_fit``), and a side whose ROS lineup the
+        # trade does not raise gets no fit bonus at all: a QB who is no better
+        # than the incumbent filled a "QB need" by head count and pushed the
+        # fairness score toward a trade that hurt the receiver.
         def _fit_bonus(received: list[dict], effective: list[float],
-                       needs: dict[str, int]) -> float:
+                       needs: dict[str, int], ros_delta: float | None) -> float:
+            if ros_delta is not None and ros_delta <= 0:
+                return 0.0
             bonus = 0.0
             for player, val in zip(received, effective, strict=True):
-                pos = player.get("position", "")
-                need = needs.get(pos, 5)
-                bonus += val * (need / 10.0) * 0.20
+                fit = player.get("lineup_fit")
+                if fit is None:
+                    fit = needs.get(player.get("position", ""), NEED_SCALE / 2) / NEED_SCALE
+                bonus += val * fit * MAX_FIT_BONUS
             return bonus
 
         # team1 receives team2_gives, team2 receives team1_gives
-        team1_need_adjustment = _fit_bonus(team2_gives, team1_effective, team1_needs)
-        team2_need_adjustment = _fit_bonus(team1_gives, team2_effective, team2_needs)
+        team1_need_adjustment = _fit_bonus(team2_gives, team1_effective, team1_needs,
+                                           team1_ros_delta)
+        team2_need_adjustment = _fit_bonus(team1_gives, team2_effective, team2_needs,
+                                           team2_ros_delta)
 
         adjusted_team1_receives = team2_value + team1_need_adjustment
         adjusted_team2_receives = team1_value + team2_need_adjustment
@@ -504,12 +527,22 @@ async def analyze_trade(
             except Exception as e:  # ROS is additive; never sink the analysis
                 logger.warning(f"ROS deltas unavailable for trade: {e}")
 
+        # Need from lineup impact when the ROS lineups are known; the head
+        # count is only the fallback.
+        needs_basis = "roster_count"
+        if ros_block:
+            team1_needs = ros_block["team1"]["positional_needs"]
+            team2_needs = ros_block["team2"]["positional_needs"]
+            needs_basis = "ros_lineup_gain"
+
         # Evaluate trade fairness
         recommendation, fairness_score, trade_details = analyzer._evaluate_trade_fairness(
             team1_gives_enriched,
             team2_gives_enriched,
             team1_needs,
-            team2_needs
+            team2_needs,
+            ros_block["team1"]["ros_points_delta"] if ros_block else None,
+            ros_block["team2"]["ros_points_delta"] if ros_block else None,
         )
 
         # Generate warnings
@@ -572,6 +605,7 @@ async def analyze_trade(
                 "overall_rank": p.get("overall_rank"),
                 "position_rank": p.get("position_rank"),
                 "is_trending": p.get("is_trending", False),
+                "ros_lineup_gain": p.get("ros_lineup_gain"),
             }
 
         verdict = _verdict(recommendation, fairness_score, ros_block)
@@ -610,13 +644,15 @@ async def analyze_trade(
                 "roster_id": team1_roster_id,
                 "gives": [_fmt(p) for p in team1_gives_enriched],
                 "receives": [_fmt(p) for p in team2_gives_enriched],
-                "positional_needs": team1_needs
+                "positional_needs": team1_needs,
+                "positional_needs_basis": needs_basis,
             },
             "team2_analysis": {
                 "roster_id": team2_roster_id,
                 "gives": [_fmt(p) for p in team2_gives_enriched],
                 "receives": [_fmt(p) for p in team1_gives_enriched],
-                "positional_needs": team2_needs
+                "positional_needs": team2_needs,
+                "positional_needs_basis": needs_basis,
             },
             "trade_details": trade_details,
             "warnings": warnings,
@@ -677,17 +713,39 @@ async def _ros_deltas(
         return [{**by_id[i], "projected_points": by_id[i]["total_points"]}
                 for i in ids if i in by_id]
 
+    # The best player at each position among everyone in the trade's two
+    # rosters: the yardstick for "how much would a strong player here add".
+    best_at: dict[str, dict] = {}
+    for entry in by_id.values():
+        pos = normalize_position(entry.get("position"))
+        if pos and (pos not in best_at
+                    or entry["total_points"] > best_at[pos]["total_points"]):
+            best_at[pos] = entry
+
     def _side(ids: list[str], gives: list[str], gets: list[str], received: list[dict]) -> dict:
         before = _players(ids)
-        after = _players([i for i in ids if i not in set(gives)] + gets)
+        kept = [i for i in ids if i not in set(gives)]
+        after = _players(kept + gets)
         starters = {p.get("player_id") for p in starting_lineup(after, slots)}
         for player in received:
             player["starts_for_receiver"] = str(player.get("player_id")) in starters
         gives_pts = sum(by_id[i]["total_points"] for i in gives if i in by_id)
         gets_pts = sum(by_id[i]["total_points"] for i in gets if i in by_id)
-        delta = (ros.weekly_lineup_total(after, slots, weeks)
-                 - ros.weekly_lineup_total(before, slots, weeks))
+        after_total = ros.weekly_lineup_total(after, slots, weeks)
+        delta = after_total - ros.weekly_lineup_total(before, slots, weeks)
+        # Each received player's own share of the new lineup: what it loses
+        # without him. Drives the positional-fit bonus (see `_fit_share`).
+        for player in received:
+            pid = str(player.get("player_id"))
+            if pid not in by_id:
+                continue
+            without = _players(kept + [g for g in gets if g != pid])
+            gain = after_total - ros.weekly_lineup_total(without, slots, weeks)
+            player["ros_lineup_gain"] = round(gain, 1)
+            player["lineup_fit"] = _fit_share(gain, _window_points(by_id[pid], weeks))
         return {
+            "positional_needs": _lineup_needs(before, slots, weeks, best_at,
+                                              league.get("roster_positions")),
             "gives_ros_points": round(gives_pts, 1),
             "receives_ros_points": round(gets_pts, 1),
             "raw_ros_points_delta": round(gets_pts - gives_pts, 1),
@@ -710,6 +768,47 @@ async def _ros_deltas(
         "trade_deadline": ros.trade_deadline_status(league.get("settings") or {}, week),
         "schedule_unknown_weeks": meta["schedule_unknown_weeks"],
     }
+
+
+def _window_points(entry: dict, weeks: list[int]) -> float:
+    """A ROS entry's points over the weeks the lineup totals are summed over."""
+    weekly = entry.get("weekly_points") or {}
+    return sum(float(weekly.get(w, 0.0) or 0.0) for w in weeks)
+
+
+def _fit_share(gain: float, points: float) -> float:
+    """Share of a player's points that actually raise the lineup, 0..1.
+
+    1 when he fills a hole (every point he scores is new), 0 when he would
+    not beat whoever already starts — however thin the position looks by count.
+    """
+    if points <= 0:
+        return 0.0
+    return round(min(1.0, max(0.0, gain / points)), 3)
+
+
+def _lineup_needs(players: list[dict], slots: dict[str, int], weeks: list[int],
+                  best_at: dict[str, dict], roster_positions: list[str] | None) -> dict[str, int]:
+    """Positional need 0-10 from lineup impact, not from a head count.
+
+    For each position the league starts: how much of a strong player's points
+    (the best at that position across both rosters) this roster's ROS lineup
+    would actually gain by adding him. A team whose QB is as good as anyone
+    available needs no QB, whatever its depth; the count-based score called
+    that a QB need of 5 and rewarded a trade that lowered its lineup.
+    """
+    from . import ros
+    from .lineup_slots import league_starts
+
+    base = ros.weekly_lineup_total(players, slots, weeks)
+    needs: dict[str, int] = {}
+    for pos, ref in sorted(best_at.items()):
+        if not league_starts(roster_positions, pos):
+            continue
+        clone = {**ref, "player_id": f"__need_{pos}", "projected_points": ref["total_points"]}
+        gain = ros.weekly_lineup_total([*players, clone], slots, weeks) - base
+        needs[pos] = round(NEED_SCALE * _fit_share(gain, _window_points(ref, weeks)))
+    return needs
 
 
 # Below this a rest-of-season lineup change is inside the noise.

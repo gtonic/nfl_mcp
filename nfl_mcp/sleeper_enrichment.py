@@ -52,7 +52,7 @@ def _first_present(stats: dict, *keys: str):
     return None
 
 
-async def _fetch_week_player_snaps(season: int, week: int):
+async def _fetch_week_player_snaps(season: int, week: int, force: bool = False):
     """Fetch player snap stats (best-effort) from Sleeper weekly stats endpoint.
 
     Returns list of dicts for upsert_player_week_stats. If advanced enrichment disabled
@@ -61,7 +61,7 @@ async def _fetch_week_player_snaps(season: int, week: int):
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
     """
-    if not advanced_enrich_enabled():
+    if not advanced_enrich_enabled() and not force:
         logger.debug("[Fetch Snaps] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
 
@@ -324,7 +324,7 @@ async def _fetch_all_team_schedules(season: int):
     return all_games
 
 
-async def _fetch_injuries(with_complete_teams: bool = False):
+async def _fetch_injuries(with_complete_teams: bool = False, force: bool = False):
     """Fetch injury reports for all NFL teams.
 
     Returns list of dicts with keys: player_id, player_name, team_id, position,
@@ -344,10 +344,15 @@ async def _fetch_injuries(with_complete_teams: bool = False):
 
     ``with_complete_teams``: return ``(injuries, complete_teams)`` instead,
     the teams the crawl covered completely — the only ones a prune may touch.
+
+    ``force``: crawl even when NFL_MCP_ADVANCED_ENRICH is off — a manual
+    refresh (``data_refresh``) is an explicit request, not opportunistic
+    enrichment. Without it a script run without ``.env`` silently got 0 rows.
     """
     empty = ([], set()) if with_complete_teams else []
-    if not advanced_enrich_enabled():
-        logger.debug("[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+    if not advanced_enrich_enabled() and not force:
+        logger.warning("[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled "
+                       "(pass force=True for an explicit refresh)")
         return empty
 
     logger.info("[Fetch Injuries] Starting fetch for all teams")
@@ -364,7 +369,7 @@ async def _fetch_injuries(with_complete_teams: bool = False):
         return empty
 
 
-async def _fetch_practice_reports(season: int, week: int, db=None):
+async def _fetch_practice_reports(season: int, week: int, db=None, force: bool = False):
     """Fetch this week's *real* practice reports (DNP/LP/FP) per report day.
 
     Returns dicts for ``upsert_practice_status``: player_name, team, date,
@@ -378,8 +383,9 @@ async def _fetch_practice_reports(season: int, week: int, db=None):
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
     """
-    if not advanced_enrich_enabled():
-        logger.debug("[Fetch Practice] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
+    if not advanced_enrich_enabled() and not force:
+        logger.warning("[Fetch Practice] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled "
+                       "(pass force=True for an explicit refresh)")
         return []
 
     logger.info(f"[Fetch Practice] Starting fetch for season={season}, week={week}")

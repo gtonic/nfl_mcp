@@ -15,6 +15,9 @@ MAX_CONCURRENT_INJURIES = 15  # Parallel injury detail fetches per team
 # 500 (with no eviction) most names were refetched on every crawl.
 ATHLETE_CACHE_SIZE = 4000
 UNKNOWN_NAME = "Unknown"  # placeholder when an athlete's name could not be fetched
+# Reports per list page. ESPN honours up to 200; at 50 a 58-report team took two
+# list requests, and every request waits on the outbound ESPN rate limiter.
+INJURY_LIST_PAGE_SIZE = 200
 REQUEST_TIMEOUT = 10.0  # Seconds per request
 # An empty team list is only believed in small numbers. One team's last injured
 # player recovering is routine; several teams losing every report in the same
@@ -369,7 +372,7 @@ class InjuryAggregator:
 
         # First, collect all injury URLs from paginated list
         while page <= page_count:
-            url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit=50&page={page}"
+            url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team}/injuries?limit={INJURY_LIST_PAGE_SIZE}&page={page}"
 
             try:
                 # Add conditional request headers for caching -- only when the
@@ -659,6 +662,8 @@ class InjuryAggregator:
         else:
             stale_teams = teams
 
+        self._seed_names_from_db()
+
         # Fetch from all sources concurrently (only stale teams)
         espn_task = self.fetch_espn_injuries(stale_teams)
         cbs_task = self.fetch_cbs_injuries(stale_teams)
@@ -695,6 +700,26 @@ class InjuryAggregator:
         all_injuries = fresh_cached + newly_fetched
 
         return all_injuries
+
+    def _seed_names_from_db(self) -> None:
+        """Warm the athlete-name cache from the names already stored.
+
+        A crawl is one detail request per listed report (~1900) plus, for each
+        athlete whose name is not cached, one more for his ESPN athlete page.
+        In a fresh process that second request ran for every report, doubling
+        a crawl that the outbound ESPN rate limiter paces anyway.
+        """
+        if not self._db or not hasattr(self._db, "get_injury_player_names"):
+            return
+        try:
+            names = self._db.get_injury_player_names()
+        except Exception as e:
+            logger.debug(f"[InjuryAggregator] stored names unavailable: {e}")
+            return
+        for pid, name in names.items():
+            if len(self._athlete_name_cache) >= ATHLETE_CACHE_SIZE:
+                break
+            self._athlete_name_cache.setdefault(pid, name)
 
     def _fill_positions(self, reports: list[InjuryReport]) -> None:
         """Set a missing ``position`` from the Sleeper athletes table.
