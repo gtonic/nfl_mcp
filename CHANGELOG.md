@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Signal history (schema v17).** `practice_report_history` keeps every
+  distinct practice row (player, day, status, source — also those the live
+  table refuses or later replaces) and `injury_news_history` every distinct
+  injury/news blurb (player, text, `date_reported`, source, return date),
+  append-only and deduplicated on content; seeded from the live tables on
+  upgrade. Pruned by `prune_old_data` after a year but never inside the
+  current season (~1 MB on the live database at seed time, a few hundred KB
+  a week). `evals/backtest/signal_history.py` rebuilds the practice week and
+  news flags as known at kickoff and reports the multiplier the outcomes
+  imply against `PRACTICE_BLEND_MULT` / `news_signals.EFFECTS`, once a few
+  weeks are collected (`--counts` shows what is there).
+- **ESPN return dates.** The injury crawl keeps ESPN's `details.returnDate`
+  (`player_injuries.return_date`, also on `injury_history` rows); it reaches
+  `ros.expected_absence` through the injury index (`ros_input`,
+  `projections._report_absence`), so Caleb Williams (Out, back 10-18) costs
+  two weeks rather than one. ESPN fills a date on nearly every report — for
+  a reserve list often just the next game — so on IR/PUP it never shortens
+  the minimum stint.
+- `refresh_data` scope `usage` (the last completed week's usage stats).
+  `get_data_freshness` — and so `refresh_data`, the briefing's
+  `data_freshness` and `/health` (`database.data_freshness`) — reports
+  `schedule` (new `schedule_games.updated_at`) and `snaps` ages too.
 - **QB ↔ pass-catcher coupling.** New `qb_coupling` module: a WR whose
   starting QB (top QB by market rank) is Out / IR / suspended is multiplied
   by the backup's tier (low 0.87, mid 0.90, starter-grade 1.0; Doubtful at
@@ -104,6 +126,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Jaylen Warren (…)"); the ROS lineup change stays the verdict.
 
 ### Changed
+- **One refresh path.** The prefetch loop runs `data_refresh`'s scope
+  functions (`run_scope`) instead of its own copies of the fetch-and-write
+  code — the same writes as `refresh_data` (injuries pruned only for
+  completely crawled teams), the same cadence (practice not on Sundays ET,
+  usage from week 2, athletes on their interval), and a scope one side is
+  refreshing is reported `already_running` by the other.
 - **Weekly projections are Sleeper-first.** `projected_points` is now
   `0.25 × our model + 0.75 × Sleeper's projection` (priced in the league's
   scoring) in every tool — project_players, start/sit, analyze_lineup, the
@@ -161,6 +189,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backups left their WRs at 0.772 of the blend), so they stay "low" and the
   backtest numbers are unchanged. The backtest falls back to nflverse's
   `stats_player` release for 2025.
+- **Practice snapshot dating.** NFL.com's page has no report date; a
+  snapshot taken before the 16:00 ET cutoff was always dated yesterday, so a
+  team posting early overwrote yesterday's row with today's report (Brock
+  Bowers' Thursday LP became Friday's DNP, 2026-09-26). A pre-cutoff snapshot
+  that differs from yesterday's stored report — or arrives on the week's
+  first report day — is now dated today. A page showing another week's game
+  (the next week's page still shows the last one on Monday/Tuesday) is
+  skipped: it had re-stored 618 last-week rows under the new week, which
+  migration v17 moves back by their game date.
+- `get_all_current_injuries` returns `date_reported` (news signals read it
+  for recency and treated every blurb as undated).
 - **Injury-shortened games are not a lost role.** `role_shift` skips a
   played week whose snap share fell below 60% of his prior mean when an
   injury designation started with that game (a non-Active report within two

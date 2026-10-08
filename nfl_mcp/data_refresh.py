@@ -8,11 +8,15 @@ fetchers by hand did not help either -- they are gated by
 ``NFL_MCP_ADVANCED_ENRICH``, which a script without ``.env`` does not have, so
 ``_fetch_injuries()`` returned 0 rows without a word.
 
-``refresh_data`` runs the same fetchers and writes the same way the loop does
-(injuries pruned only for completely crawled teams), regardless of that flag,
-and reports per-scope counts, durations and the resulting freshness. An
-injury crawl is ~1900 ESPN requests and takes minutes, so a refresh can also
-run in the background and be polled by job id.
+This module is the one code path for those feeds: the prefetch loop calls
+:func:`run_scope` per scope on its own schedule (practice not on Sundays ET,
+athletes once a day, usage only from week 2), and ``refresh_data`` runs the
+same scope functions on demand, regardless of that flag, reporting per-scope
+counts, durations and the resulting freshness. Writes are the same either way
+(injuries pruned only for completely crawled teams). A scope one caller is
+refreshing is skipped by the other (``already_running``). An injury crawl is
+~1900 ESPN requests and takes minutes, so a refresh can also run in the
+background and be polled by job id.
 """
 from __future__ import annotations
 
@@ -26,14 +30,17 @@ from .health import env_int
 
 logger = logging.getLogger(__name__)
 
-REFRESH_SCOPES = ("injuries", "practice", "athletes", "schedule", "snaps")
+REFRESH_SCOPES = ("injuries", "practice", "athletes", "schedule", "snaps", "usage")
 DEFAULT_SCOPES = ("injuries", "practice")
 
 # A feed younger than this is left alone unless ``force``: a second refresh a
 # minute after the first only re-crawls the same pages.
 MIN_REFRESH_AGE_HOURS = {"injuries": 0.25, "practice": 0.25, "athletes": 6.0}
 # Scope -> key in NFLDatabase.get_data_freshness().
-_FRESHNESS_FEED = {"injuries": "injuries", "practice": "practice_status", "athletes": "athletes"}
+_FRESHNESS_FEED = {"injuries": "injuries", "practice": "practice_status", "athletes": "athletes",
+                   "schedule": "schedule", "snaps": "snaps"}
+# Owner name the prefetch loop claims scopes under (see ``run_scope``).
+PREFETCH_OWNER = "prefetch"
 # NFL regular season, for the schedule look-ahead.
 _LAST_REGULAR_WEEK = 18
 # Finished background jobs kept for polling.
@@ -102,12 +109,26 @@ async def _refresh_snaps(db, season: int, week: int) -> dict:
     return {"fetched": fetched, "written": written, "weeks": weeks}
 
 
+async def _refresh_usage(db, season: int, week: int) -> dict:
+    from . import sleeper_tools
+    # Rolling usage averages read completed weeks: the last one.
+    weeks = [week - 1] if week > 1 else []
+    fetched = written = 0
+    for wk in weeks:
+        rows = await sleeper_tools._fetch_weekly_usage_stats(season, wk, force=True)
+        fetched += len(rows or [])
+        if rows:
+            written += await asyncio.to_thread(db.upsert_usage_stats, rows)
+    return {"fetched": fetched, "written": written, "weeks": weeks}
+
+
 _REFRESHERS = {
     "injuries": _refresh_injuries,
     "practice": _refresh_practice,
     "athletes": _refresh_athletes,
     "schedule": _refresh_schedule,
     "snaps": _refresh_snaps,
+    "usage": _refresh_usage,
 }
 
 
@@ -129,6 +150,26 @@ async def _run_scope(scope: str, db, season: int, week: int) -> dict:
         out = {"status": "error", "error": str(e)}
     out["duration_s"] = round(time.monotonic() - started, 1)
     return out
+
+
+async def run_scope(scope: str, db, season: int | None, week: int | None,
+                    owner: str = PREFETCH_OWNER) -> dict:
+    """Refresh one scope now, unless another caller is already refreshing it.
+
+    The prefetch loop's entry point: the same fetch-and-write as
+    ``refresh_data`` (so the two never diverge), with ``owner`` holding the
+    scope meanwhile so a manual refresh reports ``already_running`` instead
+    of crawling the same pages in parallel -- and vice versa. Never raises.
+    """
+    current = _scope_owner.get(scope)
+    if current:
+        return {"status": "already_running", "job_id": current}
+    _scope_owner[scope] = owner
+    try:
+        return await _run_scope(scope, db, season, week)
+    finally:
+        if _scope_owner.get(scope) == owner:
+            _scope_owner.pop(scope, None)
 
 
 async def _run(job: dict, db, season: int, week: int) -> dict:

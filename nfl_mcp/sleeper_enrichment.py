@@ -420,15 +420,16 @@ async def _fetch_practice_reports(season: int, week: int, db=None, force: bool =
         logger.error(f"[Fetch Practice] Failed for season={season}, week={week}: {e}", exc_info=True)
         return []
 
-async def _fetch_weekly_usage_stats(season: int, week: int):
+async def _fetch_weekly_usage_stats(season: int, week: int, force: bool = False):
     """Fetch weekly usage statistics (targets, routes, RZ touches) from available sources.
 
     Returns list of dicts for upsert_usage_stats.
     Attempts Sleeper stats first, falls back to ESPN if needed.
     Uses retry logic with exponential backoff and circuit breaker pattern.
     Includes response validation to ensure data quality.
+    ``force``: fetch even when NFL_MCP_ADVANCED_ENRICH is off (``refresh_data``).
     """
-    if not advanced_enrich_enabled():
+    if not advanced_enrich_enabled() and not force:
         logger.debug("[Fetch Usage] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled")
         return []
 

@@ -247,6 +247,35 @@ backoff and, on total failure, return the most recent cached snapshot with
 newest one for its league(/week) (only its `fetched_at` is refreshed) and keep at
 most 3 rows per key; schema v16 pruned the backlog to the newest row per key.
 
+### Data layer: refresh, freshness, history (schema v17)
+
+- **One refresh path.** `nfl_mcp/data_refresh.py` owns the fetch-and-write per
+  feed (`injuries`, `practice`, `athletes`, `schedule`, `snaps`, `usage`). The
+  prefetch loop calls `run_scope` per scope on its cadence
+  (`server._cycle_scopes`: practice not on Sundays ET, usage from week 2,
+  athletes on `NFL_MCP_PREFETCH_ATHLETES_INTERVAL`); the `refresh_data` tool
+  runs the same functions on demand. A scope held by one is `already_running`
+  for the other.
+- **Freshness.** `get_data_freshness()` reports `injuries`, `athletes`,
+  `practice_status`, `schedule` (`schedule_games.updated_at`, NULL until the
+  first fetch after the upgrade) and `snaps` (`player_week_stats.updated_at`);
+  `/health` carries it as `database.data_freshness`.
+- **Return dates.** `player_injuries.return_date` is ESPN's
+  `details.returnDate`; `ros.expected_absence` uses it (never below a reserve
+  list's minimum stint).
+- **Practice snapshot dating.** NFL.com shows only the latest report and no
+  date. A snapshot is dated by the clock (before 16:00 ET: yesterday),
+  corrected against the stored days: a pre-cutoff page that differs from
+  yesterday's stored report is today's (published early); a page identical to
+  the last stored day is skipped; a page whose game is not the week's
+  (schedule) or already played is skipped.
+- **Signal history.** `practice_report_history` and `injury_news_history` are
+  append-only, deduplicated on content (practice: player/day/status/source;
+  news: a hash of player/text/date/source), and pruned by `prune_old_data`
+  after `SIGNAL_HISTORY_DAYS` (365) but never inside the current season.
+  `python -m evals.backtest.signal_history --db nfl_data.db --season 2026`
+  backtests the practice and news multipliers from them.
+
 ### Weekly projections (Sleeper-first)
 
 Every tool that projects a week — `project_players`, start/sit,

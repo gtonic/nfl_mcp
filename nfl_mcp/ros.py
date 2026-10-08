@@ -200,7 +200,9 @@ def expected_absence(
     """``(weeks_missed_from_this_week, reason)`` for an injury designation.
 
     Questionable and doubtful are priced by the weekly projection (0.9 / 0.35)
-    and cost no future weeks. A stated return date wins; then the report text
+    and cost no future weeks. A stated return date (ESPN's ``returnDate``)
+    wins, except that it never shortens a reserve list's minimum stint; then
+    the report text
     ("season-ending", "2-4 weeks", "3-game suspension"); otherwise one week for
     Out and ``IR_MIN_WEEKS`` for any reserve list. The longer reading is taken,
     because a trade or a drop made on an optimistic return is the costly error.
@@ -228,6 +230,10 @@ def expected_absence(
 
     stated = _weeks_from_return_date(return_date, today or datetime.now(UTC).date())
     if stated is not None:
+        # ESPN fills a return date for nearly every report, and for a reserve
+        # list it is often just the next game: it cannot cut the minimum stint.
+        if reserve and stated < base:
+            return base, f"{reason}; ESPN return date {return_date} is earlier"
         return max(1, stated), f"{status}: return date {return_date}"
     if _SEASON_ENDING_RE.search(text):
         return SEASON_ENDING_WEEKS, f"{status}: season-ending per the report"
@@ -593,7 +599,8 @@ async def ros_projections(
         # A stated return date is a calendar date; every other window (the
         # reserve minimum, a suspension, "out 2 weeks") is games missed, so a
         # bye inside it does not use one up.
-        by_calendar = _weeks_from_return_date(injury.get("return_date"), today) is not None
+        stated = _weeks_from_return_date(injury.get("return_date"), today)
+        by_calendar = stated is not None and max(1, stated) == absent
 
         ros = playoff = 0.0
         weekly = []

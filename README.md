@@ -158,7 +158,7 @@ The active profile and its tool count are logged at startup and reported by `GET
 `fetch_athletes` · `fetch_all_players` · `fetch_teams` (cache refreshes the prefetch loop already runs) · `get_league_leaders` · `get_cbs_expert_picks` (CBS experts' ATS betting picks)
 
 **🌐 Web, data & health**
-`crawl_url` (SSRF-guarded text extraction) · `refresh_data` (refresh injuries / practice / athletes / schedule / snaps **now** — when the prefetch went stale, e.g. after the host slept; per-scope counts, durations and resulting freshness; `background=True` + `job_id` to poll) · `GET /health` (REST)
+`crawl_url` (SSRF-guarded text extraction) · `refresh_data` (refresh injuries / practice / athletes / schedule / snaps / usage **now** — when the prefetch went stale, e.g. after the host slept; per-scope counts, durations and resulting freshness; `background=True` + `job_id` to poll) · `GET /health` (REST)
 
 ## 📚 More
 

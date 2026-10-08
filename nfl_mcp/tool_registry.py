@@ -539,8 +539,8 @@ async def refresh_data(
     completely crawled teams), even when NFL_MCP_ADVANCED_ENRICH is off.
 
     Parameters:
-        scope: any of "injuries", "practice", "athletes", "schedule", "snaps"
-            (default ["injuries", "practice"])
+        scope: any of "injuries", "practice", "athletes", "schedule", "snaps",
+            "usage" (default ["injuries", "practice"])
         force: refresh even a feed younger than its minimum age
             (15 min for injuries/practice, 6h for athletes)
         background: start the refresh and return a job_id at once — an injury
@@ -551,7 +551,8 @@ async def refresh_data(
         job_id, status (running|done|error), season, week,
         scopes {scope: {status (ok|error|skipped_fresh|already_running),
                 fetched, written, duration_s, error?}},
-        freshness_before, freshness {feed: {updated_at, age_hours}},
+        freshness_before, freshness {feed: {updated_at, age_hours}} for
+            injuries, athletes, practice_status, schedule and snaps,
         duration_s, success
     }
 
