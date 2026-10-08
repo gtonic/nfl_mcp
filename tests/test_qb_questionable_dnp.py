@@ -29,9 +29,9 @@ def _flag(name, weight=1.0):
 
 
 class TestStarterSitWeight:
-    def test_questionable_dnp_dnp_is_the_doubtful_weight(self):
+    def test_questionable_dnp_dnp_is_the_dnp_weight(self):
         sit = qb_coupling.starter_sit_weight("Questionable", _practice("DNP", "DNP"))
-        assert sit["weight"] == qb_coupling.QUESTIONABLE_DNP_WEIGHT == qb_coupling.DOUBTFUL_WEIGHT
+        assert sit["weight"] == qb_coupling.QUESTIONABLE_DNP_WEIGHT < qb_coupling.DOUBTFUL_WEIGHT
         assert sit["basis"] == "practice" and sit["detail"] == "DNP Wed/Thu"
 
     @pytest.mark.parametrize("statuses, weight", [

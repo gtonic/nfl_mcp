@@ -354,6 +354,10 @@ projections, waivers, drops and trades price them, and tell you why.
   model with Sleeper.
 
 ### Fixed
+- QB coupling: a Doubtful starting QB now counts at 0.9 (was 0.75) — 8 of 9
+  doubtful starters sat in 2023-25 and 99% of all doubtful skill players did.
+  Questionable + DNP week and the news-based sit weight stay at 0.75 (now
+  their own constants instead of aliases of the doubtful weight).
 - **QB coupling for a Questionable starter who is not practising.** Receivers
   were cut only for an Out / IR / suspended (full) or Doubtful (75%) starting
   QB; Lamar Jackson (Questionable, DNP Wednesday and Thursday, "only an
