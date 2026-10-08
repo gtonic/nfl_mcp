@@ -283,13 +283,16 @@ def _cycle_scopes(week: int, weekday_et: int) -> list[str]:
 
     Schedule (this week + the look-ahead), snaps (this week and the last) and
     injuries every cycle; practice reports every day but Sunday (US Eastern);
-    usage once there is a completed week. Athletes run on their own cadence.
+    usage once there is a completed week, and then the accuracy grading (a
+    no-op unless a week has just become final or its stat corrections are
+    due: `projection_accuracy.weeks_to_grade`). Athletes run on their own
+    cadence.
     """
     scopes = ["schedule", "snaps", "injuries"]
     if weekday_et != _NO_PRACTICE_WEEKDAY:
         scopes.append("practice")
     if week > 1:
-        scopes.append("usage")
+        scopes += ["usage", "accuracy"]
     return scopes
 
 

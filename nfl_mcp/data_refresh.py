@@ -30,7 +30,7 @@ from .health import env_int
 
 logger = logging.getLogger(__name__)
 
-REFRESH_SCOPES = ("injuries", "practice", "athletes", "schedule", "snaps", "usage")
+REFRESH_SCOPES = ("injuries", "practice", "athletes", "schedule", "snaps", "usage", "accuracy")
 DEFAULT_SCOPES = ("injuries", "practice")
 
 # A feed younger than this is left alone unless ``force``: a second refresh a
@@ -122,6 +122,14 @@ async def _refresh_usage(db, season: int, week: int) -> dict:
     return {"fetched": fetched, "written": written, "weeks": weeks}
 
 
+async def _refresh_accuracy(db, season: int, week: int) -> dict:
+    """Grade finished weeks' logged projections (`projection_accuracy`):
+    each week once it is final, and once more after the stat corrections."""
+    from .projection_accuracy import refresh_accuracy
+    out = await refresh_accuracy(db, season)
+    return {k: out[k] for k in ("fetched", "written", "weeks")}
+
+
 _REFRESHERS = {
     "injuries": _refresh_injuries,
     "practice": _refresh_practice,
@@ -129,6 +137,7 @@ _REFRESHERS = {
     "schedule": _refresh_schedule,
     "snaps": _refresh_snaps,
     "usage": _refresh_usage,
+    "accuracy": _refresh_accuracy,
 }
 
 

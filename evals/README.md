@@ -260,6 +260,26 @@ python -m evals.backtest.sleeper_blend --include-dnp              # + weeks the 
 ```
 Sleeper history is cached (compacted, ~0.6 MB/week) in `evals/backtest/.cache/sleeper/`.
 
+### ROS with Sleeper (`ros_sleeper_backtest.py`)
+ROS later weeks are `0.25 × our rate + 0.75 × Sleeper's projection for that
+week`. Sleeper keeps no history of what it projected weeks ahead, so the eval
+brackets the live input on the per-game rate over W+1..17: Sleeper's week-W
+line used flat for every later week (leak-free, lower bound) and the mean of
+each later week's own pre-game line (leaky, upper bound), plus a weight sweep.
+
+```bash
+python -m evals.backtest.ros_sleeper_backtest --seasons 2023 2024 2025 --as-of 4 6 8 10
+```
+
+### Live accuracy (`accuracy_report.py`)
+The real served projections, graded: reads `projection_accuracy` (schema v18,
+filled by the prefetch loop / `refresh_data(scope=["accuracy"])`) and prints
+MAE/bias per position, projection source, signal and week.
+
+```bash
+python -m evals.backtest.accuracy_report --db nfl_data.db --season 2026 [--grade]
+```
+
 ---
 
 ## Layer B — data-source contract checks (`evals/contracts/`)

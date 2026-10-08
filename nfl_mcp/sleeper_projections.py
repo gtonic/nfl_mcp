@@ -144,17 +144,62 @@ def _index(rows) -> dict:
             "by_k": by_k}
 
 
-async def fetch_week_projections(season: int, week: int) -> dict:
-    """Sleeper's projections for one week, indexed; empty index when unavailable."""
+async def fetch_week_projections(season: int, week: int,
+                                 ttl: timedelta = CACHE_TTL) -> dict:
+    """Sleeper's projections for one week, indexed; empty index when unavailable.
+
+    `ttl`: how old a cached copy may be. The current week's numbers move with
+    the injury report (:data:`CACHE_TTL`); a week further out is re-projected
+    rarely, and ROS reads it at :data:`FUTURE_CACHE_TTL`. One cache serves
+    both, each reader applying its own age limit.
+    """
     key = (season, week)
     cached = _cache.get(key)
     now = datetime.now(UTC)
-    if cached and now - cached[0] < CACHE_TTL:
+    if cached and now - cached[0] < ttl:
         return cached[1]
     index = await _fetch(season, week)
     if index["by_id"]:
         _cache[key] = (now, index)
     return index
+
+
+# A week after the current one: re-fetched at most this often by ROS.
+FUTURE_CACHE_TTL = timedelta(hours=12)
+# At most this many week requests in flight at once (a full ROS reads ~12).
+FETCH_CONCURRENCY = 6
+# A future week that came back empty is not asked for again for this long, so
+# an outage does not cost every ROS call one timeout per week.
+_EMPTY_RETRY = timedelta(minutes=30)
+_empty_until: dict[tuple[int, int], datetime] = {}
+
+
+async def fetch_weeks(season: int, weeks, ttl: timedelta = FUTURE_CACHE_TTL) -> dict[int, dict]:
+    """``{week: index}`` for several weeks, fetched in parallel (bounded) and
+    cached per week. A week Sleeper has nothing for maps to an empty index.
+    Never raises."""
+    import asyncio
+
+    empty = {"by_id": {}, "by_name": {}, "by_def": {}}
+    sem = asyncio.Semaphore(FETCH_CONCURRENCY)
+    now = datetime.now(UTC)
+
+    async def _one(w: int) -> dict:
+        if (until := _empty_until.get((season, w))) and now < until:
+            return empty
+        async with sem:
+            try:
+                index = await fetch_week_projections(season, w, ttl=ttl)
+            except Exception as e:  # never sink the caller
+                logger.debug(f"Sleeper projections for {season} wk{w} failed: {e}")
+                index = empty
+        if not index.get("by_id"):
+            _empty_until[(season, w)] = now + _EMPTY_RETRY
+        return index
+
+    weeks = list(dict.fromkeys(int(w) for w in weeks))
+    results = await asyncio.gather(*(_one(w) for w in weeks))
+    return dict(zip(weeks, results, strict=True))
 
 
 async def _fetch(season: int, week: int) -> dict:

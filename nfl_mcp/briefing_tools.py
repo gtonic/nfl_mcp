@@ -27,7 +27,7 @@ from .injury_match import (
 from .ir_audit import audit_roster
 from .lineup_slots import starting_slot_list, starting_slots
 from .practice_reports import lookup_practice, practice_fields
-from .projection_store import log_projections
+from .projection_store import log_projections, signals_of
 from .scoring import league_scoring
 from .sleeper_tools import find_roster  # also re-exported for older importers
 from .teams import normalize_team
@@ -398,7 +398,12 @@ async def get_weekly_briefing(
     opp_all = _with_ids(_as_candidates(opp_proj), opp_inputs)
     # Kept so the week can be graded afterwards (get_weekly_retro) and so a
     # later check can say what moved. Only pre-kickoff numbers are written.
-    log_projections(db, season, week, scoring_exact, my_all + opp_all,
+    # The signals behind each number go with it, for the accuracy loop.
+    signals = {(p.get("player"), p.get("team")): signals_of(p)
+               for res in (my_proj, opp_proj) for p in (res or {}).get("projections") or []}
+    log_projections(db, season, week, scoring_exact,
+                    [{**c, "signals": signals.get((c.get("name"), c.get("team")))}
+                     for c in my_all + opp_all],
                     league_id=league_id, source="briefing", games=games)
     # Only players actually in the lineup are locked; a bench player whose game
     # has started is simply no longer available.
