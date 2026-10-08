@@ -130,6 +130,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model with Sleeper.
 
 ### Fixed
+- **Name lookups pick the fantasy player, not a namesake.**
+  `get_ros_projections(player_names=["Justin Jefferson"])` took the first
+  exact name match with a team — Cleveland's linebacker — and returned ROS
+  71.7 at a flat 8.0 a game with no value trajectory (an LB is not ranked).
+  Names now resolve through `lineup_tools.name_candidates` (team/position
+  hint, fantasy position on a team, active, Sleeper's `search_rank`); a name
+  shared by several fantasy players is priced as the best match with a
+  `warnings` entry naming the others. Jefferson: ROS 71.7 → 118.8 (13.1 a
+  game, WR, trajectory ranked against the league pool).
+- **`project_players` resolves bare names.** A string or a dict without
+  team/position used to project as a 0-information placeholder (8.0,
+  `model_only`). It is now resolved from the athlete cache first; anything
+  that cannot be (no match, no NFL team) is left out and listed in
+  `unresolved` with a warning — never priced as a placeholder. The tool also
+  accepts plain strings.
+- **Injury exits read on any database handle.** `role_shift` looked up the
+  injury history only on the server's shared database, so a projection on
+  another handle priced Ja'Marr Chase's 20%-snap week as a lost role (ROS
+  103.9 vs 134.7); the caller's handle is now passed through, and ROS hands
+  the weekly engine its database (a ROS call first after a restart left it
+  without one).
+- **Backup QB named from the depth chart.** `qb_coupling` names the backup
+  from Sleeper's `depth_chart_order` (then the market depth): "Baker
+  Mayfield Out — Jalon Daniels (low backup, unranked by the market)" instead
+  of "an unranked backup", with `backup_tier_source` and
+  `backup_sleeper_rank`. Tiering an unranked backup by his rank among the
+  week's Sleeper QB projections was backtested and rejected (`sleeper_blend
+  --qb-coupling --qb-sleeper-tier`: WR MAE 4.968 → 5.112 — Sleeper's top-24
+  backups left their WRs at 0.772 of the blend), so they stay "low" and the
+  backtest numbers are unchanged. The backtest falls back to nflverse's
+  `stats_player` release for 2025.
 - **Injury-shortened games are not a lost role.** `role_shift` skips a
   played week whose snap share fell below 60% of his prior mean when an
   injury designation started with that game (a non-Active report within two

@@ -298,6 +298,7 @@ def player_rows(
     sleeper_id: str | None = None,
     injury_history: list[dict] | None = None,
     kickoffs: dict[int, str] | None = None,
+    db=None,
 ) -> list[dict]:
     """His `usage_trends.week_row` rows over `weeks`, from data already loaded:
     the nflverse logs entry (``build_name_index`` value) and, when given, the
@@ -305,8 +306,9 @@ def player_rows(
 
     Injury-shortened games are marked ``injury_exit`` (see
     `injury_exit_weeks`), and `classify` skips them. The report history and
-    kickoffs are read from the server's database when not passed -- only for
-    a player with a low-snap week, and never creating a database.
+    kickoffs are read from `db` (else the server's shared database) when not
+    passed -- only for a player with a low-snap week, and never creating a
+    database.
     """
     games = {g["week"]: g for g in (entry or {}).get("games", [])}
     stats = week_stats or {}
@@ -319,7 +321,8 @@ def player_rows(
     if not _low_snap_weeks(rows):
         return rows
     if injury_history is None and kickoffs is None:
-        injury_history, kickoffs = _injury_context((entry or {}).get("name"), team, weeks)
+        injury_history, kickoffs = _injury_context((entry or {}).get("name"), team, weeks,
+                                                   db=db)
     for wk in injury_exit_weeks(rows, injury_history, kickoffs):
         for r in rows:
             if r["week"] == wk:
@@ -336,11 +339,17 @@ def _season_of(today=None) -> int:
 
 
 def _injury_context(name: str | None, team: str, weeks: list[int],
-                    season: int | None = None) -> tuple[list[dict], dict[int, str]]:
+                    season: int | None = None, db=None) -> tuple[list[dict], dict[int, str]]:
     """``(injury history incl. the current report, {week: kickoff})`` for one
-    player from the shared database, if the server has one open."""
+    player from `db`, else the shared database if the server has one open.
+
+    The caller's handle comes first: reading only the shared one left a
+    projection made on another handle (a script, a copy of the database)
+    blind to every injury exit, and priced Ja'Marr Chase's 20%-snap week as
+    a lost role (ROS 103.9 instead of 134.7 on 2026-10-08)."""
     from . import database
-    db = database._shared_db  # never build one here: tests and evals have none
+    if db is None:
+        db = database._shared_db  # never build one here: tests and evals have none
     if db is None or not name:
         return [], {}
     season = season or _season_of()

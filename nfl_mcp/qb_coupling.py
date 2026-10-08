@@ -11,7 +11,10 @@ weeks 3-5 of 2026 with Mayfield (week 3) and then Jalon Daniels throwing.
 (the highest-valued QB in the market depth, ``projections._depth_map``):
 when he is Out (or IR / suspended) the receiver takes ``RECEIVER_MULT`` for
 his position and the backup's tier (``BACKUP_TIERS``: the backup's market
-rank at QB); Doubtful counts at ``DOUBTFUL_WEIGHT`` of it. The multiplier is
+rank at QB; unranked is "low", see ``TIER_UNRANKED_BY_SLEEPER``); Doubtful
+counts at ``DOUBTFUL_WEIGHT`` of it. The backup is the next healthy QB on
+Sleeper's depth chart (``depth_chart_order``), then in the market depth, so
+he is named even when the market does not value him. The multiplier is
 applied after the model is built, on both shares of the blend:
 
     sleeper_share x sleeper_mult                 # the full multiplier
@@ -51,10 +54,27 @@ from __future__ import annotations
 from . import opportunity_tools
 from .opportunity import DEFAULT_LOOKBACK
 
-# Backup quarterback tiers by his market rank at QB (positional rank); an
-# unranked backup is "low".
+# Backup quarterback tiers by his rank at QB (positional rank); an unranked
+# backup is "low".
 BACKUP_TIERS: tuple[tuple[int | None, str], ...] = (
     (24, "starter_grade"), (36, "mid"), (None, "low"))
+# Where the backup's tier comes from: his market rank (FantasyCalc
+# position_rank); a backup the market does not value (most of them) is
+# "low". His rank among the week's Sleeper QB projections was tried as the
+# tier for those (backtest `--qb-sleeper-tier`, 2023-25: 193 WR rows whose
+# backup was unranked the season before but projected by Sleeper that week)
+# and rejected: it runs the wrong way -- Sleeper's QB<=24 backups left their
+# WRs at 0.772 of the blend, QB25-36 at 0.945, both below the 1.034 of other
+# WRs and together (0.85) where "low" (0.87) already prices them; tiering
+# them up un-cut them and raised the WR MAE 4.968 -> 5.112. It is reported
+# (``backup_sleeper_rank``), not used for the tier.
+TIER_SOURCE_MARKET = "market_rank"
+TIER_SOURCE_SLEEPER = "sleeper_week_rank"
+TIER_SOURCE_NONE = "unranked"
+TIER_UNRANKED_BY_SLEEPER = False
+# The Sleeper stat key the week's QBs are ranked by (a rank, so the format
+# hardly matters for a quarterback).
+SLEEPER_RANK_KEY = "pts_ppr"
 # Receiver multiplier with the starter out, by position and backup tier.
 # From the backtest (module doc): WR low 0.87 / mid 0.90 (total-points ratio
 # 0.928 / 0.833 vs 1.033 for other WRs; mid is the smaller sample, so kept
@@ -85,6 +105,53 @@ def qb_tier(rank: int | None) -> str:
     return BACKUP_TIERS[-1][1]
 
 
+def sleeper_qb_ranks(index: dict | None) -> dict[tuple[str, str], int]:
+    """``{(normalized name, team): rank}`` of every QB Sleeper projects this
+    week (`sleeper_projections` index), best first. Pure."""
+    from .opportunity_tools import norm_name
+    rows = [r for r in ((index or {}).get("by_id") or {}).values()
+            if (r.get("position") or "").upper() == "QB" and r.get("name") and r.get("team")]
+    rows.sort(key=lambda r: -float((r.get("stats") or {}).get(SLEEPER_RANK_KEY) or 0.0))
+    return {(norm_name(r["name"]), r["team"]): i for i, r in enumerate(rows, 1)}
+
+
+def sleeper_rank_of(name: str | None, team: str, sleeper_ranks: dict | None) -> int | None:
+    """His rank among the week's Sleeper QB projections (None: not projected)."""
+    from .opportunity_tools import norm_name
+    return (sleeper_ranks or {}).get((norm_name(name), team)) if name else None
+
+
+def backup_rank(name: str | None, team: str, market_rank: int | None,
+                sleeper_ranks: dict | None,
+                by_sleeper: bool = TIER_UNRANKED_BY_SLEEPER) -> tuple[int | None, str]:
+    """``(rank, source)`` for the backup's tier: his market rank; unranked
+    there, Sleeper's week rank only with `by_sleeper` (the rejected variant,
+    see `TIER_UNRANKED_BY_SLEEPER`)."""
+    if isinstance(market_rank, int) and market_rank > 0:
+        return market_rank, TIER_SOURCE_MARKET
+    rank = sleeper_rank_of(name, team, sleeper_ranks) if by_sleeper else None
+    if rank:
+        return rank, TIER_SOURCE_SLEEPER
+    return None, TIER_SOURCE_NONE
+
+
+def _pick_backup(qbs: list[dict], order: list[str], team: str, status_of) -> dict | None:
+    """The quarterback throwing in the starter's place: the team's depth chart
+    (Sleeper ``depth_chart_order``) first, then the market depth, skipping the
+    starter and anyone else Out/Doubtful. ``{name, position_rank}``."""
+    from .opportunity_tools import norm_name
+    starter = norm_name(qbs[0]["name"])
+    market = {norm_name(e["name"]): e for e in qbs}
+    names = [n for n in order if n and norm_name(n) != starter]
+    names += [e["name"] for e in qbs[1:] if norm_name(e["name"]) not in {norm_name(n) for n in names}]
+    for n in names:
+        if _kind(status_of(n, team)) in ("out", "doubtful"):
+            continue
+        entry = market.get(norm_name(n)) or {}
+        return {"name": entry.get("name") or n, "position_rank": entry.get("position_rank")}
+    return None
+
+
 def _kind(status: str | None) -> str:
     from .injury_status import availability
     return availability(status)
@@ -104,10 +171,18 @@ def _with_share(opp_index: dict | None, name: str, starter: str, week: int | Non
 
 
 def receiver_context(depth: dict, team: str, position: str, name: str, status_of,
-                     opp_index: dict | None = None, week: int | None = None) -> dict | None:
+                     opp_index: dict | None = None, week: int | None = None,
+                     qb_order: dict[str, list[str]] | None = None,
+                     sleeper_ranks: dict | None = None) -> dict | None:
     """``{starter, starter_status, backup, backup_rank, backup_tier,
-    with_starter_share, sleeper_mult, model_mult, applied, reason}`` for a
-    WR/TE whose starting QB is Out or Doubtful; None otherwise."""
+    backup_tier_source, with_starter_share, sleeper_mult, model_mult,
+    applied, reason}`` for a WR/TE whose starting QB is Out or Doubtful;
+    None otherwise.
+
+    `qb_order` is ``{team: [QB names in depth-chart order]}`` (Sleeper's
+    ``depth_chart_order``), which names the backup when the market does not
+    value him; `sleeper_ranks` (`sleeper_qb_ranks`) is reported as
+    ``backup_sleeper_rank`` (see `TIER_UNRANKED_BY_SLEEPER`)."""
     position = (position or "").upper()
     if position not in RECEIVER_MULT or not depth or status_of is None:
         return None
@@ -119,17 +194,20 @@ def receiver_context(depth: dict, team: str, position: str, name: str, status_of
     kind = _kind(status)
     if kind not in ("out", "doubtful"):
         return None
-    backup = next((e for e in qbs[1:]
-                   if _kind(status_of(e["name"], team)) not in ("out", "doubtful")), None)
-    rank = (backup or {}).get("position_rank")
+    backup = _pick_backup(qbs, (qb_order or {}).get(team) or [], team, status_of)
+    rank, source = backup_rank((backup or {}).get("name"), team,
+                               (backup or {}).get("position_rank"), sleeper_ranks)
     tier = qb_tier(rank)
     weight = 1.0 if kind == "out" else DOUBTFUL_WEIGHT
     full = RECEIVER_MULT[position][tier]
     mult = round(max(MIN_MULT, min(MAX_MULT, 1.0 - (1.0 - full) * weight)), 3)
     share = _with_share(opp_index, name, starter, week)
-    who = backup["name"] if backup else "an unranked backup"
+    who = backup["name"] if backup else "an unnamed backup"
     ctx = {"starter": starter, "starter_status": status, "backup": (backup or {}).get("name"),
-           "backup_rank": rank, "backup_tier": tier, "with_starter_share": share,
+           "backup_rank": rank, "backup_tier": tier, "backup_tier_source": source,
+           "backup_sleeper_rank": sleeper_rank_of((backup or {}).get("name"), team,
+                                                  sleeper_ranks),
+           "with_starter_share": share,
            "sleeper_mult": 1.0, "model_mult": 1.0, "applied": False}
     if share == 0.0:
         ctx["reason"] = (f"{starter} ({status}) has not played in his trailing games — "
@@ -138,8 +216,11 @@ def receiver_context(depth: dict, team: str, position: str, name: str, status_of
     model = round(1.0 - (1.0 - mult) * (1.0 if share is None else share), 3)
     ctx.update(sleeper_mult=mult, model_mult=model, applied=mult < 1.0)
     if mult < 1.0:
-        ctx["reason"] = (f"{starter} {status} — {who} ({tier.replace('_', '-')} backup) "
-                         f"throwing: x{mult}")
+        basis = {TIER_SOURCE_MARKET: f"market QB{rank}",
+                 TIER_SOURCE_SLEEPER: f"Sleeper's QB{rank} this week",
+                 TIER_SOURCE_NONE: "unranked by the market"}[source]
+        ctx["reason"] = (f"{starter} {status} — {who} ({tier.replace('_', '-')} backup, "
+                         f"{basis}) throwing: x{mult}")
     elif position == "TE":
         ctx["reason"] = (f"{starter} {status} — {who} throwing; tight ends hold their "
                          "volume with a backup (backtest), not cut")

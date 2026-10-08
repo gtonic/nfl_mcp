@@ -26,6 +26,12 @@ NFLVERSE_URL = (
     "https://github.com/nflverse/nflverse-data/releases/download/"
     "player_stats/player_stats_{season}.csv"
 )
+# The `player_stats` release stops at 2024; later seasons are only in the
+# renamed `stats_player` release (its columns are read below).
+NFLVERSE_URL_FALLBACK = (
+    "https://github.com/nflverse/nflverse-data/releases/download/"
+    "stats_player/stats_player_week_{season}.csv"
+)
 # Per-game schedule with recorded wind / roof / temp (nflverse `nfldata`).
 GAMES_URL = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
@@ -66,6 +72,10 @@ def load_season(season: int, use_cache: bool = True) -> list[dict]:
         url = NFLVERSE_URL.format(season=season)
         logger.info("Downloading %s", url)
         resp = httpx.get(url, follow_redirects=True, timeout=60)
+        if resp.status_code == 404:
+            url = NFLVERSE_URL_FALLBACK.format(season=season)
+            logger.info("Not in player_stats; downloading %s", url)
+            resp = httpx.get(url, follow_redirects=True, timeout=60)
         resp.raise_for_status()
         text = resp.text
         with open(cache_path, "w", encoding="utf-8") as f:

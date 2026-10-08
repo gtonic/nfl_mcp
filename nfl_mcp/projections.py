@@ -1115,6 +1115,27 @@ class ProjectionEngine:
             _get.news = {}
         return _get
 
+    def _qb_depth_order(self) -> dict[str, list[str]]:
+        """``{team: [QB names by Sleeper depth_chart_order]}`` from the athlete
+        cache: names a backup quarterback the market does not value
+        (`qb_coupling.receiver_context`). Empty without a database."""
+        import json
+        db = getattr(self, "db", None)
+        if db is None or not hasattr(db, "get_athletes_by_positions"):
+            return {}
+        rooms: dict[str, list[tuple[int, str]]] = {}
+        try:
+            for row in db.get_athletes_by_positions(["QB"]) or []:
+                raw = row.get("raw")
+                raw = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                order, team = raw.get("depth_chart_order"), normalize_team(row.get("team_id"))
+                if team and row.get("full_name") and isinstance(order, int) and order > 0:
+                    rooms.setdefault(team, []).append((order, row["full_name"]))
+        except Exception as e:  # context only; never sink a projection
+            logger.debug(f"QB depth chart unavailable: {e}")
+            return {}
+        return {team: [n for _, n in sorted(qbs)] for team, qbs in rooms.items()}
+
     async def project_many(
         self, players: list[dict], scoring: str = "ppr", superflex: bool = False,
         num_teams: int = 12, season: int | None = None, week: int | None = None,
@@ -1166,7 +1187,9 @@ class ProjectionEngine:
         # Recent role changes, from the same game logs plus Sleeper's weekly
         # snap counts (cached per week).
         roles, played_weeks = await _role_reads(players, logs if opp_index else {},
-                                                opp_index, season, week)
+                                                opp_index, season, week,
+                                                db=db if db is not None
+                                                else getattr(self, "db", None))
 
         projections = [
             self._project_one(p, values_index, rankings, lines, opp_index, week, ppr,
@@ -1174,9 +1197,16 @@ class ProjectionEngine:
                               role=role, played_weeks=played_weeks)
             for p, role in zip(players, roles, strict=True)
         ]
-        _attach_context(projections, depth, status_of, opp_index, week)
+        # Sleeper's week before the context: it tiers a backup quarterback the
+        # market does not rank (`qb_coupling.backup_rank`), and the blend
+        # reads the same index.
+        sleeper_index = await _safe_sleeper_index(season, week)
+        _attach_context(projections, depth, status_of, opp_index, week,
+                        qb_order=self._qb_depth_order(),
+                        sleeper_ranks=qb_coupling.sleeper_qb_ranks(sleeper_index))
         await _apply_unit_fallback(projections, season, model)
-        blend_summary = await _apply_sleeper_blend(projections, players, season, week, model)
+        blend_summary = await _apply_sleeper_blend(projections, players, season, week, model,
+                                                   index=sleeper_index)
         return {
             "projections": projections,
             "projection_sources": blend_summary["sources"],
@@ -1196,7 +1226,7 @@ class ProjectionEngine:
 
 
 async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
-                      season: int | None, week: int | None):
+                      season: int | None, week: int | None, db=None):
     """``([role_shift.classify per player], played_weeks)``.
 
     The usage rows are `usage_trends`'s, built from the game logs already
@@ -1236,7 +1266,7 @@ async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
             continue
         team = normalize_team(p.get("team")) or entry.get("team") or ""
         rows = role_shift.player_rows(entry, team, weeks, team_carries, played_teams,
-                                      week_stats, p.get("player_id"))
+                                      week_stats, p.get("player_id"), db=db)
         read = role_shift.classify(rows, position)
         # Injury-shortened games, whatever the read (an insufficient or
         # stable one carries none): the volume base leaves them out.
@@ -1252,7 +1282,8 @@ async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
 
 
 def _attach_context(projections: list[dict], depth: dict, status_of, opp_index: dict,
-                    week: int | None) -> None:
+                    week: int | None, qb_order: dict | None = None,
+                    sleeper_ranks: dict | None = None) -> None:
     """Quarterback coupling and news flags on each projection, in place.
 
     Sets ``qb_context`` (a WR/TE whose starting QB is Out/Doubtful,
@@ -1268,20 +1299,23 @@ def _attach_context(projections: list[dict], depth: dict, status_of, opp_index: 
         if proj.get("on_bye"):
             continue
         try:
-            _context_one(proj, depth, status_of, opp_index, week, news_index)
+            _context_one(proj, depth, status_of, opp_index, week, news_index,
+                         qb_order, sleeper_ranks)
         except Exception as e:  # context is additive; never sink the projection
             logger.debug(f"projection context failed for {proj.get('player')}: {e}")
 
 
 def _context_one(proj: dict, depth: dict, status_of, opp_index: dict, week: int | None,
-                 news_index: dict | None) -> None:
+                 news_index: dict | None, qb_order: dict | None = None,
+                 sleeper_ranks: dict | None = None) -> None:
     name, position = proj.get("player") or "", (proj.get("position") or "").upper()
     team = normalize_team(proj.get("team")) or (proj.get("team") or "").upper()
     bd = proj.setdefault("breakdown", {})
     conf_delta = 0
     if position in qb_coupling.RECEIVER_MULT:
         ctx = qb_coupling.receiver_context(depth, team, position, name, status_of,
-                                           opp_index, week)
+                                           opp_index, week, qb_order=qb_order,
+                                           sleeper_ranks=sleeper_ranks)
         if ctx:
             # ROS carries the model multiplier through the starter's absence.
             from .ros import _starter_absence
@@ -1363,8 +1397,20 @@ async def _sleeper_index(season: int, week: int) -> dict:
     return await fetch_week_projections(season, week)
 
 
+async def _safe_sleeper_index(season: int | None, week: int | None) -> dict:
+    """Sleeper's week, or an empty index when unavailable (never raises)."""
+    if not (season and week):
+        return {}
+    try:
+        return await _sleeper_index(season, week) or {}
+    except Exception as e:  # the model alone must still answer
+        logger.warning(f"Sleeper projections unavailable for {season} wk{week}: {e}")
+        return {}
+
+
 async def _apply_sleeper_blend(projections: list[dict], inputs: list[dict],
-                               season: int | None, week: int | None, model) -> dict:
+                               season: int | None, week: int | None, model,
+                               index: dict | None = None) -> dict:
     """Make each projection Sleeper-first, in place (see module doc).
 
     ``projected_points`` becomes the blend of ours (kept as
@@ -1376,13 +1422,8 @@ async def _apply_sleeper_blend(projections: list[dict], inputs: list[dict],
     """
     from . import sleeper_projections as sp
 
-    index: dict = {}
-    if season and week:
-        try:
-            index = await _sleeper_index(season, week)
-        except Exception as e:  # the model alone must still answer
-            logger.warning(f"Sleeper projections unavailable for {season} wk{week}: {e}")
-            index = {}
+    if index is None:
+        index = await _safe_sleeper_index(season, week)
     active = bool((index or {}).get("by_id"))
     sources = {"sleeper_blend": 0, "model_only": 0, "bye": 0}
     missing: list[str] = []
@@ -1546,6 +1587,55 @@ def _player_id_for(db, player: dict) -> str | None:
     return None
 
 
+def _resolve_inputs(players: list, db) -> tuple[list[dict], list[dict], list[str]]:
+    """``(players, unresolved, warnings)``: each input with its team and
+    position filled from the athlete cache (`lineup_tools.resolve_player`).
+
+    A bare name (a string, or a dict without team/position) used to be
+    projected as it stood: no position, no team, and the engine's flat 8.0
+    labelled ``model_only``. Now it is resolved first; one that cannot be is
+    left out and listed in `unresolved` -- never priced as a placeholder. A
+    name shared by several fantasy players is priced as the best match
+    (fantasy position on a team, active, Sleeper's market rank) with a warning
+    naming the others.
+    """
+    from .lineup_tools import resolve_player
+
+    out, unresolved, warnings = [], [], []
+    for item in players:
+        p = {"name": item} if isinstance(item, str) else dict(item or {})
+        name = p.get("name") or p.get("player_name")
+        if p.get("team") and p.get("position"):
+            out.append(p)
+            continue
+        who = (resolve_player(db, name, p.get("team"), p.get("position"),
+                              p.get("player_id") or p.get("id"))
+               if db is not None else {})
+        if not who.get("team") or not who.get("position"):
+            matched = bool(who.get("position") or who.get("team"))
+            unresolved.append({"name": name, "team": p.get("team"),
+                               "position": p.get("position"),
+                               "reason": ("athlete found but not on an NFL team" if matched
+                                          else "no team/position given and no athlete match")})
+            continue
+        if who.get("ambiguous"):
+            others = ", ".join(f"{c['name']} ({c['position']}, {c['team']})"
+                               for c in (who.get("candidates") or [])[1:])
+            warnings.append(f"{name!r} is ambiguous — projected {who['name']} "
+                            f"({who['position']}, {who['team']}); also: {others}. "
+                            "Pass team/position or player_id for an exact match.")
+        p.update({"name": who.get("name") or name, "team": who["team"],
+                  "position": who["position"]})
+        if who.get("player_id") and not p.get("player_id"):
+            p["player_id"] = who["player_id"]
+        out.append(p)
+    if unresolved:
+        warnings.append("not projected (could not resolve to a team and position): "
+                        + ", ".join(str(u["name"]) for u in unresolved)
+                        + " — pass team and position.")
+    return out, unresolved, warnings
+
+
 def _log_for_retro(db, players: list[dict], result: dict, season, week, scoring) -> None:
     """Keep these pre-kickoff projections for get_weekly_retro (never raises).
 
@@ -1599,6 +1689,12 @@ async def project_players(
     """
     if not players:
         return create_error_response("No players provided", ErrorType.VALIDATION, {"projections": []})
+    players, unresolved, resolve_warnings = _resolve_inputs(players, db)
+    if not players:
+        return create_error_response(
+            "None of the players could be resolved to a team and position — pass team and "
+            "position.", ErrorType.VALIDATION,
+            {"projections": [], "unresolved": unresolved, "warnings": resolve_warnings})
     season, week, week_inferred = await resolve_season_week(season, week)
     engine = get_projection_engine(db)
     scoring = await _scoring_for(scoring, league_id)
@@ -1612,8 +1708,11 @@ async def project_players(
     # Sleeper's projection as a labelled second opinion (see sleeper_projections).
     from .sleeper_projections import attach
     await attach(result, players, season, week, scoring)
+    if resolve_warnings:
+        result["warnings"] = resolve_warnings + list(result.get("warnings") or [])
     return create_success_response({
         **result,
+        "unresolved": unresolved,
         "season": season,
         "week": week,
         "week_inferred": week_inferred,
