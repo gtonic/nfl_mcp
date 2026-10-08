@@ -194,19 +194,26 @@ def roster_freshness(resp: dict | None) -> dict:
     age = resp.get("snapshot_age_seconds")
     stale = bool(failed or resp.get("stale"))
     warning = error = None
+    age_txt = (f"{round(age / 60)} min old" if isinstance(age, int | float) and age >= 60
+               else f"{round(age)} s old" if isinstance(age, int | float) else "of unknown age")
     if failed and not rosters:
         error = f"Could not load league rosters: {resp.get('error') or resp.get('failure_reason') or 'unknown error'}"
-    elif stale:
-        age_txt = f"{round(age / 60)} min old" if isinstance(age, int | float) else "of unknown age"
+    elif stale and failed:
         warning = (f"Rosters are a cached snapshot ({age_txt}) — the live Sleeper fetch failed"
                    f" ({resp.get('failure_reason') or resp.get('error') or 'unknown'});"
                    " adds and drops since then are not reflected.")
+    elif stale:
+        warning = (f"Rosters are Sleeper's CDN copy ({age_txt}) — a fresh copy could not be"
+                   " fetched; trades, adds and drops since then are not reflected.")
     usable = not error and (not stale or (isinstance(age, int | float)
                                           and age <= AVAILABILITY_MAX_SNAPSHOT_AGE_SECONDS))
     return {
         "rosters": rosters, "available": error is None, "stale": stale,
-        "snapshot_age_seconds": age if stale else None, "warning": warning,
-        "usable_for_availability": usable, "error": error,
+        # How old the roster data is, live or not (Sleeper's CDN copy plus the
+        # in-process reuse); None when unknown.
+        "snapshot_age_seconds": age if isinstance(age, int | float) else None,
+        "snapshot_fetched_at": resp.get("snapshot_fetched_at"),
+        "warning": warning, "usable_for_availability": usable, "error": error,
     }
 
 
@@ -265,6 +272,27 @@ async def load_rosters(league_id: str, purpose: str = "lineup", fetch=None) -> d
     return state
 
 
+def set_starters(roster: dict | None, matchup: dict | None) -> tuple[list[str], str]:
+    """``(starters, source)``: the week's set lineup, consistent with ``roster``.
+
+    The matchup's ``starters`` follow the week, so they win — but only when
+    every one of them is on the roster. Matchups and rosters are separate
+    Sleeper endpoints (and separate CDN copies); right after a trade one can
+    still list the players who left while the other already has the new ones,
+    and mixing them graded a lineup the team no longer has. Raw: Sleeper's
+    "0" empty-slot placeholders keep their place.
+    """
+    roster = roster or {}
+    from_roster = [str(p) for p in (roster.get("starters") or [])]
+    from_matchup = [str(p) for p in ((matchup or {}).get("starters") or [])]
+    if not from_matchup:
+        return from_roster, "roster"
+    on_roster = {str(p) for p in (roster.get("players") or [])}
+    if all(p in ("0", "") or p in on_roster for p in from_matchup):
+        return from_matchup, "matchup"
+    return from_roster, "roster"
+
+
 def find_roster(
     rosters: list[dict], league_id: str, roster_id: int | None, user_id: str | None,
     purpose: str = "use",
@@ -290,7 +318,146 @@ def find_roster(
     return mine, None
 
 
-async def get_rosters(league_id: str) -> dict:
+# Sleeper serves its league endpoints through Cloudflare: /rosters with
+# ``s-maxage=300, stale-while-revalidate=300``, /matchups/<week> and
+# /transactions/<week> with ``s-maxage=60``. A plain GET can therefore return a
+# copy up to ten minutes old — right after a trade the first request got the
+# pre-trade roster (served stale while the edge revalidated) and the next one
+# the new roster, so two tools a minute apart disagreed and both said "live".
+# The ``Age`` header says how old the copy is; past this the request is
+# repeated with a cache-busting query parameter, which goes to the origin.
+SLEEPER_CDN_MAX_AGE_SECONDS = 30
+# Roster data older than this (after the retry) is reported ``stale``.
+ROSTER_STALE_AFTER_SECONDS = 120
+# Every roster consumer (lineup, briefing, waivers, trades, bye plan, ...)
+# reads one in-process ``get_rosters`` response for this long, so the tools of
+# one conversation turn see the same league. A completed transaction newer
+# than the data drops it at once (``note_transactions``).
+ROSTER_MEMO_TTL_SECONDS = 20.0
+
+# league_id -> (monotonic stored, data as-of epoch seconds, response)
+_roster_memo: dict[str, tuple[float, float, dict]] = {}
+_roster_inflight: dict[str, asyncio.Task] = {}
+
+
+def invalidate_roster_cache(league_id: str | None = None) -> None:
+    """Forget the shared roster response (one league, or all of them)."""
+    if league_id is None:
+        _roster_memo.clear()
+        _roster_inflight.clear()
+    else:
+        _roster_memo.pop(str(league_id), None)
+
+
+def note_transactions(league_id: str, transactions) -> bool:
+    """Drop the shared roster response when a transaction postdates it.
+
+    A completed trade/add/drop whose ``status_updated`` is newer than the
+    roster data means the rosters changed. Returns whether it invalidated.
+    """
+    hit = _roster_memo.get(str(league_id))
+    if not hit:
+        return False
+    as_of = hit[1]
+    for tx in transactions or []:
+        if not isinstance(tx, dict) or tx.get("status") not in (None, "complete"):
+            continue
+        try:
+            updated = float(tx.get("status_updated") or tx.get("created") or 0) / 1000.0
+        except (TypeError, ValueError):
+            continue
+        if updated > as_of:
+            invalidate_roster_cache(league_id)
+            return True
+    return False
+
+
+def _cdn_age_seconds(response) -> int | None:
+    """The ``Age`` header of a (CDN-served) response, else None."""
+    try:
+        value = response.headers.get("age")
+    except Exception:
+        return None
+    if not isinstance(value, str | bytes | int):
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+async def sleeper_get_fresh(client, url: str, headers: dict,
+                            max_age: int = SLEEPER_CDN_MAX_AGE_SECONDS):
+    """``(response, data_age_seconds)`` for a Sleeper GET, bypassing an old CDN copy.
+
+    When the CDN's copy is older than ``max_age`` the request is repeated
+    with a cache-busting query parameter. ``data_age_seconds`` is the age of
+    the copy returned (None when the server does not say).
+    """
+    response = await client.get(url, headers=headers, follow_redirects=True, timeout=DEFAULT_TIMEOUT)
+    age = _cdn_age_seconds(response)
+    if age is not None and age > max_age and response.status_code == 200:
+        sep = "&" if "?" in url else "?"
+        try:
+            busted = await client.get(f"{url}{sep}_cb={time.time_ns() // 1_000_000}",
+                                      headers=headers, follow_redirects=True,
+                                      timeout=DEFAULT_TIMEOUT)
+            if busted.status_code == 200:
+                return busted, _cdn_age_seconds(busted) or 0
+        except Exception as e:
+            logger.debug(f"cache-busting refetch of {url} failed: {e}")
+    return response, age
+
+
+def _as_of_iso(epoch: float) -> str:
+    import datetime
+    return datetime.datetime.fromtimestamp(epoch, datetime.UTC).isoformat()
+
+
+def _from_memo(hit: tuple[float, float, dict]) -> dict:
+    _, as_of, resp = hit
+    out = copy.deepcopy(resp)
+    age = max(0, round(time.time() - as_of))
+    out["snapshot_age_seconds"] = age
+    out["snapshot_fetched_at"] = _as_of_iso(as_of)
+    out["stale"] = bool(out.get("stale")) or age > ROSTER_STALE_AFTER_SECONDS
+    return out
+
+
+async def get_rosters(league_id: str, force_refresh: bool = False) -> dict:
+    """League rosters — one shared, fresh-enough copy for every consumer.
+
+    A successful fetch is reused for ``ROSTER_MEMO_TTL_SECONDS`` (and
+    concurrent callers share one fetch), so the tools of one turn read the
+    same league; ``force_refresh`` skips it. ``snapshot_age_seconds`` is how
+    old the roster data is, ``stale`` whether it is too old to trust.
+    """
+    league_id = str(league_id)
+    hit = _roster_memo.get(league_id)
+    if (not force_refresh and hit
+            and time.monotonic() - hit[0] < ROSTER_MEMO_TTL_SECONDS):
+        return _from_memo(hit)
+    loop = asyncio.get_running_loop()
+    task = _roster_inflight.get(league_id)
+    if force_refresh or task is None or task.done() or task.get_loop() is not loop:
+        task = loop.create_task(_fetch_rosters(league_id))
+        _roster_inflight[league_id] = task
+
+        def _forget(t, lid=league_id):
+            if _roster_inflight.get(lid) is t:
+                _roster_inflight.pop(lid, None)
+        task.add_done_callback(_forget)
+    resp = await asyncio.shield(task)
+    if (isinstance(resp, dict) and resp.get("success") is not False
+            and not resp.get("stale") and resp.get("rosters")):
+        age = resp.get("snapshot_age_seconds")
+        as_of = time.time() - (age if isinstance(age, int | float) else 0)
+        _roster_memo[league_id] = (time.monotonic(), as_of, resp)
+        return _from_memo(_roster_memo[league_id])
+    return copy.deepcopy(resp)
+
+
+async def _fetch_rosters(league_id: str) -> dict:
     """
     Get all rosters in a fantasy league from Sleeper API.
 
@@ -328,7 +495,7 @@ async def get_rosters(league_id: str) -> dict:
         attempts += 1
         try:
             async with create_http_client() as client:
-                response = await client.get(url, headers=headers, follow_redirects=True, timeout=DEFAULT_TIMEOUT)
+                response, data_age = await sleeper_get_fresh(client, url, headers)
                 if response.status_code in (401,403,404):
                     # Direct terminal errors (no retry beyond first)
                     if response.status_code == 404:
@@ -475,14 +642,15 @@ async def get_rosters(league_id: str) -> dict:
 
                 # Save snapshot
                 nfl_db.save_roster_snapshot(league_id, rosters_data)
+                age = data_age or 0
                 return create_success_response({
                     "rosters": rosters_data,
                     "count": len(rosters_data),
                     "retries_used": attempts-1,
-                    "stale": False,
+                    "stale": age > ROSTER_STALE_AFTER_SECONDS,
                     "failure_reason": None,
-                    "snapshot_fetched_at": None,
-                    "snapshot_age_seconds": None
+                    "snapshot_fetched_at": _as_of_iso(time.time() - age),
+                    "snapshot_age_seconds": age
                 })
         except httpx.TimeoutException:
             last_error = "timeout"
@@ -609,7 +777,7 @@ async def get_matchups(league_id: str, week: int) -> dict:
         attempts += 1
         try:
             async with create_http_client() as client:
-                response = await client.get(url, headers=headers, follow_redirects=True, timeout=DEFAULT_TIMEOUT)
+                response, data_age = await sleeper_get_fresh(client, url, headers)
                 if response.status_code in (401,403,404):
                     if response.status_code == 404:
                         return create_error_response(
@@ -695,15 +863,16 @@ async def get_matchups(league_id: str, week: int) -> dict:
                     logger.debug(f"Matchup enrichment (extended) skipped: {e}")
 
                 nfl_db.save_matchup_snapshot(league_id, week, matchups_data)
+                age = data_age or 0
                 return create_success_response({
                     "matchups": matchups_data,
                     "week": week,
                     "count": len(matchups_data),
                     "retries_used": attempts-1,
-                    "stale": False,
+                    "stale": age > ROSTER_STALE_AFTER_SECONDS,
                     "failure_reason": None,
-                    "snapshot_fetched_at": None,
-                    "snapshot_age_seconds": None
+                    "snapshot_fetched_at": _as_of_iso(time.time() - age),
+                    "snapshot_age_seconds": age
                 })
         except httpx.TimeoutException:
             last_error = "timeout"

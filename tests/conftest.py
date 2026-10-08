@@ -123,6 +123,7 @@ def _clear_process_caches():
         weather_tools,
     )
     sleeper_tools.clear_nfl_state_cache()
+    sleeper_tools.invalidate_roster_cache()
     weather_tools.clear_forecast_cache()
     nfl_tools.clear_season_stats_cache()
     handcuff_tools.clear_depth_chart_cache()
@@ -132,6 +133,7 @@ def _clear_process_caches():
     projections._engine = None
     yield
     sleeper_tools.clear_nfl_state_cache()
+    sleeper_tools.invalidate_roster_cache()
     weather_tools.clear_forecast_cache()
     nfl_tools.clear_season_stats_cache()
     handcuff_tools.clear_depth_chart_cache()

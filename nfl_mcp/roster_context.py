@@ -47,6 +47,7 @@ async def load_roster_players(
     base = {"league": league, "season": season, "week": week, "players": [], "starters": [],
             "stale": roster_state["stale"],
             "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
+            "snapshot_fetched_at": roster_state.get("snapshot_fetched_at"),
             "roster_warning": roster_state["warning"], "unknown_player_ids": []}
     if not league:
         return {**base, "error": f"Could not load league {league_id}."}

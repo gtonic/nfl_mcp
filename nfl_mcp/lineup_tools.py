@@ -285,12 +285,16 @@ async def analyze_lineup(
     # follow the week), else the roster's.
     # Raw: zipped against the slot list below, so the "0" of an empty slot
     # must keep its place or every later starter shifts one slot.
+    # Only when they agree with the roster (see `set_starters`): a matchup copy
+    # from before a trade listed the departed players as starters.
     starters = ctx.get("starters_raw") or ctx["starters"]
     try:
         matchups = ((await sleeper_tools.get_matchups(league_id, week)) or {}).get("matchups") or []
         mine = next((m for m in matchups if m.get("roster_id") == ctx["roster_id"]), None)
-        if mine and mine.get("starters"):
-            starters = [str(p) for p in mine["starters"]]
+        on_roster = [*(roster.get("players") or []), *(p["player_id"] for p in ctx["players"])]
+        from_matchup, source = sleeper_tools.set_starters({**roster, "players": on_roster}, mine)
+        if source == "matchup":
+            starters = from_matchup
     except Exception as e:
         logger.debug(f"matchup starters unavailable: {e}")
 
@@ -354,6 +358,7 @@ async def analyze_lineup(
             result["warnings"] = warnings
         result["stale"] = ctx.get("stale", False)
         result["snapshot_age_seconds"] = ctx.get("snapshot_age_seconds")
+        result["snapshot_fetched_at"] = ctx.get("snapshot_fetched_at")
     return result
 
 
