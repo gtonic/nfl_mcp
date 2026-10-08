@@ -8,6 +8,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **More player news sources for the news flags** (schema v19). The news
+  flags (`news_signals`) read only the one ESPN injury blurb per player, so a
+  role or availability note was overwritten by the next practice line before
+  anything read it. New module `news_sources` polls ESPN's fantasy player
+  feed (RotoWire notes, JSON, by ESPN athlete id from the 32 team rosters,
+  20 ids per request; free agents with recent Sleeper news too), NBC Sports /
+  Rotoworld (HTML, 10 s between pages per its robots.txt crawl delay) and CBS
+  (HTML, first page) into `player_news`: mapped to the Sleeper id (Sleeper's
+  `espn_id`, else exact name + team, the position deciding a shared name and
+  never taking a same-name player at another position), deduplicated per
+  source on content, kept a season (calibration). `news_fetch_state` records
+  each source's last poll (`data_freshness.news`). New `refresh_data` scope
+  `news`; the prefetch loop polls every 45 min and every 15 min in the
+  game-day windows (`NFL_MCP_PREFETCH_NEWS*`, `NFL_MCP_NEWS_SOURCES`). Live
+  first poll: 1,564 items (ESPN 1,434, NBC 120, CBS 10), 6 unresolved, 111 s
+  (NBC's crawl delay; ESPN 12.5 s), later polls ~17 s; 99% / 94% of the
+  rostered players in the two leagues have an item in the last 7 days.
+- **`news_signals` reads every recent item**, not just the blurb: the same
+  note from several sources is read once, one flag per player whatever the
+  number of items (effects and bounds unchanged, `role_shift` interplay
+  unchanged), availability flags only since the week rolled over (Tuesday)
+  and only the newest one ("unlikely" Wednesday, "expected to play" Friday
+  → expected to play). Each flag carries `source` and `url` with its
+  snippet. Quoted phrases now match (`appears "unlikely" to play`, an
+  "outside shot at suiting up"); "has not been ruled out", a workload that
+  varies "from week to week" and a lead role the note only asks about ("who
+  among the duo will be the lead runner") no longer flag. The index is cached
+  5 minutes while reports and news are unchanged.
+- **`get_player_news`** (all profiles; 60 / 77 / 46 tools): one merged,
+  deduplicated timeline per player (names or Sleeper ids, `days`, optional
+  `league_id` — alone it lists the league's rostered players with news) with
+  the news flags, their effect and per-source freshness.
+- `evals/backtest/signal_history.py` reads `player_news` (items published
+  before kickoff) next to the blurb history.
+
+### Fixed
+- **`get_cbs_player_news`** parsed CBS's page with guessed selectors and
+  returned headline/description fragments without player, team or position;
+  it now reads the real list (`news_sources.parse_cbs`): player, position,
+  team, headline, text, approximate time, link. CBS serves only its first
+  page (ten items) to non-browser clients.
+
+### Added
 - **Gameday decisions override the injury tag.** From the inactives window
   (~2 h before kickoff) until the game ends, every projection (start/sit,
   `analyze_lineup`, briefing, win probability, risk mode's P(win)) reads the

@@ -32,15 +32,15 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server has **76 MCP tools** (including `get_league_leaders`, behind the
+The server has **77 MCP tools** (including `get_league_leaders`, behind the
 `league_leaders` feature flag, enabled by default). Which of them are registered
 depends on the tool profile, `NFL_MCP_TOOL_PROFILE`:
 
 | Profile | Tools | Registered |
 |---|---|---|
-| `season` (default) | 59 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
-| `offseason` | 45 | draft and coaching; not the in-season-only tools (briefing, retro, projection accuracy, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder/market, usage/opportunity), admin or `get_cbs_expert_picks` |
-| `full` | 76 | everything |
+| `season` (default) | 60 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
+| `offseason` | 46 | draft and coaching; not the in-season-only tools (briefing, retro, projection accuracy, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder/market, usage/opportunity), admin or `get_cbs_expert_picks` |
+| `full` | 77 | everything |
 
 The profile and count are logged at startup and returned by `GET /health`
 under `tools`. Every tool also ships its own parameter schema over MCP, so an
@@ -421,7 +421,7 @@ sentence; it is the decision.
 - **`get_stack_opportunities`**: Identify high-total games for stacking opportunities.
   - Parameters: `min_total` (optional, default 48.0)
 
-### 14. Injury Intelligence (3 tools)
+### 14. Injury Intelligence & Player News (4 tools)
 
 - **`get_injury_report`**: Who is hurt now (ESPN reports, cached), with this week's practice line.
   - Parameters: `teams` (optional), `player_ids` (optional), `min_confidence`, `severity` (min 1-5), `since` (ISO), `include_practice` (default True), `limit`, `use_cache`; `team_ids` is a deprecated alias of `teams`
@@ -433,6 +433,10 @@ sentence; it is the decision.
 - **`get_gameday_inactives`**: Get likely inactive players for upcoming games.
   - Parameters: `teams` (optional), `severity_threshold` (optional, default 3)
   - Returns: inactives, player_name, team_id, injury_status, severity
+- **`get_player_news`**: One merged news timeline per player, with the news flags the projections read.
+  - Sources: ESPN's fantasy player feed (RotoWire notes), NBC Sports / Rotoworld, CBS (stored by `refresh_data(scope=["news"])` / the prefetch loop) plus the current injury blurb; a note several sources carry is one entry.
+  - Parameters: `players` (names or Sleeper ids, up to 30), `days` (default 7, 1-30), `league_id` (optional: resolves shared names to the rostered player; alone, lists every rostered QB/RB/WR/TE/K with news)
+  - Returns: players [{name, player_id, team, position, injury_status, items, news_flags [{flag, weight, snippet, date_reported, source, url}], news_adjustment, timeline [{published_at, headline, text, source, url, sources, flags}]}], unresolved, sources (fetch freshness per source), warnings
 
 ### 15. Opponent & Season Strategy (2 tools)
 
@@ -454,9 +458,10 @@ sentence; it is the decision.
 
 ### 17. CBS Sports (3 tools)
 
-- **`get_cbs_player_news`**: Fetch latest fantasy football player news from CBS Sports.
+- **`get_cbs_player_news`**: Fetch latest fantasy football player news from CBS Sports
+  (the first page, ten items: CBS answers 406 for deeper pages; `get_player_news` has the history).
   - Parameters: `limit` (optional, default 50)
-  - Returns: news, total_news, success
+  - Returns: news [{player, position, team, headline, description, published, url}], total_news, success
 - **`get_cbs_projections`**: CBS SEASON-LONG projections for a position (CBS ignores weeks, so there is no week parameter).
   - Parameters: `position` (optional, default 'QB'), `season` (optional, default 2026), `scoring` (optional, default 'ppr')
   - Returns: projections, total_projections, period "season", week_honoured false, position, success
@@ -515,6 +520,7 @@ Background data prefetching for optimal performance:
 - **Interval**: `NFL_MCP_PREFETCH_INTERVAL` (default: 900 seconds = 15 min)
 - **Snap TTL**: `NFL_MCP_PREFETCH_SNAPS_TTL` (default: 900 seconds)
 - **Athletes refresh**: `NFL_MCP_PREFETCH_ATHLETES` (default: on) every `NFL_MCP_PREFETCH_ATHLETES_INTERVAL` (default: 86400 seconds = daily)
+- **Player news**: `NFL_MCP_PREFETCH_NEWS` (default: on) every `NFL_MCP_PREFETCH_NEWS_INTERVAL` (default: 2700 seconds = 45 min), every `NFL_MCP_PREFETCH_NEWS_GAMEDAY_INTERVAL` (default: 900) in the game-day windows (Sun 10:00-20:30 ET, Mon/Thu 17:00-20:30, Sat 14:00-20:30); sources via `NFL_MCP_NEWS_SOURCES` (default `espn_fantasy,nbc,cbs`)
 
 The prefetch system automatically:
 1. Determines current season/week via NFL state
@@ -592,6 +598,10 @@ The server supports extensive configuration via environment variables:
 - `NFL_MCP_PREFETCH_SNAPS_TTL`: Snap data TTL in seconds (default: 900)
 - `NFL_MCP_PREFETCH_ATHLETES`: Refresh athletes cache during prefetch (0 or 1, default: 1)
 - `NFL_MCP_PREFETCH_ATHLETES_INTERVAL`: Athletes refresh interval in seconds (default: 86400)
+- `NFL_MCP_PREFETCH_NEWS`: Poll player news during prefetch (0 or 1, default: 1)
+- `NFL_MCP_PREFETCH_NEWS_INTERVAL` / `NFL_MCP_PREFETCH_NEWS_GAMEDAY_INTERVAL`: news poll interval in seconds (default: 2700 / 900 in the game-day windows)
+- `NFL_MCP_NEWS_SOURCES`: comma list of news sources (`espn_fantasy`, `nbc`, `cbs`; default all)
+- `NFL_MCP_NEWS_NBC_PAGES` / `NFL_MCP_NEWS_NBC_FIRST_PAGES`: NBC pages per poll (default 3; 12 on the first poll)
 
 #### Logging
 - `NFL_MCP_LOG_LEVEL`: Log verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL)

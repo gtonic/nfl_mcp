@@ -6,7 +6,7 @@
 [![Data-source watchdog](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml/badge.svg)](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml)
 [![Docker image](https://img.shields.io/badge/image-ghcr.io%2Fgtonic%2Fnfl__mcp-2496ED?logo=docker&logoColor=white)](https://github.com/gtonic/nfl_mcp/pkgs/container/nfl_mcp)
 [![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/gtonic/nfl_mcp)
-[![59 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-59%20in--season%20%7C%2076%20total-8A2BE2)](#-whats-inside)
+[![60 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-60%20in--season%20%7C%2077%20total-8A2BE2)](#-whats-inside)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 NFL MCP turns real NFL & fantasy data into a decisive edge — a suite of tools that plug
@@ -110,7 +110,7 @@ Co-managers work too: pass your own Sleeper `user_id` and the roster is found vi
 
 ## 🧰 What's inside
 
-59 MCP tools in the default in-season profile (76 in total), grouped by what they do.
+60 MCP tools in the default in-season profile (77 in total), grouped by what they do.
 Every tool ships its own parameter schema over MCP, so your assistant can introspect
 them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration guidance.
 
@@ -118,9 +118,9 @@ them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration g
 
 | Profile | Tools | Hides |
 |---|---|---|
-| `season` (default) | 59 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
-| `offseason` | 45 | in-season-only tools (lineups, waivers, Vegas, weather, byes, playoff odds, …), admin, `get_cbs_expert_picks` |
-| `full` | 76 | nothing |
+| `season` (default) | 60 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
+| `offseason` | 46 | in-season-only tools (lineups, waivers, Vegas, weather, byes, playoff odds, …), admin, `get_cbs_expert_picks` |
+| `full` | 77 | nothing |
 
 The active profile and its tool count are logged at startup and reported by `GET /health` (`tools`).
 
@@ -140,7 +140,7 @@ The active profile and its tool count are logged at startup and reported by `GET
 `get_league` · `get_rosters` · `get_league_users` · `get_matchups` · `get_playoff_bracket` · `get_transactions` (the current week includes the previous leg, where Sleeper files the Wednesday waiver run) · `get_trending_players` · `get_fantasy_context` (aggregate) · `get_nfl_state` · `get_user` · `get_user_leagues`
 
 **🩺 Injuries & availability**
-`get_injury_report` (who is hurt: teams / players, `min_confidence`, `severity`, `since`, practice reports; healthy rows only with `include_healthy`; ESPN source) · `get_injury_trends` (**what changed** since you last looked) · `get_gameday_inactives`
+`get_injury_report` (who is hurt: teams / players, `min_confidence`, `severity`, `since`, practice reports; healthy rows only with `include_healthy`; ESPN source) · `get_injury_trends` (**what changed** since you last looked) · `get_gameday_inactives` · `get_player_news` (**what is the latest on X** — one merged timeline per player from ESPN's fantasy feed, NBC Sports / Rotoworld and CBS, with the role / availability flags the projections read, each with source and link; `league_id` alone lists your league's rostered players with news)
 
 **📰 NFL data & news**
 `get_nfl_news` · `get_teams` · `get_depth_chart` · `get_team_player_stats` · `get_nfl_standings` · `get_team_schedule` · `get_cbs_player_news` · `get_cbs_projections` (CBS **season-long** totals, not weekly)

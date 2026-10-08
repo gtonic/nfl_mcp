@@ -99,6 +99,7 @@ def _load_runtime_settings() -> None:
     global PREFETCH_ENABLED, PREFETCH_INTERVAL_SECONDS, PREFETCH_SNAPS_TTL_SECONDS
     global PREFETCH_SCHEDULE_WEEKS, PREFETCH_ATHLETES, PREFETCH_ATHLETES_INTERVAL_SECONDS
     global DB_PRUNE_INTERVAL_SECONDS
+    global PREFETCH_NEWS, PREFETCH_NEWS_INTERVAL_SECONDS, PREFETCH_NEWS_GAMEDAY_INTERVAL_SECONDS
 
     # Prefetch config from environment (prefetch is separate from general config)
     PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
@@ -114,6 +115,12 @@ def _load_runtime_settings() -> None:
     # DB pruning cadence. Wall-clock rather than a cycle count, which reset on every
     # restart and so never reached its threshold on a server restarted daily.
     DB_PRUNE_INTERVAL_SECONDS = _env_int("NFL_MCP_DB_PRUNE_INTERVAL", 86400)  # daily
+    # Player news (`news_sources`): every 45 min, every 15 min in the game-day
+    # windows (inactives and late scratches, see `_news_interval`).
+    PREFETCH_NEWS = os.getenv("NFL_MCP_PREFETCH_NEWS", "1") == "1"
+    PREFETCH_NEWS_INTERVAL_SECONDS = _env_int("NFL_MCP_PREFETCH_NEWS_INTERVAL", 2700)
+    PREFETCH_NEWS_GAMEDAY_INTERVAL_SECONDS = _env_int(
+        "NFL_MCP_PREFETCH_NEWS_GAMEDAY_INTERVAL", 900)
 
 
 PREFETCH_ENABLED: bool
@@ -123,8 +130,14 @@ PREFETCH_SCHEDULE_WEEKS: int
 PREFETCH_ATHLETES: bool
 PREFETCH_ATHLETES_INTERVAL_SECONDS: int
 DB_PRUNE_INTERVAL_SECONDS: int
+PREFETCH_NEWS: bool
+PREFETCH_NEWS_INTERVAL_SECONDS: int
+PREFETCH_NEWS_GAMEDAY_INTERVAL_SECONDS: int
 _load_runtime_settings()
 _last_prune_at: float | None = None
+# Wall clock of the last news poll (the monotonic clock stops while the host
+# sleeps; a woken laptop should poll at once).
+_last_news_at: datetime | None = None
 
 # How long shutdown waits for an in-flight startup warm-up before cancelling it.
 _STARTUP_TASK_SHUTDOWN_GRACE_SECONDS = 10.0
@@ -240,10 +253,14 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
         try:
             season, week = _season_week(await get_nfl_state(), tag)
             if season is not None and week is not None:
-                for scope in _cycle_scopes(week, to_eastern(cycle_start).weekday()):
+                news_due = PREFETCH_NEWS and _news_due(cycle_start, _last_news_at)
+                for scope in _cycle_scopes(week, to_eastern(cycle_start).weekday(),
+                                           news_due=news_due):
                     # The same fetch-and-write as refresh_data (one code path).
                     results[scope] = await data_refresh.run_scope(scope, nfl_db, season, week)
                     _log_scope(tag, scope, results[scope])
+                    if scope == "news" and results[scope].get("status") != "already_running":
+                        _mark_news_polled(cycle_start)
         except Exception as e:
             logger.error(f"[{tag}] Iteration error: {e}", exc_info=True)
 
@@ -278,22 +295,55 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
 _NO_PRACTICE_WEEKDAY = 6
 
 
-def _cycle_scopes(week: int, weekday_et: int) -> list[str]:
+def _cycle_scopes(week: int, weekday_et: int, news_due: bool = False) -> list[str]:
     """The ``data_refresh`` scopes one prefetch cycle runs, in order.
 
     Schedule (this week + the look-ahead), snaps (this week and the last) and
     injuries every cycle; practice reports every day but Sunday (US Eastern);
     usage once there is a completed week, and then the accuracy grading (a
     no-op unless a week has just become final or its stat corrections are
-    due: `projection_accuracy.weeks_to_grade`). Athletes run on their own
-    cadence.
+    due: `projection_accuracy.weeks_to_grade`); player news when it is due
+    (`_news_due`). Athletes run on their own cadence.
     """
     scopes = ["schedule", "snaps", "injuries"]
     if weekday_et != _NO_PRACTICE_WEEKDAY:
         scopes.append("practice")
     if week > 1:
         scopes += ["usage", "accuracy"]
+    if news_due:
+        scopes.append("news")
     return scopes
+
+
+# Game-day windows (US Eastern, hours): inactives come out 90 minutes before
+# kickoff and late scratches after, so news is polled more often then.
+_NEWS_GAMEDAY_WINDOWS = {6: (10.0, 20.5), 0: (17.0, 20.5), 3: (17.0, 20.5), 5: (14.0, 20.5)}
+# A cycle runs every PREFETCH_INTERVAL plus its own duration: this much early
+# still counts as due, so a 15-minute news interval runs every cycle.
+_NEWS_DUE_SLACK_SECONDS = 120
+
+
+def _news_interval(now_et: datetime) -> int:
+    """Seconds between news polls at this (US Eastern) time."""
+    window = _NEWS_GAMEDAY_WINDOWS.get(now_et.weekday())
+    hour = now_et.hour + now_et.minute / 60
+    if window and window[0] <= hour <= window[1]:
+        return PREFETCH_NEWS_GAMEDAY_INTERVAL_SECONDS
+    return PREFETCH_NEWS_INTERVAL_SECONDS
+
+
+def _news_due(now: datetime, last: datetime | None) -> bool:
+    """Whether a prefetch cycle at `now` should poll the news sources."""
+    from .practice_reports import to_eastern
+    if last is None:
+        return True
+    return ((now - last).total_seconds()
+            >= _news_interval(to_eastern(now)) - _NEWS_DUE_SLACK_SECONDS)
+
+
+def _mark_news_polled(when: datetime) -> None:
+    global _last_news_at
+    _last_news_at = when
 
 
 def _season_week(state: dict, tag: str) -> tuple[int | None, int | None]:

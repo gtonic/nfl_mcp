@@ -244,6 +244,7 @@ class TestMigration:
                 conn.commit()
             NFLDatabase(path).close()
             with sqlite3.connect(path) as conn:
-                assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 18
+                assert (conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+                        == NFLDatabase.CURRENT_SCHEMA_VERSION)
                 assert "signals" in {r[1] for r in conn.execute("PRAGMA table_info(projection_log)")}
                 assert conn.execute("SELECT COUNT(*) FROM projection_accuracy").fetchone()[0] == 0

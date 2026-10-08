@@ -30,15 +30,16 @@ from .health import env_int
 
 logger = logging.getLogger(__name__)
 
-REFRESH_SCOPES = ("injuries", "practice", "athletes", "schedule", "snaps", "usage", "accuracy")
+REFRESH_SCOPES = ("injuries", "practice", "athletes", "schedule", "snaps", "usage", "accuracy",
+                  "news")
 DEFAULT_SCOPES = ("injuries", "practice")
 
 # A feed younger than this is left alone unless ``force``: a second refresh a
 # minute after the first only re-crawls the same pages.
-MIN_REFRESH_AGE_HOURS = {"injuries": 0.25, "practice": 0.25, "athletes": 6.0}
+MIN_REFRESH_AGE_HOURS = {"injuries": 0.25, "practice": 0.25, "athletes": 6.0, "news": 0.25}
 # Scope -> key in NFLDatabase.get_data_freshness().
 _FRESHNESS_FEED = {"injuries": "injuries", "practice": "practice_status", "athletes": "athletes",
-                   "schedule": "schedule", "snaps": "snaps"}
+                   "schedule": "schedule", "snaps": "snaps", "news": "news"}
 # Owner name the prefetch loop claims scopes under (see ``run_scope``).
 PREFETCH_OWNER = "prefetch"
 # NFL regular season, for the schedule look-ahead.
@@ -130,6 +131,15 @@ async def _refresh_accuracy(db, season: int, week: int) -> dict:
     return {k: out[k] for k in ("fetched", "written", "weeks")}
 
 
+async def _refresh_news(db, season: int, week: int) -> dict:
+    """Player news from every enabled source (`news_sources.ingest_news`):
+    ESPN's fantasy feed, NBC Sports / Rotoworld and CBS, into ``player_news``."""
+    from .news_sources import ingest_news
+    out = await ingest_news(db)
+    return {"fetched": out["fetched"], "written": out["written"],
+            "unresolved": out["unresolved"], "sources": out["sources"]}
+
+
 _REFRESHERS = {
     "injuries": _refresh_injuries,
     "practice": _refresh_practice,
@@ -138,6 +148,7 @@ _REFRESHERS = {
     "snaps": _refresh_snaps,
     "usage": _refresh_usage,
     "accuracy": _refresh_accuracy,
+    "news": _refresh_news,
 }
 
 

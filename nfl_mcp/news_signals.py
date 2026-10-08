@@ -27,6 +27,23 @@ else the blurb's own player -- so "Keenum ... backup role after Johnson said
 Tyson Bagent will start" is a lead role for Bagent, not for Keenum, and a
 teammate's blurb that names him counts for him too.
 
+Since schema v19 the blurbs are not only the injury table's one line per
+player: every item of the news sources (`news_sources`: ESPN's fantasy
+player feed, NBC Sports / Rotoworld, CBS) is kept in ``player_news``, and
+:func:`build_index` reads all of a player's recent items (``news=``) next to
+his injury blurb. The same note from two sources (or the injury blurb, which
+is ESPN's copy of the RotoWire note) is read once (:func:`text_key`), and a
+flag is counted once per player whatever the number of items saying it
+(:func:`signals_for`: the most recent wins), so more sources add coverage,
+not weight. Sources are not weighted against each other: the ESPN and CBS
+items are RotoWire's, the NBC ones Rotoworld's, both beat-reporter
+summaries with no accuracy record yet to tell them apart. Availability flags
+(``expected_to_play`` / ``unlikely_to_play`` / ``ruled_out``) are about one
+game: only items since the week rolled over (:func:`week_start`, Tuesday)
+count, and only the newest of them ("unlikely" Wednesday, "expected to play"
+Friday: expected to play). Each flag carries its ``source``, ``url`` and
+``snippet``.
+
 What the flags change (:func:`adjustment`) is deliberately small and only
 on our model's share of the blend: Sleeper's projections are Rotowire's,
 whose writers also wrote the blurb, so their stat line has already seen the
@@ -73,7 +90,8 @@ PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "unlikely_to_play": (
         r"\b(?:not|isn't|is not|aren't|unlikely) (?:expected |likely |going |set )?to (?:play|suit up)\b",
-        r"\b(?:only )?an? (?:outside|slim|small|long-?shot) chance (?:to|of) (?:play|suit up|go)",
+        r"\b(?:only )?an? (?:outside|slim|small|long-?shot) (?:chance|shot) (?:to|of|at) "
+        r"(?:play|suit|go)",
     ),
     "expected_to_play": (
         r"\b(?:expected|set|on track|slated|poised|cleared|plans?|good|ready) to (?:play|suit up|go)\b",
@@ -119,7 +137,8 @@ PATTERNS: dict[str, tuple[str, ...]] = {
         r"\bworkload (?:will be |is |could be )?(?:managed|monitored|limited)\b",
     ),
     "week_to_week": (
-        r"\bweek[- ]to[- ]week\b",
+        # Not a workload that varies "from week to week".
+        r"(?<!from )(?<!vary )(?<!varies )(?<!varied )\bweek[- ]to[- ]week\b",
         r"\bmiss(?:es|ing)?\s+(?:multiple|several|a few|a couple(?: of)?)\s+"
         r"(?:more\s+)?(?:games|weeks)\b",
     ),
@@ -130,10 +149,13 @@ PATTERNS: dict[str, tuple[str, ...]] = {
     ),
 }
 # Flags a negation just before the phrase cancels ("won't be benched",
-# "isn't expected to start"). `ruled_out` / `unlikely_to_play` carry their
-# negation in the phrase itself.
+# "isn't expected to start", "hasn't been ruled out"). `unlikely_to_play`
+# carries its negation in the phrase itself.
 NEGATABLE = {"benched", "committee", "lead_role", "limited_snaps", "expected_to_play",
-             "week_to_week"}
+             "week_to_week", "ruled_out"}
+# A lead role the sentence only asks about ("to get a sense of who among
+# the duo will be Chicago's lead runner") is not one.
+_QUESTION_RE = re.compile(r"\b(?:who|whether|which|wonder(?:s|ed|ing)?)\b[^.;]*$", re.I)
 _NEGATION_RE = re.compile(r"(?:\b(?:not|no|never|without)\b|n't\b)[^.;,]{0,25}$", re.I)
 _COMPILED = {flag: tuple(re.compile(p, re.I) for p in pats) for flag, pats in PATTERNS.items()}
 # The designated-to-return phrases, shared with the returning-teammate logic
@@ -183,6 +205,13 @@ BORROWED_POINTS = -1.0
 SECURITY_RANGE = 2.0
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?;])\s+")
+# Quotation marks around a quoted word ("only an \"outside chance\" of
+# playing", 'appears "unlikely" to play') would break the phrase patterns.
+_QUOTES_RE = re.compile("[\"\u201c\u201d]")
+# The NFL week rolls over on Tuesday morning (US Eastern): availability
+# flags from before it are about last week's game.
+WEEK_ROLLOVER_WEEKDAY = 1  # Tuesday
+WEEK_ROLLOVER_HOUR_UTC = 9
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\-]+")
 
 
@@ -254,7 +283,8 @@ def classify(text: str | None, owner: str = "", names: dict[str, str | None] | N
     names = names or {}
     out: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    for sentence in _SENTENCE_RE.split(text or ""):
+    text = _QUOTES_RE.sub("", (text or "").replace("\u2019", "'"))
+    for sentence in _SENTENCE_RE.split(text):
         taken: list[tuple[int, int]] = []
         for flag, pats in _COMPILED.items():
             for pat in pats:
@@ -262,6 +292,9 @@ def classify(text: str | None, owner: str = "", names: dict[str, str | None] | N
                     if any(a < m.end() and m.start() < b for a, b in taken):
                         continue  # a more specific flag owns this span
                     before = sentence[:m.start()]
+                    if flag == "lead_role" and _QUESTION_RE.search(before):
+                        taken.append((m.start(), m.end()))
+                        continue
                     if flag in NEGATABLE and _NEGATION_RE.search(before):
                         if flag == "expected_to_play":
                             flag_out = "unlikely_to_play"
@@ -280,23 +313,98 @@ def classify(text: str | None, owner: str = "", names: dict[str, str | None] | N
     return out
 
 
+def week_start(now: datetime | None = None) -> datetime:
+    """When the current NFL week began: the last Tuesday rollover."""
+    from datetime import timedelta
+    now = now or datetime.now(UTC)
+    now = now if now.tzinfo else now.replace(tzinfo=UTC)
+    start = (now - timedelta(days=(now.weekday() - WEEK_ROLLOVER_WEEKDAY) % 7)).replace(
+        hour=WEEK_ROLLOVER_HOUR_UTC, minute=0, second=0, microsecond=0)
+    return start if start <= now else start - timedelta(days=7)
+
+
+def text_key(text: str | None) -> str:
+    """A note's identity across sources: its first words, normalized."""
+    words = re.findall(r"[a-z0-9]+", _QUOTES_RE.sub("", (text or "").lower()))
+    return " ".join(words[:30])
+
+
+def news_rows(items: list[dict] | None) -> list[dict]:
+    """``player_news`` rows in the shape :func:`build_index` reads."""
+    from .news_sources import item_text
+    out = []
+    for it in items or []:
+        text = item_text(it)
+        if not text or not it.get("player_name"):
+            continue
+        out.append({"player_name": it["player_name"], "team_id": it.get("team"),
+                    "text": text, "date_reported": it.get("published_at") or it.get("recorded_at"),
+                    "source": it.get("source"), "url": it.get("url"),
+                    "headline": it.get("headline")})
+    return out
+
+
+def recent_news(db, now: datetime | None = None, teams: list[str] | None = None) -> list[dict]:
+    """The stored news items young enough to be read (``MAX_AGE_DAYS``), as
+    :func:`build_index` rows. [] without a database or the table."""
+    from datetime import timedelta
+    if db is None or not hasattr(db, "get_player_news"):
+        return []
+    since = ((now or datetime.now(UTC)) - timedelta(days=MAX_AGE_DAYS)).isoformat()
+    try:
+        return news_rows(db.get_player_news(since=since, teams=teams))
+    except Exception as e:
+        logger.debug(f"stored news unavailable: {e}")
+        return []
+
+
+# Reading every stored item takes a few hundred milliseconds (~1000 items, a
+# week in season) and a weekly briefing projects several rosters: the index
+# is reused while neither the reports nor the news changed, for this long.
+INDEX_CACHE_SECONDS = 300
+_index_cache: dict = {}
+
+
+def index_for(db, rows: list[dict] | None) -> dict[tuple[str, str], list[dict]]:
+    """:func:`build_index` over the report rows and the stored news, now;
+    cached ``INDEX_CACHE_SECONDS`` per database while both are unchanged."""
+    import time
+    news = recent_news(db)
+    rows = rows or []
+    key = (str(getattr(db, "db_path", id(db))), len(rows),
+           max((str(r.get("updated_at") or r.get("date_reported") or "") for r in rows),
+               default=""),
+           len(news), max((str(n.get("date_reported") or "") for n in news), default=""))
+    hit = _index_cache.get("entry")
+    if hit and hit[0] == key and time.monotonic() - hit[1] < INDEX_CACHE_SECONDS:
+        return hit[2]
+    index = build_index(rows, news=news)
+    _index_cache["entry"] = (key, time.monotonic(), index)
+    return index
+
+
 def build_index(rows: list[dict] | None, now: datetime | None = None,
-                extra: list[dict] | None = None) -> dict[tuple[str, str], list[dict]]:
+                extra: list[dict] | None = None,
+                news: list[dict] | None = None) -> dict[tuple[str, str], list[dict]]:
     """``{(normalized name, team): [signal]}`` from stored report rows.
 
     `rows` are ``player_injuries`` rows (``player_name``, ``team_id``,
     ``injury_description``, ``date_reported``, ``sources``); `extra` takes
     the same shape for any other text (``text`` instead of
-    ``injury_description``), e.g. items from ``get_nfl_news``. Each signal:
-    ``{flag, weight, snippet, date_reported, source, from_player}``.
+    ``injury_description``), e.g. items from ``get_nfl_news``; `news` the
+    stored news items (:func:`news_rows` / :func:`recent_news`), read first
+    so a note both carry keeps the news item's link. Each signal: ``{flag,
+    weight, snippet, date_reported, source, url, from_player}``.
     """
     from .teams import normalize_team
     now = now or datetime.now(UTC)
+    rollover = week_start(now)
     items = []
+    seen_text: set[tuple[str, str, str]] = set()
     # Every listed player's last name, for attribution -- not only the ones
     # with a fresh blurb: a teammate's blurb can name a player whose own is old.
     by_team: dict[str, dict[str, str | None]] = {}
-    for r in [*(rows or []), *(extra or [])]:
+    for r in [*(news or []), *(rows or []), *(extra or [])]:
         text = r.get("injury_description") or r.get("text")
         name = r.get("player_name") or r.get("name")
         team = normalize_team(r.get("team_id") or r.get("team")) or ""
@@ -312,23 +420,36 @@ def build_index(rows: list[dict] | None, now: datetime | None = None,
         weight = recency_weight(r.get("date_reported"), now)
         if weight <= 0:
             continue
+        dup = (key, team, text_key(text))
+        if dup in seen_text:  # the same note from another source
+            continue
+        seen_text.add(dup)
         items.append((name, team, text, weight, r))
     index: dict[tuple[str, str], list[dict]] = {}
     for name, team, text, weight, r in items:
         owner = _norm(name)
+        when = _parse_date(r.get("date_reported"))
+        last_week = when is not None and when < rollover
         for hit in classify(text, owner, by_team.get(team), _last_name(name)):
+            if hit["flag"] in AVAILABILITY_FLAGS and last_week:
+                continue  # about last week's game
             source = r.get("source") or r.get("sources") or "injury_report"
             index.setdefault((hit["about"], team), []).append({
                 "flag": hit["flag"], "weight": weight, "snippet": hit["snippet"],
                 "date_reported": r.get("date_reported"),
                 "source": source if isinstance(source, str) else str(source),
+                **({"url": r["url"]} if r.get("url") else {}),
                 **({"from_player": name} if hit["about"] != owner else {}),
             })
     return index
 
 
 def signals_for(index: dict | None, name: str | None, team: str | None) -> list[dict]:
-    """The flags for one player, strongest (most recent) first, one per flag."""
+    """The flags for one player, strongest (most recent) first, one per flag.
+
+    Of the availability flags only the most recent one is kept: a later
+    "expected to play" settles an earlier "unlikely to play" (and vice versa).
+    """
     from .teams import normalize_team
     if not index or not name:
         return []
@@ -336,6 +457,12 @@ def signals_for(index: dict | None, name: str | None, team: str | None) -> list[
     best: dict[str, dict] = {}
     for s in sorted(found, key=lambda s: -s["weight"]):
         best.setdefault(s["flag"], s)
+    availability = [f for f in best.values() if f["flag"] in AVAILABILITY_FLAGS]
+    if len(availability) > 1:
+        newest = max(availability, key=lambda f: (
+            _parse_date(f.get("date_reported")) or datetime.min.replace(tzinfo=UTC),
+            f["weight"]))
+        best = {k: v for k, v in best.items() if k not in AVAILABILITY_FLAGS or v is newest}
     return list(best.values())
 
 
@@ -370,8 +497,9 @@ def adjustment(flags: list[dict] | None, role_trend: str | None = None,
 
 
 def player_news(db, name: str, team: str | None, now: datetime | None = None) -> list[dict]:
-    """The news flags for one player from the stored reports (his own blurb
-    and teammates' that name him). Never raises; [] without a database."""
+    """The news flags for one player from the stored reports and news items
+    (his own and teammates' that name him). Never raises; [] without a
+    database."""
     from .teams import normalize_team
     if db is None or not name:
         return []
@@ -382,7 +510,8 @@ def player_news(db, name: str, team: str | None, now: datetime | None = None) ->
         return []
     canon = normalize_team(team) or ""
     rows = [r for r in rows if (normalize_team(r.get("team_id")) or "") == canon]
-    return signals_for(build_index(rows, now), name, canon)
+    news = recent_news(db, now, teams=[canon])
+    return signals_for(build_index(rows, now, news=news), name, canon)
 
 
 def role_security(proj: dict | None) -> dict:
