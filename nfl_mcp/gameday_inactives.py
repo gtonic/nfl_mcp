@@ -303,3 +303,73 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
         if own:
             await client.__aexit__(None, None, None)
     return result
+
+
+# The projection path's read of the published inactives (`gameday_statuses`):
+# cached per (season, week) so a tool that projects a whole league (waivers,
+# the briefing) asks the feeds once, not once per player. Short: the list fills
+# in team by team as each window opens.
+GAMEDAY_CACHE_TTL = timedelta(minutes=5)
+# Phases in which a published decision prices the projection: from the
+# inactives window to the end of the game (a locked lineup still feeds the live
+# win probability). Upcoming and final games cost nothing to ask about.
+PRICED_PHASES = ("inactives_window", "in_progress")
+_gameday_cache: dict[tuple[int, int], tuple[datetime, dict]] = {}
+
+
+def gameday_index(official: dict | None) -> dict[tuple[str, str], dict]:
+    """``{(normalized name, team): {status, note, source, posted}}`` with
+    ``status`` ``"active"`` / ``"inactive"`` from a `get_official_inactives`
+    result. A player both confirmed active and listed inactive (two feeds that
+    disagree) is inactive: the worse reading wins, as for injury reports."""
+    index: dict[tuple[str, str], dict] = {}
+    for key, rows in (("active", "confirmed_active"), ("inactive", "inactives")):
+        for row in (official or {}).get(rows) or []:
+            name, team = norm_name(row.get("player_name")), normalize_team(row.get("team_id"))
+            if name and team:
+                index[(name, team)] = {"status": key, "note": row.get("note"),
+                                       "source": row.get("source"), "posted": row.get("posted")}
+    return index
+
+
+def priced_teams(db, season: int | None, week: int | None,
+                 now: datetime | None = None) -> set[str]:
+    """Teams whose game is in a `PRICED_PHASES` phase, from the *cached*
+    schedule only (no network): outside a gameday window nothing is fetched."""
+    if db is None or not season or not week or not hasattr(db, "get_week_kickoffs"):
+        return set()
+    try:
+        kickoffs = db.get_week_kickoffs(int(season), int(week)) or {}
+        if not isinstance(kickoffs, dict):
+            return set()
+        now = now or datetime.now(UTC)
+        return {normalize_team(t) or t for t, k in kickoffs.items()
+                if game_phase(k, now) in PRICED_PHASES}
+    except Exception as e:  # context only; never sink a projection
+        logger.debug(f"[Inactives] kickoff read failed: {e}")
+        return set()
+
+
+async def gameday_statuses(db, season: int | None, week: int | None,
+                           now: datetime | None = None,
+                           client=None) -> dict[tuple[str, str], dict]:
+    """`gameday_index` of the published inactives for the games now in a
+    `PRICED_PHASES` phase; ``{}`` when none is (the usual case: one cached
+    schedule read, no network). Never raises."""
+    now = now or datetime.now(UTC)
+    teams = priced_teams(db, season, week, now)
+    if not teams:
+        return {}
+    key = (int(season), int(week))
+    hit = _gameday_cache.get(key)
+    if hit and timedelta(0) <= now - hit[0] < GAMEDAY_CACHE_TTL:
+        official = hit[1]
+    else:
+        try:
+            official = await get_official_inactives(db, int(season), int(week), now=now,
+                                                    client=client)
+        except Exception as e:
+            logger.warning(f"[Inactives] gameday read for the projection failed: {e}")
+            return {}
+        _gameday_cache[key] = (now, official)
+    return {k: v for k, v in gameday_index(official).items() if k[1] in teams}

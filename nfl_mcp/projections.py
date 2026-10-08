@@ -317,14 +317,33 @@ def availability(status: str | None) -> str:
 # DNP (n=35): DNP 14%, LP 51%, FP/REST 35% -> 0.78. The live 2026 history
 # (`signal_history.py --truth sleeper`, weeks 3-4, n=18) agrees in direction:
 # questionable players scored 0.45 [0.21, 0.74] of their trailing rate.
-# The value is the expected share of a healthy week, *before* inactives: a
-# questionable player confirmed active on game day scores ~0.95 of it.
+# The value is the expected share of a healthy week, *before* inactives; a
+# player confirmed active on game day is priced by `CONFIRMED_ACTIVE_REALISED`.
+# With no practice line, all questionable players (n=583): 0.736 [0.676,
+# 0.800] -- ``NONE``, the same value as `injury_status.QUESTIONABLE_MULT`.
 QUESTIONABLE_REALISED = {"FP": 0.97, "REST": 0.97, "LP": 0.72, "DNP": 0.54,
-                         "DNP_SINGLE": 0.78}
+                         "DNP_SINGLE": 0.78, "NONE": 0.74}
 # Our model share reads no injury information: it takes the realised share
-# whole. Keyed by the latest practice day; with no report the flat 0.9 of
-# `_injury_mult` stands.
+# whole. Keyed by the latest practice day; with no report the flat
+# `injury_status.QUESTIONABLE_MULT` of `_injury_mult` (``NONE``) stands.
 QUESTIONABLE_BY_PRACTICE = {k: QUESTIONABLE_REALISED[k] for k in ("FP", "REST", "LP", "DNP")}
+
+# Once the gameday inactives are out (~90 minutes before kickoff,
+# `gameday_inactives`), the "might sit" part of a questionable or doubtful
+# discount is settled. A player confirmed active is priced on what such a
+# player scores *when he plays* -- 2023-25 (`practice_backtest.py`, "given he
+# played": the bucket's actual/model over the same ratio for unreported
+# players who played; 95% bootstrap intervals):
+#
+#   Q + FP   n=89   0.924 [0.803, 1.063]
+#   Q + LP   n=249  0.947 [0.869, 1.028]
+#   Q + DNP  n=49   0.819 [0.670, 0.972]   (a DNP week: he plays hurt)
+#   Q, all   n=398  0.924 [0.866, 0.986]   (no practice line / one DNP so far)
+#
+# Doubtful players who played: 1 of 60, nothing to measure; priced like the
+# DNP week. Never below the pre-inactives value (an FP week stays 0.97: being
+# confirmed cannot make him worth less). An officially Inactive player is 0.
+CONFIRMED_ACTIVE_REALISED = {"LP": 0.95, "DNP": 0.82, "NONE": 0.92}
 
 
 # The same practice week on Sleeper's share of the blend. Sleeper's pre-game
@@ -334,14 +353,15 @@ QUESTIONABLE_BY_PRACTICE = {k: QUESTIONABLE_REALISED[k] for k in ("FP", "REST", 
 # realised share over that (capped at 1.0): a DNP week puts the blend at
 # ~0.55 of healthy, an LP week at ~0.72, as measured. A single DNP so far is
 # weaker evidence (most practise later in the week) than DNP on two or more
-# days. Applied only where the model share already prices the practice
-# (`QUESTIONABLE_BY_PRACTICE`), so neither share is charged twice. Every
-# reported practice row is kept in `practice_report_history` (schema v17);
+# days. A questionable tag with no practice line (``NONE``) is the mix of
+# all of them, on both shares: the model's flat `_injury_mult` and Sleeper's
+# 0.74 / 0.92, so the blend lands at ~0.74 rather than the 0.92 it used to.
+# Every reported practice row is kept in `practice_report_history` (schema v17);
 # re-calibrate with `python -m evals.backtest.practice_backtest` (2023-25) and
 # `python -m evals.backtest.signal_history --truth sleeper --transitions`.
 SLEEPER_QUESTIONABLE_PRICED = 0.92
 PRACTICE_BLEND_MULT = {k: round(min(1.0, QUESTIONABLE_REALISED[k] / SLEEPER_QUESTIONABLE_PRICED), 2)
-                       for k in ("DNP_SINGLE", "DNP", "LP")}
+                       for k in ("DNP_SINGLE", "DNP", "LP", "NONE")}
 
 
 def _practice_days(pattern: str | None) -> list[str]:
@@ -360,7 +380,8 @@ def _latest_practice(practice_status: str | None, days: list[str]) -> str:
 def practice_blend_mult(status: str | None, practice_status: str | None,
                         pattern: str | None = None) -> float:
     """Multiplier on Sleeper's share of the blend for a questionable player's
-    reported practice week (see `PRACTICE_BLEND_MULT`). 1.0 otherwise."""
+    reported practice week (see `PRACTICE_BLEND_MULT`; ``NONE`` without a
+    practice line). 1.0 for a full / rest latest day or any other status."""
     if availability(status) != "questionable":
         return 1.0
     days = _practice_days(pattern)
@@ -369,7 +390,47 @@ def practice_blend_mult(status: str | None, practice_status: str | None,
         return PRACTICE_BLEND_MULT["DNP" if len(days) >= 2 else "DNP_SINGLE"]
     if latest == "LP":
         return PRACTICE_BLEND_MULT["LP"]
-    return 1.0
+    if latest in QUESTIONABLE_BY_PRACTICE:  # FP / REST
+        return 1.0
+    return PRACTICE_BLEND_MULT["NONE"]
+
+
+def confirmed_active_mult(status: str | None, practice_status: str | None,
+                          pattern: str | None = None) -> float:
+    """The model share's multiplier for a player confirmed active at gameday
+    inactives (see `CONFIRMED_ACTIVE_REALISED`).
+
+    Healthy stays 1.0. Questionable: the played-only share by practice week
+    (a DNP week 0.82, a limited latest day 0.95, else 0.92), never below the
+    pre-inactives value. Doubtful, Out (a stale tag the note overrides),
+    unknown or unrecognised: the DNP-week value, or their own if higher.
+    """
+    base = practice_adjusted_mult(status, practice_status, pattern)
+    kind = availability(status)
+    if kind == "healthy":
+        return 1.0
+    if kind != "questionable":
+        return max(base, CONFIRMED_ACTIVE_REALISED["DNP"])
+    days = _practice_days(pattern)
+    practice = _latest_practice(practice_status, [] if practice_status else days)
+    if practice == "DNP" and len(days) >= 2:
+        key = "DNP"
+    elif practice == "LP":
+        key = "LP"
+    else:
+        key = "NONE"
+    return max(base, CONFIRMED_ACTIVE_REALISED[key])
+
+
+def confirmed_active_blend_mult(status: str | None, practice_status: str | None,
+                                pattern: str | None = None) -> float:
+    """Sleeper's share for a player confirmed active: its own questionable
+    shading (`SLEEPER_QUESTIONABLE_PRICED`) taken out against the played-only
+    share, capped at 1.0 -- in place of `practice_blend_mult`."""
+    if availability(status) == "healthy":
+        return 1.0
+    played = confirmed_active_mult(status, practice_status, pattern)
+    return round(min(1.0, played / SLEEPER_QUESTIONABLE_PRICED), 2)
 
 
 def practice_adjusted_mult(status: str | None, practice_status: str | None,
@@ -403,22 +464,23 @@ def _injury_mult(status: str | None) -> float:
     project at full points. New upstream codes now degrade safely and noisily
     instead of silently.
     """
+    from .injury_status import DOUBTFUL_MULT, QUESTIONABLE_MULT
     kind = availability(status)
     if kind == "healthy":
         return 1.0
     if kind == "out":
         return 0.0
     if kind == "doubtful":
-        return 0.35
+        return DOUBTFUL_MULT
     if kind == "questionable":
-        return 0.9
+        return QUESTIONABLE_MULT
     if kind == "uncertain":
         return UNCERTAIN_MULT
     logger.warning(
-        f"unrecognised injury status {status!r} — treating as questionable (0.9). "
-        "Add it to the status tables in projections.py / injury_service.py."
+        f"unrecognised injury status {status!r} — treating as questionable "
+        f"({QUESTIONABLE_MULT}). Add it to the status tables in injury_status.py."
     )
-    return 0.9
+    return QUESTIONABLE_MULT
 
 
 def _absence_detail(status_of, name: str, team: str) -> dict:
@@ -1030,6 +1092,14 @@ class ProjectionEngine:
         )
         inj_mult = practice_adjusted_mult(injury.get("status"), injury.get("practice_status"),
                                           injury.get("practice_pattern"))
+        # The published gameday decision (`_mark_gameday`) settles whether he
+        # plays: officially inactive is 0, confirmed active is priced on what
+        # a player who suits up scores (`confirmed_active_mult`).
+        if injury.get("gameday") == "inactive":
+            inj_mult = 0.0
+        elif injury.get("gameday") == "active":
+            inj_mult = confirmed_active_mult(injury.get("status"), injury.get("practice_status"),
+                                             injury.get("practice_pattern"))
 
         # 6) Weather (opt-in): only applied when the caller supplies wind/roof
         #    (e.g. from get_weather_forecast). The backtest shows the effect is
@@ -1175,6 +1245,13 @@ class ProjectionEngine:
             "practice_status": injury.get("practice_status"),
             "practice_pattern": injury.get("practice_pattern"),
             "practice_source": injury.get("practice_source"),
+            # The published gameday decision, once there is one: "active" /
+            # "inactive" (`gameday_inactives`); None before the window.
+            **({"gameday_status": injury["gameday"],
+                "gameday_note": injury.get("gameday_note"),
+                "gameday_source": injury.get("gameday_source"),
+                "reported_injury_status": injury.get("reported_status", injury.get("status"))}
+               if injury.get("gameday") else {}),
             "on_bye": False,
             # "unknown" when there was neither an opponent nor a cached
             # schedule to check against: projected as playing, but unverified.
@@ -1321,6 +1398,15 @@ class ProjectionEngine:
         # of the vacated volume instead of being priced as a backup.
         depth = _depth_map(values_index)
         status_of = self._status_lookup()
+        # From the inactives window until the game ends, the published
+        # decisions override the week's designations for the players
+        # projected and for their teammates (the starting QB a receiver's
+        # coupling reads). Nothing is fetched outside a window.
+        gameday = await _safe_gameday(db if db is not None else getattr(self, "db", None),
+                                      season, week)
+        if gameday:
+            status_of = _with_gameday(status_of, gameday)
+            players = [_mark_gameday(p, gameday) for p in players]
         # Recent role changes, from the same game logs plus Sleeper's weekly
         # snap counts (cached per week).
         roles, played_weeks = await _role_reads(players, logs if opp_index else {},
@@ -1360,6 +1446,62 @@ class ProjectionEngine:
             "ppr": ppr,
             "scoring_used": model.summary(),
         }
+
+
+async def _safe_gameday(db, season: int | None, week: int | None) -> dict:
+    """`gameday_inactives.gameday_statuses` (a seam for tests). Never raises."""
+    try:
+        from .gameday_inactives import gameday_statuses
+        return await gameday_statuses(db, season, week)
+    except Exception as e:  # context only; never sink a projection
+        logger.debug(f"gameday statuses unavailable: {e}")
+        return {}
+
+
+def _gameday_hit(gameday: dict, name: str | None, team: str | None) -> dict | None:
+    from .opportunity_tools import norm_name
+    if not gameday or not name:
+        return None
+    return gameday.get((norm_name(name), normalize_team(team) or (team or "").upper()))
+
+
+def _mark_gameday(player: dict, gameday: dict) -> dict:
+    """The player with his published gameday decision on ``injury``:
+    ``gameday`` "active" / "inactive" (+ note, source). Inactive also becomes
+    his status (the reported one kept as ``reported_status``), so every
+    consumer of the projection reads him as out."""
+    hit = _gameday_hit(gameday, player.get("name") or player.get("player_name"),
+                       player.get("team"))
+    if not hit:
+        return player
+    injury = dict(player.get("injury") or {})
+    injury.update({"gameday": hit["status"], "gameday_note": hit.get("note"),
+                   "gameday_source": hit.get("source")})
+    if hit["status"] == "inactive":
+        injury["reported_status"] = injury.get("status")
+        injury["status"] = "Inactive"
+    return {**player, "injury": injury}
+
+
+def _with_gameday(status_of, gameday: dict):
+    """``status_of`` with the published decisions first: "Inactive" for an
+    officially inactive player, "Active" for a confirmed active one (he plays:
+    no depth inheritance, no coupling cut). ``.gameday(name, team)`` gives
+    the raw decision; the other attributes carry over."""
+    def _get(name: str, team: str) -> str | None:
+        hit = _gameday_hit(gameday, name, team)
+        if hit:
+            return "Inactive" if hit["status"] == "inactive" else "Active"
+        return status_of(name, team)
+
+    def _decision(name: str, team: str) -> str | None:
+        return (_gameday_hit(gameday, name, team) or {}).get("status")
+
+    for attr in ("detail", "practice", "practice_week", "news"):
+        if hasattr(status_of, attr):
+            setattr(_get, attr, getattr(status_of, attr))
+    _get.gameday = _decision
+    return _get
 
 
 async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
@@ -1478,6 +1620,9 @@ def _context_one(proj: dict, depth: dict, status_of, opp_index: dict, week: int 
             conf_delta += int(ctx.get("confidence_delta") or 0)
     flags = news_signals.signals_for(news_index, name, team)
     proj["news_flags"] = flags
+    if proj.get("gameday_status") == "active":
+        # Confirmed active: the week's "unlikely to play" is settled.
+        flags = [f for f in flags if f.get("flag") not in news_signals.AVAILABILITY_FLAGS]
     if flags:
         adj = news_signals.adjustment(flags, proj.get("role_trend"),
                                       availability(proj.get("injury_status")))
@@ -1621,20 +1766,38 @@ async def _apply_sleeper_blend(projections: list[dict], inputs: list[dict],
         # A backup quarterback throwing to him: Sleeper's line does not move
         # for it (`qb_coupling`), so its share takes the full multiplier.
         qb_mult = float(bd.get("qb_sleeper_mult", 1.0) or 1.0)
+        kind = availability(proj.get("injury_status"))
+        sleeper_zeroed = False
+        if proj.get("gameday_status") == "active":
+            # Confirmed active: Sleeper's share drops its own questionable
+            # shading for the played-only share, and no doubtful / out cap
+            # applies -- he is playing.
+            practice_mult = confirmed_active_blend_mult(proj.get("injury_status"),
+                                                        proj.get("practice_status"),
+                                                        proj.get("practice_pattern"))
+            kind = "healthy" if kind == "healthy" else "questionable"
+            # Sleeper zeroed him before the decision (it does for most
+            # doubtful players): ours alone.
+            sleeper_zeroed = status == "not_projected" or not theirs
         bd["role_mult"] = round(role_mult, 3)
         bd["practice_blend_mult"] = round(practice_mult, 3)
-        blended = sp.blend(ours, theirs * role_mult * practice_mult * qb_mult,
-                           availability(proj.get("injury_status")), inj, status)
+        if sleeper_zeroed:
+            blended = round(max(0.0, ours), 1)
+            bd["sleeper_zero_overridden"] = True
+        else:
+            blended = sp.blend(ours, theirs * role_mult * practice_mult * qb_mult,
+                               kind, inj, status)
         vol = _VOLATILITY.get((proj.get("position") or "").upper(), 0.35)
         proj.update({
             "projected_points": blended,
             "floor": 0.0 if blended == 0 else round(blended * (1 - vol), 1),
             "ceiling": 0.0 if blended == 0 else round(blended * (1 + vol), 1),
             "sleeper_projection": theirs,
-            "projection_source": "sleeper_blend",
-            "blend_weights": sp.weights_for(status),
+            "projection_source": "model_only" if sleeper_zeroed else "sleeper_blend",
+            "blend_weights": (dict(sp.MODEL_ONLY_WEIGHTS) if sleeper_zeroed
+                              else sp.weights_for(status)),
         })
-        sources["sleeper_blend"] += 1
+        sources["model_only" if sleeper_zeroed else "sleeper_blend"] += 1
     warnings = []
     if missing:
         why = ("Sleeper projections unavailable" if not active

@@ -48,7 +48,7 @@ class TestKnownStatusesUnchanged:
     @pytest.mark.parametrize("status,expected", [
         ("Out", 0.0), ("IR", 0.0), ("PUP", 0.0), ("NFI", 0.0),
         ("injured reserve", 0.0), ("suspended", 0.0),
-        ("Doubtful", 0.35), ("Questionable", 0.9),
+        ("Doubtful", 0.02), ("Questionable", 0.74),
         ("Active", 1.0), ("Probable", 1.0), (None, 1.0), ("", 1.0),
     ])
     def test_multiplier(self, status, expected):
@@ -66,7 +66,7 @@ class TestUnknownStatusFailsSafe:
         `NA` project at full points, so a new upstream code now degrades to the
         questionable haircut rather than to "fine".
         """
-        assert _injury_mult("SomeFutureCode") == 0.9
+        assert _injury_mult("SomeFutureCode") == 0.74
 
     def test_it_is_logged_so_the_gap_is_visible(self, caplog):
         import logging

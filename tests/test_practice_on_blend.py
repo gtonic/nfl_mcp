@@ -22,7 +22,7 @@ class TestPracticeBlendMult:
         ("FP", "DNP-LP-FP", 1.0),
         ("REST", "REST", 1.0),
         ("Did Not Participate In Practice", None, PRACTICE_BLEND_MULT["DNP_SINGLE"]),
-        (None, None, 1.0),
+        (None, None, PRACTICE_BLEND_MULT["NONE"]),                # no practice line: the mix
     ])
     def test_questionable(self, practice, pattern, expected):
         assert practice_blend_mult("Questionable", practice, pattern) == expected
@@ -64,7 +64,7 @@ class TestCalibratedValues:
     def test_model_share_needs_a_questionable_tag(self):
         assert projections.practice_adjusted_mult(None, "DNP", "DNP-DNP") == 1.0
         assert projections.practice_adjusted_mult("Out", "LP") == 0.0
-        assert projections.practice_adjusted_mult("Questionable", None) == 0.9
+        assert projections.practice_adjusted_mult("Questionable", None) == 0.74
 
 
 def _hurt(pattern):

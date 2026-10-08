@@ -252,7 +252,8 @@ def _analyzer():
 
 class TestConsumers:
     def test_projection_prices_the_practice_line_only_on_a_questionable_tag(self):
-        assert practice_adjusted_mult("Questionable", "DNP") < _injury_mult("Questionable")
+        # A DNP week (one DNP so far is the mix of how such weeks end, 0.78).
+        assert practice_adjusted_mult("Questionable", None, "DNP-DNP") < _injury_mult("Questionable")
         assert practice_adjusted_mult("Questionable", "FP") > _injury_mult("Questionable")
         # A limited week: a third of those players sit (practice_backtest).
         assert practice_adjusted_mult("Questionable", "limited") < _injury_mult("Questionable")

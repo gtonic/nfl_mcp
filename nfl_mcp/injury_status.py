@@ -35,15 +35,40 @@ class StatusInfo(NamedTuple):
     health: int
 
 
+# The one-week projection multipliers of the two uncertain tags: the
+# *expected* share of a healthy week before inactives, the chance he sits
+# included. Measured on 2023-25 (`evals/backtest/practice_backtest.py`: every
+# nflverse injury report joined to the walk-forward backtest; a relevant player
+# whose team played without him scores 0):
+#
+# - Questionable with no practice line: the mix of how questionable weeks end
+#   -- all questionable players, n=583, played 68%, 0.736 [0.676, 0.800]
+#   (the few without a practice line on the report, n=15: 0.786 [0.47, 1.10]).
+#   It used to be 0.9. A practice line refines it
+#   (`projections.QUESTIONABLE_BY_PRACTICE`).
+# - Doubtful: 1 of 60 relevant doubtful players played, implied 0.006
+#   [0.000, 0.019], MAE-optimal 0.00. The wider nflverse population agrees:
+#   3 of 390 doubtful QB/RB/WR/TE with a stat line that season played in
+#   2018-25, 0.8% [0.3%, 2.2%]. It used to be 0.35. Kept just above zero so a
+#   doubtful player stays apart from an Out one (Out zeroes Sleeper's share
+#   outright and ends every availability question).
+#
+# A player confirmed active at inactives time is priced on what a player who
+# plays scores instead (`projections.confirmed_active_mult`). Who counts as
+# unavailable this week is a separate threshold
+# (`injury_match.MISSES_WEEK_MAX_MULT`), not these values.
+QUESTIONABLE_MULT = 0.74
+DOUBTFUL_MULT = 0.02
+
 STATUS_TABLE: dict[str, StatusInfo] = {
     "Active": StatusInfo("healthy", 1, 1.0, 100),
     "Probable": StatusInfo("healthy", 1, 1.0, 100),
     "FP": StatusInfo("healthy", 1, 1.0, 100),
     "Unknown": StatusInfo("uncertain", 1, 0.95, 70),
-    "Questionable": StatusInfo("questionable", 2, 0.9, 60),
-    "LP": StatusInfo("questionable", 2, 0.9, 60),
-    "DNP": StatusInfo("questionable", 3, 0.9, 60),
-    "Doubtful": StatusInfo("doubtful", 4, 0.35, 25),
+    "Questionable": StatusInfo("questionable", 2, QUESTIONABLE_MULT, 60),
+    "LP": StatusInfo("questionable", 2, QUESTIONABLE_MULT, 60),
+    "DNP": StatusInfo("questionable", 3, QUESTIONABLE_MULT, 60),
+    "Doubtful": StatusInfo("doubtful", 4, DOUBTFUL_MULT, 25),
     "Out": StatusInfo("out", 4, 0.0, 0),
     "Inactive": StatusInfo("out", 4, 0.0, 0),
     "IR": StatusInfo("out", 5, 0.0, 0),
@@ -58,7 +83,7 @@ STATUS_TABLE: dict[str, StatusInfo] = {
 # A designation none of the tables know. Priced as questionable: Sleeper only
 # sets `injury_status` when something is wrong, so an unknown code is evidence
 # against the player, not for him.
-UNRECOGNISED = StatusInfo("unrecognised", 2, 0.9, 60)
+UNRECOGNISED = StatusInfo("unrecognised", 2, QUESTIONABLE_MULT, 60)
 
 # Exact spellings (lower-cased, stripped) -> canonical.
 _ALIASES: dict[str, str] = {

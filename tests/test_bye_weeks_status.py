@@ -380,15 +380,17 @@ class TestStatusVocabulary:
 
 
 class TestDoubtfulAgrees:
-    """Doubtful: projected at ×0.35 and labelled risky, never started."""
+    """Doubtful: projected at ×0.02 (1 of 60 played, 2023-25) and labelled
+    risky, never started."""
 
     def test_projection_keeps_the_discount(self):
-        assert pj._injury_mult("Doubtful") == 0.35
+        from nfl_mcp.injury_status import DOUBTFUL_MULT
+        assert pj._injury_mult("Doubtful") == DOUBTFUL_MULT == 0.02
 
     def test_decision_follows_the_discounted_points_capped_at_sit(self):
         opt = lo.LineupOptimizer.__new__(lo.LineupOptimizer)
         score = lo.injury_score("Doubtful")
-        # 30 × 0.35 = 10.5 would be a WR "start"; doubtful caps it at sit.
+        # 10.5 points would be a WR "start"; doubtful caps it at sit.
         assert opt.determine_decision(10.5, "WR", score, injury_status="Doubtful") == "sit"
         # Low enough, the points alone say must_sit — same as the projection.
         assert opt.determine_decision(2.0, "WR", score, injury_status="Doubtful") == "must_sit"

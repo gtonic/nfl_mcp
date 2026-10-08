@@ -279,12 +279,21 @@ def injury_for_row(row: dict, injury_index: dict[tuple[str, str], dict]) -> dict
     return resolve_injury(row, injury_index, normalize_team(row.get("team_id")) or "")
 
 
+# A status whose one-week multiplier is at or below this all but rules the
+# player out of the week (`misses_this_week`): Out and Doubtful, never
+# Questionable. An availability threshold, deliberately not the Doubtful
+# multiplier itself: recalibrating what a doubtful week is worth
+# (`injury_status.DOUBTFUL_MULT`) must not change who counts as unavailable.
+MISSES_WEEK_MAX_MULT = 0.35
+
+
 def misses_this_week(status: str | None) -> bool:
     """Whether a status all but rules the player out of this week's game.
 
-    Doubtful counts: it projects at 0.35 and rarely plays. A one-week projection
-    of such a player says nothing about his value beyond this week, so tools
-    that act on that projection for longer — a drop, a trade — must not.
+    Doubtful counts: it rarely plays (1 of 60 relevant doubtful players in
+    2023-25). A one-week projection of such a player says nothing about his
+    value beyond this week, so tools that act on that projection for longer —
+    a drop, a trade — must not.
     """
     from .projections import _injury_mult  # deferred: projections is heavy
-    return bool(status) and _injury_mult(status) <= 0.35
+    return bool(status) and _injury_mult(status) <= MISSES_WEEK_MAX_MULT

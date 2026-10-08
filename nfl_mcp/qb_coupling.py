@@ -217,20 +217,29 @@ def _dnp_days(practice: dict | None) -> list[str]:
 
 
 def starter_sit_weight(status: str | None, practice: dict | None = None,
-                       flags: list[dict] | None = None) -> dict:
+                       flags: list[dict] | None = None,
+                       gameday: str | None = None) -> dict:
     """``{weight, basis, detail}``: how much of the backup's multiplier a
     receiver takes, from the starter's status, this week's practice line
     (`practice_reports.summarize`) and his report-text flags
     (`news_signals.signals_for`).
 
-    Out / IR / suspended: ``OUT_WEIGHT``; Doubtful: ``DOUBTFUL_WEIGHT``;
-    Questionable: ``QUESTIONABLE_DNP_WEIGHT`` with ``QUESTIONABLE_DNP_DAYS``
-    DNP days ending on a DNP, ``QUESTIONABLE_NEWS_WEIGHT`` with a recent
-    "ruled out" / "unlikely to play" and no limited or full latest day,
-    ``QUESTIONABLE_FULL_WEIGHT`` with a full (or rest) latest day or a recent
-    "expected to play", ``QUESTIONABLE_LIMITED_WEIGHT`` with a limited one,
-    else ``QUESTIONABLE_WEIGHT``. ``basis`` is "status", "practice" or "news".
-    Pure."""
+    The published gameday decision (`gameday`: "active" / "inactive",
+    `gameday_inactives`) settles it first: officially inactive is
+    ``OUT_WEIGHT``, confirmed active is no cut, whatever the week said.
+    Otherwise Out / IR / suspended: ``OUT_WEIGHT``; Doubtful:
+    ``DOUBTFUL_WEIGHT``; Questionable: ``QUESTIONABLE_DNP_WEIGHT`` with
+    ``QUESTIONABLE_DNP_DAYS`` DNP days ending on a DNP,
+    ``QUESTIONABLE_NEWS_WEIGHT`` with a recent "ruled out" / "unlikely to
+    play" and no limited or full latest day, ``QUESTIONABLE_FULL_WEIGHT`` with
+    a full (or rest) latest day or a recent "expected to play",
+    ``QUESTIONABLE_LIMITED_WEIGHT`` with a limited one, else
+    ``QUESTIONABLE_WEIGHT``. ``basis`` is "gameday", "status", "practice" or
+    "news". Pure."""
+    if gameday == "inactive":
+        return {"weight": OUT_WEIGHT, "basis": "gameday", "detail": "inactive"}
+    if gameday == "active":
+        return {"weight": 0.0, "basis": "gameday", "detail": "active"}
     kind = _kind(status)
     if kind == "out":
         return {"weight": OUT_WEIGHT, "basis": "status", "detail": None}
@@ -310,7 +319,13 @@ def receiver_context(depth: dict, team: str, position: str, name: str, status_of
         return None
     starter = qbs[0]["name"]
     status = status_of(starter, team)
-    kind = _kind(status)
+    # The published gameday decision, when the lookup has one
+    # (`projections._with_gameday`): it overrides the week's tag.
+    decision_of = getattr(status_of, "gameday", None)
+    gameday = decision_of(starter, team) if callable(decision_of) else None
+    if gameday == "active":
+        return None
+    kind = "out" if gameday == "inactive" else _kind(status)
     if kind not in ("out", "doubtful", "questionable"):
         return None
     # The starter's practice line and report flags, when the lookup has them
@@ -322,7 +337,7 @@ def receiver_context(depth: dict, team: str, position: str, name: str, status_of
         practice = week_of(starter, team) if callable(week_of) else None
         from . import news_signals
         flags = news_signals.signals_for(getattr(status_of, "news", None), starter, team)
-    sit = starter_sit_weight(status, practice, flags)
+    sit = starter_sit_weight(status, practice, flags, gameday=gameday)
     weight = sit["weight"]
     if weight <= 0:
         return None
