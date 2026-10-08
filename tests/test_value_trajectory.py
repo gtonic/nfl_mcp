@@ -64,6 +64,57 @@ class TestReturningTeammate:
         assert t["signal"] == "hold"
         assert not any(s["kind"] == "returning_teammate" for s in t["signals"])
 
+    @pytest.mark.parametrize("games", [0, 1, 3])
+    def test_a_teammate_back_inside_the_horizon_is_a_sell_high(self, games):
+        e = _warren()
+        e["returning_teammates"][0].update(games_until_return=games,
+                                           expected_return_week=5 + games)
+        t = assess(e, week=5)
+        assert t["signal"] == "sell_high" and t["change_week"] == 5 + games
+        assert ("back this week" if games == 0 else f"due back week {5 + games}") \
+            in t["reasons"][0]
+
+    def test_a_teammate_back_later_does_not_hide_one_back_next_week(self):
+        # Emanuel Wilson, week 5: Charbonnet off PUP next week, Price on IR
+        # for four more -- the longest absence used to gate the signal.
+        e = _entry(name="Emanuel Wilson", team="SEA", per_game=9.43,
+                   per_game_until_return=9.92, per_game_recent=10.4,
+                   returning_teammates=[
+                       {"name": "Zach Charbonnet", "expected_return_week": 6,
+                        "games_until_return": 1, "status": "Out"},
+                       {"name": "Jadarian Price", "expected_return_week": 9,
+                        "games_until_return": 4, "status": "IR"}],
+                   role_trend="role_up", role_flags=["carries share 31%→57% (weeks 3-4)"])
+        t = assess(e, week=5)
+        assert t["signal"] == "sell_high" and t["change_week"] == 6
+        assert t["expected_value_change"]["pct"] == pytest.approx(-9.3)
+        why = t["reasons"][0]
+        assert why.startswith("Zach Charbonnet (SEA, Out) due back week 6")
+        assert "10.4 pts/game came without them" in why
+        assert "Jadarian Price back later (week 9)" in why
+
+    def test_every_teammate_past_the_horizon_is_still_a_hold(self):
+        e = _warren(per_game_recent=16.0)
+        e["returning_teammates"] = [
+            {"name": n, "games_until_return": g, "expected_return_week": 5 + g}
+            for n, g in (("Rico Dowdle", 4), ("Kenneth Gainwell", 6))]
+        t = assess(e, week=5)
+        assert t["signal"] == "hold" and t["change_week"] is None
+
+    def test_the_drop_is_read_from_what_he_has_been_producing(self):
+        # The ROS rate until the return is regressed toward the rank prior;
+        # the market prices the recent production. A 13.6 regressed rate on
+        # a 15.0 trailing one: -21% rather than -13%.
+        t = assess(_warren(per_game_recent=15.0), week=5)
+        assert t["expected_value_change"]["pct"] == pytest.approx(-21.3)
+        assert t["expected_value_change"]["per_game"] == pytest.approx(-3.2)
+        assert "15.0 pts/game came without him" in t["reasons"][0]
+
+    def test_a_recent_rate_below_the_regressed_one_does_not_shrink_the_drop(self):
+        # (A small sample regressed *up*: the ROS rate is the higher one.)
+        assert assess(_warren(per_game_recent=12.0), week=5)["expected_value_change"] == \
+            assess(_warren(), week=5)["expected_value_change"]
+
     def test_inherited_volume_ending_is_falling(self):
         e = _entry(name="Fill In", per_game=9.0, inherited_per_game=3.0, inherited_games=1,
                    inherited_from=["Hurt Starter"])

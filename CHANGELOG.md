@@ -163,6 +163,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model with Sleeper.
 
 ### Fixed
+- **Value trajectory: a teammate due back soon reads as a sell-high again.**
+  Emanuel Wilson (SEA) was a `hold` with Zach Charbonnet off PUP next week.
+  Three causes:
+  1. The horizon gate took the *longest* return among the teammates due
+     back, so Jadarian Price (IR, 4 games) hid Charbonnet. The first return
+     inside `TRAJECTORY_HORIZON_GAMES` now sets `change_week`, and teammates
+     back later are named in the reason.
+  2. A teammate's absence ignored the PUP / NFI preseason rule from #250,
+     because `_starter_absence` was called without the week. Charbonnet read
+     4 games out instead of 1. `ros._starter_absence(..., season_week=)` is
+     now passed the week by `projections._teammate_return_games`, the backup
+     QB's `games_out` and `ros._inherited`.
+  3. The drop was measured from the ROS rate until the return, which is
+     regressed toward the rank prior. For a backup with no games next to the
+     starter, the post-return rate falls back to that same prior, so no drop
+     showed (9.92 → 9.43). ROS now reports `per_game_recent`, his unregressed
+     trailing rate, and the trajectory measures the drop from the higher of
+     the two. That is what the market prices.
+
+  Live, week 5:
+  - Wilson: hold → sell_high, −9.3%.
+  - Warren: −8.6% → −14.2%.
+  - Doubs: −13.6% → −17.6%.
+  - Hockenson: −13.9% → −24.0%.
+
+  Flag rate: Ropeway 14.7% → 18.6%, VLBG 16.3% → 20.2%.
 - **Name lookups pick the fantasy player, not a namesake.**
   `get_ros_projections(player_names=["Justin Jefferson"])` took the first
   exact name match with a team — Cleveland's linebacker — and returned ROS
