@@ -108,8 +108,10 @@ MAX_MULT = 1.0
 OUT_WEIGHT = 1.0
 # A doubtful starter sits most weeks; the multiplier counts at this weight.
 # 2023-25 (`evals/backtest/practice_backtest.py`): 8 of 9 doubtful starters
-# sat, 89% [57%, 98%] -- consistent, too few to move it.
-DOUBTFUL_WEIGHT = 0.75
+# sat, 89% [57%, 98%]. Too few alone, but every doubtful QB/RB/WR/TE agrees:
+# 0.8% [0.3%, 2.2%] played (n=390, 2018-25), which is why a doubtful player's
+# own projection multiplier is 0.02 (`injury_status.DOUBTFUL_MULT`).
+DOUBTFUL_WEIGHT = 0.9
 # Questionable used to be "a coin flip that usually plays: no cut". The
 # 2023-25 reports say otherwise: of the starters of a team's last game who
 # were questionable the next week, 42% [28%, 57%] did not start (n=43); with
@@ -124,13 +126,13 @@ QUESTIONABLE_FULL_WEIGHT = 0.0
 # practise on at least QUESTIONABLE_DNP_DAYS report days, the latest of them
 # included (Lamar Jackson, week 5 2026: Questionable, DNP Wed and Thu,
 # "only an outside chance to play"). 2023-25: 3 of 5 sat (60% [23%, 88%]) --
-# too few to move it from the doubtful weight.
+# too few to move it; kept at the old doubtful weight.
 QUESTIONABLE_DNP_DAYS = 2
-QUESTIONABLE_DNP_WEIGHT = DOUBTFUL_WEIGHT
+QUESTIONABLE_DNP_WEIGHT = 0.75
 # Questionable with a recent report that he will not / is unlikely to play
 # (`news_signals` flags, at recency weight >= SIT_FLAG_MIN_WEIGHT) and no
 # practice line that says otherwise: the same weight.
-QUESTIONABLE_NEWS_WEIGHT = DOUBTFUL_WEIGHT
+QUESTIONABLE_NEWS_WEIGHT = QUESTIONABLE_DNP_WEIGHT
 SIT_FLAGS = ("ruled_out", "unlikely_to_play")
 # A recent "expected to play" keeps a Questionable starter uncut whatever his
 # practice line (a veteran's rest days, a walkthrough week).
