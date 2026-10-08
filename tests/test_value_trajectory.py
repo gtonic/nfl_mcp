@@ -87,7 +87,8 @@ class TestReturningTeammate:
                    role_trend="role_up", role_flags=["carries share 31%→57% (weeks 3-4)"])
         t = assess(e, week=5)
         assert t["signal"] == "sell_high" and t["change_week"] == 6
-        assert t["expected_value_change"]["pct"] == pytest.approx(-9.3)
+        assert t["expected_value_change"]["pct"] == pytest.approx(
+            -9.3 * value_trajectory.RETURNING_CHANGE_SCALE["RB"], abs=0.1)
         why = t["reasons"][0]
         assert why.startswith("Zach Charbonnet (SEA, Out) due back week 6")
         assert "10.4 pts/game came without them" in why
@@ -106,7 +107,9 @@ class TestReturningTeammate:
         # the market prices the recent production. A 13.6 regressed rate on
         # a 15.0 trailing one: -21% rather than -13%.
         t = assess(_warren(per_game_recent=15.0), week=5)
-        assert t["expected_value_change"]["pct"] == pytest.approx(-21.3)
+        # (scaled to the realised size of the drop, `RETURNING_CHANGE_SCALE`)
+        assert t["expected_value_change"]["pct"] == pytest.approx(
+            -21.3 * value_trajectory.RETURNING_CHANGE_SCALE["RB"], abs=0.1)
         assert t["expected_value_change"]["per_game"] == pytest.approx(-3.2)
         assert "15.0 pts/game came without him" in t["reasons"][0]
 

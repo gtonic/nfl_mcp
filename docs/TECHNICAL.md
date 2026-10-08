@@ -274,7 +274,10 @@ most 3 rows per key; schema v16 pruned the backlog to the newest row per key.
   news: a hash of player/text/date/source), and pruned by `prune_old_data`
   after `SIGNAL_HISTORY_DAYS` (365) but never inside the current season.
   `python -m evals.backtest.signal_history --db nfl_data.db --season 2026`
-  backtests the practice and news multipliers from them.
+  backtests the practice and news multipliers from them (`--truth sleeper`
+  scores against Sleeper's weekly stat lines, `--transitions` shows how a
+  questionable player's first practice day ends); the 2023-25 counterpart
+  that set the live values is `python -m evals.backtest.practice_backtest`.
 
 ### Weekly accuracy loop (schema v18)
 
@@ -314,9 +317,18 @@ model_projection = regressed_rate(opportunity, rank_bucket, games)   # k = 2
 
 - `sleeper_projection` is Sleeper's projected stat line priced with the
   league's `ScoringModel` (`sleeper_projections.price_stats`).
-- Byes and Out are 0. Questionable discounts only our quarter (Sleeper's line
-  already carries its own injury read); Doubtful is capped at 35% of the
-  healthier reading. A player Sleeper lists without points (benched,
+- Byes and Out are 0. Questionable with a reported practice week is priced on
+  both shares at what such players scored in 2023-25
+  (`evals/backtest/practice_backtest.py`, nflverse injury reports): full
+  Friday 0.97, limited 0.72, DNP week 0.54, a single DNP so far 0.78 of a
+  healthy week — ours takes that share (`QUESTIONABLE_BY_PRACTICE`), Sleeper's
+  that share over its own ~0.92 shading (`PRACTICE_BLEND_MULT`); without a
+  report ours takes 0.9. Doubtful is capped at 35% of the healthier reading
+  (the backtest has 1 of 60 relevant doubtful players playing — a candidate
+  for a lower cap).
+- A gained role is priced only for a back whose gain held two games and that
+  no teammate's absence explains (`role_gain`, ×(1 + 0.1 × volume-share
+  gain) on this week's Sleeper share; `evals/backtest/trend_calibration.py`). A player Sleeper lists without points (benched,
   inactive) projects 0 — but only when Sleeper has published his team.
 - No Sleeper number (outage, off-season, unlisted player): the model alone,
   `projection_source: "model_only"` plus a warning. Each projection carries
@@ -348,7 +360,9 @@ model_projection = regressed_rate(opportunity, rank_bucket, games)   # k = 2
   (fetches and caches Sleeper's projection history on first run).
 - **Quarterback coupling** (`qb_coupling`): a WR whose starting QB (top QB by
   market rank) is Out / IR / suspended takes a multiplier by the backup's
-  tier — low 0.87, mid 0.90, starter-grade 1.0; Doubtful at 75% of it — on
+  tier — low 0.87, mid 0.90, starter-grade 1.0; Doubtful or Questionable
+  with a DNP week at 75% of it, Questionable at 40% (limited Friday 45%, full
+  0%: the share of such starters who sat in 2023-25) — on
   Sleeper's share (its line does not react to a backup) and, scaled by the
   share of his trailing games the starter played, on ours. Tight ends are
   flagged, not cut (they gained with a backup in the backtest). A QB whose

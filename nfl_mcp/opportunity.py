@@ -84,6 +84,10 @@ QB_LOOKBACK = 8
 # (2023-25), model MAE on the role_down rows: 5.520 -> 5.507 at 1.5 (RB 5.394
 # -> 5.359), 5.508 at 2, 5.523 at 3. On a gained role it only hurt (5.797 ->
 # 5.862), which is why `role_shift` asks for it on a lost role alone.
+# Re-swept 2026-10 (`evals/backtest/trend_calibration.py --only role_down`,
+# 1,224 role_down rows): 1 5.538, 1.25 5.529, 1.5 5.526, 2 5.526, 2.5 5.533.
+# Backs like more (2.5: 5.381 vs 5.397), tight ends none (1.0), and 2023
+# preferred 1.0 while 2024-25 preferred 2-2.5: the pooled optimum stays 1.5.
 POST_BREAK_WEIGHT = 1.5
 QB_ATTEMPTS_PRIOR = 30.6
 QB_ATTEMPTS_PSEUDO_GAMES = 3.0

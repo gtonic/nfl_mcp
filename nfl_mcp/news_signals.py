@@ -142,7 +142,11 @@ DESIGNATED_RE = re.compile("|".join(PATTERNS["designated_to_return"]), re.I)
 
 # What a flag moves, at full recency weight. ``model_mult`` is on our
 # model's share of the blend only (see module doc); ``confidence`` is added
-# to the projection's confidence. Heuristic (no blurb history to backtest).
+# to the projection's confidence. Heuristic: the blurb history
+# (`injury_news_history`, schema v17) had no flagged player-week with a
+# trailing rate of 5+ points in 2026 weeks 3-4 (491 unflagged), so there is
+# nothing to fit yet. Re-calibrate once it does:
+# `python -m evals.backtest.signal_history --db nfl_data.db --season 2026 --truth sleeper`.
 EFFECTS: dict[str, dict[str, float]] = {
     "benched": {"model_mult": 0.85, "confidence": -8},
     "committee": {"model_mult": 0.93, "confidence": -5},

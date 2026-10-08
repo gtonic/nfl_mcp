@@ -34,11 +34,22 @@ class TestStarterSitWeight:
         assert sit["weight"] == qb_coupling.QUESTIONABLE_DNP_WEIGHT == qb_coupling.DOUBTFUL_WEIGHT
         assert sit["basis"] == "practice" and sit["detail"] == "DNP Wed/Thu"
 
-    @pytest.mark.parametrize("statuses", [("LP",), ("DNP", "LP"), ("DNP", "FP"), ("FP", "FP"),
-                                          ("DNP",), ("LP", "DNP"), ()])
-    def test_questionable_otherwise_is_no_cut(self, statuses):
+    @pytest.mark.parametrize("statuses, weight", [
+        (("LP",), "QUESTIONABLE_LIMITED_WEIGHT"), (("DNP", "LP"), "QUESTIONABLE_LIMITED_WEIGHT"),
+        (("DNP", "FP"), "QUESTIONABLE_FULL_WEIGHT"), (("FP", "FP"), "QUESTIONABLE_FULL_WEIGHT"),
+        (("REST",), "QUESTIONABLE_FULL_WEIGHT"),
+        (("DNP",), "QUESTIONABLE_WEIGHT"), (("LP", "DNP"), "QUESTIONABLE_WEIGHT"),
+        ((), "QUESTIONABLE_WEIGHT")])
+    def test_questionable_otherwise(self, statuses, weight):
+        # 2023-25: 42% of questionable starters sat, 47% with a limited
+        # latest day, none of six with a full one (practice_backtest).
         sit = qb_coupling.starter_sit_weight("Questionable", _practice(*statuses))
-        assert sit["weight"] == qb_coupling.QUESTIONABLE_WEIGHT == 0.0
+        assert sit["weight"] == getattr(qb_coupling, weight)
+
+    def test_calibrated_weights(self):
+        assert qb_coupling.QUESTIONABLE_FULL_WEIGHT == 0.0
+        assert 0 < qb_coupling.QUESTIONABLE_WEIGHT <= qb_coupling.QUESTIONABLE_LIMITED_WEIGHT \
+            < qb_coupling.QUESTIONABLE_DNP_WEIGHT <= qb_coupling.DOUBTFUL_WEIGHT < 1.0
 
     def test_dnp_on_the_latest_day_after_an_earlier_dnp(self):
         sit = qb_coupling.starter_sit_weight("Questionable", _practice("DNP", "LP", "DNP"))
@@ -60,9 +71,11 @@ class TestStarterSitWeight:
         assert sit["weight"] == qb_coupling.QUESTIONABLE_NEWS_WEIGHT and sit["basis"] == "news"
         # A stale blurb, or a limited practice since, does not count.
         assert qb_coupling.starter_sit_weight(
-            "Questionable", None, [_flag("unlikely_to_play", 0.2)])["weight"] == 0.0
+            "Questionable", None, [_flag("unlikely_to_play", 0.2)])["weight"] \
+            == qb_coupling.QUESTIONABLE_WEIGHT
         assert qb_coupling.starter_sit_weight(
-            "Questionable", _practice("DNP", "LP"), [_flag("ruled_out")])["weight"] == 0.0
+            "Questionable", _practice("DNP", "LP"), [_flag("ruled_out")])["weight"] \
+            == qb_coupling.QUESTIONABLE_LIMITED_WEIGHT
 
     def test_expected_to_play_keeps_him_uncut(self):
         sit = qb_coupling.starter_sit_weight("Questionable", _practice("DNP", "DNP"),
@@ -87,14 +100,25 @@ class TestReceiverContext:
         assert ctx["reason"].startswith(
             "Starter Qb Questionable, DNP Wed/Thu — 75% weight: Backup Qb (low backup")
 
-    def test_questionable_limited_is_no_context(self):
+    def test_questionable_limited_is_a_smaller_cut(self):
+        depth, status_of = _depth("Questionable")
+        ctx = qb_coupling.receiver_context(
+            depth, "TB", "WR", "Wide One", _with_practice(status_of, _practice("DNP", "LP")))
+        m = qb_coupling.RECEIVER_MULT["WR"]["low"]
+        assert ctx["applied"] and ctx["starter_sit_weight"] == \
+            qb_coupling.QUESTIONABLE_LIMITED_WEIGHT
+        assert ctx["sleeper_mult"] == round(
+            1 - (1 - m) * qb_coupling.QUESTIONABLE_LIMITED_WEIGHT, 3)
+        # Without any practice data: the questionable weight.
+        depth, status_of = _depth("Questionable")
+        ctx = qb_coupling.receiver_context(depth, "TB", "WR", "Wide One", status_of)
+        assert ctx["starter_sit_weight"] == qb_coupling.QUESTIONABLE_WEIGHT
+
+    def test_questionable_full_practice_is_no_context(self):
         depth, status_of = _depth("Questionable")
         assert qb_coupling.receiver_context(
             depth, "TB", "WR", "Wide One",
-            _with_practice(status_of, _practice("DNP", "LP"))) is None
-        # Without any practice data, Questionable is no cut (as before).
-        depth, status_of = _depth("Questionable")
-        assert qb_coupling.receiver_context(depth, "TB", "WR", "Wide One", status_of) is None
+            _with_practice(status_of, _practice("LP", "FP"))) is None
 
     def test_doubtful_unchanged(self):
         depth, status_of = _depth("Doubtful")
@@ -200,9 +224,16 @@ class TestOnTheProjection:
         assert ctx["games_out"] == ros.WEEK_TO_WEEK_GAMES
         assert "multiple games per the report" in ctx["reason"]
 
-        # Limited on the latest day: no context at all.
+        # Limited on the latest day: the limited weight.
         eng.db.practice = [{"date": "2026-10-07", "status": "DNP", "source": "nfl.com"},
                            {"date": "2026-10-08", "status": "LP", "source": "nfl.com"}]
         rows[0]["injury_description"] = "Starter Qb was a limited participant Thursday."
+        p = (await eng.project_many([player], season=2026, week=5))["projections"][0]
+        assert p["qb_context"]["sleeper_mult"] == round(
+            1 - (1 - m) * qb_coupling.QUESTIONABLE_LIMITED_WEIGHT, 3)
+        # Full on the latest day: no context at all.
+        eng.db.practice = [{"date": "2026-10-07", "status": "DNP", "source": "nfl.com"},
+                           {"date": "2026-10-08", "status": "FP", "source": "nfl.com"}]
+        rows[0]["injury_description"] = "Starter Qb was a full participant Thursday."
         p = (await eng.project_many([player], season=2026, week=5))["projections"][0]
         assert "qb_context" not in p

@@ -19,7 +19,9 @@ Two adjustments ride on Sleeper's share, because Sleeper's stat line is slow
 to show them and charging only our quarter diluted them four times over:
 
     sleeper_share × role_multiplier     # a lost role (`role_shift`): the
-                                        # model reweights its volume instead
+                                        # model reweights its volume instead;
+                                        # a back's gained role no teammate's
+                                        # absence explains (`role_gain`)
                   × practice_blend_mult # a questionable player's practice
                                         # week; the model's share already
                                         # carries it in injury_mult
@@ -294,31 +296,65 @@ def availability(status: str | None) -> str:
     return injury_status.availability(status)
 
 
-# How a questionable tag plays out depends on the week's practice: a player
-# limited or better on the latest report usually suits up, one who has not
-# practised usually does not. Applied only to a *reported* practice line on top
-# of a questionable designation; with no report the flat 0.9 stands. Heuristic
-# weights (not backtested yet — see `practice_report_history` and
-# `evals/backtest/signal_history.py`), kept mild on the upside and firm on
-# the downside.
-QUESTIONABLE_BY_PRACTICE = {"FP": 0.97, "REST": 0.97, "LP": 0.9, "DNP": 0.65}
+# How a questionable tag plays out depends on the week's practice. Measured,
+# not guessed: `evals/backtest/practice_backtest.py` joins every official
+# report of 2023-25 (nflverse `injuries`: the designation and the *last*
+# practice day of the week) to the walk-forward backtest rows -- a relevant
+# player whose team played without him scores 0 -- and reads what share of a
+# healthy projection each bucket really scored (actual / our model, which
+# reads no injury information, over the same ratio for players not on the
+# report; 95% bootstrap intervals):
+#
+#   Q + FP   n=103  played 86%  0.96 [0.80, 1.11]
+#   Q + LP   n=378  played 66%  0.72 [0.65, 0.81]   (0.69 / 0.73 / 0.76 by season)
+#   Q + DNP  n=87   played 56%  0.54 [0.41, 0.69]
+#
+# A questionable player who suits up costs little (Q+LP who played: 0.95);
+# the price is the third who do not. The old values (LP 0.90 on the model
+# share, nothing on Sleeper's) put a Q+LP week at ~0.92 of healthy against a
+# realised 0.72. A single DNP so far (the Wednesday report) is the mix of how
+# such weeks end -- 2026 weeks 3-4, questionable players whose first day was
+# DNP (n=35): DNP 14%, LP 51%, FP/REST 35% -> 0.78. The live 2026 history
+# (`signal_history.py --truth sleeper`, weeks 3-4, n=18) agrees in direction:
+# questionable players scored 0.45 [0.21, 0.74] of their trailing rate.
+# The value is the expected share of a healthy week, *before* inactives: a
+# questionable player confirmed active on game day scores ~0.95 of it.
+QUESTIONABLE_REALISED = {"FP": 0.97, "REST": 0.97, "LP": 0.72, "DNP": 0.54,
+                         "DNP_SINGLE": 0.78}
+# Our model share reads no injury information: it takes the realised share
+# whole. Keyed by the latest practice day; with no report the flat 0.9 of
+# `_injury_mult` stands.
+QUESTIONABLE_BY_PRACTICE = {k: QUESTIONABLE_REALISED[k] for k in ("FP", "REST", "LP", "DNP")}
 
 
-# The same practice week on Sleeper's share of the blend. Sleeper's stat line
-# reacts to a designation, if at all, and not to a Wednesday or Thursday
-# practice report, so a questionable DNP used to move only our quarter of the
-# number (0.65 x 0.25: a 9% cut for a player who sat out all week). Applied
-# only where the model share already prices the practice
-# (`QUESTIONABLE_BY_PRACTICE`), so neither share is charged twice. Read off the
-# week's pattern: one DNP so far (the Wednesday report) is weak evidence —
-# most of those practise later in the week — while DNP on every day reported
-# is the questionable player who usually sits. Heuristic, not backtested yet;
-# kept mild. Every reported practice row is kept in `practice_report_history`
-# (schema v17) and `evals/backtest/signal_history.py` measures these values
-# once a few weeks are collected. A DNP week at 0.75 puts
-# the blend at ~0.72 of a healthy projection, between the questionable tag
-# alone (0.91) and Out.
-PRACTICE_BLEND_MULT = {"DNP_SINGLE": 0.90, "DNP": 0.75, "LP_WORSENING": 0.95}
+# The same practice week on Sleeper's share of the blend. Sleeper's pre-game
+# projection already shades a questionable player a little -- 2026 week 5
+# against week 4, questionable 0.91 vs healthy 0.98 of the week before (n=27):
+# ~0.92 -- and does not read the practice report, so its share takes the
+# realised share over that (capped at 1.0): a DNP week puts the blend at
+# ~0.55 of healthy, an LP week at ~0.72, as measured. A single DNP so far is
+# weaker evidence (most practise later in the week) than DNP on two or more
+# days. Applied only where the model share already prices the practice
+# (`QUESTIONABLE_BY_PRACTICE`), so neither share is charged twice. Every
+# reported practice row is kept in `practice_report_history` (schema v17);
+# re-calibrate with `python -m evals.backtest.practice_backtest` (2023-25) and
+# `python -m evals.backtest.signal_history --truth sleeper --transitions`.
+SLEEPER_QUESTIONABLE_PRICED = 0.92
+PRACTICE_BLEND_MULT = {k: round(min(1.0, QUESTIONABLE_REALISED[k] / SLEEPER_QUESTIONABLE_PRICED), 2)
+                       for k in ("DNP_SINGLE", "DNP", "LP")}
+
+
+def _practice_days(pattern: str | None) -> list[str]:
+    return [d.strip().upper() for d in (pattern or "").split("-") if d.strip()]
+
+
+def _latest_practice(practice_status: str | None, days: list[str]) -> str:
+    latest = (practice_status or (days[-1] if days else "")).strip().upper()
+    if latest and latest not in QUESTIONABLE_BY_PRACTICE:
+        # A caller's spelling ("limited", "Did Not Participate In Practice").
+        from .practice_reports import normalize_practice
+        latest = normalize_practice(latest) or ""
+    return latest
 
 
 def practice_blend_mult(status: str | None, practice_status: str | None,
@@ -327,31 +363,32 @@ def practice_blend_mult(status: str | None, practice_status: str | None,
     reported practice week (see `PRACTICE_BLEND_MULT`). 1.0 otherwise."""
     if availability(status) != "questionable":
         return 1.0
-    days = [d.strip().upper() for d in (pattern or "").split("-") if d.strip()]
-    latest = (practice_status or (days[-1] if days else "")).strip().upper()
-    if latest and latest not in QUESTIONABLE_BY_PRACTICE:
-        from .practice_reports import normalize_practice
-        latest = normalize_practice(latest) or ""
+    days = _practice_days(pattern)
+    latest = _latest_practice(practice_status, days)
     if latest == "DNP":
         return PRACTICE_BLEND_MULT["DNP" if len(days) >= 2 else "DNP_SINGLE"]
-    if latest == "LP" and "FP" in days[:-1]:
-        return PRACTICE_BLEND_MULT["LP_WORSENING"]
+    if latest == "LP":
+        return PRACTICE_BLEND_MULT["LP"]
     return 1.0
 
 
-def practice_adjusted_mult(status: str | None, practice_status: str | None) -> float:
-    """``_injury_mult`` refined by the latest reported practice.
+def practice_adjusted_mult(status: str | None, practice_status: str | None,
+                           pattern: str | None = None) -> float:
+    """``_injury_mult`` refined by the reported practice week (latest day,
+    and with `pattern` a single DNP so far told from a DNP week).
 
     Only a questionable designation moves: Out stays 0, a healthy player with
     a DNP (often rest before the designations are set) stays 1.0.
     """
     base = _injury_mult(status)
-    practice = (practice_status or "").strip().upper()
-    if practice and practice not in QUESTIONABLE_BY_PRACTICE:
-        # A caller's spelling ("limited", "Did Not Participate In Practice").
-        from .practice_reports import normalize_practice
-        practice = normalize_practice(practice) or ""
-    if practice and availability(status) == "questionable" and practice in QUESTIONABLE_BY_PRACTICE:
+    if availability(status) != "questionable":
+        return base
+    days = _practice_days(pattern)
+    practice = _latest_practice(practice_status, [] if practice_status else days)
+    if practice == "DNP" and len(days) < 2:
+        # One DNP so far (or no pattern to tell): as on Sleeper's share.
+        return QUESTIONABLE_REALISED["DNP_SINGLE"]
+    if practice in QUESTIONABLE_BY_PRACTICE:
         return QUESTIONABLE_BY_PRACTICE[practice]
     return base
 
@@ -497,13 +534,19 @@ def _inherited_shares(
 DESIGNATED_RETURN_GAMES = 2
 # Once a teammate is back, the share of the player's full trailing rate that
 # is kept; the rest is the rate from the games they played together.
-# `evals/backtest/sleeper_blend.py --returning` (2023-25, the teammate playing
-# that week standing in for "back"; 1.7k player-weeks): model MAE 5.26 ->
-# 5.15 (bias +0.18 -> -0.55), blend 4.90 -> 4.87 (RB 4.56 -> 4.50, WR 5.12
-# -> 5.10, TE 4.29 -> 4.30). Pricing only the games together (keep 0) moved
-# the blend a little further but left the model ~1.5 points low, and the
-# model alone is what ROS prices every later week on.
-RETURNING_KEEP_WEIGHT = 0.5
+# Swept with `python -m evals.backtest.trend_calibration --only returning
+# --cross-position` (2023-25, the teammate playing that week standing in for
+# "back"; 1,974 player-weeks, a WR back for a TE and vice versa included as
+# live). The weekly model's single-game MAE likes a small keep (0.2: 5.077 vs
+# 5.098 at 0.5) but leaves those rows ~0.9 points low; the rest-of-season
+# view -- the rate ROS prices every later week on and `value_trajectory`
+# reads a sell-high from -- is best at 0.6 (MAE vs the next four games 3.468;
+# 0.5: 3.470, 0.3: 3.492, 1.0: 3.535), where the rows' bias (-0.35) matches
+# the model's overall (-0.40) and the predicted drop matches the realised
+# one (next-4 vs trailing rate, against unaffected players: -10.7%; the
+# deflation predicts -10.7% net of everyone's regression). The blend moves
+# by <0.01 either way (Sleeper's share is untouched).
+RETURNING_KEEP_WEIGHT = 0.6
 # A teammate valued *below* him still counts as returning when, in the games
 # they played together, he took at least this share of the player's volume:
 # the market re-ranks a backup who has been starting (Warren RB17 over the
@@ -607,6 +650,65 @@ def _returning_teammates(
         out.append({"name": mate, "status": status, "missed_weeks": missed,
                     "games_until_return": games, "expected_return_week": week + games})
     return out
+
+
+def _gain_explained_by_absence(
+    depth: dict[tuple[str, str], list[dict]], team: str, position: str,
+    pos_rank: int | None, opp_index: dict, name: str, week: int,
+    break_week: int | None, played_weeks=None,
+) -> list[str] | None:
+    """Teammates whose absence explains a gained role (`role_shift`'s
+    ``role_up`` from `break_week`): same position, ranked ahead of him (any
+    ranked teammate when he is unranked) or sharing his role when both played
+    (`RETURNING_MIN_VOLUME_RATIO`), who played before the gain and missed at
+    least one of its games -- whether or not he is back. Emanuel Wilson's
+    carries share 31% -> 57% while Charbonnet and Price were out is their
+    absence, not his role. The backtest's gate
+    (``evals.backtest.sleeper_blend._absent_mates``). None without the
+    data to tell (no logs, no gain weeks): not priced then either."""
+    if not opp_index or not name or not week or not break_week:
+        return None
+    gain_weeks = [g["week"] for g in opportunity_tools.prior_games(opp_index, name, week)
+                  if g["week"] >= break_week]
+    if not gain_weeks:
+        return None
+    me = opportunity_tools.norm_name(name)
+    out = []
+    for entry in (depth or {}).get((team, position), []):
+        mate = entry.get("name")
+        if not mate or opportunity_tools.norm_name(mate) == me:
+            continue
+        rank = entry.get("position_rank")
+        ahead = rank is not None and (pos_rank is None or rank < pos_rank)
+        if not (ahead or _shares_his_role(opp_index, name, mate, week)):
+            continue
+        logged = opp_index.get(opportunity_tools.norm_name(mate)) or {}
+        played = {g["week"] for g in logged.get("games", []) if g["week"] < week}
+        if callable(played_weeks):
+            played |= {w for w in played_weeks(entry.get("player_id")) if w < week}
+        if not any(w < min(gain_weeks) for w in played):
+            continue  # never on the field before it: a camp body, a rookie
+        if any(w not in played for w in gain_weeks):
+            out.append(mate)
+    return out
+
+
+def _role_gain(role: dict | None, explained_by: list[str] | None,
+               returning: list[dict], starters_out: list[str]) -> dict | None:
+    """``{multiplier, priced, explained_by}`` for a gained role with a
+    candidate multiplier (``role_shift`` ``gain_multiplier``), else None.
+
+    Priced only when nothing explains it: no teammate missed one of its games
+    (`_gain_explained_by_absence`), none is back or due back
+    (`returning_teammates`), none ahead of him is out now."""
+    mult = float((role or {}).get("gain_multiplier") or 1.0)
+    if (role or {}).get("role_trend") != "role_up" or mult <= 1.0:
+        return None
+    blockers = sorted(set(explained_by or []) | {r["name"] for r in returning or []}
+                      | set(starters_out or []))
+    priced = explained_by is not None and not blockers
+    return {"multiplier": mult if priced else 1.0, "priced": priced,
+            "explained_by": blockers}
 
 
 def _volume_change(opp_index: dict, name: str, week: int, exclude: frozenset[int],
@@ -772,7 +874,8 @@ class ProjectionEngine:
         # The reverse: a higher-valued teammate who missed some of his recent
         # games and is back (or due back) left him volume that is not his to
         # keep. From the teammate's return -- this week, or his expected
-        # return in ROS -- half his rate is from the games they played together.
+        # return in ROS -- `1 - RETURNING_KEEP_WEIGHT` of his rate is from the
+        # games they played together.
         returning: list[dict] = []
         if depth and status_of and team and opp_index and week and name:
             returning = _returning_teammates(
@@ -782,6 +885,7 @@ class ProjectionEngine:
         # already *is* the bigger role, and a share of the teammate's volume
         # on top of it counted the absence twice.
         ongoing = {r["name"] for r in returning if r["games_until_return"] > 0}
+        returning_seen = list(returning)  # before "never a lift" below drops any
         if depth and status_of and team and opp_index and week:
             starters_out = _starters_ahead(depth, depth_team, position, pos_rank, status_of)
             if starters_out:
@@ -793,6 +897,16 @@ class ProjectionEngine:
                 if vacated:
                     inherited_from = {n: _absence_detail(status_of, n, depth_team)
                                       for n in shares}
+        # A gained role is priced only when no teammate's absence explains it
+        # (`role_shift.UP_STRENGTH`, `_role_gain`).
+        role_gain = None
+        if (role or {}).get("role_trend") == "role_up" \
+                and float((role or {}).get("gain_multiplier") or 1.0) > 1.0:
+            explained = (_gain_explained_by_absence(
+                depth, depth_team, position, pos_rank, opp_index, name, week,
+                role.get("break_week"), played_weeks) if depth and opp_index and week and name
+                else None)
+            role_gain = _role_gain(role, explained, returning_seen, starters_out)
         # A lost role (role_shift) weights the games since it from that week.
         break_week = (role or {}).get("reweight_from_week")
         # Injury-shortened games (`role_shift.injury_exit_weeks`: a 12%-snap
@@ -914,7 +1028,8 @@ class ProjectionEngine:
             1.0 if base_source == "opportunity"
             else _usage_mult(usage.get("snap_percentage"), usage.get("usage_trend"))
         )
-        inj_mult = practice_adjusted_mult(injury.get("status"), injury.get("practice_status"))
+        inj_mult = practice_adjusted_mult(injury.get("status"), injury.get("practice_status"),
+                                          injury.get("practice_pattern"))
 
         # 6) Weather (opt-in): only applied when the caller supplies wind/roof
         #    (e.g. from get_weather_forecast). The backtest shows the effect is
@@ -1029,7 +1144,7 @@ class ProjectionEngine:
                 # without the weeks they missed. `deflated_base_ppg` is his
                 # base over the `deflated_games` games with them; from the
                 # teammate's return (this week: `regressed_base_ppg`; later:
-                # ROS) it takes half the rate (`RETURNING_KEEP_WEIGHT`).
+                # ROS) it keeps `RETURNING_KEEP_WEIGHT` of the rate.
                 "returning_teammates": returning,
                 "deflated_volume": deflated_volume,
                 **({"deflated_base_ppg": deflated_base, "deflated_games": deflated_games}
@@ -1045,6 +1160,11 @@ class ProjectionEngine:
             "role_trend": role.get("role_trend", "insufficient_data"),
             "role_multiplier": float(role.get("role_multiplier", 1.0)),
             "role_flags": list(role.get("role_flags") or []),
+            # A gained role's candidate multiplier, and whether it was priced
+            # or explained by a teammate's absence (None: no gain to price).
+            # This week's Sleeper share only (the backtest measured the next
+            # game): ROS's later weeks read `role_multiplier`, a lost role.
+            "role_gain": role_gain,
             "value_source": (
                 "opportunity" if base_source == "opportunity"
                 else "fantasycalc" if market else "baseline"
@@ -1491,6 +1611,10 @@ async def _apply_sleeper_blend(projections: list[dict], inputs: list[dict],
         # stat line has not caught up with; ours already prices both (the
         # change-point weights, injury_mult), so it is left alone.
         role_mult = float(proj.get("role_multiplier", 1.0) or 1.0)
+        gain = proj.get("role_gain") or {}
+        if gain.get("priced"):
+            # A back's gained role no absence explains (`role_shift.UP_STRENGTH`).
+            role_mult *= float(gain.get("multiplier") or 1.0)
         practice_mult = practice_blend_mult(proj.get("injury_status"),
                                             proj.get("practice_status"),
                                             proj.get("practice_pattern"))

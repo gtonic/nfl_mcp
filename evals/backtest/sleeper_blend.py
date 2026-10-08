@@ -154,8 +154,12 @@ def _volume(g: dict) -> float:
 
 
 def _returning_weeks(pid: str, prior: list[dict], week: int, team: str, pos: str,
-                     mates: dict[str, dict[int, dict]], ranks: dict) -> set[int]:
-    """His trailing weeks a teammate who plays `week` missed (see module doc)."""
+                     mates: dict[str, dict[int, dict]], ranks: dict,
+                     ahead_of=None) -> set[int]:
+    """His trailing weeks a teammate who plays `week` missed (see module doc).
+    `ahead_of(mate)`: the other pass-catching position's room, where only a
+    teammate valued above him counts (live: market value; here last season's
+    points per game)."""
     window = [g["week"] for g in prior[-6:]]
     mine = {g["week"]: g for g in prior}
     out: set[int] = set()
@@ -166,6 +170,10 @@ def _returning_weeks(pid: str, prior: list[dict], week: int, team: str, pos: str
         together = [w for w in mine if w in games]
         if not missed or not together:
             continue
+        if ahead_of is not None:
+            if ahead_of(mate):
+                out |= set(missed)
+            continue
         ahead = ranks.get(mate) is not None and (
             ranks.get(pid) is None or ranks[mate] < ranks[pid])
         shares = sum(_volume(games[w]) for w in together) >= \
@@ -173,6 +181,14 @@ def _returning_weeks(pid: str, prior: list[dict], week: int, team: str, pos: str
         if ahead or shares:
             out |= set(missed)
     return out
+
+
+def _prior_ppg(records: list[dict]) -> dict[str, float]:
+    """{player_id: PPR points per game} over a season (min. 4 games)."""
+    pts: dict[str, list[float]] = defaultdict(list)
+    for r in records:
+        pts[r["player_id"]].append(r["ppr"])
+    return {pid: sum(v) / len(v) for pid, v in pts.items() if len(v) >= 4}
 
 
 def _qb_coupling_read(pid: str, pos: str, prior: list[dict], week: int, team: str,
@@ -231,10 +247,51 @@ def _qb_coupling_read(pid: str, pos: str, prior: list[dict], week: int, team: st
     return {"kind": "catchers_out", "n": len(missing), "with_frac": sum(fracs) / len(fracs)}
 
 
+def _absent_mates(pid: str, prior: list[dict], weeks: list[int],
+                  mates: dict[str, dict[int, dict]], ranks: dict) -> list[str]:
+    """Same-room teammates ranked ahead (or sharing his volume when both
+    played) who played for the team earlier and missed one of `weeks` -- a
+    role gained in those weeks is the absence, not a new role."""
+    mine = {g["week"]: g for g in prior}
+    first = min(weeks) if weeks else 0
+    out = []
+    for mate, games in mates.items():
+        if mate == pid or not any(w < first for w in games):
+            continue
+        if not any(w not in games for w in weeks):
+            continue
+        together = [w for w in mine if w in games]
+        ahead = ranks.get(mate) is not None and (
+            ranks.get(pid) is None or ranks[mate] < ranks[pid])
+        shares = bool(together) and sum(_volume(games[w]) for w in together) >= \
+            RETURNING_MIN_VOLUME_RATIO * sum(_volume(mine[w]) for w in together)
+        if ahead or shares:
+            out.append(mate)
+    return out
+
+
+def _horizon_actual(by_week: dict[int, dict], week: int, games: int = 4) -> float | None:
+    """Mean PPR over his next `games` played games from `week` on (the
+    rest-of-season view a trade is priced on); None without one."""
+    pts = [by_week[w]["ppr"] for w in sorted(by_week) if w >= week][:games]
+    return sum(pts) / len(pts) if pts else None
+
+
 def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
                   min_trailing: float = 5.0, include_dnp: bool = False,
                   with_role: bool = False, with_returning: bool = False,
-                  with_qb: bool = False, qb_sleeper_tier: bool = False) -> list[dict]:
+                  with_qb: bool = False, qb_sleeper_tier: bool = False,
+                  post_break_weights: tuple[float, ...] = (),
+                  cross_position: bool = False) -> list[dict]:
+    """Walk-forward rows (see module doc). `post_break_weights` (with
+    `with_role`): also the role-reweighted model at each of these
+    ``opportunity.POST_BREAK_WEIGHT`` values (``model_role_at``), and the
+    raw role read (``role_rel``, ``role_weeks``, ``role_mates_absent``) the
+    calibration sweeps (``evals.backtest.trend_calibration``) re-price.
+    `cross_position` (with `with_returning`): a WR's or TE's returning
+    teammates also include the other pass-catching position's players who
+    out-scored him per game last season (live: market value above his), and
+    each deflated row is tagged ``ret_kind`` same / cross / both."""
     samples: list[dict] = []
     for season in seasons:
         records = load_season(season)
@@ -242,6 +299,7 @@ def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
         ranks = _prior_ranks(prev)
         games = load_games(season)
         prior_final = compute_defense_rankings(_weekly_allowed(prev), season - 1)
+        prev_ppg = _prior_ppg(prev)
         by_player: dict[str, list[dict]] = defaultdict(list)
         teams_played: dict[int, set] = defaultdict(set)
         team_carries: dict[tuple[str, int], float] = defaultdict(float)
@@ -292,6 +350,7 @@ def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
                                                name=gs[0]["player"], team=team)
                 sample = {
                     "season": season, "week": week, "position": pos, "played": game is not None,
+                    "player_id": pid, "team": team,
                     "model_raw": opp * mf * env, "model": model, "sleeper": theirs,
                     "sleeper_status": status, "actual": game["ppr"] if game else 0.0,
                 }
@@ -306,6 +365,9 @@ def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
                         "model_role": regressed_rate(opp_role, base_ppg(pos, ranks.get(pid)), n)
                         * mf * env,
                     })
+                    if post_break_weights:
+                        sample.update(_role_detail(role, prior, pos, pid, week, team, gs, rooms,
+                                                   ranks, n, mf * env, post_break_weights))
                 if with_qb and game is not None:
                     team_weeks = sorted(w for w in teams_played if w < week
                                         and team in teams_played[w])
@@ -318,17 +380,67 @@ def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
                 if with_returning and game is not None:
                     missed = _returning_weeks(pid, prior, week, team, pos,
                                               rooms[(team, pos)], ranks)
+                    cross: set[int] = set()
+                    other = {"WR": "TE", "TE": "WR"}.get(pos)
+                    if cross_position and other:
+                        mine_ppg = prev_ppg.get(pid, trailing)
+                        cross = _returning_weeks(
+                            pid, prior, week, team, pos, rooms[(team, other)], ranks,
+                            ahead_of=lambda m, v=mine_ppg, pp=prev_ppg: pp.get(m, 0.0) > v)
+                    kind = ("both" if missed and cross else "same" if missed
+                            else "cross" if cross else None)
+                    missed = missed | cross
                     kept = [g for g in prior if g["week"] not in missed]
                     prior_ppg = base_ppg(pos, ranks.get(pid))
-                    kept_rate = (regressed_rate(project_opportunity(kept, pos), prior_ppg,
-                                                min(len(kept), 6)) if kept else prior_ppg)
+                    kept_raw = project_opportunity(kept, pos) if kept else None
+                    kept_rate = (regressed_rate(kept_raw, prior_ppg, min(len(kept), 6))
+                                 if kept_raw is not None else prior_ppg)
                     full_rate = model / (mf * env) if mf * env else 0.0
                     if missed and kept_rate < full_rate:
                         sample["model_returning"] = (
                             RETURNING_KEEP_WEIGHT * full_rate
                             + (1 - RETURNING_KEEP_WEIGHT) * kept_rate) * mf * env
+                        # The pieces, for the keep-weight sweep.
+                        sample.update({"ret_full_rate": full_rate, "ret_kept_rate": kept_rate,
+                                       "ret_scale": mf * env, "ret_kind": kind,
+                                       "ret_kept_raw": (kept_raw if kept_raw is not None
+                                                        else prior_ppg)})
+                    # The next four games: the rest-of-season view a trade prices.
+                    sample["actual_next4"] = _horizon_actual(by_week, week)
                 samples.append(sample)
     return samples
+
+
+def _role_detail(role: dict, prior: list[dict], pos: str, pid: str, week: int, team: str,
+                 gs: list[dict], rooms: dict, ranks: dict, n: int, scale: float,
+                 weights: tuple[float, ...]) -> dict:
+    """The raw role read and the model reweighted from its break week at each
+    POST_BREAK_WEIGHT in `weights` -- for a lost role (live) and, so a gained
+    one can be priced the same way, for a gained one."""
+    from nfl_mcp import opportunity
+    out: dict = {"role_weeks": role.get("recent_weeks") or 0}
+    moved = [m for m in (*role_shift.VOLUME_METRICS.get(pos, ()), "snap_share")
+             if (role.get("metrics") or {}).get(m, {}).get("direction")
+             == (1 if role["role_trend"] == "role_up" else -1)]
+    out["role_rel"] = (sum(role["metrics"][m]["relative"] for m in moved) / len(moved)
+                       if moved and role["role_trend"] in ("role_up", "role_down") else 0.0)
+    if role["role_trend"] not in ("role_up", "role_down") or not role.get("break_week"):
+        return out
+    played = [g["week"] for g in gs if g["week"] < week]
+    recent = [w for w in played if w >= role["break_week"]]
+    out["role_mates_absent"] = _absent_mates(pid, prior, recent, rooms[(team, pos)], ranks)
+    saved = opportunity.POST_BREAK_WEIGHT
+    prior_ppg = base_ppg(pos, ranks.get(pid))
+    at = {}
+    try:
+        for w in weights:
+            opportunity.POST_BREAK_WEIGHT = w
+            opp = project_opportunity(prior, pos, break_week=role["break_week"])
+            at[w] = regressed_rate(opp, prior_ppg, n) * scale if opp is not None else None
+    finally:
+        opportunity.POST_BREAK_WEIGHT = saved
+    out["model_role_at"] = at
+    return out
 
 
 def _blend(s: dict, w: float) -> float:

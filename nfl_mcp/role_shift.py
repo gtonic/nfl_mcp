@@ -34,10 +34,12 @@ opportunity base weights from), and human-readable flags such as
 The multiplier is applied to the Sleeper share of the blended weekly
 projection (see ``projections._apply_sleeper_blend``): our own model reacts
 through change-point weighting of its trailing volume instead
-(``opportunity.POST_BREAK_WEIGHT``), so neither share is charged twice. Only a
-lost role is priced -- see `DOWN_STRENGTH` for the backtest
-(``evals/backtest/sleeper_blend.py --role-shift``; nflverse shares only, the
-backtest has no snap history). Pure; no network.
+(``opportunity.POST_BREAK_WEIGHT``), so neither share is charged twice. A lost
+role is priced (`DOWN_STRENGTH`); a gained one only for a back whose gain
+held two games and is not a teammate's absence (``gain_multiplier``,
+`UP_STRENGTH`, gated by the projection). Backtests:
+``evals/backtest/trend_calibration.py`` (nflverse shares only, the backtest
+has no snap history). Pure; no network.
 """
 from __future__ import annotations
 
@@ -81,18 +83,39 @@ _LABELS = {m: usage_trends.TREND_METRICS[m][0] for m in SHIFT_THRESHOLDS}
 
 # Multiplier on a lost role = 1 + strength x relative volume change, bounded.
 # A one-week shift counts for `ONE_WEEK_WEIGHT` of a two-week one: a single
-# game can be game script. Backtest (evals/backtest/sleeper_blend.py
-# --role-shift, 2023-25 weeks 3+, Sleeper-matched rows), blend MAE:
-#   role_down at strength 0.3: RB 5.404 -> 5.393, WR 5.450 -> 5.438; tight
-#   ends got worse (4.748 -> 4.755), so a TE's lost role is flagged and
-#   reweighted but not multiplied;
-#   role_up at any strength > 0 was worse (5.554 -> 5.65+ on those rows):
-#   Sleeper already prices a bigger role, and one big week regresses. A role
-#   gained is reported, never multiplied.
+# game can be game script. Re-swept 2026-10 with
+# `python -m evals.backtest.trend_calibration --only role_down --per-season`
+# (2023-25 weeks 3+, Sleeper-matched role_down rows, nflverse shares only),
+# blend MAE:
+#   strength: RB 0 5.257, 0.2 5.197, 0.3 5.190, 0.4 5.188; WR 0 5.531, 0.3
+#   5.473, 0.5 5.475 -- 0.3 is at or next to the best in every season;
+#   floor: 0.85 beats 0.80 for RB (5.195 vs 5.204) and WR (5.476 vs 5.480)
+#   and in 5 of the 6 position-seasons (the sixth a tie): the deepest cuts
+#   overshoot, so MIN_MULTIPLIER 0.80 -> 0.85;
+#   one-week weight: RB prefers 0.5, WR 1.0, neither by more than 0.01 --
+#   kept at 0.75;
+#   tight ends get worse at any strength (5.218 -> 5.219+), so a TE's lost
+#   role is flagged and reweighted but not multiplied.
 DOWN_STRENGTH: dict[str, float] = {"RB": 0.3, "WR": 0.3, "TE": 0.0}
 ONE_WEEK_WEIGHT = 0.75
-MIN_MULTIPLIER = 0.80
+MIN_MULTIPLIER = 0.85
 MAX_MULTIPLIER = 1.15
+# A gained role. Priced on everyone it made the blend worse at every strength
+# (role_up rows 5.607 -> 5.651 at 0.05, 5.699 at 0.1): Sleeper already prices
+# a bigger role, one big week regresses, and many gains are a teammate's
+# absence. Gated -- held for `UP_MIN_WEEKS` games, at RB, and not explained
+# by a teammate's absence (a teammate ahead of him or sharing his role who
+# played before the gain and missed one of its games; the projection checks
+# that, `projections._gain_explained_by_absence`) -- the backtest's gated
+# backs improve at every strength up to 0.15 and in each season (n=79, blend
+# MAE 6.280 -> 6.188 at 0.1; 2023 5.42 -> 5.33, 2024 6.28 -> 6.16, 2025 7.27
+# -> 7.21; all rows 5.3787 -> 5.3780; 95% interval of the gain -0.34..+0.15,
+# hence a small strength). Gated receivers (n=129, 6.300 -> 6.362) and tight
+# ends (n=71, 4.865 -> 4.938) still get worse: flagged, not multiplied. Sized
+# on the volume shares (carries, targets) only -- all the backtest has: the
+# snap share is not part of a gain's size.
+UP_STRENGTH: dict[str, float] = {"RB": 0.1, "WR": 0.0, "TE": 0.0}
+UP_MIN_WEEKS = 2
 # A role in motion is a less certain projection than a settled one.
 SHIFT_CONFIDENCE_DELTA = -5
 
@@ -229,7 +252,7 @@ def classify(rows: list[dict], position: str | None) -> dict:
     pos = (position or "").upper()
     played = _played(rows)
     neutral = {"role_trend": "insufficient_data", "role_multiplier": 1.0,
-               "confidence_delta": 0, "break_week": None, "reweight_from_week": None,
+               "gain_multiplier": 1.0, "confidence_delta": 0, "break_week": None, "reweight_from_week": None,
                "recent_weeks": 0,
                "metrics": {}, "role_flags": []}
     if pos not in ROLE_METRICS or len(played) < MIN_PRIOR_WEEKS + 1:
@@ -267,6 +290,14 @@ def classify(rows: list[dict], position: str | None) -> dict:
     strength = DOWN_STRENGTH.get(pos, 0.0) if verdict < 0 else 0.0
     mult = 1.0 + strength * weight * rel
     mult = round(max(MIN_MULTIPLIER, min(MAX_MULTIPLIER, mult)), 3)
+    # A gained role's candidate multiplier (`UP_STRENGTH`): the projection
+    # applies it only once no teammate's absence explains the gain.
+    gain = 1.0
+    if verdict > 0 and recent_n >= UP_MIN_WEEKS and UP_STRENGTH.get(pos, 0.0) > 0:
+        volume = [shifts[m]["relative"] for m in VOLUME_METRICS[pos]
+                  if m in shifts and shifts[m]["direction"] > 0]
+        if volume:
+            gain = round(min(MAX_MULTIPLIER, 1.0 + UP_STRENGTH[pos] * _mean(volume)), 3)
     when = (f"week {break_week}" if recent_n == 1
             else f"weeks {break_week}-{played[-1]['week']}")
     flags = [
@@ -276,6 +307,7 @@ def classify(rows: list[dict], position: str | None) -> dict:
     return {
         "role_trend": "role_up" if verdict > 0 else "role_down",
         "role_multiplier": mult,
+        "gain_multiplier": gain,
         "confidence_delta": SHIFT_CONFIDENCE_DELTA,
         "break_week": break_week,
         # The opportunity base weights its volume from here -- a lost role

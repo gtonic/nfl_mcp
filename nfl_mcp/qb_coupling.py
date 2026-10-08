@@ -45,13 +45,17 @@ A Questionable starter used to cost nothing, whatever the week looked like
 context). ``starter_sit_weight`` reads how likely the starter is to sit:
 Questionable with ``QUESTIONABLE_DNP_DAYS`` DNP days ending on a DNP (or a
 recent "ruled out" / "unlikely to play" report and no limited or full day
-since) counts like Doubtful; a limited or full latest practice is no cut.
+since) counts like Doubtful; a full latest practice is no cut, a limited one
+or none at all is the share of questionable starters who sat (2023-25,
+`evals/backtest/practice_backtest.py`: the starter of the team's last game on
+the official report, did he start? Q + LP 47% [31%, 64%] of 32, Q + FP 0 of
+6, Q + DNP 3 of 5, Doubtful 8 of 9, Out 32 of 34).
 The practice line is `practice_reports.summarize` of the stored days plus
 the day the starter's current report blurb names. When the report text says
 he will miss more than this week ("multiple games", "week-to-week";
-`multi_game_absence`) ROS keeps the cut for that long. Not backtested: the
-backtest has no practice history (its "out" is a realised non-start), so
-these rows are not in it and its numbers do not move.
+`multi_game_absence`) ROS keeps the cut for that long. The coupling backtest
+itself (`sleeper_blend.py --qb-coupling`) reads realised non-starts, so its
+numbers do not move with these weights.
 
 ``catchers_context`` is the inverse, for a QB: his top two pass catchers by
 market value (WR/TE) Out or Doubtful. The backtest found no effect worth
@@ -103,13 +107,24 @@ MAX_MULT = 1.0
 # counts at (`starter_sit_weight`). Out / IR / suspended: all of it.
 OUT_WEIGHT = 1.0
 # A doubtful starter sits most weeks; the multiplier counts at this weight.
+# 2023-25 (`evals/backtest/practice_backtest.py`): 8 of 9 doubtful starters
+# sat, 89% [57%, 98%] -- consistent, too few to move it.
 DOUBTFUL_WEIGHT = 0.75
-# Questionable alone is a coin flip that usually plays: no cut.
-QUESTIONABLE_WEIGHT = 0.0
+# Questionable used to be "a coin flip that usually plays: no cut". The
+# 2023-25 reports say otherwise: of the starters of a team's last game who
+# were questionable the next week, 42% [28%, 57%] did not start (n=43); with
+# a limited latest practice 47% [31%, 64%] (n=32), with a full one none of 6.
+# Questionable without a practice line (or one DNP so far) counts at
+# QUESTIONABLE_WEIGHT, with a limited latest day at QUESTIONABLE_LIMITED_WEIGHT,
+# with a full one (or rest) at QUESTIONABLE_FULL_WEIGHT.
+QUESTIONABLE_WEIGHT = 0.4
+QUESTIONABLE_LIMITED_WEIGHT = 0.45
+QUESTIONABLE_FULL_WEIGHT = 0.0
 # Questionable with no practice all week reads like Doubtful: did not
 # practise on at least QUESTIONABLE_DNP_DAYS report days, the latest of them
 # included (Lamar Jackson, week 5 2026: Questionable, DNP Wed and Thu,
-# "only an outside chance to play"). A limited or full latest day is no cut.
+# "only an outside chance to play"). 2023-25: 3 of 5 sat (60% [23%, 88%]) --
+# too few to move it from the doubtful weight.
 QUESTIONABLE_DNP_DAYS = 2
 QUESTIONABLE_DNP_WEIGHT = DOUBTFUL_WEIGHT
 # Questionable with a recent report that he will not / is unlikely to play
@@ -121,8 +136,6 @@ SIT_FLAGS = ("ruled_out", "unlikely_to_play")
 # practice line (a veteran's rest days, a walkthrough week).
 PLAY_FLAGS = ("expected_to_play",)
 SIT_FLAG_MIN_WEIGHT = 0.5
-# Practice statuses that say he is working (no cut while Questionable).
-_PRACTISING = ("LP", "FP", "REST")
 # Pass attempts that make a quarterback's game one he played in.
 QB_PLAYED_ATTEMPTS = 10
 # The inverse (a QB's top-two pass catchers out): flagged, not priced -- see
@@ -213,22 +226,29 @@ def starter_sit_weight(status: str | None, practice: dict | None = None,
     Out / IR / suspended: ``OUT_WEIGHT``; Doubtful: ``DOUBTFUL_WEIGHT``;
     Questionable: ``QUESTIONABLE_DNP_WEIGHT`` with ``QUESTIONABLE_DNP_DAYS``
     DNP days ending on a DNP, ``QUESTIONABLE_NEWS_WEIGHT`` with a recent
-    "ruled out" / "unlikely to play" and no limited or full latest day, else
-    ``QUESTIONABLE_WEIGHT``. ``basis`` is "status", "practice" or "news".
+    "ruled out" / "unlikely to play" and no limited or full latest day,
+    ``QUESTIONABLE_FULL_WEIGHT`` with a full (or rest) latest day or a recent
+    "expected to play", ``QUESTIONABLE_LIMITED_WEIGHT`` with a limited one,
+    else ``QUESTIONABLE_WEIGHT``. ``basis`` is "status", "practice" or "news".
     Pure."""
     kind = _kind(status)
     if kind == "out":
         return {"weight": OUT_WEIGHT, "basis": "status", "detail": None}
     if kind == "doubtful":
         return {"weight": DOUBTFUL_WEIGHT, "basis": "status", "detail": None}
-    none = {"weight": QUESTIONABLE_WEIGHT if kind == "questionable" else 0.0,
-            "basis": "status", "detail": None}
-    if kind != "questionable" or _recent(flags, PLAY_FLAGS):
-        return none
+    if kind != "questionable":
+        return {"weight": 0.0, "basis": "status", "detail": None}
+    if _recent(flags, PLAY_FLAGS):
+        return {"weight": QUESTIONABLE_FULL_WEIGHT, "basis": "news",
+                "detail": "report: expected to play"}
+    none = {"weight": QUESTIONABLE_WEIGHT, "basis": "status", "detail": None}
     days = (practice or {}).get("days") or []
     latest = days[-1].get("status") if days else None
-    if latest in _PRACTISING:
-        return none
+    if latest in ("FP", "REST"):
+        return {"weight": QUESTIONABLE_FULL_WEIGHT, "basis": "practice",
+                "detail": latest}
+    if latest == "LP":
+        return {"weight": QUESTIONABLE_LIMITED_WEIGHT, "basis": "practice", "detail": "LP"}
     dnp = _dnp_days(practice)
     if latest == "DNP" and len(dnp) >= QUESTIONABLE_DNP_DAYS:
         return {"weight": QUESTIONABLE_DNP_WEIGHT, "basis": "practice",
