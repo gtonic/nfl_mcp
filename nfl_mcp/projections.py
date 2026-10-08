@@ -630,9 +630,13 @@ def _shares_his_role(opp_index: dict, name: str, mate: str, week: int) -> bool:
     his = sum(_volume(mine[w]) for w in together)
     return bool(together) and his > 0 and (
         sum(_volume(theirs[w]) for w in together) >= RETURNING_MIN_VOLUME_RATIO * his)
-# "Designated to return", "returned to practice", "practice window": the
-# news classifier's phrases (`news_signals`), one list for both.
-_DESIGNATED_RE = news_signals.DESIGNATED_RE
+# "Designated to return", "practice window", "activated from IR" and a
+# plain "returned to practice": the news classifier's designated_to_return
+# and practice_progress phrases (`news_signals.RETURN_CUE_RE`). Read only for
+# a teammate who is unavailable (Out / IR), where a return to practice is
+# the window opening -- the classifier keeps the two flags apart because for
+# a healthy-ish player it is not.
+_DESIGNATED_RE = news_signals.RETURN_CUE_RE
 
 
 def _teammate_return_games(status_of, name: str, team: str, week: int) -> int | None:

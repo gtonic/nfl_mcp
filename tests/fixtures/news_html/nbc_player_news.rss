@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<rss version="2.0" xml:base="https://www.nbcsports.com/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>NFL Headlines</title>
+        <link>https://www.nbcsports.com</link>
+        <description>NFL Player News - NBC Sports</description>
+        <item>
+            <title>DeVonta Smith (hamstring) sits out again on Thurs.</title>
+            <link>https://www.nbcsports.com/fantasy/football/player-news/2026-10-08/devonta-smith-hamstring-sits-out-again-on-thurs</link>
+            <description>DeVonta Smith (hamstring) did not practice on Thursday.</description>
+            <pubDate>Thu, 8 Oct 2026 16:52:19 -0400</pubDate>
+            <guid isPermalink="false">000001a1-1d36-db25-abb3-5d3fb99c0000</guid>
+        </item>
+        <item>
+            <title>Jaylen Wright (foot) added to injury report</title>
+            <link>https://www.nbcsports.com/fantasy/football/player-news/2026-10-08/jaylen-wright-foot-added-to-injury-report</link>
+            <description>Jaylen Wright (foot) was limited in Thursday&amp;apos;s practice.</description>
+            <pubDate>Thu, 8 Oct 2026 16:24:03 -0400</pubDate>
+            <guid isPermalink="false">000001a1-1d2f-d62f-a3f1-ddbf72de0000</guid>
+        </item>
+        <item>
+            <title>Commanders waive RB Kaytron Allen</title>
+            <link>https://www.nbcsports.com/fantasy/football/player-news/2026-10-08/commanders-waive-rb-kaytron-allen</link>
+            <description>The Commanders waived RB Kaytron Allen.</description>
+            <pubDate>Thu, 8 Oct 2026 15:10:00 -0400</pubDate>
+            <guid isPermalink="false">000001a1-1d2f-d62f-a3f1-ddbf72de0001</guid>
+        </item>
+    </channel>
+</rss>

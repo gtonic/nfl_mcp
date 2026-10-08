@@ -409,11 +409,18 @@ async def get_player_news(
     Rotoworld, CBS -- plus his current injury blurb. A note several sources
     carry is one entry (`sources` lists each copy with its link). Also the
     flags the projections read from that text (benched, committee, lead_role,
-    limited_snaps, week_to_week, designated_to_return, expected_to_play,
-    unlikely_to_play, ruled_out), each with source, url and snippet; a
-    teammate's note that names him counts for him. Reads the store only:
-    refresh it with refresh_data(scope=["news"]) (the prefetch loop polls
-    every 45 min, every 15 min on game days).
+    limited_snaps, week_to_week, designated_to_return, practice_progress,
+    expected_to_play, unlikely_to_play, ruled_out, inactive_healthy_scratch),
+    each with source, url and snippet; a teammate's note that names him
+    counts for him. A flag inside a condition ("would be the lead back if
+    Hall can't go") is `conditional` (a timeline entry shows it as
+    "lead_role?"). Reads the store only: refresh it with
+    refresh_data(scope=["news"]) (the prefetch loop polls every 45 min, every
+    15 min on game days). `sources` reports each source's health (ok /
+    degraded / failing, why, failure streak, backoff) and `warnings` names a
+    source that is not ok -- its items are missing until it recovers. A
+    source is switched off with one env line on the server, e.g.
+    NFL_MCP_NEWS_SOURCES=-nbc (all but NBC), =espn_fantasy (ESPN only), =none.
 
     Parameters:
         players: names or Sleeper ids (up to 30), e.g. ["Lamar Jackson", "4881"]
@@ -425,11 +432,13 @@ async def get_player_news(
     Returns: {
         players [{query, name, player_id, team, position, injury_status, items,
                   news_flags [{flag, weight, snippet, date_reported, source, url,
-                  from_player?}], news_adjustment {model_mult, confidence_delta,
+                  from_player?, conditional?}], news_adjustment {model_mult, confidence_delta,
                   applied}?, timeline [{published_at, headline, text, source,
                   url, sources [{source, url}], flags}], ambiguous?, candidates?}],
         unresolved [{name, reason}], window_days,
-        sources {source: {label, fetched_at, age_hours, status, newest_item}},
+        sources {source: {label, fetched_at, age_hours, status, health,
+                 last_success_at, newest_item, detail?, consecutive_failures?,
+                 next_attempt_at?, enabled?, error?}},
         notes, warnings?, success
     }
 

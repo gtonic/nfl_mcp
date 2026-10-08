@@ -44,7 +44,11 @@ from __future__ import annotations
 
 from bisect import bisect_right
 
+from .injury_status import normalize as normalize_status
 from .ros import SEASON_ENDING_WEEKS
+
+# Reserve lists a player cannot practise from until his window opens.
+RESERVE_STATUSES = {"IR", "PUP", "NFI"}
 
 # How far ahead a change counts: a teammate back, an inherited role ending or
 # a player of his own returning within this many games moves his value now.
@@ -262,10 +266,17 @@ def assess(entry: dict, *, week: int | None = None, rank: int | None = None) -> 
 
     # 3) His own return from a multi-week absence. A reserve player whose
     #    practice window is open is back sooner than the minimum says.
+    #    A plain return to practice counts only for a reserve-list player
+    #    (who cannot practise until his window opens); for anyone else it is
+    #    this week's practice news, not a return (`news_signals`).
     news = {f.get("flag"): f for f in entry.get("news_flags") or []}
-    if absent > TRAJECTORY_HORIZON_GAMES and "designated_to_return" in news:
+    cue = "designated_to_return" if "designated_to_return" in news else (
+        "practice_progress" if "practice_progress" in news
+        and normalize_status(entry.get("injury_status")) in RESERVE_STATUSES else None)
+    if absent > TRAJECTORY_HORIZON_GAMES and cue:
         absent = DESIGNATED_RETURN_GAMES
-        reasons.append(f"{name} designated to return: \"{news['designated_to_return'].get('snippet', '')[:90]}\"")
+        what = "designated to return" if cue == "designated_to_return" else "back at practice"
+        reasons.append(f"{name} {what}: \"{news[cue].get('snippet', '')[:90]}\"")
     if INJURY_RETURN_MIN_GAMES <= absent <= TRAJECTORY_HORIZON_GAMES:
         back = entry.get("injury_weeks") or []
         back_week = (max(back) + 1) if back else (week + absent if week else None)

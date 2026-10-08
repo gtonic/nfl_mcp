@@ -368,7 +368,8 @@ class TestStore:
                 conn.commit()
             NFLDatabase(path).close()
             with sqlite3.connect(path) as conn:
-                assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 19
+                assert (conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+                        == NFLDatabase.CURRENT_SCHEMA_VERSION)
                 assert conn.execute("SELECT COUNT(*) FROM player_news").fetchone()[0] == 0
                 assert conn.execute("SELECT COUNT(*) FROM news_fetch_state").fetchone()[0] == 0
 

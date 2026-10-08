@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **News source health** (schema v20). NBC and CBS are HTML scrapes, and a
+  redesign answered 200 and parsed to nothing -- a quiet news day as far as
+  anything could tell. Every selector now lives in one table per site
+  (`NBC_SELECTORS`, `CBS_SELECTORS`) with fallbacks after the primary, and
+  each fetch is assessed: `ok`, `degraded` (a fallback selector or feed was
+  needed, under half of a page's ten items parsed, some ESPN requests
+  failed) or `failing` (an error, or a 200 page that parsed to nothing).
+  `news_fetch_state` keeps the health, the reason, parsed vs expected items,
+  the last success / error and the failure streak; a failing source waits
+  30 min, doubling to 12 h (stored, so a restart keeps it), before the next
+  probe, and the other sources always run. Shown in `GET /health`
+  (`data_freshness.news.sources`, `warnings`; the overall status is not
+  changed by a news source), in `data_freshness.news` (briefing, waivers,
+  trades, `refresh_data`), the `refresh_data` news scope (`health`,
+  `warnings`) and `get_player_news` (`sources`, `warnings`). NBC's page
+  parsing to nothing falls back to its RSS feed (ten items, headline and
+  one-line note; the Atom feed is empty and `/api/` / GraphQL are
+  disallowed by robots.txt, so the HTML stays the primary). Contract tests
+  hold the live pages trimmed to their markup with synthetic prose
+  (`tests/fixtures/news_html`), plus redesigned copies. Live: all three
+  sources `ok`, NBC and CBS 10 of 10 items parsed.
+- **`NFL_MCP_NEWS_SOURCES=-nbc`** switches one news source off (`-name`
+  entries drop sources, a list keeps those, `none` stops news polling); a
+  "Data sources & terms" section in the README and `.env.example` lists every
+  external source, notes that some sites' terms restrict automated access,
+  the rate limits / robots.txt handling and the switches (personal use).
+- **News classifier evaluation set**: 326 sentences from the stored news
+  (`player_news`, `injury_news_history`), hand-labelled per flag and player
+  (`tests/fixtures/news_labels.jsonl`: 256 written against, 70 held out and
+  labelled before the classifier saw them); `python -m
+  evals.news_classifier_eval [--split] [--baseline old.py] [--errors]` prints
+  precision / recall per flag; `tests/test_news_classifier_eval.py` holds
+  thresholds. Old → new classifier, dev set: precision 0.55 → 0.98, recall
+  0.59 → 0.96; held out: 0.60 / 0.17 → 1.00 / 0.33 (recall limited by
+  phrasings the vocabulary lacks).
 - **More player news sources for the news flags** (schema v19). The news
   flags (`news_signals`) read only the one ESPN injury blurb per player, so a
   role or availability note was overwritten by the next practice line before
@@ -44,6 +79,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before kickoff) next to the blurb history.
 
 ### Fixed
+- **News flags: precision and recall** (`news_signals`).
+  `designated_to_return` now means an IR / PUP / NFI return only (designated,
+  21-day window, activated / reinstated from a reserve list); a plain
+  "resumed practicing" / "returned to practice" (Pollard, Swift, Goedert in
+  week 5) is the new `practice_progress` flag (this week's news, no effect).
+  `value_trajectory` still reads a return to practice as a return for a
+  player on IR / PUP / NFI, and the returning-teammate logic reads both for
+  an unavailable teammate (`RETURN_CUE_RE`), so neither changes. Losing the
+  work is `benched`: "watched Monangai dominate touches" after a fumble,
+  "didn't see the field again", "saw his snaps dwindle", "lost work to";
+  the teammate who "dominated the touches / carries / looks" is `lead_role`.
+  "(coach's decision) inactive" / "healthy scratch" is the new
+  `inactive_healthy_scratch` (reported, no effect -- a backup's routine; the
+  gameday inactives settle a starter) instead of `benched`; "(foot) is
+  inactive" is `ruled_out`. A phrase inside a condition ("if Hall can't go,
+  Allen would be the lead back", "if he's not cleared to play", "could be
+  primed for a workhorse role if ...") is `conditional`: a conditional lead
+  role counts at half weight, other conditional flags not at all
+  (`get_player_news` timeline: `lead_role?`). A role named as a title
+  ("bell-cow running back Jonathan Taylor", "lead back Breece Hall") is the
+  named player's. Gone: "elevated week-to-week", "a week-to-week role",
+  "more day-to-day than week-to-week", "ruled out of bounds", "prior to
+  being ruled out", "The Eagles will play Week 5 with", a plain "snap count".
+  New phrasings: "more likely than not to sit out", "likely to miss a second
+  straight game", "will miss a second contest", "in the clear for", "expect
+  him to play", "on track to avoid an injury designation", "make the Week 5
+  start", "could manage his snaps", "well under a full workload". Live,
+  week 5: Pollard `designated_to_return` (a teammate's note) →
+  `practice_progress` + `expected_to_play` ("Expect him to play in Week 5");
+  Swift `designated_to_return` → `practice_progress`, `committee` ("ceded 30
+  carries to Monangai"), `benched` (the week-4 fumble note); Monangai gains
+  `lead_role`; Huntley's `lead_role` now from "trending toward the start",
+  not "would be in line to start".
 - **`get_cbs_player_news`** parsed CBS's page with guessed selectors and
   returned headline/description fragments without player, team or position;
   it now reads the real list (`news_sources.parse_cbs`): player, position,

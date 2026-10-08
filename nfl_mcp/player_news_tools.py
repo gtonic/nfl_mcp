@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from . import news_signals
 from .database import get_shared_db
 from .errors import create_success_response
-from .news_sources import SOURCE_LABELS, merge_timeline
+from .news_sources import SOURCE_LABELS, health_summary, merge_timeline
 from .opportunity_tools import norm_name
 from .teams import normalize_team
 
@@ -78,17 +78,26 @@ def _resolve(db, queries: list[str], held: set[str]) -> tuple[list[dict], list[d
 
 
 def _freshness(db, now: datetime) -> tuple[dict, list[str]]:
+    """``(sources, warnings)``: each source's last fetch and health
+    (`news_sources.health_summary`), and a warning for a stale store or a
+    degraded / failing source."""
     state = db.get_news_fetch_state() if hasattr(db, "get_news_fetch_state") else {}
-    out, warnings = {}, []
+    health = health_summary(state, now)
+    out, warnings = {}, list(health.get("warnings") or [])
     for source, st in sorted(state.items()):
         age = None
         try:
             age = round((now - datetime.fromisoformat(st["fetched_at"])).total_seconds() / 3600, 1)
         except (TypeError, ValueError, KeyError):
             pass
+        h = health["sources"].get(source) or {}
         out[source] = {"label": SOURCE_LABELS.get(source, source), "fetched_at": st.get("fetched_at"),
                        "age_hours": age, "status": st.get("status"),
+                       "health": h.get("health"), "last_success_at": h.get("last_success_at"),
                        "newest_item": st.get("newest_published"),
+                       **({k: h[k] for k in ("detail", "consecutive_failures", "next_attempt_at")
+                           if h.get(k)}),
+                       **({"enabled": False} if h and not h.get("enabled") else {}),
                        **({"error": st["error"]} if st.get("error") else {})}
     if not state:
         warnings.append("No news has been fetched yet: run refresh_data(scope=[\"news\"]) "
@@ -101,7 +110,10 @@ def _freshness(db, now: datetime) -> tuple[dict, list[str]]:
 
 
 def _item_flags(text: str, owner: str, names: dict, owner_last: str) -> list[str]:
-    return sorted({h["flag"] for h in news_signals.classify(text, owner, names, owner_last)
+    """The flags one entry carries for its player (a conditional one --
+    "would be the lead back if Hall can't go" -- as ``lead_role?``)."""
+    return sorted({h["flag"] + ("?" if h.get("conditional") else "")
+                   for h in news_signals.classify(text, owner, names, owner_last)
                    if h["about"] == owner})
 
 

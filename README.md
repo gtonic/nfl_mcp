@@ -160,6 +160,37 @@ The active profile and its tool count are logged at startup and reported by `GET
 **🌐 Web, data & health**
 `crawl_url` (SSRF-guarded text extraction) · `refresh_data` (refresh injuries / practice / athletes / schedule / snaps / usage / accuracy grading **now** — when the prefetch went stale, e.g. after the host slept; per-scope counts, durations and resulting freshness; `background=True` + `job_id` to poll) · `GET /health` (REST)
 
+## 🔌 Data sources & terms
+
+Every source is free and on by default. This server is meant for **personal, low-volume use**: you
+run it for your own leagues and it reads public pages and endpoints the way a browser would.
+
+| Source | What it reads | Access | Switch it off |
+|---|---|---|---|
+| **Sleeper** | your leagues, rosters, transactions, players, Sleeper projections | public API | — (core) |
+| **ESPN** | injuries, depth charts, teams, schedules, standings, news, fantasy player news (RotoWire notes) | public site / core / fantasy JSON endpoints | news: `NFL_MCP_NEWS_SOURCES=-espn_fantasy` |
+| **NBC Sports / Rotoworld** | player news | HTML scrape (RSS as fallback), 10 s between pages | `NFL_MCP_NEWS_SOURCES=-nbc` |
+| **CBS Sports** | player news (first page), projections, expert picks | HTML scrape | news: `NFL_MCP_NEWS_SOURCES=-cbs`; tools: `NFL_MCP_TOOL_PROFILE` (`get_cbs_expert_picks` is `full` only) |
+| **NFL.com** | the official weekly practice / injury report | HTML scrape, cached per week | — (the practice reads; fetched by the prefetch loop and on demand) |
+| **nflverse** | weekly stats, snap counts (GitHub releases) | public files | — |
+| **FantasyCalc** | market player values | public API | — |
+| **The Odds API** | Vegas lines / implied totals | your API key | leave `ODDS_API_KEY` unset |
+| **Open-Meteo** | game-day weather | public API | — |
+
+- **Terms.** Some of these sites' terms of use restrict automated access or reuse of their content.
+  Read them and decide for yourself; switch off whatever you do not want to use. Nothing here
+  republishes their content — the news text stays in your local database and is quoted only in
+  short snippets in tool answers.
+- **Politeness.** Every outbound request goes through a per-host rate limiter (`config.py`; NBC at
+  6/min with no burst to keep its robots.txt `Crawl-delay: 10`); the HTML news scrapers read only
+  pages their robots.txt allows (NBC's `/api/` and GraphQL are not used). A news source that keeps failing backs off (30 min doubling to
+  12 h) instead of retrying, and `/health` shows its state.
+- **Switches.** One env line each: `NFL_MCP_NEWS_SOURCES=-nbc` (all news sources but NBC; `-nbc,-cbs`
+  for two, `espn_fantasy` to keep one, `none` for no news polling), `NFL_MCP_PREFETCH=0` (no
+  background fetching at all), `NFL_MCP_PREFETCH_NEWS=0` (no background news polling),
+  `NFL_MCP_<API>_RATE_LIMIT` (requests/minute per host, e.g. `NFL_MCP_NBC_RATE_LIMIT=3`). See
+  [`.env.example`](.env.example).
+
 ## 📚 More
 
 - **[docs/TECHNICAL.md](docs/TECHNICAL.md)** — setup, configuration, architecture, data sources, eval suite, CI/CD, security.

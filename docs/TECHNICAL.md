@@ -160,7 +160,7 @@ variables take precedence.
 | `NFL_MCP_PREFETCH_NEWS` | `1` (default) polls player news during prefetch (`news` scope). |
 | `NFL_MCP_PREFETCH_NEWS_INTERVAL` | News poll interval, seconds (default 2700 = 45 min). |
 | `NFL_MCP_PREFETCH_NEWS_GAMEDAY_INTERVAL` | News poll interval in the game-day windows (Sun 10:00-20:30 ET, Mon/Thu 17:00-20:30, Sat 14:00-20:30), seconds (default 900). |
-| `NFL_MCP_NEWS_SOURCES` | News sources, comma list of `espn_fantasy`, `nbc`, `cbs` (default all). |
+| `NFL_MCP_NEWS_SOURCES` | News sources `espn_fantasy`, `nbc`, `cbs` (default all): a comma list keeps those, `-name` drops one (`-nbc` = all but NBC), `none` stops them. |
 | `NFL_MCP_NEWS_NBC_PAGES` / `NFL_MCP_NEWS_NBC_FIRST_PAGES` | NBC Sports pages read per poll (default 3) and on the first poll (default 12); 10 s apart (robots.txt crawl delay). |
 | `NFL_MCP_TIMEOUT_TOTAL` | Total HTTP request timeout (e.g. `45.0`). |
 | `NFL_MCP_RATE_LIMIT_DEFAULT` | Default outbound rate limit (requests/min). |
@@ -229,7 +229,8 @@ Design principles:
 | **nflverse** | Real weekly player stats → defense-vs-position, offense strength, backtests | No |
 | **ESPN** | News, teams, depth charts, injuries, standings, schedules, league leaders | No |
 | **FantasyCalc** | Market-consensus player values (trades, draft board), format-aware | No |
-| **CBS Sports** | Player news, projections, expert picks | No |
+| **CBS Sports** | Player news (HTML, first page), projections, expert picks | No |
+| **NBC Sports / Rotoworld** | Player news (HTML, 10 s between pages per robots.txt; RSS as the fallback) | No |
 | **Open-Meteo** | Per-game wind/precipitation/temperature (weather tool) | No |
 | **The Odds API** | Live Vegas lines / implied totals | `ODDS_API_KEY` |
 
@@ -389,17 +390,46 @@ model_projection = regressed_rate(opportunity, rank_bucket, games)   # k = 2
   kept a season. `get_player_news` merges them per player (near-duplicates
   across sources are one entry). Rejected: ESPN league news (articles),
   ESPN core athlete notes (404), RotoWire RSS (5 items, ESPN's text),
-  FantasyPros (no news RSS, `/api/` disallowed), Sleeper (no news endpoint).
+  FantasyPros (no news RSS, `/api/` disallowed), Sleeper (no news endpoint),
+  NBC's feeds as the primary (the Atom feed is empty, the RSS has ten items
+  of headline + one line with no analysis or team; `/api/` and GraphQL are
+  disallowed) -- the RSS is the fallback when the HTML parses to nothing.
+- **News source health** (schema v20, `news_fetch_state`): every selector
+  of the HTML parsers is in one table (`NBC_SELECTORS`, `CBS_SELECTORS`,
+  fallbacks after the primary). Each fetch is `ok`, `degraded` (a fallback
+  selector or the RSS feed was needed, fewer than half of a page's ten
+  items parsed, some requests failed) or `failing` (an error, or a 200
+  page that parsed to nothing). A failing source waits 30 min, doubling to
+  12 h (stored: a restart keeps it) before the next probe; the others always
+  run. Reported in `GET /health` (`data_freshness.news.sources`,
+  `warnings`), `data_freshness.news` of every tool that returns it
+  (briefing, waivers, trades, `refresh_data`), the `refresh_data` news
+  scope (`sources[*].health`, `warnings`) and `get_player_news`
+  (`sources`, `warnings`). Contract tests hold trimmed copies of both pages
+  (`tests/fixtures/news_html`).
 - **News signals** (`news_signals`): a rule-based classifier over the stored
   report text (`player_injuries.injury_description` and every `player_news`
   item of the last 10 days, teammates' notes that name the player included;
-  the same note from two sources read once) yields `news_flags` — `benched`, `committee`,
-  `lead_role`, `limited_snaps`, `week_to_week`, `designated_to_return`,
-  `expected_to_play`, `unlikely_to_play`, `ruled_out` — each with the
+  the same note from two sources read once) yields `news_flags` — `benched`
+  (incl. lost work after a fumble), `committee`, `lead_role`,
+  `limited_snaps`, `week_to_week`, `designated_to_return` (IR / PUP / NFI
+  window opened or activated only), `practice_progress` (back at practice),
+  `expected_to_play`, `unlikely_to_play`, `ruled_out`,
+  `inactive_healthy_scratch` (reported only) — each with the
   snippet, date, source, url and a recency weight (half-life 4 days,
   ignored after 10). One flag per player whatever the number of items; of
   the availability flags only those since the week rolled over (Tuesday)
-  and only the newest one count.
+  and only the newest one count (practice progress and healthy scratches
+  are this week's too). A phrase inside a condition ("if Hall can't go,
+  Allen would be the lead back", "if he's not cleared to play") is
+  `conditional`: a conditional lead role counts at half weight, the other
+  conditional flags not at all; a role named as a title ("bell-cow running
+  back Jonathan Taylor") is the named player's. Measured on 326
+  hand-labelled stored sentences (`tests/fixtures/news_labels.jsonl`,
+  `python -m evals.news_classifier_eval [--split holdout] [--baseline
+  old.py] [--errors]`): dev P/R 0.98 / 0.96 (the old classifier 0.55 /
+  0.59), held out 1.00 / 0.33 -- precise, recall limited by phrasings the
+  vocabulary lacks; thresholds in `tests/test_news_classifier_eval.py`.
   Benched / committee / limited snaps take a small multiplier (0.85 / 0.93 /
   0.90 at full weight, floor 0.80) on *our* share only — Sleeper's
   projections come from the writers of the blurbs — and only when
