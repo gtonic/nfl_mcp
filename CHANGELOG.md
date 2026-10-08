@@ -163,6 +163,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model with Sleeper.
 
 ### Fixed
+- **Stale roster right after a trade.** Sleeper serves `/rosters` through
+  Cloudflare (`s-maxage=300, stale-while-revalidate=300`; matchups and
+  transactions `s-maxage=60`), so a "live" fetch could return a copy up to ten
+  minutes old: after a 2-for-2 trade `analyze_lineup` still benched the
+  departed players, never listed the new ones and said `stale: false`, while
+  `get_bye_week_plan` a moment later had the new roster. Sleeper GETs for
+  rosters, matchups and transactions now read the CDN's `Age` header and
+  refetch from the origin (cache-busting query) when the copy is older than
+  30 s. `get_rosters` keeps one shared copy for 20 s (concurrent callers share
+  the fetch), so lineup, briefing, waiver, trade and bye-plan tools in one turn
+  read the same league; a completed transaction newer than that copy (seen by
+  `get_transactions` / `get_league_changes`) drops it at once.
+  `snapshot_age_seconds` / `snapshot_fetched_at` now give the data's real age
+  on live responses too, and data still older than 2 min is `stale` with a
+  warning. The week's matchup starters are used only when every one of them is
+  on the roster (`set_starters`) — a pre-trade matchup copy no longer grades a
+  lineup the team no longer has (analyze_lineup, weekly briefing, gameday
+  inactives, league changes).
 - **Value trajectory: a teammate due back soon reads as a sell-high again.**
   Emanuel Wilson (SEA) was a `hold` with Zach Charbonnet off PUP next week.
   Three causes:

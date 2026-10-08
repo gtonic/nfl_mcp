@@ -106,7 +106,10 @@ def patched():
          patch("nfl_mcp.gameday_inactives.get_official_inactives", AsyncMock(return_value=official)), \
          patch("nfl_mcp.injury_service.get_injury_reports", AsyncMock(return_value=INJURIES)), \
          patch.object(tool_registry.sleeper_tools, "get_matchups",
-                      AsyncMock(return_value={"matchups": [{"roster_id": 7, "starters": ["s1", "s2", "s3"]}]})):
+                      AsyncMock(return_value={"matchups": [{"roster_id": 7, "starters": ["s1", "s2", "s3"]}]})), \
+         patch.object(tool_registry.sleeper_tools, "load_rosters",
+                      AsyncMock(return_value={"rosters": [{"roster_id": 7, "players": ["s1", "s2", "s3"],
+                                                           "starters": ["s1", "s2", "s3"]}]})):
         yield
 
 

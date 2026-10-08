@@ -2955,11 +2955,13 @@ async def _flag_my_starters(league_id, roster_id, week, inactives, confirmed_act
     try:
         matchups = (await sleeper_tools.get_matchups(league_id, week) or {}).get("matchups") or []
         mine = next((m for m in matchups if m.get("roster_id") == roster_id), None)
-        starters = [str(p) for p in (mine or {}).get("starters") or [] if p and p != "0"]
-        if not starters:
-            state = await sleeper_tools.load_rosters(league_id, "lineup")
-            roster, _ = sleeper_tools.find_roster(state["rosters"], league_id, roster_id, None)
-            starters = [str(p) for p in (roster or {}).get("starters") or [] if p and p != "0"]
+        state = await sleeper_tools.load_rosters(league_id, "lineup")
+        roster, _ = sleeper_tools.find_roster(state["rosters"], league_id, roster_id, None)
+        # The matchup's starters only when they agree with the roster: a copy
+        # from before a trade still starts the players who left.
+        raw = (sleeper_tools.set_starters(roster, mine)[0] if roster
+               else [str(p) for p in (mine or {}).get("starters") or []])
+        starters = [p for p in raw if p and p != "0"]
     except Exception as e:
         return {"error": f"could not load starters: {e}"}
     athletes = get_db().get_athletes_by_ids(starters) if starters else {}

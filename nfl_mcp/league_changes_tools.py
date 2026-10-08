@@ -435,10 +435,9 @@ async def get_league_changes(
     )
     opp_rid = (opp_matchup or {}).get("roster_id")
     opp_roster = next((r for r in rosters if r.get("roster_id") == opp_rid), None)
-    starters = [s for s in ((my_matchup or {}).get("starters") or mine.get("starters") or [])
-                if s and s != "0"]
-    opp_starters = [s for s in ((opp_matchup or {}).get("starters")
-                                or (opp_roster or {}).get("starters") or [])
+    starters = [s for s in sleeper_tools.set_starters(mine, my_matchup)[0] if s and s != "0"]
+    opp_starters = [s for s in (sleeper_tools.set_starters(opp_roster, opp_matchup)[0] if opp_roster
+                                else (opp_matchup or {}).get("starters") or [])
                     if s and s != "0"]
 
     roles: dict[str, str] = {}

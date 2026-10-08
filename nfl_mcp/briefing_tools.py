@@ -285,6 +285,16 @@ async def get_weekly_briefing(
             None,
         )
 
+    # The set lineups, read so they agree with the rosters: a matchup copy from
+    # before a trade still starts the players who left (see `set_starters`).
+    my_set_starters, _ = sleeper_tools.set_starters(mine, my_matchup)
+    opp_roster = next((r for r in rosters
+                       if opponent_matchup and r.get("roster_id") == opponent_matchup.get("roster_id")),
+                      None)
+    opp_set_starters = ([p for p in sleeper_tools.set_starters(opp_roster, opponent_matchup)[0]
+                         if p and p != "0"] if opp_roster
+                        else list((opponent_matchup or {}).get("starters") or []))
+
     # 4) Context shared by every player: opponent, weather, trailing usage.
     #    Opponents come from the cached schedule rather than the odds feed,
     #    which publishes several weeks at once.
@@ -301,7 +311,7 @@ async def get_weekly_briefing(
         for row in db.get_usage_for_week(season, max(1, week - 1))
     }
     athletes = db.get_athletes_by_ids(
-        list(mine.get("players") or []) + list((opponent_matchup or {}).get("starters") or [])
+        list(mine.get("players") or []) + list(opp_set_starters)
     )
     # Sleeper's player list is not the only injury source, and around kickoff it
     # is routinely the slower one. `player_injuries` holds the ESPN reports.
@@ -321,7 +331,7 @@ async def get_weekly_briefing(
             if pid not in unavailable
         ) if p
     ]
-    opp_ids = (opponent_matchup or {}).get("starters") or []
+    opp_ids = opp_set_starters
     opp_inputs = [
         p for p in (
             _build_player(pid, athletes, opponents, weather, usage, injury_index,
@@ -355,9 +365,7 @@ async def get_weekly_briefing(
     # refilled.
     my_points = (my_matchup or {}).get("players_points") or {}
     opp_points = (opponent_matchup or {}).get("players_points") or {}
-    current_starters = list(
-        (my_matchup or {}).get("starters") or mine.get("starters") or []
-    )
+    current_starters = list(my_set_starters)
     # Sleeper's `starters` follows `roster_positions` one to one, so the slot
     # a starter occupies is read off the league's own order — every starting
     # slot, projectable or not, or the two lists drift apart.
@@ -417,7 +425,7 @@ async def get_weekly_briefing(
     # defense — which has no `full_name` — is never recognised as already
     # starting and shows up as a change every single week.
     current_names = set()
-    for pid in ((my_matchup or {}).get("starters") or mine.get("starters") or []):
+    for pid in my_set_starters:
         row = athletes.get(pid)
         if not row:
             continue

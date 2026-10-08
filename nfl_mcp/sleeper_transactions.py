@@ -10,7 +10,6 @@ import logging
 import httpx
 
 from .config import (
-    DEFAULT_TIMEOUT,
     LIMITS,
     create_http_client,
     get_http_headers,
@@ -23,7 +22,13 @@ from .errors import (
     handle_validation_error,
 )
 from .sleeper_enrichment import _enrich_usage_and_opponent
-from .sleeper_tools import _enrich_single, _init_db, get_nfl_state
+from .sleeper_tools import (
+    _enrich_single,
+    _init_db,
+    get_nfl_state,
+    note_transactions,
+    sleeper_get_fresh,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +196,7 @@ async def _fetch_week(league_id: str, week: int, auto_inferred: bool) -> dict:
         attempts += 1
         try:
             async with create_http_client() as client:
-                response = await client.get(url, headers=headers, follow_redirects=True, timeout=DEFAULT_TIMEOUT)
+                response, _ = await sleeper_get_fresh(client, url, headers)
                 if response.status_code in (401,403,404):
                     # Direct terminal errors (no further retry)
                     if response.status_code == 404:
@@ -272,6 +277,9 @@ async def _fetch_week(league_id: str, week: int, auto_inferred: bool) -> dict:
 
                 # Save snapshot
                 nfl_db.save_transaction_snapshot(league_id, week, tx_data)
+                # A trade/add/drop newer than the shared roster copy: the
+                # rosters changed, so the next roster read refetches.
+                note_transactions(league_id, tx_data)
                 return create_success_response({
                     "transactions": tx_data,
                     "week": week,
