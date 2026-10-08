@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-08
+
+0.9.0 gave the tools the league's real scoring and real practice data. This
+release makes the recommendations follow the *trends* in that data: who is
+losing a role, whose teammate is coming back, which quarterback is about to
+sit, and when to sell or buy.
+
+15 PRs (#239–#253). The headline: **the server measured role changes and
+returning teammates, but no recommendation used them.** A runner benched after
+a fumble, a receiver whose volume only existed because the WR1 was hurt, a
+wideout losing his quarterback — all were projected forward unchanged. Now
+projections, waivers, drops and trades price them, and tell you why.
+
+- **Trend-aware projections**: lost roles (`role_shift`), returning-teammate
+  deflation (weekly and ROS), injury-shortened games excluded from the volume
+  base, practice reports applied to the blended projection, QB↔pass-catcher
+  coupling (incl. a Questionable QB with a DNP streak), news-text signals.
+- **Trade tools**: value trajectory (`sell_high` / `buy_low` with reasons,
+  ~15–20% of rostered players flagged) and package search (2-for-1, 2-for-2,
+  optionally 3-for-2) in `find_trade_targets`.
+- **Data you can trust right after a move**: Sleeper CDN copies older than 30 s
+  are bypassed, one shared roster for every tool, `get_transactions` reads the
+  previous leg, ESPN return dates stored (schema v17), practice rows dated
+  correctly, injury crawl 32 → 3 minutes.
+- **New tools**: `refresh_data`, `get_player_ownership`.
+- Backtested where history exists (2023–25): blend MAE on rows with a lost
+  role 5.41 → 5.36, with a returning teammate 4.90 → 4.87, WRs with a weak
+  backup QB 5.10 → 4.89. Practice and news weights are heuristics; history
+  tables now collect the data to calibrate them.
+
 ### Added
 - **`get_player_ownership(league_id, players)`** (all profiles: season 57,
   full 74, offseason 45 tools). Per name: `player_id`, `team` ("FA" without
@@ -148,6 +178,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carries his `value_trajectory`. `analyze_trade` returns `value_trajectory`
   per traded player and `timing_notes` per side ("You are selling high on
   Jaylen Warren (…)"); the ROS lineup change stays the verdict.
+
+- `refresh_data` tool (every profile): runs the prefetch's injuries /
+  practice / athletes / schedule / snaps refreshes on demand, regardless of
+  `NFL_MCP_ADVANCED_ENRICH`, with per-scope counts, durations and resulting
+  freshness; `background=True` + `job_id` polling for long crawls.
+- `evals/backtest/sleeper_blend.py`: model vs Sleeper vs blend, weight sweep,
+  band coverage and start/sit accuracy; Sleeper history fetched once and
+  cached (network on first run).
 
 ### Changed
 - **One refresh path.** The prefetch loop runs `data_refresh`'s scope
@@ -334,15 +372,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fumbles / 2-pt columns, 2025 interceptions read as 0) while the model
   predicts Sleeper defaults; truth is now priced by `ScoringModel` on the full
   stat line.
-
-### Added
-- `refresh_data` tool (every profile): runs the prefetch's injuries /
-  practice / athletes / schedule / snaps refreshes on demand, regardless of
-  `NFL_MCP_ADVANCED_ENRICH`, with per-scope counts, durations and resulting
-  freshness; `background=True` + `job_id` polling for long crawls.
-- `evals/backtest/sleeper_blend.py`: model vs Sleeper vs blend, weight sweep,
-  band coverage and start/sit accuracy; Sleeper history fetched once and
-  cached (network on first run).
 
 ## [0.9.0] - 2026-09-23
 
@@ -1870,6 +1899,8 @@ Low-severity consistency/schema polish from the audit:
 - Aligned `requirements.txt` and `pyproject.toml` dependencies; documented
   `ODDS_API_KEY`; removed a stray dev script.
 
-[Unreleased]: https://github.com/gtonic/nfl_mcp/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/gtonic/nfl_mcp/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/gtonic/nfl_mcp/compare/v0.9.0...v0.9.5
+[0.9.0]: https://github.com/gtonic/nfl_mcp/compare/v0.8.5...v0.9.0
 [0.6.0]: https://github.com/gtonic/nfl_mcp/compare/v0.5.16...v0.6.0
 [0.5.16]: https://github.com/gtonic/nfl_mcp/releases/tag/v0.5.16
