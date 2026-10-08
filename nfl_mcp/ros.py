@@ -42,6 +42,13 @@ fantasy-playoff window (``playoff_points``, from the league's
   teammate's expected return (``returning_teammates`` in the weekly
   breakdown); from then on he is priced on the games they played together
   (``deflated_base_ppg``), regressed toward the rank prior like any base.
+- Backup quarterback: a receiver whose starting QB is out keeps the weekly
+  projection's model multiplier (``qb_context``, `qb_coupling`) for the
+  starter's expected absence. "Week-to-week" in an Out player's report is
+  read as two games, not one.
+- News: the weekly projection's ``news_flags`` (`news_signals`) are passed
+  through on every entry, for the tools that weigh a role's security
+  (waivers, drops, value trajectory); they do not move ROS points.
 - K / DEF: later weeks are priced per opponent off the offense read the weekly
   engine falls back to (``streaming_tools.unit_matchup``).
 """
@@ -89,6 +96,11 @@ _SEASON_ENDING_RE = re.compile(
 )
 _WEEKS_RE = re.compile(r"(\d{1,2})\s*(?:-|to|or)?\s*(\d{1,2})?\s*weeks?\b", re.I)
 _GAMES_RE = re.compile(r"(\d{1,2})[- ]game(?:s)?\s+suspension|suspended\s+(\d{1,2})\s+games", re.I)
+# An Out player the report calls "week-to-week" is not back next week: the
+# phrase is the coaches' way of saying "more than one". Two games, the
+# shortest reading of it (`news_signals` flags the same phrase).
+_WEEK_TO_WEEK_RE = re.compile(r"\bweek[- ]to[- ]week\b", re.I)
+WEEK_TO_WEEK_GAMES = 2
 
 
 # --------------------------------------------------------------------------
@@ -228,6 +240,8 @@ def expected_absence(
         n = max(weeks)
         if 0 < n <= LAST_NFL_WEEK and n > base:
             return n, f"{status}: {n} weeks per the report"
+    if base < WEEK_TO_WEEK_GAMES and _WEEK_TO_WEEK_RE.search(text):
+        return WEEK_TO_WEEK_GAMES, f"{status}: week-to-week per the report"
     return base, reason
 
 
@@ -561,6 +575,11 @@ async def ros_projections(
         deflation = 0.0
         if after is not None and after < per_game:
             deflation, per_game = round(per_game - after, 2), after
+        # A backup quarterback throwing to him (`qb_coupling`): the model's
+        # multiplier for as long as the starter is expected out.
+        qb = proj.get("qb_context") or {}
+        qb_mult = float(qb.get("model_mult") or 1.0) if qb.get("applied") else 1.0
+        qb_games = int(qb.get("games_out") or 0) if qb_mult < 1.0 else 0
         injury = p.get("injury") or {}
         absent, absence_reason = expected_absence(
             injury.get("status"), injury.get("description"), injury.get("return_date"), today,
@@ -601,6 +620,8 @@ async def ros_projections(
                 mult, tier = _matchup(p["position"], opponent, rankings, analyzer, model.rec)
                 rate = (per_game + (inherited if game_no - 1 < inherited_games else 0.0)
                         + (deflation if game_no - 1 < returning_games else 0.0))
+                if game_no - 1 < qb_games:
+                    rate *= qb_mult
                 points = round(rate * mult, 2)
                 if not opponent:
                     reason = "schedule unknown — counted as playing"
@@ -634,7 +655,15 @@ async def ros_projections(
             "injury_window": absence_reason,
             "expected_absence_games": absent,
             "weekly_points": {row["week"]: row["points"] for row in weekly},
+            # What the report text says about his role (`news_signals`), from
+            # this week's projection (`value_trajectory` reads it too).
+            "news_flags": list(proj.get("news_flags") or rate_src.get("news_flags") or []),
         }
+        if qb_games:
+            # The backup quarterback's multiplier on his later weeks.
+            entry["qb_context"] = {k: qb.get(k) for k in (
+                "starter", "starter_status", "backup", "backup_tier", "model_mult",
+                "games_out", "reason")}
         if deflation:
             # Who is due back, and the per-game rate he loses from then on.
             entry["returning_teammates"] = [

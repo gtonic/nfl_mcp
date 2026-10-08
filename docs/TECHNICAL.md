@@ -277,6 +277,36 @@ model_projection = regressed_rate(opportunity, rank_bucket, games)   # k = 2
   point-in-time history to backtest a ROS blend on.
 - The weight is reproducible: `python -m evals.backtest.sleeper_blend`
   (fetches and caches Sleeper's projection history on first run).
+- **Quarterback coupling** (`qb_coupling`): a WR whose starting QB (top QB by
+  market rank) is Out / IR / suspended takes a multiplier by the backup's
+  tier — low 0.87, mid 0.90, starter-grade 1.0; Doubtful at 75% of it — on
+  Sleeper's share (its line does not react to a backup) and, scaled by the
+  share of his trailing games the starter played, on ours. Tight ends are
+  flagged, not cut (they gained with a backup in the backtest). A QB whose
+  top-two pass catchers are Out/Doubtful gets `teammate_context` and −5
+  confidence, no multiplier (no effect in the backtest). Fields:
+  `qb_context`, `teammate_context`, `breakdown.qb_model_mult` /
+  `qb_sleeper_mult`; ROS keeps the model multiplier for the starter's
+  expected absence. `--qb-coupling` on the backtest: affected WR blend MAE
+  5.103 → 4.887.
+- **News signals** (`news_signals`): a rule-based classifier over the stored
+  report text (`player_injuries.injury_description`, teammates' blurbs that
+  name the player included) yields `news_flags` — `benched`, `committee`,
+  `lead_role`, `limited_snaps`, `week_to_week`, `designated_to_return`,
+  `expected_to_play`, `unlikely_to_play`, `ruled_out` — each with the
+  snippet, date and a recency weight (half-life 4 days, ignored after 10).
+  Benched / committee / limited snaps take a small multiplier (0.85 / 0.93 /
+  0.90 at full weight, floor 0.80) on *our* share only — Sleeper's
+  projections come from the writers of the blurbs — and only when
+  `role_shift` has not already priced a lost role; lead role and expected
+  to play add confidence. Not backtested (no history of the text). On
+  projection and ROS rows; `news_signals.player_news(db, name, team)` for
+  other modules. "Week-to-week" on an Out player is two games in ROS.
+- **Role security** (`news_signals.role_security`, −2..+2 with reasons):
+  role read + news + volume borrowed from an absent or returning teammate.
+  `get_waiver_targets` ranks by `rank_score = upgrade + 0.75 × score` (the
+  verdict still rests on points) and drop candidates' keep score moves 0.08
+  per unit, so a shrinking role surfaces as a drop.
 
 ## Eval suite (`evals/`)
 

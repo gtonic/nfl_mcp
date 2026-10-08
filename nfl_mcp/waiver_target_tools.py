@@ -12,6 +12,11 @@ This starts from the pool: every athlete nobody in the league rosters, projected
 for the coming week in the league's own scoring, and scored by the only thing
 that makes a claim worth making — how much better they are than the player they
 would displace in your lineup.
+
+Close calls are ordered by role security (`news_signals.role_security`): a
+role that is growing ranks ahead of one propped up by a teammate's absence,
+and on the drop side a bench player in a shrinking role (lost share, a
+committee, week-to-week) comes up before one in a settled role.
 """
 from __future__ import annotations
 
@@ -19,7 +24,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from . import ros
+from . import news_signals, ros
 from .briefing_tools import _staleness_warnings
 from .database import get_shared_db
 from .errors import create_success_response
@@ -110,12 +115,28 @@ _DROP_VALUE_WEIGHT = 0.6
 _DROP_ROS_WEIGHTS = {"ros": 0.5, "value": 0.3, "week": 0.2}
 _MAX_DROP_CANDIDATES = 5
 
+# Role security (`news_signals.role_security`, -2..+2: the role read, news
+# flags, volume borrowed from an absent teammate). A waiver target's rank
+# moves by this many points per unit -- at most 1.5, inside the projection's
+# noise, so it orders close calls rather than overriding a real gap; the
+# verdict ("upgrade") still rests on the points alone. A drop candidate's
+# keep score (0-1, relative to the roster) moves by `_DROP_ROLE_WEIGHT` per
+# unit, so a bench player in a shrinking role (a lost target share, a
+# committee, week-to-week) surfaces ahead of one in a settled role.
+# Heuristic, not backtested (no history of the news text).
+_ROLE_SECURITY_POINTS = 0.75
+_DROP_ROLE_WEIGHT = 0.08
+
 # Roster slots that do not count against the active roster size.
 _NON_ROSTER_SLOTS = {"IR", "TAXI"}
 
 
 def _value_of(player: dict) -> float:
     return float(player.get("value") or 0.0)
+
+
+def _security(player: dict) -> float:
+    return float((player.get("role_security") or {}).get("score") or 0.0)
 
 
 def _ros_of(player: dict) -> float | None:
@@ -162,6 +183,8 @@ def _droppable(players: list[dict], slots: dict[str, int],
     """
     starting = {id(p) for p in starting_lineup(players, slots)}
     keep = _keep_scores(players)
+    # A shrinking or borrowed role lowers it, a secure one raises it.
+    keep = {id(p): round(keep[id(p)] + _DROP_ROLE_WEIGHT * _security(p), 3) for p in players}
     bench = [
         p for p in players
         if id(p) not in starting
@@ -228,11 +251,14 @@ def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
         if candidate.get("player_id") == target.get("player_id"):
             continue
         if _outvalues(target, candidate):
+            role = candidate.get("role_security") or {}
+            why = (f" Role {role['label']}: {role['reasons'][0]}."
+                   if role.get("score", 0) < 0 and role.get("reasons") else "")
             return ({k: candidate.get(k) for k in (
                 "player_id", "name", "position", "projected_points", "value",
-                "ros_total")},
+                "ros_total", "role_security")},
                 f"Drop {candidate['name']} ({_worth_text(candidate, points=True)}) — "
-                f"worth less than {target['name']} ({_worth_text(target) or 'more'}).")
+                f"worth less than {target['name']} ({_worth_text(target) or 'more'})." + why)
         break  # the least-valuable bench player is worth more; the rest are too
     return None, (
         f"Nobody on your bench is worth less than {target['name']} rest-of-season "
@@ -317,10 +343,17 @@ async def get_waiver_targets(
     """Rank this league's free agents by how much they would upgrade your lineup."""
     from . import sleeper_tools
     from .briefing_tools import _scoring_label, _scoring_ppr
-    from .projections import project_players
+    from .projections import get_projection_engine, project_players
     from .scoring import league_scoring
 
     db = get_shared_db()
+    # The engine reads teammates' statuses and the news text from the
+    # database (depth pricing, QB coupling, news flags): hand it the handle
+    # if nothing has yet, without logging the whole pool for the retro.
+    try:
+        get_projection_engine(db)
+    except Exception as e:  # the projection degrades to "everyone available"
+        logger.debug(f"projection engine without a database: {e}")
 
     if week is None or season is None:
         state = await sleeper_tools.get_nfl_state()
@@ -439,6 +472,10 @@ async def get_waiver_targets(
                 "floor": p["floor"], "ceiling": p["ceiling"],
                 "confidence": p["confidence"],
                 "base_source": (p.get("breakdown") or {}).get("base_source"),
+                # How safe his role is: usage read, news, borrowed volume.
+                "role_trend": p.get("role_trend"),
+                "role_security": news_signals.role_security(p),
+                **({"qb_context": p["qb_context"]} if p.get("qb_context") else {}),
             }
             for p in (result or {}).get("projections") or []
         ]
@@ -571,9 +608,12 @@ async def get_waiver_targets(
             "trending_adds": adds,
             "verdict": verdict,
             "waiver_timing": timing,
+            # The order: the lineup gain, nudged by role security.
+            "rank_score": round(upgrade + _ROLE_SECURITY_POINTS * _security(candidate), 2),
         })
 
-    targets.sort(key=lambda t: (t["upgrade_points"], t["trending_adds"]), reverse=True)
+    targets.sort(key=lambda t: (t["rank_score"], t["upgrade_points"], t["trending_adds"]),
+                 reverse=True)
     top = [t for t in targets if t["verdict"] in ("upgrade", "speculative")][:limit]
     # Would-be upgrades that cannot make it into this week's lineup, so their
     # absence from `targets` is explained rather than silent.

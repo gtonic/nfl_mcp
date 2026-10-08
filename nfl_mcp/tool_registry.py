@@ -3399,9 +3399,12 @@ async def get_waiver_targets(
                   ceiling, replacement_level, upgrade_points, trending_adds,
                   verdict, kickoff, kickoff_local, locked, waiver_timing,
                   waiver_strategy {recommendation: claim_now|add_now|wait|
-                  dont_bother, reason, waiver_position, teams_ahead, wait_days}}],
+                  dont_bother, reason, waiver_position, teams_ahead, wait_days},
+                  role_security {score -2..2, label rising|secure|neutral|
+                  shaky|shrinking, reasons}, rank_score}],
         waiver_priority, locked_players, too_late_for_this_week,
-        drop_candidates, replacement_levels, thin_positions, waiver_type,
+        drop_candidates (with keep_score and role_security: a shrinking role
+        ranks first), replacement_levels, thin_positions, waiver_type,
         pool_size, league, week, season, success
     }
 

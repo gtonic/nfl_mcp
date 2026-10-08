@@ -47,11 +47,13 @@ assistant** and answers the question you actually asked.
 - **Streaming planner** — the best DST / K / QB / TE to stream over the next 1-3 weeks (soft defense, weak opposing offense, strong own offense).
 - **Weather / wind** — fade passing and kickers in the ugly-weather games (wind ≥ 15 mph), dome games flagged neutral.
 - **Game-day aware** — players whose game has kicked off are locked, byes are caught from the schedule, practice reports (DNP / LP / FP) and official inactives feed straight into the call.
+- **Who's throwing, and what the coach said** — a receiver whose starting QB is out is cut by the backup's quality (backtested), a QB missing his top targets is flagged, and the news text ("benched after his fumble", "gonna rotate", "week-to-week", "the lead back") is read into `news_flags` with the quote that triggered it.
 
 **🔄 Trades & waivers**
 - **Trade analyzer on real market values** — knows your league's exact format and flags a lopsided deal *with evidence*.
 - **FAAB bids or waiver priority** — exactly how much to spend on that waiver breakout (market value + league demand + your budget); in non-FAAB leagues, whether the add is worth burning your waiver priority.
 - **Rest-of-season aware** — waiver and trade gains are measured over the rest of the season and your fantasy-playoff weeks, not just this week.
+- **Role security** — waiver targets in a growing role rank ahead of equal upgrades whose volume is borrowed from an injured teammate, and bench players in a shrinking role (lost target share, a committee, week-to-week) surface first as drops, with the reasons shown.
 
 **🏆 Season strategy**
 - **Monte-Carlo playoff odds** — *"72% to make it — 84% if you win this week."* Real probabilities, not vibes (median-game leagues included).

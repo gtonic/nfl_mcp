@@ -114,18 +114,29 @@ def _no_sleeper_week_stats(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clear_process_caches():
     """Short-lived in-process caches must not leak one test's mocks into the next."""
-    from nfl_mcp import handcuff_tools, lineup_tools, nfl_tools, sleeper_tools, weather_tools
+    from nfl_mcp import (
+        handcuff_tools,
+        lineup_tools,
+        nfl_tools,
+        projections,
+        sleeper_tools,
+        weather_tools,
+    )
     sleeper_tools.clear_nfl_state_cache()
     weather_tools.clear_forecast_cache()
     nfl_tools.clear_season_stats_cache()
     handcuff_tools.clear_depth_chart_cache()
     lineup_tools.clear_usage_cache()
+    # The projection engine singleton adopts the first database it is handed
+    # (a test's temp file); the next test must not read that one.
+    projections._engine = None
     yield
     sleeper_tools.clear_nfl_state_cache()
     weather_tools.clear_forecast_cache()
     nfl_tools.clear_season_stats_cache()
     handcuff_tools.clear_depth_chart_cache()
     lineup_tools.clear_usage_cache()
+    projections._engine = None
 
 
 @pytest.fixture(autouse=True)
