@@ -32,15 +32,15 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server has **75 MCP tools** (including `get_league_leaders`, behind the
+The server has **76 MCP tools** (including `get_league_leaders`, behind the
 `league_leaders` feature flag, enabled by default). Which of them are registered
 depends on the tool profile, `NFL_MCP_TOOL_PROFILE`:
 
 | Profile | Tools | Registered |
 |---|---|---|
-| `season` (default) | 58 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
-| `offseason` | 45 | draft and coaching; not the in-season-only tools (briefing, retro, projection accuracy, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder, usage/opportunity), admin or `get_cbs_expert_picks` |
-| `full` | 75 | everything |
+| `season` (default) | 59 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
+| `offseason` | 45 | draft and coaching; not the in-season-only tools (briefing, retro, projection accuracy, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder/market, usage/opportunity), admin or `get_cbs_expert_picks` |
+| `full` | 76 | everything |
 
 The profile and count are logged at startup and returned by `GET /health`
 under `tools`. Every tool also ships its own parameter schema over MCP, so an
@@ -251,7 +251,7 @@ Advanced waiver wire intelligence:
     taxi, or `free_agent` / `on_waivers` with `waiver_timing` — the same
     estimate as `get_waiver_targets`)
 
-### 8. Trade Analysis Tools (2 tools)
+### 8. Trade Analysis Tools (3 tools)
 
 Trade evaluation and discovery:
 
@@ -270,6 +270,32 @@ Trade evaluation and discovery:
   - Returns: proposals (you_give, you_get, your_gain, their_gain, mutual_gain,
     partner), trade_deadline, your_replacement_levels, candidates_considered
     (every swap scored), caveats
+  - `risk_mode` (default `auto`): reads your playoff odds — a long shot
+    (< 20%) re-ranks by lineup ceiling (`risk.upside_gain`), a contender
+    (>= 60%) by fantasy-playoff-week points (`risk.playoff_gain`);
+    `your_gain` stays the pure ROS delta and the both-sides bar
+
+- **`get_trade_market`**: **the league's trade market** — who needs what, who
+  has it, and who would say yes
+  - Parameters: `league_id` (required), `roster_id` or `user_id`, `offer`
+    (optional `{partner_roster_id, you_give: [ids], you_get: [ids]}`),
+    `risk_mode`, `max_partners` (default 5)
+  - Every roster: `needs` / `surpluses` by position 0-10 from ROS lineup
+    impact (need = share of a solid starter's — the league's num_teams-th
+    best — points its weekly lineup would gain; surplus = share of a player's
+    points the keenest other teams would start × (share his own lineup does
+    not need)²), `bye_crunch` weeks, `injured_starters`, record, playoff
+    odds, `situation` (contender / bubble / long_shot) and `posture`
+  - `partners`: their need ∩ your surplus and vice versa (`fit_score`,
+    `natural_partner`), with packages pre-scored by `find_trade_targets`
+    (both lineups gain) and `acceptance_likelihood` 0-1 + `acceptance_label`
+    + `acceptance_factors` (their lineup gain, FantasyCalc balance, their
+    need, depth they give up, contender/long shot, value timing) and
+    `expected_gain` = acceptance × your gain
+  - `offer` → `counter_offers`: 1-3 versions (add depth you can spare, ask for
+    less, send a player at their need) that keep at least half your gain and
+    raise their acceptance; the same as `analyze_trade(..., suggest_counters=True)`
+  - acceptance_likelihood is a heuristic, not a fitted model — read the factors
 
 - **`get_ros_projections`**: rest-of-season and fantasy-playoff points in the
   league's scoring — use instead of `project_players` for trades, drops and
@@ -319,8 +345,8 @@ covers the real outcome ~68% of the time, measured in
 `evals/backtest/calibration.py`. Treat the floor as a real floor.
 
 - **`get_weekly_briefing`**: One call for "how should I line up this week". Mid-week, players whose game has kicked off carry their actual points with no remaining variance and their slots leave the optimization.
-  - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional)
-  - Returns: league, week, record, win_probability, projected_points, opponent_projected_points, recommended_lineup, changes, bench, injury_changes, not_projected
+  - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional), `risk_mode` (optional, default `auto`)
+  - Returns: league, week, record, win_probability, projected_points, opponent_projected_points, recommended_lineup, changes, bench, injury_changes, not_projected, risk_mode, risk_reason, playoff_pct, risk_adjustment
 
 - **`get_weekly_retro`**: Post-game review of a finished week (default: the last completed one). Each starter's actual points against the projection logged before kickoff, points left on the bench (exact hindsight lineup under the league's slot rules), result vs the opponent and whether the hindsight lineup would have flipped it, biggest misses/hits, and projection calibration over every logged week. A week with no logged projection is re-projected and labelled `projection_source: "recomputed"`.
 - **`get_projection_accuracy`**: How accurate the logged pre-kickoff projections were (all leagues, or `league_id`), graded against the points actually scored in each projection's own scoring. Parameters: `weeks`, `position`, `by_signal` (default True), `season`, `league_id`. Returns overall / by_position / by_projection_source MAE and bias (projected − actual), `components` (our model vs Sleeper vs the blend on the same rows), `trend` per week, `by_signal` (with vs without: role_down/up, returning_teammates, qb_coupling, practice_dnp, questionable, news flags, …) and an `interpretation`. Finished weeks are graded on the fly (and by the prefetch loop / `refresh_data(scope=["accuracy"])`).
@@ -345,18 +371,29 @@ covers the real outcome ~68% of the time, measured in
 
 ### 11. Start/Sit & Lineup Optimization (4 tools)
 
+**`risk_mode`** (briefing, `analyze_lineup`, `compare_players_for_slot`,
+`get_win_probability_lineup`): `auto` (default) | `neutral` | `seek_variance` |
+`protect_floor`. Auto reads this week's P(win) (points-optimal lineup vs the
+opponent's projected starters) and the season's playoff odds (cached
+`get_playoff_odds`): an underdog (< 45%) or a long shot (< 20% playoff odds,
+close game) chases ceiling, a favourite (> 55%) protects its floor; with an
+opponent it maximises P(win). Each response states the mode, the reason and —
+when the pick differs from the points-optimal one — the trade-off
+("Starting X over Y raises P(win) 41%→44% although mean −0.6"). Relay that
+sentence; it is the decision.
+
 - **`get_start_sit_recommendation`**: Start or sit? One player (`player_name`) or several (`players`, names or partial dicts). Team, position, Sleeper id, opponent, last week's snap share, injury designation and practice report are looked up server-side (QB/RB/WR/TE and K/DEF).
   - Parameters: `player_name` or `players`, `position`/`team`/`player_id` (optional, to disambiguate), `opponent` (optional), `injury_status` (optional override), `league_id` (preferred, league scoring), `scoring`, `season`, `week`, `include_reasoning`
   - Returns (single): recommendation, confidence, matchup_tier, reasoning, factors, resolved; (list): recommendations, by_position, must_starts, sits, on_bye, locked
 - **`compare_players_for_slot`**: Compare 2-5 players competing for the same roster slot (names or dicts; details looked up).
-  - Parameters: `players` (required), `slot` (optional, default 'FLEX'), `league_id` (optional)
-  - Returns: winner, comparison, confidence_gap, verdict
+  - Parameters: `players` (required), `slot` (optional, default 'FLEX'), `league_id` (optional), `roster_id` (optional: each player's P(win) vs this week's opponent), `risk_mode` (optional)
+  - Returns: winner (the risk-mode pick), points_winner, risk {risk_mode, reason, p_win, summary}, comparison, confidence_gap, verdict
 - **`analyze_lineup`**: Grade the lineup you have set this week, read from the league.
-  - Parameters: `league_id` + `roster_id` or `user_id`, `week`, `season`; or `lineup` (dict keyed by slot) for a hypothetical
-  - Returns: lineup_grade, lineup_efficiency_pct, total_projected, optimal_projected, optimal_lineup, suggested_changes, locked_players, weak_spots, starters, bench, empty_slots
+  - Parameters: `league_id` + `roster_id` or `user_id`, `week`, `season`, `risk_mode`; or `lineup` (dict keyed by slot) for a hypothetical
+  - Returns: risk {risk_mode, reason, win_probability, adjustment, recommended_lineup when it differs}, lineup_grade, lineup_efficiency_pct, total_projected, optimal_projected, optimal_lineup, suggested_changes, locked_players, weak_spots, starters, bench, empty_slots
 - **`get_win_probability_lineup`**: Pick the lineup that maximizes P(beating this specific opponent).
-  - Parameters: `your_players` (required), `opponent_players` (required), `slots` (optional), `stack_correlation` (optional, default 0.35)
-  - Returns: recommended_lineup, win_probability, projected_points, opponent_projected_points, projected_margin, you_are, strategy, points_optimal_lineup
+  - Parameters: `your_players` (required), `opponent_players` (required), `slots` (optional), `stack_correlation` (optional, default 0.35), `risk_mode` (optional), `league_id` + `roster_id` (optional, playoff odds for auto)
+  - Returns: risk_mode, risk_reason, risk_adjustment, recommended_lineup, win_probability, projected_points, opponent_projected_points, projected_margin, you_are, strategy, points_optimal_lineup
 
 ### 12. Matchup, Schedule & Weather (5 tools)
 
@@ -648,7 +685,9 @@ The server implements comprehensive security measures:
 
 #### Trade Evaluation Workflow
 1. `find_trade_targets` → trades both lineups gain from (reads the trade deadline)
-2. `analyze_trade` → evaluate the chosen proposal
+   — or `get_trade_market` → partners, needs/surpluses and acceptance likelihood
+2. `analyze_trade` → evaluate the chosen proposal (`suggest_counters=True` to
+   answer an incoming offer)
 3. `get_bye_week_plan` → check the bye weeks after the trade
 
 #### Playoff Preparation Workflow

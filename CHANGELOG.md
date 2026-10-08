@@ -69,6 +69,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   history against Sleeper's weekly stats with intervals (2026 weeks 3-4: 18
   questionable player-weeks, 0.45 [0.21, 0.74] of their trailing rate — too
   few alone, same direction).
+- **Risk-aware lineups (`risk_mode`).** `get_weekly_briefing`, `analyze_lineup`,
+  `compare_players_for_slot` (with `roster_id`) and `get_win_probability_lineup`
+  take `risk_mode` = `auto` (default) | `neutral` | `seek_variance` |
+  `protect_floor`. Auto reads this week's P(win) (points-optimal lineup vs the
+  opponent's projected starters, sd from floor/ceiling, QB-stack covariance)
+  and the season's playoff odds (`get_playoff_odds`, 2000 sims, cached 30 min
+  per league): an underdog (< 45%) or a long-shot season (< 20% playoff odds,
+  in a close game) chases ceiling, a favourite (> 55%) protects its floor.
+  Explicit seek/protect maximise P(score > a target ½ sd above / below the
+  points-optimal expectation). Every response reports `risk_mode`, the reason
+  and, when the choice differs from the points-optimal one, the trade-off
+  (`risk_adjustment.summary`: "Starting X over Y raises P(win) 41%→44%
+  although mean −0.6"). The grade and suggested changes of `analyze_lineup`
+  stay on expected points (`risk` block alongside). A bye week no longer
+  drops the briefing's lineup (no opponent: chosen on the risk mode alone).
+- **Risk-weighted trades.** `find_trade_targets(risk_mode=…)` and
+  `analyze_trade(risk_mode=…)`: a long shot weights lineup ceiling
+  (`risk.upside_gain`), a contender (>= 60%) the fantasy-playoff weeks
+  (`risk.playoff_gain`); the pure ROS delta and the both-sides bar are
+  unchanged. `find_trade_targets` gains `per_partner`.
+- **`get_trade_market`** (new tool; season 59 / full 76 / offseason 45 tools):
+  every roster's needs and surpluses by position from ROS lineup impact, bye
+  crunches, injured starters, record, playoff odds and contender / bubble /
+  long_shot; your natural partners (their need ∩ your surplus and vice versa)
+  with packages pre-scored by `find_trade_targets` and an
+  `acceptance_likelihood` (logistic heuristic over their lineup gain,
+  FantasyCalc balance, positional need, depth given up, situation, value
+  timing — each factor reported); `offer` → 1-3 counter offers that keep your
+  gain and raise their acceptance, also as `analyze_trade(...,
+  suggest_counters=True)`. ~3-4 s warm for a 12-team league; the first ROS
+  call of a process pays the cold Sleeper-week fetch (~15 s).
 - **Weekly accuracy loop.** Pre-kickoff projections are logged with the
   signals active at the time (schema v18: `projection_log.signals`); once a
   week is final they are graded against the actual points (league scoring and

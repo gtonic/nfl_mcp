@@ -1338,9 +1338,20 @@ async def compare_players_for_slot(
     league_id: str | None = None,
     season: int | None = None,
     week: int | None = None,
+    risk_mode: str | None = "auto",
+    roster_id: int | None = None,
+    matchup_context: dict | None = None,
 ) -> dict:
     """
     Compare multiple players competing for the same roster slot.
+
+    ``risk_mode`` (auto | neutral | seek_variance | protect_floor): with
+    ``league_id`` + ``roster_id`` (or a ready ``matchup_context`` {my_mean,
+    my_var, opp_mean, opp_var, starting: [names], playoff_pct}) each player
+    gets his P(win) — the rest of your lineup plus him against this week's
+    opponent — and auto picks the one that maximises it (ceiling when you
+    trail, floor when you lead; extra ceiling for a long-shot season).
+    Without a matchup auto ranks on expected points.
 
     Useful for deciding between players for a specific position or flex spot.
     Returns a ranked comparison with the recommended starter.
@@ -1405,6 +1416,13 @@ async def compare_players_for_slot(
     if len(players) > 5:
         players = players[:5]  # Limit to 5 players
 
+    from . import risk_mode as rm
+    try:
+        risk_mode = rm.normalize_risk_mode(risk_mode)
+    except ValueError as e:
+        return create_error_response(str(e), error_type=ErrorType.VALIDATION,
+                                     data={"comparison": None})
+
     optimizer = get_lineup_optimizer()
     season, week, week_inferred = await _resolve_season_week(season, week)
     scoring, num_teams, scoring_source = await _league_scoring(league_id, scoring)
@@ -1450,6 +1468,15 @@ async def compare_players_for_slot(
     winner = movable[0]
     runner_up = movable[1] if len(movable) > 1 else None
 
+    # Risk: the same slot weighed on P(win) / the team's situation rather
+    # than on the mean alone. Only players who can still be moved and are
+    # not on bye compete.
+    if matchup_context is None and league_id and roster_id is not None and risk_mode != "neutral":
+        matchup_context = await slot_matchup_context(league_id, roster_id, season, week)
+    risk = _slot_risk([a for a in movable if not a.on_bye and not a.locked], risk_mode,
+                      matchup_context)
+    points_winner = winner
+
     confidence_gap = winner.confidence - runner_up.confidence if runner_up else 100
     # The gap that matters for a slot decision is in points, not in how much we
     # know. Compared against the projection's own error (MAE ~5.8), so "clear"
@@ -1476,6 +1503,17 @@ async def compare_players_for_slot(
     else:
         verdict = (f"Coin flip: {winner.player_name} and {runner_up.player_name} are "
                    f"{points_gap} points apart, inside the model's error")
+
+    # The risk-mode pick, when it is not the points favourite, takes the slot;
+    # the points verdict stays visible next to it.
+    chosen = None
+    if risk and risk.get("summary") and not locked_starter:
+        chosen = next((a for a in movable if a.player_name == risk["choice"]), None)
+    if chosen is not None and chosen is not points_winner:
+        runner_up = points_winner
+        winner = chosen
+        verdict = (f"{risk['summary']} — risk mode {risk['risk_mode']} "
+                   f"({risk['reason']}). On points alone: {verdict}")
 
     if locked_starter:
         winner = locked_starter
@@ -1539,6 +1577,10 @@ async def compare_players_for_slot(
             "reasoning": winner.reasoning,
         },
         "comparison": comparison_list,
+        # Which objective chose the winner (risk_mode), why, each player's
+        # P(win) when the matchup is known, and the points favourite.
+        "risk": risk,
+        "points_winner": points_winner.player_name,
         # Players left out because the slot cannot hold their position.
         "ineligible": ineligible,
         "points_gap": points_gap,
@@ -1556,6 +1598,80 @@ async def compare_players_for_slot(
                     else f"For {slot}: Start {winner.player_name} "
                          f"({winner.projected_points} projected, {winner.confidence:.0f}% confidence)")
     })
+
+
+async def slot_matchup_context(league_id: str, roster_id: int, season: int | None,
+                               week: int | None) -> dict | None:
+    """``{my_mean, my_var, opp_mean, opp_var, starting, playoff_pct}`` for the
+    roster's points-optimal lineup this week vs its opponent, from the weekly
+    briefing (plus cached playoff odds). None without an opponent."""
+    from . import risk_mode as rm
+    from .briefing_tools import get_weekly_briefing
+    try:
+        brief, playoff_pct = await asyncio.gather(
+            get_weekly_briefing(league_id, roster_id=roster_id, week=week, season=season,
+                                risk_mode="neutral"),
+            rm.playoff_pct_for(league_id, roster_id))
+    except Exception as e:
+        logger.debug(f"matchup context unavailable: {e}")
+        return None
+    if not (brief or {}).get("success") or brief.get("opponent_projected_points") is None:
+        return {"playoff_pct": playoff_pct} if playoff_pct is not None else None
+    return {
+        "my_mean": float(brief["projected_points"] or 0.0),
+        "my_var": float(brief.get("projected_sd") or 0.0) ** 2,
+        "opp_mean": float(brief["opponent_projected_points"] or 0.0),
+        "opp_var": float(brief.get("opponent_projected_sd") or 0.0) ** 2,
+        "starting": [s.get("player") for s in brief.get("recommended_lineup") or []],
+        "playoff_pct": playoff_pct,
+        "opponent_roster_id": brief.get("opponent_roster_id"),
+    }
+
+
+def _slot_risk(analyses: list[PlayerAnalysis], risk_mode: str,
+               context: dict | None) -> dict | None:
+    """The risk-mode pick among players competing for one slot. Never raises."""
+    from . import risk_mode as rm
+    if not analyses:
+        return None
+    try:
+        cands = [{"key": a.player_name, "mean": float(a.projected_points or 0.0),
+                  "sd": max(0.0, (float(a.ceiling or 0.0) - float(a.floor or 0.0)) / 2.0)}
+                 for a in analyses]
+        playoff_pct = (context or {}).get("playoff_pct")
+        matchup = None
+        if context and context.get("opp_mean") is not None:
+            starting = set(context.get("starting") or [])
+            ref = next((c["key"] for c in cands if c["key"] in starting), None)
+            matchup = {**context, "ref_key": ref}
+        pick = rm.slot_choice(cands, risk_mode, playoff_pct=playoff_pct, context=matchup)
+    except Exception as e:
+        logger.warning(f"slot risk unavailable: {e}")
+        return None
+    res = pick["resolution"]
+    by_key = pick["by_key"]
+    best, points_best = pick["best_key"], pick["points_best_key"]
+    mean_of = {c["key"]: c["mean"] for c in cands}
+    summary = None
+    if best != points_best:
+        delta = mean_of[best] - mean_of[points_best]
+        pb, pp = by_key[best]["p_win"], by_key[points_best]["p_win"]
+        effect = (f"{'raises' if pb >= pp else 'lowers'} P(win) {pp:.1f}%→{pb:.1f}%"
+                  if pb is not None and pp is not None else
+                  "buys ceiling" if res["risk_mode"] == "seek_variance" else "buys floor")
+        summary = (f"Starting {best} over {points_best} {effect}"
+                   + (f" although mean {delta:+.1f}" if delta < 0 else f" (mean {delta:+.1f})"))
+    return {
+        "risk_mode": res["risk_mode"],
+        "risk_mode_requested": res["requested"],
+        "reason": res["reason"],
+        "has_matchup": pick["has_matchup"],
+        "playoff_pct": playoff_pct,
+        "choice": best,
+        "points_choice": points_best,
+        "p_win": {k: v["p_win"] for k, v in by_key.items()} if pick["has_matchup"] else None,
+        "summary": summary,
+    }
 
 
 def _settle_seats(seats: list[tuple[str, PlayerAnalysis | None]],
@@ -1676,9 +1792,19 @@ async def analyze_full_lineup(
     league_id: str | None = None,
     season: int | None = None,
     empty_slots: list[str] | None = None,
+    opponent_players: list[dict] | None = None,
+    risk_mode: str | None = "auto",
+    playoff_pct: float | None = None,
 ) -> dict:
     """
     Analyze a complete fantasy lineup with optimal lineup suggestions.
+
+    ``opponent_players`` (the opponent's projected starters: name, position,
+    team, projected_points, floor, ceiling) and ``playoff_pct`` feed the
+    ``risk`` block: which lineup the team's situation calls for under
+    ``risk_mode`` (auto | neutral | seek_variance | protect_floor) and, when
+    it differs from the points-optimal one, the trade-off in P(win) and mean.
+    The grade and suggested changes stay on expected points.
 
     ``empty_slots`` names starting slots nobody holds (Sleeper's "0"): they
     are open seats the optimal lineup fills and the grade counts.
@@ -1737,6 +1863,12 @@ async def analyze_full_lineup(
             error_type=ErrorType.VALIDATION,
             data={"analysis": None}
         )
+    from . import risk_mode as rm
+    try:
+        risk_mode = rm.normalize_risk_mode(risk_mode)
+    except ValueError as e:
+        return create_error_response(str(e), error_type=ErrorType.VALIDATION,
+                                     data={"analysis": None})
 
     optimizer = get_lineup_optimizer()
     season, week, week_inferred = await _resolve_season_week(season, week)
@@ -1933,7 +2065,13 @@ async def analyze_full_lineup(
         avg_confidence = 0
         efficiency = 0.0
 
+    risk = _risk_block(seats, bench_analysis, open_seats, opponent_players,
+                       risk_mode, playoff_pct)
+
     return create_success_response({
+        # Which lineup this team's situation calls for (risk_mode) and what it
+        # trades against the points-optimal one; the grade stays on points.
+        "risk": risk,
         "starters": starters_analysis,
         "bench": [a.to_dict() for a in bench_analysis],
         "suggested_changes": suggested_changes[:5],  # Top 5 changes
@@ -1961,5 +2099,57 @@ async def analyze_full_lineup(
         "message": (f"Lineup Grade: {grade} | {efficiency:.0f}% of available points started "
                     f"| {len(suggested_changes)} change(s) suggested"
                     + (f" | {len(marginal_changes)} marginal" if marginal_changes else "")
-                    + (f" | {len(locked_players)} locked (game started)" if locked_players else ""))
+                    + (f" | {len(locked_players)} locked (game started)" if locked_players else "")
+                    + (f" | risk {risk['risk_mode']}: {risk['adjustment']['summary']}"
+                       if risk and risk.get("adjustment") else
+                       f" | risk {risk['risk_mode']}" if risk else ""))
     })
+
+
+def _analysis_input(a: PlayerAnalysis, slot: str | None = None) -> dict:
+    """A PlayerAnalysis as a win-probability candidate (mean + floor/ceiling)."""
+    out = {"name": a.player_name, "position": a.position, "team": a.team,
+           "projected_points": a.projected_points, "floor": a.floor, "ceiling": a.ceiling}
+    if slot is not None:
+        out["slot"] = slot
+    return out
+
+
+def _risk_block(seats: list[tuple[str, PlayerAnalysis | None]],
+                bench: list[PlayerAnalysis], open_seats: list[int],
+                opponent_players: list[dict] | None, risk_mode: str,
+                playoff_pct: float | None) -> dict | None:
+    """The risk-adjusted lineup next to the points-optimal one. Never raises."""
+    from collections import Counter
+
+    from .win_probability import optimize_win_probability
+    try:
+        slot_names = [normalize_slot(seats[i][0]) for i in open_seats]
+        if not slot_names:
+            return None
+        candidates = ([_analysis_input(seats[i][1]) for i in open_seats if seats[i][1] is not None]
+                      + [_analysis_input(a) for a in bench if not a.locked])
+        locked = [_analysis_input(a, normalize_slot(key)) for key, a in seats
+                  if a is not None and a.locked]
+        res = optimize_win_probability(
+            candidates, opponent_players or None, dict(Counter(slot_names)),
+            locked_players=locked, risk_mode=risk_mode, playoff_pct=playoff_pct)
+    except Exception as e:  # additive; the grade must not fail on it
+        logger.warning(f"risk-adjusted lineup unavailable: {e}")
+        return None
+    adjustment = res.get("risk_adjustment")
+    return {
+        "risk_mode": res["risk_mode"],
+        "risk_mode_requested": res["risk_mode_requested"],
+        "reason": res["risk_reason"],
+        "objective": res["risk_objective"],
+        "playoff_pct": playoff_pct,
+        "win_probability": res["win_probability"],
+        "points_optimal_win_probability": res["points_optimal_win_probability"],
+        "projected_points": res["projected_points"],
+        "points_optimal_projected": res["points_optimal_projected"],
+        "opponent_projected_points": res["opponent_projected_points"],
+        "adjustment": adjustment,
+        # Only when it differs: otherwise it is `optimal_lineup`.
+        "recommended_lineup": res["recommended_lineup"] if adjustment else None,
+    }

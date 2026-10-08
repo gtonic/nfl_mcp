@@ -222,12 +222,24 @@ async def get_weekly_briefing(
     user_id: str | None = None,
     week: int | None = None,
     season: int | None = None,
+    risk_mode: str | None = "auto",
 ) -> dict:
-    """Everything needed to set a lineup for one week, in a single call."""
+    """Everything needed to set a lineup for one week, in a single call.
+
+    ``risk_mode`` (auto | neutral | seek_variance | protect_floor) decides
+    what the recommended lineup optimises; auto reads this week's P(win) and
+    the season's playoff odds (see `risk_mode`).
+    """
+    from . import risk_mode as rm
     from . import sleeper_tools
     from .injury_service import STATUS_SEVERITY  # noqa: F401  (severity vocabulary)
     from .projections import project_players
     from .win_probability import get_win_probability_lineup
+
+    try:
+        risk_mode = rm.normalize_risk_mode(risk_mode)
+    except ValueError as e:
+        return create_success_response({"success": False, "error": str(e)})
 
     db = get_shared_db()
 
@@ -246,6 +258,10 @@ async def get_weekly_briefing(
     #    League, rosters, the week's matchups and the weather do not depend on
     #    each other, so they are fetched together rather than one after another.
     weather_task = asyncio.create_task(weather_by_team(season, week))
+    # Season playoff odds for risk_mode=auto: a cached Monte Carlo, started
+    # now so it runs alongside the reads and projections below.
+    odds_task = (asyncio.create_task(rm.season_odds(league_id, db=db))
+                 if risk_mode == "auto" else None)
     try:
         league_resp, roster_state, matchups_resp = await asyncio.gather(
             sleeper_tools.get_league(league_id),
@@ -254,6 +270,8 @@ async def get_weekly_briefing(
         )
     except BaseException:
         weather_task.cancel()
+        if odds_task:
+            odds_task.cancel()
         raise
     league = (league_resp or {}).get("league") or {}
     scoring = _scoring_label(league)
@@ -271,6 +289,8 @@ async def get_weekly_briefing(
         else find_roster(rosters, league_id, roster_id, user_id)
     if error:
         weather_task.cancel()
+        if odds_task:
+            odds_task.cancel()
         return create_success_response({"success": False, "error": error})
     roster_id = mine["roster_id"]
 
@@ -420,11 +440,23 @@ async def get_weekly_briefing(
     ]
     opp_locked, opp_open = _settled(opp_all, opp_points)
 
+    playoff_pct = None
+    if odds_task is not None:
+        try:
+            odds = await odds_task
+            row = (odds.get("by_roster") or {}).get(roster_id)
+            playoff_pct = row.get("playoff_pct") if row else None
+        except Exception as e:  # the season view is additive
+            logger.debug(f"playoff odds unavailable for the briefing: {e}")
+    # No opponent this week (bye / unscheduled): nothing to beat, so the
+    # lineup is chosen without one rather than against an empty roster.
     lineup = await get_win_probability_lineup(
         your_players=my_open,
-        opponent_players=opp_locked + opp_open,
+        opponent_players=(opp_locked + opp_open) if opponent_matchup else None,
         slots=lineup_slots or None,
         locked_players=my_locked,
+        risk_mode=risk_mode,
+        playoff_pct=playoff_pct,
     )
 
     # 6) What to actually change, named rather than left as a diff to eyeball
@@ -567,8 +599,20 @@ async def get_weekly_briefing(
         },
         "opponent_roster_id": (opponent_matchup or {}).get("roster_id"),
         "win_probability": (lineup or {}).get("win_probability"),
+        # What the lineup optimises and why (auto: this week's P(win) and the
+        # season's playoff odds), and — when it differs from the
+        # points-optimal lineup — the trade-off in P(win) and mean.
+        "risk_mode": (lineup or {}).get("risk_mode"),
+        "risk_mode_requested": risk_mode,
+        "risk_reason": (lineup or {}).get("risk_reason"),
+        "risk_adjustment": (lineup or {}).get("risk_adjustment"),
+        "playoff_pct": playoff_pct,
+        "points_optimal_win_probability": (lineup or {}).get("points_optimal_win_probability"),
+        "points_optimal_projected": (lineup or {}).get("points_optimal_projected"),
         "projected_points": (lineup or {}).get("projected_points"),
+        "projected_sd": (lineup or {}).get("projected_sd"),
         "opponent_projected_points": (lineup or {}).get("opponent_projected_points"),
+        "opponent_projected_sd": (lineup or {}).get("opponent_projected_sd"),
         "recommended_lineup": recommended,
         "changes": changes,
         "bench": bench,

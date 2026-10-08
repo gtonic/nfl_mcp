@@ -10,6 +10,7 @@ league, so no lineup dict has to be typed in at all.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from .teams import normalize_team
@@ -279,16 +280,27 @@ async def analyze_lineup(
     season: int | None = None,
     lineup: dict | None = None,
     db=None,
+    risk_mode: str | None = "auto",
 ) -> dict:
-    """Grade the lineup set in the league (or a supplied `lineup` dict)."""
+    """Grade the lineup set in the league (or a supplied `lineup` dict).
+
+    With the league's roster, ``risk_mode`` (auto | neutral | seek_variance |
+    protect_floor) also weighs the lineup against this week's opponent and the
+    season's playoff odds (the ``risk`` block).
+    """
     from . import lineup_optimizer_tools, sleeper_tools
+    from . import risk_mode as rm
     from .errors import create_success_response
     from .lineup_slots import starting_slot_list
     from .roster_context import load_roster_players
 
+    try:
+        risk_mode = rm.normalize_risk_mode(risk_mode)
+    except ValueError as e:
+        return create_success_response({"success": False, "error": str(e)})
     if lineup:
         return await lineup_optimizer_tools.analyze_full_lineup(
-            lineup=lineup, week=week, league_id=league_id, season=season)
+            lineup=lineup, week=week, league_id=league_id, season=season, risk_mode=risk_mode)
     if not league_id:
         return create_success_response({"success": False,
                                         "error": "Pass league_id with roster_id or user_id (or a lineup dict)."})
@@ -297,6 +309,11 @@ async def analyze_lineup(
         return create_success_response({"success": False, "error": ctx["error"]})
     season, week = ctx["season"], ctx["week"]
     league, roster = ctx["league"], ctx["roster"]
+    # Season playoff odds for risk_mode=auto (cached Monte Carlo), alongside
+    # the projections below.
+    odds_task = (asyncio.create_task(rm.playoff_pct_for(league_id, ctx["roster_id"], db=db))
+                 if risk_mode == "auto" else None)
+    matchups: list[dict] = []
 
     # This week's set lineup: the matchup's starters when Sleeper has them (they
     # follow the week), else the roster's.
@@ -343,10 +360,22 @@ async def analyze_lineup(
                           "player_id": p["player_id"], "opponent": p["opponent"]}, season, week)
         for p in ctx["players"] if p["player_id"] not in started
     ]
+    opponent_players, opponent_roster_id = None, None
+    if risk_mode != "neutral":
+        opponent_players, opponent_roster_id = await _opponent_projection(
+            league, league_id, ctx["roster_id"], matchups, season, week, db)
+    playoff_pct = None
+    if odds_task is not None:
+        try:
+            playoff_pct = await odds_task
+        except Exception as e:  # the season view is additive
+            logger.debug(f"playoff odds unavailable: {e}")
     result = await lineup_optimizer_tools.analyze_full_lineup(
         lineup=built, week=week, league_id=league_id, season=season,
-        empty_slots=empty_slots)
+        empty_slots=empty_slots, opponent_players=opponent_players,
+        risk_mode=risk_mode, playoff_pct=playoff_pct)
     if isinstance(result, dict):
+        result["opponent_roster_id"] = opponent_roster_id
         result["league"] = {"league_id": league_id, "name": league.get("name")}
         result["roster_id"] = ctx["roster_id"]
         result["empty_slots"] = empty_slots
@@ -377,6 +406,60 @@ async def analyze_lineup(
         result["snapshot_age_seconds"] = ctx.get("snapshot_age_seconds")
         result["snapshot_fetched_at"] = ctx.get("snapshot_fetched_at")
     return result
+
+
+async def _opponent_projection(league: dict, league_id: str, roster_id: int,
+                               matchups: list[dict], season, week, db) -> tuple[list[dict] | None, int | None]:
+    """``(the opponent's projected set starters, his roster id)`` this week.
+
+    ``(None, None)`` without a scheduled opponent or projections. Never raises:
+    the risk block is additive.
+    """
+    from . import sleeper_tools
+    from .projections import project_players
+    from .scoring import league_scoring
+    try:
+        mine = next((m for m in matchups if m.get("roster_id") == roster_id), None)
+        if not mine or mine.get("matchup_id") is None:
+            return None, None
+        opp = next((m for m in matchups if m.get("matchup_id") == mine.get("matchup_id")
+                    and m.get("roster_id") != roster_id), None)
+        if not opp:
+            return None, None
+        opp_ctx = await load_opponent(league_id, opp["roster_id"], db, season, week)
+        if not opp_ctx:
+            return None, opp["roster_id"]
+        opp_roster = opp_ctx["roster"]
+        held = [*(opp_roster.get("players") or []), *(p["player_id"] for p in opp_ctx["players"])]
+        starters, _ = sleeper_tools.set_starters({**opp_roster, "players": held}, opp)
+        by_id = {p["player_id"]: p for p in opp_ctx["players"]}
+        inputs = [player_input(db, {k: by_id[str(pid)][k] for k in
+                                    ("name", "position", "team", "player_id", "opponent")},
+                               season, week)
+                  for pid in starters if pid and str(pid) in by_id
+                  and by_id[str(pid)].get("opponent") not in ("", "BYE")]
+        if not inputs:
+            return None, opp["roster_id"]
+        projected = await project_players(
+            inputs, scoring=league_scoring(league),
+            num_teams=int(league.get("total_rosters") or 12), season=season, week=week)
+        players = [
+            {"name": p["player"], "position": p["position"], "team": p["team"],
+             "projected_points": p["projected_points"], "floor": p["floor"],
+             "ceiling": p["ceiling"]}
+            for p in (projected or {}).get("projections") or []
+        ]
+        return (players or None), opp["roster_id"]
+    except Exception as e:
+        logger.debug(f"opponent projection unavailable: {e}")
+        return None, None
+
+
+async def load_opponent(league_id: str, roster_id: int, db, season, week) -> dict | None:
+    """The opponent's roster context (`load_roster_players`), or None."""
+    from .roster_context import load_roster_players
+    ctx = await load_roster_players(league_id, roster_id, None, db=db, season=season, week=week)
+    return None if ctx.get("error") else ctx
 
 
 __all__ = ["analyze_lineup", "candidate_summary", "name_candidates", "player_input", "recent_snap_share",

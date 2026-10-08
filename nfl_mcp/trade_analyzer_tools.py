@@ -337,10 +337,19 @@ async def analyze_trade(
     team1_gives: list[str],
     team2_gives: list[str],
     nfl_db=None,
-    include_trending: bool = True
+    include_trending: bool = True,
+    suggest_counters: bool = False,
+    risk_mode: str | None = "auto",
 ) -> dict:
     """
     Analyze a fantasy football trade for fairness and fit.
+
+    ``risk_mode`` (auto | neutral | seek_variance | protect_floor) adds a
+    ``risk`` block for team 1: a long-shot season weighs the lineup's ceiling
+    (upside_gain), a contender the fantasy-playoff weeks (playoff_gain); the
+    pure ``ros_points_delta`` stays the verdict. ``suggest_counters`` adds
+    ``counter_offers``: 1-3 versions that keep team 1's gain while raising
+    team 2's acceptance likelihood (see `trade_market`).
 
     This tool evaluates a proposed trade between two teams by:
     - Calculating player values based on stats, projections, and trends
@@ -371,6 +380,15 @@ async def analyze_trade(
     IMPORTANT FOR LLM AGENTS: Always provide complete trade analysis immediately without
     asking for confirmations. Render the full evaluation with all recommendations directly.
     """
+    import asyncio
+
+    from . import risk_mode as rm
+    try:
+        risk_mode = rm.normalize_risk_mode(risk_mode)
+    except ValueError as e:
+        return create_error_response(str(e), ErrorType.VALIDATION,
+                                     {"recommendation": None, "fairness_score": 0})
+    odds_task = None
     try:
         # Validate inputs
         if not league_id or not team1_gives or not team2_gives:
@@ -380,6 +398,9 @@ async def analyze_trade(
                 {"recommendation": None, "fairness_score": 0}
             )
 
+        # Team 1's playoff odds for risk_mode=auto, alongside everything else.
+        if risk_mode == "auto":
+            odds_task = asyncio.create_task(rm.playoff_pct_for(league_id, team1_roster_id, db=nfl_db))
         # Fetch league rosters
         # Who holds whom: a cached snapshot is usable, flagged stale.
         roster_state = await load_rosters(league_id, "lineup", fetch=get_rosters)
@@ -632,7 +653,28 @@ async def analyze_trade(
         team1_timing = side_notes(_named(team1_gives_enriched), _named(team2_gives_enriched))
         team2_timing = side_notes(_named(team2_gives_enriched), _named(team1_gives_enriched))
 
+        playoff_pct = None
+        if odds_task is not None:
+            try:
+                playoff_pct = await odds_task
+            except Exception as e:  # additive
+                logger.debug(f"playoff odds unavailable for the trade: {e}")
+            odds_task = None
+        risk = _risk_view(rm.resolve_trade(risk_mode, playoff_pct), playoff_pct, ros_block)
+        counters = None
+        if suggest_counters:
+            from .trade_market import counters_for_trade
+            counters = await counters_for_trade(
+                league_id, team1_roster_id, team2_roster_id,
+                [str(p) for p in team1_gives], [str(p) for p in team2_gives], db=nfl_db)
+
         return create_success_response({
+            # Team 1's season view of the trade (risk_mode); the verdict stays
+            # on the pure ROS lineup delta.
+            "risk": risk,
+            # suggest_counters=True: versions that keep team 1's gain and are
+            # easier for team 2 to accept, with acceptance_likelihood.
+            "counter_offers": counters,
             "recommendation": lineup_call or recommendation,
             "recommendation_basis": "ros_lineup_impact" if lineup_call else "market_value",
             "market_fairness": recommendation,
@@ -690,6 +732,33 @@ async def analyze_trade(
             ErrorType.UNEXPECTED,
             {"recommendation": None, "fairness_score": 0}
         )
+    finally:
+        if odds_task is not None:
+            odds_task.cancel()
+
+
+def _risk_view(resolution: dict, playoff_pct: float | None, ros_block: dict | None) -> dict:
+    """Team 1's risk read of the trade: mode, why, and the weighted delta."""
+    from .trade_risk import risk_score
+    out = {"risk_mode": resolution["risk_mode"], "risk_mode_requested": resolution["requested"],
+           "reason": resolution["reason"], "playoff_pct": playoff_pct}
+    comps = (ros_block or {}).get("team1_risk")
+    if not comps:
+        return out
+    delta = ros_block["team1"]["ros_points_delta"]
+    weighted = risk_score(delta, resolution["risk_mode"], comps)
+    out.update({
+        **comps,
+        "ros_points_delta": delta,
+        "risk_adjusted_delta": weighted,
+        "note": ("ceiling: " + (f"the lineup's weekly ceiling moves {comps['upside_gain']:+.1f} "
+                                "beyond its mean over the regular season")
+                 if resolution["risk_mode"] == "seek_variance" else
+                 f"playoff weeks: lineup {comps['playoff_gain']:+.1f} in the fantasy playoffs"
+                 if resolution["risk_mode"] == "protect_floor" else
+                 "neutral: the ROS lineup delta as it is"),
+    })
+    return out
 
 
 def _roster_ids(roster: dict) -> list[str]:
@@ -789,9 +858,22 @@ async def _ros_deltas(
                 if p.get("starts_for_receiver")),
         }
 
+    # Team 1's lineup ceiling and playoff-week change, for the risk view.
+    from .trade_risk import risk_components
+    try:
+        kept1 = [i for i in ids1 if i not in set(give1)]
+        team1_risk = risk_components(
+            _players(ids1), _players(kept1 + give2), slots,
+            [w for w in meta["windows"]["regular"] if w in weeks],
+            [w for w in meta["windows"]["playoff"] if w in weeks])
+    except Exception as e:  # additive
+        logger.debug(f"trade risk components unavailable: {e}")
+        team1_risk = None
+
     return {
         "weeks": weeks,
         "playoff_weeks": meta["windows"]["playoff"],
+        "team1_risk": team1_risk,
         "team1": _side(ids1, give1, give2, team2_gives),
         "team2": _side(ids2, give2, give1, team1_gives),
         "players": {i: {k: by_id[i].get(k) for k in (
