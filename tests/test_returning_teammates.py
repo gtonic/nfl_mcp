@@ -190,7 +190,8 @@ class TestRosDeflation:
         assert p["weekly_points"][9] == pytest.approx(after, abs=0.01)
         assert p["per_game"] == pytest.approx(after, abs=0.01)
         assert p["per_game_until_return"] == pytest.approx(before, abs=0.01)
-        assert p["returning_teammates"] == [{"name": "Lead Back", "expected_return_week": 5}]
+        assert p["returning_teammates"] == [{"name": "Lead Back", "expected_return_week": 5,
+                                             "games_until_return": 2, "status": None}]
 
     @pytest.mark.asyncio
     async def test_back_this_week_deflates_every_later_week(self, monkeypatch):

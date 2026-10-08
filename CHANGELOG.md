@@ -33,6 +33,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   practice multiplier, so nothing is charged twice. A DNP week moves the
   blend to ~0.72 of healthy instead of ~0.91. Heuristic (no practice
   history to backtest).
+- **Value trajectory (sell-high / buy-low).** New `value_trajectory` module:
+  where a player's trade value is headed over the next ~3 games — a teammate
+  due back (the backup's rate before vs after the return), inherited volume
+  ending, his own return from a multi-week absence, a two-week role shift,
+  and our per-game rank against the FantasyCalc positional rank
+  (`market_gap`). Output: `trajectory` (rising / falling / stable),
+  `signal` (buy_low / sell_high / hold), `expected_value_change`
+  (pct, per game, ROS points), `change_week`, `reasons` ("Rico Dowdle (PIT)
+  back this week — Jaylen Warren's 12.9 pts/game came without him; 11.8 with
+  him (carries 15.1→10.7/game)"). A role that grew while a teammate was out
+  is not read as rising; a market rank above ours is not held against a
+  rising role. The hard signals (teammate back, inherited volume ending, own
+  return) carry the calls; a role shift or a market gap alone never makes
+  one, only both agreeing. Calibrated on two live 12-team leagues (week 5):
+  31% / 32% of rostered players flagged before, 15% / 15% after. Heuristic
+  thresholds (named constants), no backtest yet.
+  `get_ros_projections` returns `value_trajectory` per player (ranked
+  against every rostered player in the league; `include_trajectory`).
+- **Package trades in `find_trade_targets`.** New `max_package_size`
+  (default 2): 2-for-1, 1-for-2 and 2-for-2 (3-for-2 / 2-for-3 at 3),
+  built from each side's surplus (players who start in under half the
+  remaining weeks) plus at most one starter, an upgrade required on the
+  receiving side, padding skipped, the screen capped; both sides must still
+  gain on the ROS lineup. A full roster receiving more than it sends drops
+  its least valuable active player (`your_drops` / `their_drops`).
+  Package search adds well under a second on a 12-team league (live:
+  0.6–0.9 s at size 2, 2.2 s at size 3; the ROS projection is ~10 s of the
+  total). Results in `package_proposals` and `package_search`.
+- **Timing in the trade tools.** `find_trade_targets` ranks proposals by
+  your gain plus a small timing bonus (0.25 pts/week per sell_high sent or
+  buy_low received, minus the reverse), reported separately in `timing`
+  and `rank_score` and never used for the both-sides bar; each player
+  carries his `value_trajectory`. `analyze_trade` returns `value_trajectory`
+  per traded player and `timing_notes` per side ("You are selling high on
+  Jaylen Warren (…)"); the ROS lineup change stays the verdict.
 
 ### Changed
 - **Weekly projections are Sleeper-first.** `projected_points` is now
@@ -61,6 +96,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model with Sleeper.
 
 ### Fixed
+- **Injury-shortened games are not a lost role.** `role_shift` skips a
+  played week whose snap share fell below 60% of his prior mean when an
+  injury designation started with that game (a non-Active report within two
+  days after kickoff, Active or nothing before it) or he missed the next
+  game (`injury_exit_weeks`; rows marked `injury_exit`). Ja'Marr Chase
+  (concussion, 30% of snaps) and Justin Jefferson (12%, then out) no longer
+  read as role_down, so the weekly role_down multiplier stops penalising
+  them; a healthy benching (D'Andre Swift) still does.
+- `analyze_trade` no longer calls a trade "unfair" / "significantly
+  lopsided" when both ROS lineups improve: the verdict says market values
+  lean one way ("expect a counter-offer") and the warning names the market,
+  not the trade.
 - `analyze_lineup`: suggestions follow the optimal lineup's move chains, so a
   fill is always slot-legal ("move Washington FLEX→WR, start Wilson at FLEX",
   not "fill WR with Wilson (RB)") and each swap is paired with the starter it

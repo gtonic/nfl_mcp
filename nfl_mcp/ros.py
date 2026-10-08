@@ -632,14 +632,31 @@ async def ros_projections(
             "injury_status": injury.get("status"),
             "injury_weeks": injured,
             "injury_window": absence_reason,
+            "expected_absence_games": absent,
             "weekly_points": {row["week"]: row["points"] for row in weekly},
         }
         if deflation:
             # Who is due back, and the per-game rate he loses from then on.
             entry["returning_teammates"] = [
-                {"name": r["name"], "expected_return_week": r.get("expected_return_week")}
+                {"name": r["name"], "expected_return_week": r.get("expected_return_week"),
+                 "games_until_return": r.get("games_until_return"),
+                 "status": r.get("status")}
                 for r in returning]
             entry["per_game_until_return"] = round(per_game + deflation, 2)
+            entry["deflated_volume"] = (rate_src.get("breakdown") or {}).get("deflated_volume") or {}
+        if inherited:
+            # A share of an absent starter's volume, priced only for his
+            # expected absence (`_inherited`).
+            entry["inherited_per_game"] = inherited
+            entry["inherited_games"] = inherited_games
+            entry["inherited_from"] = sorted(
+                (rate_src.get("breakdown") or {}).get("inherited_from") or {})
+        # What `value_trajectory` reads beyond the rates: the market's
+        # positional rank behind the projection and a recent change of role.
+        entry["market_position_rank"] = (rate_src.get("breakdown") or {}).get("position_rank")
+        if rate_src.get("role_trend") in ("role_up", "role_down"):
+            entry["role_trend"] = rate_src["role_trend"]
+            entry["role_flags"] = list(rate_src.get("role_flags") or [])
         if include_weekly:
             entry["weekly"] = weekly
         out.append(entry)
@@ -787,9 +804,12 @@ async def get_ros_projections(
     season: int | None = None,
     week: int | None = None,
     include_weekly: bool = False,
+    include_trajectory: bool = True,
     db=None,
 ) -> dict:
-    """Rest-of-season and fantasy-playoff points in the league's scoring."""
+    """Rest-of-season and fantasy-playoff points in the league's scoring,
+    with each player's value trajectory (``value_trajectory``: rising /
+    falling / stable, sell_high / buy_low / hold, and why)."""
     from . import sleeper_tools
     from .database import get_shared_db
     from .opportunity_tools import norm_name
@@ -839,8 +859,22 @@ async def get_ros_projections(
             unresolved.append(name)
     ids = list(dict.fromkeys(ids))
 
+    # Every rostered player in the league as well, so each player's per-game
+    # rate can be ranked against the market's rank (`value_trajectory`).
+    # The projection inputs are shared, so the pool costs little extra.
+    pool_ids: list[str] = []
+    if include_trajectory:
+        try:
+            league_rosters = ((await sleeper_tools.get_rosters(league_id)) or {}).get("rosters") or []
+            pool_ids = [str(p) for r in league_rosters for p in (r.get("players") or [])]
+        except Exception as e:  # the pool only sharpens the market gap
+            logger.debug(f"league pool unavailable for value trajectory: {e}")
     by_id, meta = await ros_for_ids(
-        ids, league=league, season=season, week=week, db=db, include_weekly=include_weekly)
+        list(dict.fromkeys(ids + pool_ids)), league=league, season=season, week=week, db=db,
+        include_weekly=include_weekly)
+    if include_trajectory:
+        from .value_trajectory import annotate
+        annotate([by_id[i] for i in ids if i in by_id], week=week, pool=list(by_id.values()))
     entries = []
     for pid in ids:
         entry = by_id.get(pid)
@@ -877,6 +911,10 @@ async def get_ros_projections(
             f"one, otherwise 1 week for Out and {IR_MIN_WEEKS} for IR/PUP/NFI.",
             "Later weeks carry no Vegas or weather adjustment — those lines are "
             "not published that far ahead.",
+            "value_trajectory is where trade value is headed over the next "
+            "few games (teammate returns, inherited volume ending, a return "
+            "from injury, a role shift, our rank vs the market's) — timing, "
+            "not a different ROS total.",
         ] + ([] if meta["matchups_active"] else [
             "No defense rankings available — later weeks are matchup-neutral.",
         ]),

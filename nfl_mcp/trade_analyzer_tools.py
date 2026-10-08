@@ -523,6 +523,7 @@ async def analyze_trade(
                 ros_block = await _ros_deltas(
                     league_obj, team1_roster, team2_roster,
                     team1_gives_enriched, team2_gives_enriched, nfl_db,
+                    pool_ids=[pid for r in rosters for pid in _roster_ids(r)],
                 )
             except Exception as e:  # ROS is additive; never sink the analysis
                 logger.warning(f"ROS deltas unavailable for trade: {e}")
@@ -567,10 +568,18 @@ async def analyze_trade(
                 warnings.append(f"{name} has DNP status (injury concern)")
 
         # Check for lopsided trades (on market value; the headline below is
-        # the lineup impact when it is known).
+        # the lineup impact when it is known). When both lineups improve the
+        # trade is a real one on the field: the market is lopsided, not the
+        # trade, or the warning contradicts the verdict.
+        lineup_call = _lineup_call(ros_block)
         if fairness_score < 60:
             winner = "Team 1" if trade_details["team1_receives_adjusted_value"] > trade_details["team2_receives_adjusted_value"] else "Team 2"
-            warnings.append(f"This trade appears significantly lopsided (favors {winner})")
+            if lineup_call == "both_lineups_improve":
+                warnings.append(
+                    f"Market values are lopsided (favour {winner}) although both lineups "
+                    "improve — expect the other manager to ask for more")
+            else:
+                warnings.append(f"This trade appears significantly lopsided (favors {winner})")
 
         # Transparency: values that fell back to a replacement-level estimate.
         estimated = [p.get("full_name", "Unknown") for p in team1_gives_enriched + team2_gives_enriched if p.get("value_source") == "estimated"]
@@ -606,13 +615,22 @@ async def analyze_trade(
                 "position_rank": p.get("position_rank"),
                 "is_trending": p.get("is_trending", False),
                 "ros_lineup_gain": p.get("ros_lineup_gain"),
+                # Where his trade value is headed (sell_high / buy_low / hold).
+                "value_trajectory": p.get("value_trajectory"),
             }
 
         verdict = _verdict(recommendation, fairness_score, ros_block)
         # The headline is what the trade does to each lineup; market-value
         # fairness is the secondary read. "unfair" next to "Both lineups
         # improve" contradicted itself.
-        lineup_call = _lineup_call(ros_block)
+        from .value_trajectory import side_notes
+
+        def _named(players: list[dict]) -> list[dict]:
+            return [{**p, "name": p.get("full_name") or p.get("name") or p.get("player_id")}
+                    for p in players]
+
+        team1_timing = side_notes(_named(team1_gives_enriched), _named(team2_gives_enriched))
+        team2_timing = side_notes(_named(team2_gives_enriched), _named(team1_gives_enriched))
 
         return create_success_response({
             "recommendation": lineup_call or recommendation,
@@ -646,6 +664,9 @@ async def analyze_trade(
                 "receives": [_fmt(p) for p in team2_gives_enriched],
                 "positional_needs": team1_needs,
                 "positional_needs_basis": needs_basis,
+                # Sell-high / buy-low timing of this side's pieces; the ROS
+                # lineup change stays the verdict.
+                "timing_notes": team1_timing,
             },
             "team2_analysis": {
                 "roster_id": team2_roster_id,
@@ -653,6 +674,7 @@ async def analyze_trade(
                 "receives": [_fmt(p) for p in team1_gives_enriched],
                 "positional_needs": team2_needs,
                 "positional_needs_basis": needs_basis,
+                "timing_notes": team2_timing,
             },
             "trade_details": trade_details,
             "warnings": warnings,
@@ -682,6 +704,7 @@ def _roster_ids(roster: dict) -> list[str]:
 async def _ros_deltas(
     league: dict, team1_roster: dict, team2_roster: dict,
     team1_gives: list[dict], team2_gives: list[dict], db,
+    pool_ids: list[str] | None = None,
 ) -> dict | None:
     """Each team's rest-of-season lineup change from the trade.
 
@@ -689,7 +712,9 @@ async def _ros_deltas(
     re-optimised for every remaining week (regular season and fantasy
     playoffs) before and after, and the weeks are summed. A depth piece that
     would never start adds nothing; one that covers a bye adds that week.
-    Marks each received player ``starts_for_receiver`` for the fairness sum.
+    Marks each received player ``starts_for_receiver`` for the fairness sum,
+    and attaches ``value_trajectory`` to every traded player, ranked against
+    `pool_ids` (every rostered player in the league) for the market gap.
     """
     from . import ros
     from .roster_needs import lineup_slots, starting_lineup
@@ -703,9 +728,16 @@ async def _ros_deltas(
     give1 = [str(p.get("player_id")) for p in team1_gives]
     give2 = [str(p.get("player_id")) for p in team2_gives]
     by_id, meta = await ros.ros_for_ids(
-        list(dict.fromkeys(ids1 + ids2 + give1 + give2)),
+        list(dict.fromkeys(ids1 + ids2 + give1 + give2 + [str(p) for p in pool_ids or []])),
         league=league, season=season, week=week, db=db,
     )
+    from .value_trajectory import annotate
+    trajectories = annotate([by_id[i] for i in give1 + give2 if i in by_id],
+                            week=week, pool=list(by_id.values()))
+    for player in team1_gives + team2_gives:
+        t = trajectories.get(str(player.get("player_id")))
+        if t:
+            player["value_trajectory"] = t
     weeks = sorted(set(meta["windows"]["regular"]) | set(meta["windows"]["playoff"]))
     slots = lineup_slots(league.get("roster_positions"))
 
@@ -764,7 +796,8 @@ async def _ros_deltas(
         "team2": _side(ids2, give2, give1, team1_gives),
         "players": {i: {k: by_id[i].get(k) for k in (
             "player", "position", "ros_points", "playoff_points", "total_points",
-            "bye_weeks", "injury_weeks")} for i in give1 + give2 if i in by_id},
+            "bye_weeks", "injury_weeks", "per_game", "per_game_until_return",
+            "value_trajectory")} for i in give1 + give2 if i in by_id},
         "trade_deadline": ros.trade_deadline_status(league.get("settings") or {}, week),
         "schedule_unknown_weeks": meta["schedule_unknown_weeks"],
     }
@@ -849,6 +882,11 @@ def _verdict(recommendation: str, fairness: float, ros_block: dict | None) -> st
 
     if t1 >= bar and t2 >= bar:
         call = "Both lineups improve — a real trade."
+        if recommendation in ("unfair", "needs_adjustment"):
+            # Not "unfair": on the field both win. The market read is what
+            # the other manager sees, so it shapes the negotiation.
+            market = (f"market values lean one way (fairness {round(fairness)}/100), "
+                      "so expect a counter-offer")
     elif t1 >= bar > t2:
         call = "Favours team 1 on the field."
     elif t2 >= bar > t1:
