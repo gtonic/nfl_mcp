@@ -68,6 +68,7 @@ RUN
     python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025 --role-shift
     python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025 --returning
     python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025 --qb-coupling
+    python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025 --qb-coupling --qb-sleeper-tier
 """
 
 from __future__ import annotations
@@ -176,12 +177,16 @@ def _returning_weeks(pid: str, prior: list[dict], week: int, team: str, pos: str
 
 def _qb_coupling_read(pid: str, pos: str, prior: list[dict], week: int, team: str,
                       team_games: dict[str, dict[int, dict]], team_weeks: list[int],
-                      started_by: str | None, ranks: dict) -> dict | None:
+                      started_by: str | None, ranks: dict,
+                      sleeper_ranks: dict | None = None) -> dict | None:
     """The QB <-> pass-catcher read for one row (see module doc), or None.
 
     WR/TE: the team's starter (most pass attempts over its last six games
     before `week`) did not start (nflverse ``games.csv``), with the backup's
-    tier from his previous-season rank. QB: he starts, and one or both of
+    tier from his previous-season rank -- or, unranked there and with
+    `sleeper_ranks` given (``--qb-sleeper-tier``), his rank among that week's
+    Sleeper QB projections: the variant ``qb_coupling.TIER_UNRANKED_BY_SLEEPER``
+    rejects. QB: he starts, and one or both of
     the team's top-two pass catchers by targets over those games have no
     stat line this week. ``with_frac`` is the share of the player's trailing
     games in which the missing teammate(s) did play -- what is left for the
@@ -204,7 +209,10 @@ def _qb_coupling_read(pid: str, pos: str, prior: list[dict], week: int, team: st
         played = [w for w in mine
                   if (team_games.get(starter, {}).get(w) or {}).get("attempts", 0.0)
                   >= qb_coupling.QB_PLAYED_ATTEMPTS]
-        return {"kind": "qb_out", "tier": qb_coupling.qb_tier(ranks.get(started_by)),
+        backup = next(iter(team_games.get(started_by, {}).values()), {}).get("player")
+        rank, source = qb_coupling.backup_rank(backup, team, ranks.get(started_by),
+                                               sleeper_ranks, by_sleeper=bool(sleeper_ranks))
+        return {"kind": "qb_out", "tier": qb_coupling.qb_tier(rank), "tier_source": source,
                 "with_frac": len(played) / len(mine) if mine else 1.0}
     if pos != "QB" or started_by != pid:
         return None
@@ -226,7 +234,7 @@ def _qb_coupling_read(pid: str, pos: str, prior: list[dict], week: int, team: st
 def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
                   min_trailing: float = 5.0, include_dnp: bool = False,
                   with_role: bool = False, with_returning: bool = False,
-                  with_qb: bool = False) -> list[dict]:
+                  with_qb: bool = False, qb_sleeper_tier: bool = False) -> list[dict]:
     samples: list[dict] = []
     for season in seasons:
         records = load_season(season)
@@ -303,7 +311,8 @@ def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
                                         and team in teams_played[w])
                     read = _qb_coupling_read(
                         pid, pos, prior, week, team, squads[team], team_weeks,
-                        (games.get((season, week, team)) or {}).get("qb_id"), ranks)
+                        (games.get((season, week, team)) or {}).get("qb_id"), ranks,
+                        qb_coupling.sleeper_qb_ranks(sleeper[week]) if qb_sleeper_tier else None)
                     if read:
                         sample["qb_coupling"] = read
                 if with_returning and game is not None:
@@ -429,6 +438,9 @@ def report_qb(samples: list[dict]) -> None:
             key = read["tier"] if read["kind"] == "qb_out" else f"{read['n']} out"
             groups[(read["kind"], s["position"], key)].append(s)
             groups[(read["kind"], s["position"], "ALL")].append(s)
+            if read.get("tier_source") == qb_coupling.TIER_SOURCE_SLEEPER:
+                # Backups tiered by Sleeper's week rank (unranked last season).
+                groups[(read["kind"], s["position"], f"{key} via Sleeper")].append(s)
     for (kind, pos, key), rows in sorted(groups.items()):
         act = [s["actual"] for s in rows]
         before = [_blend(s, w) for s in rows]
@@ -438,7 +450,7 @@ def report_qb(samples: list[dict]) -> None:
         ratio = sum(act) / max(1e-9, sum(before))
         sweep = " ".join(f"{m:g}:{mae([after(s, m) for s in rows], act):.3f}"
                          for m in (0.95, 0.9, 0.85))
-        print(f"  {kind:12s} {pos} {key:13s} n={len(rows):4d} {mae(before, act):5.3f} "
+        print(f"  {kind:12s} {pos} {key:25s} n={len(rows):4d} {mae(before, act):5.3f} "
               f"{bias(before, act):+5.2f} -> {mae(adj, act):5.3f} {bias(adj, act):+5.2f} | "
               f"ratio {ratio:.3f} vs {ctrl_ratio:.3f} | uniform cut {sweep}")
 
@@ -519,10 +531,15 @@ def main() -> None:
                     help="also price the returning-teammate deflation")
     ap.add_argument("--qb-coupling", action="store_true",
                     help="also price the QB <-> pass-catcher coupling")
+    ap.add_argument("--qb-sleeper-tier", action="store_true",
+                    help="with --qb-coupling: tier a backup unranked the season before by "
+                         "his rank among that week's Sleeper QB projections instead of "
+                         "'low' (the variant qb_coupling.TIER_UNRANKED_BY_SLEEPER rejects)")
     args = ap.parse_args()
     samples = build_samples(args.seasons, args.start_week, include_dnp=args.include_dnp,
                             with_role=args.role_shift, with_returning=args.returning,
-                            with_qb=args.qb_coupling)
+                            with_qb=args.qb_coupling,
+                            qb_sleeper_tier=args.qb_sleeper_tier)
     report(samples)
     if args.role_shift:
         report_role(samples)

@@ -1428,7 +1428,7 @@ async def simulate_draft(
 
 @timing_decorator("project_players", tool_type="projection")
 async def project_players(
-    players: list[dict],
+    players: list[dict | str],
     scoring: str = "ppr",
     superflex: bool = False,
     num_teams: int = 12,
@@ -1451,6 +1451,10 @@ async def project_players(
             opponent "BYE" (or a team the cached schedule has no game for)
             projects 0 with `on_bye: true`; a blank opponent is filled from the
             schedule. A missing injury status is looked up in the injury tables.
+            A bare name (a string, or a dict without team/position) is
+            resolved from the athlete cache (fantasy position, active, market
+            rank first); one that cannot be is listed in `unresolved` and not
+            projected, and an ambiguous name adds a `warnings` entry.
         scoring/superflex/num_teams: league format for the value baseline.
         season (int, optional), week (int, optional): default to the current
             NFL week (`week_inferred`); with week > 1 the opportunity-based
@@ -1464,7 +1468,7 @@ async def project_players(
               disagreement, gap], sleeper_second_opinion: {active, matched,
               disagreements:[{player, ours, sleeper, gap}] (largest first),
               rule}, on_bye:[names], schedule_known, season, week,
-              week_inferred, total, success}
+              week_inferred, total, unresolved, warnings, success}
         Our `projected_points` stays primary; Sleeper's projection (priced in
         the league's scoring) is a labelled second opinion. Pass each
         player's Sleeper `player_id` for an exact match (else name + team).

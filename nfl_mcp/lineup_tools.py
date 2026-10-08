@@ -19,16 +19,90 @@ logger = logging.getLogger(__name__)
 _FANTASY = ("QB", "RB", "WR", "TE", "K", "DEF")
 
 
+# Sleeper's `search_rank` for a player it does not rank (a practice-squad
+# linebacker sits at 9999999); every missing rank counts as this.
+UNRANKED_SEARCH_RANK = 9_999_999
+_ACTIVE_STATUS = "active"
+
+
+def _search_rank(row: dict) -> int:
+    """Sleeper's market-wide `search_rank` from an athlete row's raw JSON."""
+    import json
+    raw = row.get("raw")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = None
+    try:
+        rank = int((raw if isinstance(raw, dict) else {}).get("search_rank")
+                   or UNRANKED_SEARCH_RANK)
+    except (TypeError, ValueError):
+        rank = UNRANKED_SEARCH_RANK
+    return min(rank, UNRANKED_SEARCH_RANK)
+
+
+def name_candidates(db, name: str | None, team: str | None = None,
+                    position: str | None = None) -> tuple[list[dict], bool]:
+    """``(candidates, ambiguous)``: athlete rows for a name, best match first.
+
+    Ranked by the team/position hint, then a fantasy position with a team,
+    an active status and Sleeper's market ``search_rank``; exact names only
+    when there are any. `ambiguous` is True when two or more exact-name
+    fantasy players on a team fit the hints (two "Mike Williams"): the first
+    is still the best guess, but the caller should say so.
+    """
+    from .opportunity_tools import norm_name
+
+    if db is None or not name:
+        return [], False
+    team = normalize_team(team) if team else None
+    position = (position or "").upper() or None
+    try:
+        hits = db.search_athletes_by_name(name, limit=25) or []
+    except Exception as e:
+        logger.debug(f"athlete search failed for {name!r}: {e}")
+        return [], False
+    exact = [h for h in hits if norm_name(h.get("full_name")) == norm_name(name)]
+
+    def fits(h: dict) -> bool:
+        pos = (h.get("position") or "").upper()
+        return (bool(h.get("team_id")) and pos in _FANTASY
+                and (not team or normalize_team(h.get("team_id")) == team)
+                and (not position or pos == position))
+
+    def score(h: dict) -> tuple:
+        pos = (h.get("position") or "").upper()
+        return (
+            bool(team) and normalize_team(h.get("team_id")) == team,
+            bool(position) and pos == position,
+            bool(h.get("team_id")) and pos in _FANTASY,
+            bool(h.get("team_id")),
+            (h.get("status") or "").lower() == _ACTIVE_STATUS,
+            -_search_rank(h),
+        )
+
+    ranked = sorted(exact or hits, key=score, reverse=True)
+    return ranked, bool(exact) and sum(1 for h in exact if fits(h)) > 1
+
+
+def candidate_summary(rows: list[dict], limit: int = 5) -> list[dict]:
+    """``[{name, team, position, player_id}]`` for an ambiguity warning."""
+    return [{"name": r.get("full_name"), "team": normalize_team(r.get("team_id")),
+             "position": (r.get("position") or "").upper() or None,
+             "player_id": str(r["id"]) if r.get("id") else None}
+            for r in rows[:limit]]
+
+
 def resolve_player(db, name: str | None, team: str | None = None,
                    position: str | None = None, player_id: str | None = None) -> dict:
     """``{name, position, team, player_id}`` for a named player, best effort.
 
-    Given fields win; missing ones come from the athlete cache (exact name
-    first, then the team/position hint, then a fantasy position with a team).
-    A bare team code is that team's defense.
+    Given fields win; missing ones come from the athlete cache
+    (`name_candidates`). A bare team code is that team's defense. With
+    several exact-name fantasy players the result also carries
+    ``ambiguous: True`` and ``candidates``.
     """
-    from .opportunity_tools import norm_name
-
     out = {"name": name, "position": (position or "").upper() or None,
            "team": normalize_team(team) if team else None, "player_id": player_id}
     if db is None:
@@ -45,29 +119,16 @@ def resolve_player(db, name: str | None, team: str | None = None,
     code = normalize_team(name)
     if code and len(name.strip()) <= 4 and (out["position"] in (None, "DEF", "DST")):
         return {"name": code, "position": "DEF", "team": code, "player_id": player_id or code}
-    try:
-        hits = db.search_athletes_by_name(name, limit=25) or []
-    except Exception as e:
-        logger.debug(f"athlete search failed for {name!r}: {e}")
-        hits = []
-    exact = [h for h in hits if norm_name(h.get("full_name")) == norm_name(name)]
-
-    def score(h: dict) -> tuple:
-        pos = (h.get("position") or "").upper()
-        return (
-            bool(out["team"]) and normalize_team(h.get("team_id")) == out["team"],
-            bool(out["position"]) and pos == out["position"],
-            bool(h.get("team_id")),
-            pos in _FANTASY,
-        )
-
-    pool = exact or hits
-    if pool:
-        best = max(pool, key=score)
+    ranked, ambiguous = name_candidates(db, name, out["team"], out["position"])
+    if ranked:
+        best = ranked[0]
         out["team"] = out["team"] or normalize_team(best.get("team_id"))
         out["position"] = out["position"] or (best.get("position") or "").upper() or None
         out["player_id"] = out["player_id"] or (str(best["id"]) if best.get("id") else None)
         out["name"] = best.get("full_name") or name
+        if ambiguous:
+            out["ambiguous"] = True
+            out["candidates"] = candidate_summary(ranked)
     return out
 
 
@@ -296,4 +357,5 @@ async def analyze_lineup(
     return result
 
 
-__all__ = ["analyze_lineup", "player_input", "recent_snap_share", "recent_usage", "resolve_player"]
+__all__ = ["analyze_lineup", "candidate_summary", "name_candidates", "player_input", "recent_snap_share",
+           "recent_usage", "resolve_player"]

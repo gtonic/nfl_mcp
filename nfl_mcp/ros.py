@@ -481,6 +481,12 @@ async def ros_projections(
     from .scoring import resolve_scoring
 
     model = resolve_scoring(scoring)
+    if db is not None:
+        # The weekly engine prices teammates' injuries and the QB depth chart
+        # from its own handle; a ROS call that came first after a restart left
+        # it without one. Hand it ours (not via project_players' `db`, which
+        # would also file the whole league pool in the retro log).
+        projections.get_projection_engine(db)
     windows = season_windows(settings, week)
     weeks = sorted(set(windows["regular"]) | set(windows["playoff"]))
     if not weeks:
@@ -841,7 +847,7 @@ async def get_ros_projections(
     falling / stable, sell_high / buy_low / hold, and why)."""
     from . import sleeper_tools
     from .database import get_shared_db
-    from .opportunity_tools import norm_name
+    from .lineup_tools import candidate_summary, name_candidates
 
     started = datetime.now(UTC)
     if not (player_names or player_ids or roster_id is not None):
@@ -878,12 +884,22 @@ async def get_ros_projections(
         for pid in (str(p) for p in (mine.get("players") or [])):
             ids.append(pid)
             slot_of[pid] = "IR" if pid in reserve else "TAXI" if pid in taxi else "active"
+    warnings: list[str] = []
     for name in player_names or []:
-        hits = db.search_athletes_by_name(name, limit=10) or []
-        exact = [h for h in hits if norm_name(h.get("full_name")) == norm_name(name)]
-        pick = next((h for h in exact or hits if h.get("team_id")), None)
+        # A fantasy player before a namesake: the first exact match with a
+        # team used to win, and "Justin Jefferson" priced Cleveland's
+        # linebacker (8.0 a week, no trajectory) instead of the receiver.
+        ranked, ambiguous = name_candidates(db, name)
+        pick = next((h for h in ranked if h.get("team_id")), None)
         if pick:
             ids.append(str(pick["id"]))
+            if ambiguous:
+                others = ", ".join(f"{c['name']} ({c['position']}, {c['team']})"
+                                   for c in candidate_summary(ranked)[1:])
+                warnings.append(f"{name!r} is ambiguous — priced {pick.get('full_name')} "
+                                f"({(pick.get('position') or '').upper()}, "
+                                f"{normalize_team(pick.get('team_id'))}); also: {others}. "
+                                "Pass player_ids for an exact match.")
         else:
             unresolved.append(name)
     ids = list(dict.fromkeys(ids))
@@ -925,6 +941,7 @@ async def get_ros_projections(
         "playoff_weeks": windows["playoff"],
         "players": entries,
         "unresolved": unresolved + [pid for pid in (player_ids or []) if str(pid) not in by_id],
+        "warnings": warnings,
         "schedule_unknown_weeks": meta["schedule_unknown_weeks"],
         "matchups_active": meta["matchups_active"],
         "scoring_used": meta["scoring_used"],
