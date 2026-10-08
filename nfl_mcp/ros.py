@@ -384,12 +384,14 @@ def _per_game(proj: dict, position: str, model) -> tuple[float, str, float | Non
     return round(float(base) * usage, 2), source, None
 
 
-def _starter_absence(entry, today: date | None = None) -> int:
+def _starter_absence(entry, today: date | None = None, season_week: int | None = None) -> int:
     """Games an absent starter is expected to miss, from an ``inherited_from``
     value: a status string, or ``{status, description, return_date,
-    placed_on}`` (see ``projections._absence_detail``)."""
+    placed_on}`` (see ``projections._absence_detail``). `season_week` applies
+    the preseason-list (PUP / NFI) rule of `expected_absence` -- without it a
+    teammate whose PUP minimum is served read as four more games out."""
     if not isinstance(entry, dict):
-        return expected_absence(entry, today=today)[0]
+        return expected_absence(entry, today=today, season_week=season_week)[0]
     placed = entry.get("placed_on")
     if isinstance(placed, str):
         try:
@@ -400,10 +402,11 @@ def _starter_absence(entry, today: date | None = None) -> int:
     if not is_reserve(status) and is_reserve(entry.get("game_status")):
         status = entry.get("game_status")
     return expected_absence(status, entry.get("description"), entry.get("return_date"),
-                            today, placed_on=placed)[0]
+                            today, placed_on=placed, season_week=season_week)[0]
 
 
-def _inherited(proj: dict, today: date | None = None) -> tuple[float, int]:
+def _inherited(proj: dict, today: date | None = None,
+               week: int | None = None) -> tuple[float, int]:
     """``(points_per_game, team_games)`` inherited from absent starters.
 
     The weekly base includes a share of an out teammate's volume; ROS used to
@@ -416,7 +419,7 @@ def _inherited(proj: dict, today: date | None = None) -> tuple[float, int]:
     if own is None or base is None or bd.get("base_source") != "opportunity":
         return 0.0, 0
     bump = max(0.0, float(base) - float(own)) * float(bd.get("usage_mult") or 1.0)
-    games = max((_starter_absence(s, today) for s in (bd.get("inherited_from") or {}).values()),
+    games = max((_starter_absence(s, today, week) for s in (bd.get("inherited_from") or {}).values()),
                 default=1)
     return round(bump, 2), games
 
@@ -598,7 +601,7 @@ async def ros_projections(
         proj = now_proj.get(key) or {}
         rate_src = rate_proj.get(key) or proj
         per_game, source, prior_weight = _per_game(rate_src, p["position"], model)
-        inherited, inherited_games = _inherited(rate_src, today)
+        inherited, inherited_games = _inherited(rate_src, today, week)
         # A teammate due back: the inflated rate until his return, the rate
         # from their games together after it (reported as per_game).
         after, returning_games, returning = _returning(rate_src, per_game, p["position"], model)
@@ -704,6 +707,17 @@ async def ros_projections(
                 for r in returning]
             entry["per_game_until_return"] = round(per_game + deflation, 2)
             entry["deflated_volume"] = (rate_src.get("breakdown") or {}).get("deflated_volume") or {}
+            # What he has actually been producing without them -- his own
+            # trailing opportunity rate before the regression toward the rank
+            # prior. The market prices him on this; `value_trajectory` reads
+            # the drop from it (the regressed rate hid most of it for a backup
+            # with no games next to the starter: Emanuel Wilson).
+            bd = rate_src.get("breakdown") or {}
+            recent = bd.get("own_base_ppg") if bd.get("own_base_ppg") is not None \
+                else bd.get("base_ppg")
+            if recent is not None:
+                entry["per_game_recent"] = round(
+                    float(recent) * float(bd.get("usage_mult") or 1.0), 2)
         if inherited:
             # A share of an absent starter's volume, priced only for his
             # expected absence (`_inherited`).

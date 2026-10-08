@@ -194,6 +194,14 @@ class TestRosDeflation:
                                              "games_until_return": 2, "status": None}]
 
     @pytest.mark.asyncio
+    async def test_the_unregressed_recent_rate_is_reported_for_the_trajectory(
+            self, monkeypatch):
+        # What the market sees: his trailing rate without the regression.
+        p = await self._run(monkeypatch, 1)
+        assert p["per_game_recent"] == 14.0
+        assert p["per_game_recent"] > p["per_game_until_return"] > p["per_game"]
+
+    @pytest.mark.asyncio
     async def test_back_this_week_deflates_every_later_week(self, monkeypatch):
         p = await self._run(monkeypatch, 0)
         assert p["weekly_points"][4] == pytest.approx(p["per_game"], abs=0.01)
@@ -211,3 +219,27 @@ class TestRosDeflation:
         assert "returning_teammates" not in p
         assert p["weekly_points"][9] == pytest.approx(
             ros.regressed_rate(14.0, projections.base_ppg("RB", None), 6), abs=0.01)
+
+
+class TestTeammatePreseasonList:
+    """A teammate on PUP since before week 1 has served the minimum by week 5:
+    his ESPN return date decides (Zach Charbonnet, PUP-R, back 2026-10-15),
+    not four more games from today."""
+
+    def _detail(self, days):
+        from datetime import UTC, datetime, timedelta
+        back = (datetime.now(UTC).date() + timedelta(days=days)).isoformat()
+        return {"status": "Out", "game_status": "PUP-R", "return_date": back}
+
+    def test_starter_absence_applies_the_pup_rule_with_the_week(self):
+        assert ros._starter_absence(self._detail(7), season_week=5) == 1
+        # Without the week the reserve minimum still reads four games.
+        assert ros._starter_absence(self._detail(7)) == ros.IR_MIN_WEEKS
+
+    def test_a_pup_teammate_is_due_back_next_week(self):
+        detail = self._detail(7)
+
+        def status_of(name, team):
+            return "Out" if name == "Lead Back" else None
+        status_of.detail = lambda name, team: detail if name == "Lead Back" else {}
+        assert projections._teammate_return_games(status_of, "Lead Back", "PIT", 5) == 1

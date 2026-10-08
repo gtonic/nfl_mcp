@@ -543,7 +543,7 @@ def _teammate_return_games(status_of, name: str, team: str, week: int) -> int | 
         # doubtful or questionable-DNP teammate is due back next week.
         return 1 if kind == "doubtful" or (kind == "questionable" and practice == "DNP") else 0
     detail = _absence_detail(status_of, name, team)
-    games = _starter_absence(detail)
+    games = _starter_absence(detail, season_week=week)
     if _DESIGNATED_RE.search(str(detail.get("description") or "")):
         games = min(games, DESIGNATED_RETURN_GAMES)
     return None if games >= SEASON_ENDING_WEEKS else games
@@ -1322,7 +1322,8 @@ def _context_one(proj: dict, depth: dict, status_of, opp_index: dict, week: int 
         if ctx:
             # ROS carries the model multiplier through the starter's absence.
             from .ros import _starter_absence
-            ctx["games_out"] = _starter_absence(_absence_detail(status_of, ctx["starter"], team))
+            ctx["games_out"] = _starter_absence(
+                _absence_detail(status_of, ctx["starter"], team), season_week=week)
             proj["qb_context"] = ctx
             bd["qb_model_mult"] = ctx["model_mult"]
             bd["qb_sleeper_mult"] = ctx["sleeper_mult"]

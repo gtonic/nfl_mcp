@@ -56,7 +56,9 @@ TRAJECTORY_HORIZON_GAMES = 3
 # gap that agree do -- and the hard ones (a teammate back, inherited volume
 # ending, his own return) carry most calls. Before: 31% / 32% of rostered
 # players flagged, most on a role shift alone; after: 15% / 15%, about
-# two thirds of them hard signals.
+# two thirds of them hard signals. With a teammate's drop read from the
+# recent (unregressed) rate and the first return gating it: 19% / 20%,
+# about 70% of them hard.
 TRAJECTORY_MIN_CHANGE = 0.08
 # A role that just moved (role_shift role_up / role_down), held for two
 # games; one game counts for ROLE_ONE_WEEK_WEIGHT of it (a single game can be
@@ -190,21 +192,38 @@ def assess(entry: dict, *, week: int | None = None, rank: int | None = None) -> 
     until = entry.get("per_game_until_return")
     if due and until:
         absence_role = [r["name"] for r in due]
-        games = max(int(r.get("games_until_return") or 0) for r in due)
-        change = (per_game - float(until)) / float(until) if float(until) > 0 else 0.0
-        if games <= TRAJECTORY_HORIZON_GAMES and abs(change) >= MIN_REPORTED_CHANGE:
-            rate_change += per_game - float(until)
-            weeks = [r.get("expected_return_week") for r in due if r.get("expected_return_week")]
+        # The first return inside the horizon is when the market re-prices
+        # him, not the last one: a second teammate out longer (Price on IR)
+        # must not hide the one back next week (Charbonnet).
+        soon = [r for r in due
+                if int(r.get("games_until_return") or 0) <= TRAJECTORY_HORIZON_GAMES]
+        later = [r for r in due if r not in soon]
+        # Against what he has been producing without them (the unregressed
+        # trailing rate the market sees), not the ROS rate until the return:
+        # that one is regressed toward the rank prior, and for a backup with
+        # no games next to the starter the post-return rate is that same
+        # prior -- post against post, no visible drop.
+        until = max(float(until), float(entry.get("per_game_recent") or 0.0))
+        change = (per_game - until) / until if until > 0 else 0.0
+        if soon and abs(change) >= MIN_REPORTED_CHANGE:
+            games = min(int(r.get("games_until_return") or 0) for r in soon)
+            rate_change += per_game - until
+            weeks = [r.get("expected_return_week") for r in soon if r.get("expected_return_week")]
             change_week = min(weeks) if weeks else week
             who = ", ".join(
-                f"{r['name']} ({team}{', ' + r['status'] if r.get('status') else ''})" for r in due)
+                f"{r['name']} ({team}{', ' + r['status'] if r.get('status') else ''})" for r in soon)
             when = ("back this week" if games == 0
                     else f"due back week {change_week}" if change_week else "due back soon")
             them = "them" if len(due) > 1 else "him"
             volume = _volume_text(entry.get("deflated_volume"))
+            also = "; ".join(
+                f"{r['name']} back later" + (f" (week {r['expected_return_week']})"
+                                             if r.get("expected_return_week") else "")
+                for r in later)
             reasons.append(
-                f"{who} {when} — {name}'s {float(until):.1f} pts/game came without {them}; "
-                f"{per_game:.1f} with {them}" + (f" ({volume})" if volume else ""))
+                f"{who} {when} — {name}'s {until:.1f} pts/game came without {them}; "
+                f"{per_game:.1f} with {them}" + (f" ({volume})" if volume else "")
+                + (f"; {also}" if also else ""))
             signals.append({"kind": "returning_teammate", "change": round(change, 3)})
 
     # 2) Inherited volume that ends inside the horizon.
