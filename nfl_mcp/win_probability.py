@@ -139,12 +139,15 @@ def _stacks(lineup: list[dict | None]) -> list[str]:
 
 def optimize_win_probability(
     candidates: list[dict],
-    opponent_players: list[dict],
+    opponent_players: list[dict] | None,
     slots: dict[str, int] | None = None,
     stack_correlation: float = STACK_CORRELATION,
     locked_players: list[dict] | None = None,
+    risk_mode: str | None = "auto",
+    playoff_pct: float | None = None,
 ) -> dict:
-    """Pick the lineup maximizing P(win) vs the given opponent.
+    """Pick the lineup maximizing P(win) vs the given opponent — or, with
+    ``risk_mode``, the lineup that fits the team's situation (see `risk_mode`).
 
     ``locked_players`` are already committed and cannot be changed — mid-week,
     anyone whose game has kicked off. Each entry should carry its slot under
@@ -153,13 +156,25 @@ def optimize_win_probability(
     move. A settled player carries ``sd`` 0, which correctly makes the outcome
     less uncertain rather than merely shifting the mean.
 
+    ``risk_mode``: "auto" (default; maximise P(win), plus a ceiling tilt for a
+    long-shot season — pass ``playoff_pct``), "neutral" (expected points),
+    "seek_variance" / "protect_floor" (beat a target above / below the
+    points-optimal expectation). ``opponent_players=None`` means no opponent
+    is known: auto then falls back to expected points unless the season is a
+    long shot.
+
     Returns the recommended lineup, its win probability, the E[points]-optimal
-    lineup for comparison, and a floor/ceiling strategy label. ``stack_correlation``
-    sets the QB↔same-team pass-catcher covariance (0 disables stacking effects).
+    lineup for comparison, a floor/ceiling strategy label, and the risk mode
+    with its reason and the trade-off when the two lineups differ.
+    ``stack_correlation`` sets the QB↔same-team pass-catcher covariance (0
+    disables stacking effects).
     """
+    from . import risk_mode as rm
+
     slots = slots or DEFAULT_SLOTS
     slot_list = expand_slots(slots)
     locked_players = locked_players or []
+    has_opponent = opponent_players is not None
 
     # Remove one slot per locked player, matching on the slot they occupy.
     if locked_players:
@@ -180,7 +195,7 @@ def optimize_win_probability(
         slot_list = remaining
 
     locked_mean, locked_var = _team_stats(locked_players, stack_correlation)
-    opp_mean, opp_var = _team_stats(opponent_players, stack_correlation)
+    opp_mean, opp_var = _team_stats(opponent_players or [], stack_correlation)
 
     # Optimize the open slots against a residual target: locked points are a
     # certainty on my side, so P(locked + open > opp) == P(open > opp - locked).
@@ -189,34 +204,51 @@ def optimize_win_probability(
 
     mean_lineup = mean_optimal_lineup(candidates, slot_list)
     mean_p_win = _p_win_of(mean_lineup, residual_mean, residual_var, stack_correlation)
+    mo_open_mean, mo_open_var = _team_stats([p for p in mean_lineup if p is not None],
+                                            stack_correlation)
+
+    # What this team should optimise: P(win) (auto), expected points
+    # (neutral), or P(beating a target above / below its own expectation).
+    resolution = rm.resolve(risk_mode, mean_p_win if has_opponent else None, playoff_pct)
+    target = rm.lineup_target(resolution, mo_open_mean, mo_open_var + locked_var,
+                              residual_mean if has_opponent else None,
+                              opp_var if has_opponent else 0.0)
+    # On the open slots: the locked side moves into the residual target.
+    objective = rm.score_fn(target, residual_var if has_opponent else locked_var)
+
+    def _score(lineup: list[dict | None]) -> float:
+        m, v = _team_stats([p for p in lineup if p is not None], stack_correlation)
+        return objective(m, v)
 
     # Local search over *who* starts: bring a bench player in for any starter
     # (or into an empty slot) whenever some legal arrangement of the new set
     # exists — which may move other starters between slots — and keep the
-    # change that most improves P(win). P(win) depends only on the set.
+    # change that most improves the objective. It depends only on the set.
     current = list(mean_lineup)
-    current_p = mean_p_win
-    for _ in range(_MAX_SWAP_ITERS):
-        in_lineup = {id(p) for p in current if p is not None}
-        bench = [b for b in candidates if id(b) not in in_lineup]
-        best_gain, best_trial = 1e-9, None
-        for i in range(len(current)):
-            for b in bench:
-                if slot_accepts(slot_list[i], b.get("position")):
-                    trial = list(current)
-                    trial[i] = b
-                else:
-                    starters = [p for j, p in enumerate(current) if p is not None and j != i]
-                    trial = assign_to_slots([*starters, b], slot_list)
-                    if trial is None:
-                        continue
-                gain = _p_win_of(trial, residual_mean, residual_var, stack_correlation) - current_p
-                if gain > best_gain:
-                    best_gain, best_trial = gain, trial
-        if best_trial is None:
-            break
-        current = best_trial
-        current_p = _p_win_of(current, residual_mean, residual_var, stack_correlation)
+    current_s = _score(current)
+    if target is not None:
+        for _ in range(_MAX_SWAP_ITERS):
+            in_lineup = {id(p) for p in current if p is not None}
+            bench = [b for b in candidates if id(b) not in in_lineup]
+            best_gain, best_trial = 1e-9, None
+            for i in range(len(current)):
+                for b in bench:
+                    if slot_accepts(slot_list[i], b.get("position")):
+                        trial = list(current)
+                        trial[i] = b
+                    else:
+                        starters = [p for j, p in enumerate(current) if p is not None and j != i]
+                        trial = assign_to_slots([*starters, b], slot_list)
+                        if trial is None:
+                            continue
+                    gain = _score(trial) - current_s
+                    if gain > best_gain:
+                        best_gain, best_trial = gain, trial
+            if best_trial is None:
+                break
+            current = best_trial
+            current_s = _score(current)
+    current_p = _p_win_of(current, residual_mean, residual_var, stack_correlation)
 
     def _fmt(lineup):
         return [
@@ -231,12 +263,14 @@ def optimize_win_probability(
     rec_mean += locked_mean
     rec_var += locked_var
     mo_starters = [p for p in mean_lineup if p is not None]
-    _, mo_var = _team_stats(mo_starters, stack_correlation)
+    mo_mean, mo_var = _team_stats(mo_starters, stack_correlation)
+    mo_mean += locked_mean
     mo_var += locked_var
 
     underdog = rec_mean < opp_mean
     if rec_var > mo_var * 1.02:
-        strategy = "ceiling (chase variance — you're the underdog)"
+        strategy = "ceiling (chase variance — you're the underdog)" if underdog or not has_opponent \
+            else "ceiling (chase variance)"
     elif rec_var < mo_var * 0.98:
         strategy = "floor (protect the lead — you're favored)"
     else:
@@ -248,20 +282,38 @@ def optimize_win_probability(
          "mean": round(player_mean(p), 1), "sd": round(player_sd(p), 1), "locked": True}
         for p in locked_players
     ]
+    difference = rm.describe_difference(
+        rec_starters, mo_starters,
+        p_win_risk=current_p if has_opponent else None,
+        p_win_mean=mean_p_win if has_opponent else None,
+        mean_risk=rec_mean, mean_mean=mo_mean, mean_of=player_mean, sd_of=player_sd,
+    )
 
     return {
         "recommended_lineup": locked_fmt + _fmt(current),
         "locked_players": locked_fmt,
-        "win_probability": round(current_p * 100, 1),
+        "win_probability": round(current_p * 100, 1) if has_opponent else None,
         "projected_points": round(rec_mean, 1),
-        "opponent_projected_points": round(opp_mean, 1),
-        "projected_margin": round(rec_mean - opp_mean, 1),
-        "you_are": "underdog" if underdog else "favorite",
+        "projected_sd": round(math.sqrt(max(0.0, rec_var)), 1),
+        "opponent_projected_points": round(opp_mean, 1) if has_opponent else None,
+        "opponent_projected_sd": round(math.sqrt(max(0.0, opp_var)), 1) if has_opponent else None,
+        "projected_margin": round(rec_mean - opp_mean, 1) if has_opponent else None,
+        "you_are": ("underdog" if underdog else "favorite") if has_opponent else None,
         "strategy": strategy,
         "stacks": _stacks(current),
         "points_optimal_lineup": _fmt(mean_lineup),
-        "points_optimal_win_probability": round(mean_p_win * 100, 1),
-        "win_probability_gain": round((current_p - mean_p_win) * 100, 1),
+        "points_optimal_projected": round(mo_mean, 1),
+        "points_optimal_win_probability": round(mean_p_win * 100, 1) if has_opponent else None,
+        "win_probability_gain": round((current_p - mean_p_win) * 100, 1) if has_opponent else None,
+        # Which objective chose the lineup, why, and what it cost or bought.
+        "risk_mode": resolution["risk_mode"],
+        "risk_mode_requested": resolution["requested"],
+        "risk_reason": resolution["reason"],
+        "risk_objective": ("expected points" if target is None
+                           else "P(beat opponent)" if resolution["target"] == "p_win"
+                           else f"P(score > {round(target + locked_mean, 1)})"),
+        "playoff_pct": playoff_pct,
+        "risk_adjustment": difference,
     }
 
 
@@ -330,6 +382,10 @@ async def get_win_probability_lineup(
     locked_players: list[dict] | None = None,
     season: int | None = None,
     week: int | None = None,
+    risk_mode: str | None = "auto",
+    playoff_pct: float | None = None,
+    league_id: str | None = None,
+    roster_id: int | None = None,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
 
@@ -355,14 +411,29 @@ async def get_win_probability_lineup(
             has started is locked in his current `slot`, or — benched or with
             no slot given — left out, since he can no longer be moved in.
         season, week: the week those kickoffs are read for (default: current).
+        risk_mode: "auto" (default) maximises P(win) — ceiling when you trail,
+            floor when you lead — and adds a ceiling tilt in a close game for
+            a long-shot season; "neutral" = expected points; "seek_variance" /
+            "protect_floor" force the tilt. See `risk_mode`.
+        playoff_pct: your season playoff odds (percent) for auto; or pass
+            league_id + roster_id and they are read (cached) from
+            get_playoff_odds.
 
     Returns the recommended lineup, its win probability, any QB stacks, the
     points-optimal lineup for comparison, and a floor/ceiling strategy label.
     """
+    from . import risk_mode as rm
+
     default_data = {"recommended_lineup": [], "win_probability": None}
+    try:
+        risk_mode = rm.normalize_risk_mode(risk_mode)
+    except ValueError as e:
+        return handle_validation_error(str(e), default_data)
     if not your_players:
         return handle_validation_error("your_players is required", default_data)
-    if not opponent_players:
+    # None (internal callers only): no opponent this week — the lineup is
+    # chosen on the risk mode alone. An empty list is a caller error.
+    if opponent_players is not None and not opponent_players:
         return handle_validation_error("opponent_players is required", default_data)
 
     unavailable: list[dict] = []
@@ -375,14 +446,17 @@ async def get_win_probability_lineup(
                 "every one of your_players has already kicked off from the bench — "
                 "nothing left to optimize", default_data)
 
+    if playoff_pct is None and risk_mode == "auto" and league_id and roster_id is not None:
+        playoff_pct = await rm.playoff_pct_for(league_id, roster_id)
     result = optimize_win_probability(
         your_players, opponent_players, slots,
         stack_correlation=stack_correlation, locked_players=locked_players,
+        risk_mode=risk_mode, playoff_pct=playoff_pct,
     )
     if lock_by_name:
         for key in ("recommended_lineup", "locked_players", "points_optimal_lineup"):
             result[key] = _with_kickoffs(result[key], lock_by_name)
-    rec = result["you_are"]
+    rec = result["you_are"] or "no opponent"
     return create_success_response({
         **result,
         # Benched (or slot-less) players whose game has started: out of reach.
@@ -396,9 +470,13 @@ async def get_win_probability_lineup(
         "season": season,
         "week": week,
         "message": (
-            f"Win probability {result['win_probability']}% "
-            f"({rec}; {result['strategy']}). "
-            f"vs points-optimal {result['points_optimal_win_probability']}% "
-            f"({result['win_probability_gain']:+} pts)."
+            (f"Win probability {result['win_probability']}% "
+             f"({rec}; {result['strategy']}). "
+             f"vs points-optimal {result['points_optimal_win_probability']}% "
+             f"({result['win_probability_gain']:+} pts). "
+             if result["win_probability"] is not None else
+             f"No opponent: lineup projects {result['projected_points']} ({result['strategy']}). ")
+            + f"Risk mode {result['risk_mode']}: {result['risk_reason']}."
+            + (f" {result['risk_adjustment']['summary']}." if result.get("risk_adjustment") else "")
         ),
     })

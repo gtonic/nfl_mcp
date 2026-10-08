@@ -107,7 +107,7 @@ IN_SEASON_TOOLS = frozenset({
     "compare_players_for_slot", "analyze_lineup", "get_win_probability_lineup",
     "get_gameday_inactives", "get_streaming_options", "get_weather_forecast",
     "analyze_opponent", "analyze_roster_matchups", "get_stack_opportunities",
-    "get_vegas_lines", "find_trade_targets", "get_opportunity_projections",
+    "get_vegas_lines", "find_trade_targets", "get_trade_market", "get_opportunity_projections",
     "get_usage_trends",
 })
 
@@ -206,6 +206,7 @@ def _registered_tools() -> list[Callable]:
         # Trade Analyzer Tools
         analyze_trade,
         find_trade_targets,
+        get_trade_market,
 
         # Player Value Tools (real market-consensus values)
         get_player_values,
@@ -1159,7 +1160,9 @@ async def analyze_trade(
     team2_roster_id: int,
     team1_gives: list[str],
     team2_gives: list[str],
-    include_trending: bool = True
+    include_trending: bool = True,
+    suggest_counters: bool = False,
+    risk_mode: str = "auto",
 ) -> dict:
     """Analyze a fantasy football trade for fairness and fit.
 
@@ -1174,6 +1177,15 @@ async def analyze_trade(
         team1_gives (list[str], required): List of player IDs team 1 is giving up.
         team2_gives (list[str], required): List of player IDs team 2 is giving up.
         include_trending (bool, default True): Include trending player data in analysis.
+        suggest_counters (bool, default False): also return `counter_offers` —
+            1-3 adjusted versions (add a bench sweetener, ask for less, send a
+            player at their need) that keep team 1's ROS gain while raising
+            team 2's acceptance_likelihood. Team 1 is YOU.
+        risk_mode (str, default "auto"): team 1's season lens — auto reads your
+            playoff odds: a long shot weighs lineup ceiling (risk.upside_gain),
+            a contender the fantasy-playoff weeks (risk.playoff_gain); also
+            "neutral" | "seek_variance" | "protect_floor". The verdict stays on
+            ros_points_delta.
 
     Market-value fairness counts unpriced players (K/DEF/deep bench) as zero
     and discounts extra bodies in an uneven-count deal unless they would start
@@ -1190,6 +1202,12 @@ async def analyze_trade(
     change stays the verdict.
 
     Returns: {
+        risk: {risk_mode, reason, playoff_pct, upside_gain, playoff_gain,
+               ros_points_delta, risk_adjusted_delta, note},
+        counter_offers: {original {your_gain, their_gain, acceptance_likelihood,
+               acceptance_label, acceptance_factors, market}, counters [{change,
+               you_give, you_get, your_gain, their_gain, acceptance_likelihood,
+               expected_gain, ...}], message} | null,
         recommendation: str (fair, needs_adjustment, unfair, etc.),
         fairness_score: float (0-100, higher = more fair),
         verdict: str, ros_points_delta: {team1, team2}, ros: {...},
@@ -1231,7 +1249,9 @@ async def analyze_trade(
             team1_gives=team1_gives,
             team2_gives=team2_gives,
             nfl_db=get_db(),
-            include_trending=include_trending
+            include_trending=include_trending,
+            suggest_counters=bool(suggest_counters),
+            risk_mode=risk_mode,
         )
     except ValueError as e:
         return {
@@ -2178,6 +2198,8 @@ async def compare_players_for_slot(
     league_id: str | None = None,
     season: int | None = None,
     week: int | None = None,
+    roster_id: int | None = None,
+    risk_mode: str = "auto",
 ) -> dict:
     """Compare multiple players competing for the same roster slot.
 
@@ -2200,9 +2222,21 @@ async def compare_players_for_slot(
             competitive with a volume receiver for a flex spot.
         season (int, optional), week (int, optional): pass both (week > 1) to
             project off trailing volume
+        roster_id (int, optional): your roster in `league_id`. Then each player
+            gets his P(win) — your lineup with him in the slot vs this week's
+            opponent — and the risk mode can pick on it.
+        risk_mode (str, default "auto"): "auto" maximises P(win) when the
+            matchup is known (ceiling when you trail, floor when you lead,
+            extra ceiling for a long-shot season by playoff odds) and ranks on
+            expected points otherwise; "neutral" = expected points;
+            "seek_variance" / "protect_floor" force the tilt.
 
     Returns: {
-        winner: dict with recommended player details,
+        winner: dict with recommended player details (the risk-mode pick),
+        points_winner: the expected-points favourite,
+        risk: {risk_mode, reason, has_matchup, playoff_pct, choice,
+               points_choice, p_win {player: %}, summary ("Starting X over Y
+               raises P(win) 41%→44% although mean −0.6") or null},
         comparison: list of ranked players with analysis (each with
             `sleeper_projection` / `consensus` / `disagreement` as a second
             opinion; the ranking is on our `projected_points`),
@@ -2261,6 +2295,8 @@ async def compare_players_for_slot(
         league_id=league_id,
         season=season,
         week=week,
+        risk_mode=risk_mode,
+        roster_id=roster_id,
     )
     if isinstance(result, dict) and unresolved:
         result["unresolved"] = unresolved
@@ -2275,6 +2311,7 @@ async def analyze_lineup(
     week: int | None = None,
     season: int | None = None,
     lineup: dict | None = None,
+    risk_mode: str = "auto",
 ) -> dict:
     """Grade the lineup YOU have set this week and name the swaps worth making.
 
@@ -2293,8 +2330,17 @@ async def analyze_lineup(
         lineup (dict, optional): grade a hypothetical lineup instead, keyed by
             slot ({"QB": [{name, team, position, opponent}], ..., "BENCH": [...]});
             league_id then only supplies the scoring
+        risk_mode (default "auto"): auto | neutral | seek_variance |
+            protect_floor. Auto weighs this week's P(win) against the
+            opponent's projected starters and your season playoff odds: an
+            underdog or long shot chases ceiling, a favourite protects floor.
+            Reported in `risk`; the grade stays on expected points.
 
     Returns: {
+        risk {risk_mode, reason, objective, playoff_pct, win_probability,
+              points_optimal_win_probability, projected_points,
+              opponent_projected_points, adjustment {swaps, mean_delta,
+              summary} | null, recommended_lineup (only when it differs)},
         lineup_grade (A-F), lineup_efficiency_pct, total_projected,
         optimal_projected, optimal_lineup [{slot, player, position,
         projected_points}], suggested_changes [{action (fill|swap), bench_in,
@@ -2321,7 +2367,7 @@ async def analyze_lineup(
         return {"lineup_grade": "N/A", "success": False, "error": f"Invalid input: {e!s}"}
     return await lineup_tools.analyze_lineup(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
-        week=week, season=season, lineup=lineup, db=get_db(),
+        week=week, season=season, lineup=lineup, db=get_db(), risk_mode=risk_mode,
     )
 
 
@@ -2333,6 +2379,9 @@ async def get_win_probability_lineup(
     stack_correlation: float = 0.35,
     season: int | None = None,
     week: int | None = None,
+    risk_mode: str = "auto",
+    league_id: str | None = None,
+    roster_id: int | None = None,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
 
@@ -2351,8 +2400,16 @@ async def get_win_probability_lineup(
         season, week (int, optional): the week whose kickoffs decide locks
             (default: current). A player (with `team`) whose game has started is
             kept in the `slot` he holds, or left out if benched / no slot given.
+        risk_mode (str, default "auto"): auto = maximise P(win), plus a further
+            ceiling tilt in a close game when the season is a long shot (needs
+            league_id + roster_id for the playoff odds); "neutral" = expected
+            points; "seek_variance" / "protect_floor" = beat a target above /
+            below your own expectation.
+        league_id, roster_id (optional): read your playoff odds for auto.
 
     Returns: {
+        risk_mode, risk_reason, risk_objective, playoff_pct,
+        risk_adjustment {swaps, mean_delta, summary} | null,
         recommended_lineup (each with kickoff, kickoff_local, locked),
         unavailable_started, win_probability, projected_points,
         opponent_projected_points, projected_margin, you_are, strategy,
@@ -2372,6 +2429,9 @@ async def get_win_probability_lineup(
         stack_correlation=stack_correlation,
         season=season,
         week=week,
+        risk_mode=risk_mode,
+        league_id=league_id,
+        roster_id=roster_id,
     )
 
 
@@ -3137,6 +3197,7 @@ async def get_weekly_briefing(
     user_id: str | None = None,
     week: int | None = None,
     season: int | None = None,
+    risk_mode: str = "auto",
 ) -> dict:
     """START HERE for "how should I line up this week" - one call, not six.
 
@@ -3151,8 +3212,14 @@ async def get_weekly_briefing(
         user_id: Your Sleeper user id, if you do not know the roster id
         week: NFL week (defaults to the current one)
         season: Season (defaults to the current one)
+        risk_mode: "auto" (default) | "neutral" | "seek_variance" |
+            "protect_floor". Auto reads this week's P(win) and your season
+            playoff odds: underdog or long shot -> ceiling, favourite -> floor.
 
     Returns: {
+        risk_mode, risk_reason, playoff_pct, risk_adjustment {swaps,
+        mean_delta, p_win_points_optimal, p_win_risk_adjusted, summary} | null,
+        points_optimal_win_probability, points_optimal_projected,
         league {name, scoring, slots}, week, record, win_probability,
         projected_points, opponent_projected_points, recommended_lineup,
         changes [{slot, start, projected_points}],
@@ -3172,7 +3239,7 @@ async def get_weekly_briefing(
     """
     return await briefing_tools.get_weekly_briefing(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
-        week=week, season=season,
+        week=week, season=season, risk_mode=risk_mode,
     )
 
 
@@ -3348,6 +3415,7 @@ async def find_trade_targets(
     limit: int = 10,
     horizon: str = "ros",
     max_package_size: int = 2,
+    risk_mode: str = "auto",
 ) -> dict:
     """START HERE for "who should I trade with" - finds the deal, not just grades one.
 
@@ -3382,11 +3450,19 @@ async def find_trade_targets(
             "week" — this week's lineup only (the old behaviour, 1-for-1 only).
         max_package_size: 1 = one-for-one only; 2 (default) adds 2-for-1,
             1-for-2 and 2-for-2; 3 adds 3-for-2 and 2-for-3 (slower).
+        risk_mode: "auto" (default) reads your playoff odds: a long shot ranks
+            by ceiling too (risk.upside_gain: the weekly lineup's ceiling beyond
+            its mean), a contender by fantasy-playoff weeks (risk.playoff_gain);
+            "neutral" | "seek_variance" | "protect_floor". your_gain stays the
+            pure ROS delta and the both-sides bar. For partners' needs and
+            acceptance likelihood use get_trade_market.
 
     Returns: {
+        risk_mode, risk_reason, playoff_pct,
         proposals [{partner, partner_roster_id, shape, you_give, you_get,
                     your_gain, their_gain, mutual_gain, timing {score, bonus,
-                    notes}, rank_score}]  (one-for-one, best per partner),
+                    notes}, rank_score, risk {risk_mode, upside_gain,
+                    playoff_gain, risk_score}}]  (one-for-one, best per partner),
         package_proposals [{... you_give: [..], you_get: [..], your_drops,
                     their_drops ...}]  (best package per partner),
         package_search {shapes, screened, rescored_weekly, search_seconds},
@@ -3405,7 +3481,83 @@ async def find_trade_targets(
     return await trade_finder_tools.find_trade_targets(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
         week=week, season=season, positions=positions, limit=limit,
-        horizon=horizon, max_package_size=max_package_size,
+        horizon=horizon, max_package_size=max_package_size, risk_mode=risk_mode,
+    )
+
+
+@timing_decorator("get_trade_market", tool_type="trade")
+async def get_trade_market(
+    league_id: str,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    offer: dict | None = None,
+    risk_mode: str = "auto",
+    max_partners: int = 5,
+    week: int | None = None,
+    season: int | None = None,
+) -> dict:
+    """The league's trade market for YOUR roster: who needs what, who has it,
+    and who would say yes.
+
+    One read of the whole league: every roster's needs and surpluses by
+    position (from rest-of-season lineup impact — how much of a solid
+    starter's points its weekly best lineup would gain; surplus = players the
+    keenest other teams would start that this lineup can spare), bye-week
+    crunches and injured starters, and each team's situation (record, playoff
+    odds, contender / bubble / long_shot). Then your natural partners (their
+    need ∩ your surplus and vice versa) with candidate packages pre-scored by
+    find_trade_targets (both lineups must gain over the rest of the season),
+    each with an acceptance_likelihood (0-1) and the factors behind it: their
+    lineup gain, FantasyCalc market balance, their positional need, whether
+    they give from depth, contender vs long shot, value timing. Pass `offer`
+    to get counter offers. Use find_trade_targets for the raw search,
+    analyze_trade to grade one deal.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id (or pass user_id instead)
+        user_id: Your Sleeper user id, if you do not know the roster id
+        offer (dict, optional): an offer to counter, {"partner_roster_id": 1,
+            "you_give": ["8228", ...], "you_get": ["9997", ...]} (player ids).
+            Returns 1-3 adjusted versions that keep your gain while raising
+            the partner's acceptance likelihood.
+        risk_mode: "auto" (default; long shots weight ceiling, contenders the
+            fantasy-playoff weeks) | "neutral" | "seek_variance" | "protect_floor"
+        max_partners: partners listed (default 5)
+        week, season: default to the current NFL week
+
+    Returns: {
+        you {needs {pos: 0-10}, surpluses {pos: 0-10}, surplus_players,
+             weak_spots, bye_crunch, injured_starters, situation, posture,
+             playoff_pct, record},
+        teams [same, every roster],
+        partners [{partner_roster_id, partner, situation, fit_score,
+                   natural_partner, they_need_you_have, you_need_they_have,
+                   packages [{you_give, you_get, your_gain, their_gain,
+                              acceptance_likelihood, acceptance_label,
+                              acceptance_factors, market, expected_gain,
+                              risk, timing}]}],
+        counter_offers {original, counters [{change, ...}], message} | null,
+        risk_mode, risk_reason, trade_deadline, timing, success
+    }
+
+    Example: get_trade_market(league_id="123", roster_id=7)
+    Example: get_trade_market(league_id="123", roster_id=7,
+        offer={"partner_roster_id": 1, "you_give": ["8228"], "you_get": ["9997"]})
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=50, required=True)
+        if roster_id is not None:
+            roster_id = validate_numeric_input(roster_id, min_val=1, max_val=32, required=False)
+        max_partners = validate_numeric_input(max_partners, min_val=1, max_val=20, required=False) or 5
+        if offer is not None and not isinstance(offer, dict):
+            raise ValueError("offer must be a dict {partner_roster_id, you_give, you_get}")
+    except ValueError as e:
+        return {"partners": [], "success": False, "error": f"Invalid input: {e!s}"}
+    from . import trade_market
+    return await trade_market.get_trade_market(
+        league_id=league_id, roster_id=roster_id, user_id=user_id, week=week, season=season,
+        offer=offer, risk_mode=risk_mode, max_partners=max_partners,
     )
 
 

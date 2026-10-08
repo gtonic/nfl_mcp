@@ -113,6 +113,19 @@ def _no_sleeper_week_stats(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_risk_mode_odds(monkeypatch):
+    """Season playoff odds for risk_mode=auto stay offline (unknown) in unit
+    tests; tests of the risk mode patch `risk_mode._fetch_odds` themselves."""
+    from nfl_mcp import risk_mode
+
+    async def _none(*_a, **_k):
+        return None
+
+    risk_mode.clear_odds_cache()
+    monkeypatch.setattr(risk_mode, "_fetch_odds", _none)
+
+
+@pytest.fixture(autouse=True)
 def _clear_process_caches():
     """Short-lived in-process caches must not leak one test's mocks into the next."""
     from nfl_mcp import (

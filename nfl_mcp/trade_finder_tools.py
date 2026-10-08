@@ -115,10 +115,27 @@ async def find_trade_targets(
     limit: int = 10,
     horizon: str = "ros",
     max_package_size: int = 2,
+    risk_mode: str | None = "auto",
+    per_partner: int = 1,
+    ros_data: tuple | None = None,
 ) -> dict:
     """Find trades (one-for-one, and packages up to `max_package_size` a side)
-    that improve both your lineup and theirs."""
+    that improve both your lineup and theirs.
+
+    ``risk_mode`` (auto | neutral | seek_variance | protect_floor) re-ranks the
+    ROS proposals for the team's season (`trade_risk`): a long shot weights
+    lineup ceiling, a contender the fantasy-playoff weeks; ``your_gain`` stays
+    the pure ROS delta. ``per_partner`` proposals are kept per partner (1 by
+    default); ``ros_data`` is a ready ``(by_id, meta)`` from `ros.ros_for_ids`
+    for every rostered player (the trade market passes its own).
+    """
+    from . import risk_mode as rm
     from . import ros, sleeper_tools
+
+    try:
+        risk_mode = rm.normalize_risk_mode(risk_mode)
+    except ValueError as e:
+        return create_success_response({"success": False, "error": str(e)})
     from .briefing_tools import _scoring_label, _scoring_ppr
     from .projections import project_players
     from .scoring import league_scoring
@@ -189,6 +206,9 @@ async def find_trade_targets(
 
     names = await _team_names(sleeper_tools, league_id, rosters)
     if horizon != "week":
+        playoff_pct = (await rm.playoff_pct_for(league_id, roster_id, db=db)
+                       if risk_mode == "auto" else None)
+        resolution = rm.resolve_trade(risk_mode, playoff_pct)
         return sleeper_tools.mark_roster_staleness(await _find_ros(
             db=db, league=league, league_id=league_id, rosters=rosters,
             roster_id=roster_id, season=season, week=week, positions=positions,
@@ -201,6 +221,8 @@ async def find_trade_targets(
             },
             whole_slots=whole_slots, fractional_slots=fractional_slots,
             max_package_size=max(1, min(MAX_PACKAGE_SIZE, int(max_package_size or 1))),
+            risk=resolution, playoff_pct=playoff_pct,
+            per_partner=max(1, int(per_partner or 1)), ros_data=ros_data,
         ), roster_state)
 
     all_ids = [pid for ids in ids_by_roster.values() for pid in ids]
@@ -547,6 +569,10 @@ async def _find_ros(
     names: dict[int, str], deadline: dict, freshness: dict, header: dict,
     whole_slots: dict[str, int], fractional_slots: dict[str, float],
     max_package_size: int = 2,
+    risk: dict | None = None,
+    playoff_pct: float | None = None,
+    per_partner: int = 1,
+    ros_data: tuple | None = None,
 ) -> dict:
     """The rest-of-season search: every week's best lineup, before and after.
 
@@ -576,12 +602,16 @@ async def _find_ros(
             str(p) for p in (roster.get("players") or []) if str(p) not in taxi
         ]
     all_ids = [pid for ids in ids_by_roster.values() for pid in ids]
-    by_id, meta = await ros.ros_for_ids(all_ids, league=league, season=season,
-                                        week=week, db=db)
+    if ros_data is not None:
+        by_id, meta = ros_data
+    else:
+        by_id, meta = await ros.ros_for_ids(all_ids, league=league, season=season,
+                                            week=week, db=db)
     weeks = sorted(set(meta["windows"]["regular"]) | set(meta["windows"]["playoff"]))
     # Where each player's trade value is headed, ranked against every
     # rostered player in the league.
-    annotate(list(by_id.values()), week=week)
+    if ros_data is None or not any("value_trajectory" in e for e in by_id.values()):
+        annotate(list(by_id.values()), week=week)
     projected_at = time.monotonic()
 
     def _scored(ids: list[str]) -> list[dict]:
@@ -671,7 +701,6 @@ async def _find_ros(
         })
 
     proposals.sort(key=lambda p: (p["rank_score"], p["mutual_gain"]), reverse=True)
-    top = _best_per_partner(proposals, limit)
 
     package_result = None
     if max_package_size and max_package_size > 1:
@@ -681,7 +710,22 @@ async def _find_ros(
             names=names, roster_positions=league.get("roster_positions"),
             max_package_size=max_package_size, base=_base,
         )
-    package_top = _best_per_partner(package_result["proposals"], limit) if package_result else []
+    # The team's season decides which points weigh most (`trade_risk`); the
+    # ROS gain itself is untouched.
+    from .trade_risk import adjust_proposals
+    risk = risk or {"risk_mode": "neutral", "requested": "neutral", "reason": "neutral"}
+    by_pid = {str(e.get("player_id")): e for players in scored_by_roster.values() for e in players}
+    regular = [w for w in meta["windows"]["regular"] if w in weeks]
+    playoff_weeks = [w for w in meta["windows"]["playoff"] if w in weeks]
+    adjust_proposals(proposals, mine=mine_scored, by_pid=by_pid, slots=whole_slots,
+                     regular_weeks=regular, playoff_weeks=playoff_weeks, resolution=risk)
+    top = _best_per_partner(proposals, limit, per_partner)
+    if package_result:
+        adjust_proposals(package_result["proposals"], mine=mine_scored, by_pid=by_pid,
+                         slots=whole_slots, regular_weeks=regular, playoff_weeks=playoff_weeks,
+                         resolution=risk)
+    package_top = (_best_per_partner(package_result["proposals"], limit, per_partner)
+                   if package_result else [])
     elapsed = time.monotonic() - started
 
     levels = replacement_levels(mine_scored, fractional_slots, whole_slots)
@@ -714,6 +758,13 @@ async def _find_ros(
         "your_replacement_levels": {k: round(v, 1) for k, v in levels.items()},
         "proposals": top,
         "package_proposals": package_top,
+        # How the proposals are ranked for this team's season: long shots
+        # weight ceiling (risk.upside_gain), contenders the playoff weeks
+        # (risk.playoff_gain); your_gain stays the pure ROS lineup delta.
+        "risk_mode": risk["risk_mode"],
+        "risk_mode_requested": risk.get("requested"),
+        "risk_reason": risk.get("reason"),
+        "playoff_pct": playoff_pct,
         "max_package_size": max_package_size,
         # Every swap scored, not only the ones that survived.
         "candidates_considered": evaluated,
@@ -753,18 +804,20 @@ async def _find_ros(
     })
 
 
-def _best_per_partner(proposals: list[dict], limit: int) -> list[dict]:
-    """One proposal per partner, best first: a set of conversations to have
-    rather than twenty variations on the same one."""
-    seen: set[int] = set()
+def _best_per_partner(proposals: list[dict], limit: int, per_partner: int = 1) -> list[dict]:
+    """`per_partner` proposals per partner (one by default), best first, for at
+    most `limit` partners: a set of conversations to have rather than twenty
+    variations on the same one."""
+    count: dict[int, int] = {}
     top = []
     for proposal in proposals:
-        if proposal["partner_roster_id"] in seen:
+        rid = proposal["partner_roster_id"]
+        if rid not in count and len(count) >= limit:
             continue
-        seen.add(proposal["partner_roster_id"])
+        if count.get(rid, 0) >= per_partner:
+            continue
+        count[rid] = count.get(rid, 0) + 1
         top.append(proposal)
-        if len(top) >= limit:
-            break
     return top
 
 

@@ -6,7 +6,7 @@
 [![Data-source watchdog](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml/badge.svg)](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml)
 [![Docker image](https://img.shields.io/badge/image-ghcr.io%2Fgtonic%2Fnfl__mcp-2496ED?logo=docker&logoColor=white)](https://github.com/gtonic/nfl_mcp/pkgs/container/nfl_mcp)
 [![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/gtonic/nfl_mcp)
-[![58 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-58%20in--season%20%7C%2075%20total-8A2BE2)](#-whats-inside)
+[![59 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-59%20in--season%20%7C%2076%20total-8A2BE2)](#-whats-inside)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 NFL MCP turns real NFL & fantasy data into a decisive edge — a suite of tools that plug
@@ -110,7 +110,7 @@ Co-managers work too: pass your own Sleeper `user_id` and the roster is found vi
 
 ## 🧰 What's inside
 
-58 MCP tools in the default in-season profile (75 in total), grouped by what they do.
+59 MCP tools in the default in-season profile (76 in total), grouped by what they do.
 Every tool ships its own parameter schema over MCP, so your assistant can introspect
 them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration guidance.
 
@@ -118,20 +118,20 @@ them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration g
 
 | Profile | Tools | Hides |
 |---|---|---|
-| `season` (default) | 58 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
+| `season` (default) | 59 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
 | `offseason` | 45 | in-season-only tools (lineups, waivers, Vegas, weather, byes, playoff odds, …), admin, `get_cbs_expert_picks` |
-| `full` | 75 | nothing |
+| `full` | 76 | nothing |
 
 The active profile and its tool count are logged at startup and reported by `GET /health` (`tools`).
 
 **📊 Weekly lineup & projections**
-`get_weekly_briefing` (**start here** — roster, opponent, weather, usage and the lineup changes worth making, in one call; mid-week it scores played games for real and only optimizes what you can still change) · `get_league_changes` (**daily check** — what moved for your roster since you last looked) · `analyze_lineup` (grade the lineup you have set, optimal vs current, swaps, locked players) · `get_start_sit_recommendation` (one player or a list; team, position, opponent, snaps, injury and practice looked up for you) · `compare_players_for_slot` · `get_win_probability_lineup` (lineup that maximises P(beating *this* opponent)) · `project_players` (this week's points, one or many, with Sleeper's projection as a labelled second opinion) · `get_ros_projections` (rest-of-season + fantasy-playoff points in your scoring, every later week blended with Sleeper's projection for it, with each player's `value_trajectory`: sell-high / buy-low and why) · `get_opportunity_projections` · `get_usage_trends` · `get_weekly_retro` (after the games: actual vs projection, points left on the bench) · `get_projection_accuracy` (how accurate the logged projections were, week by week: MAE/bias per position, source and signal)
+`get_weekly_briefing` (**start here** — roster, opponent, weather, usage and the lineup changes worth making, in one call; mid-week it scores played games for real and only optimizes what you can still change) · `get_league_changes` (**daily check** — what moved for your roster since you last looked) · `analyze_lineup` (grade the lineup you have set, optimal vs current, swaps, locked players; `risk_mode` says whether your situation calls for ceiling or floor) · `get_start_sit_recommendation` (one player or a list; team, position, opponent, snaps, injury and practice looked up for you) · `compare_players_for_slot` · `get_win_probability_lineup` (lineup that maximises P(beating *this* opponent)) — lineup tools take `risk_mode` (auto | neutral | seek_variance | protect_floor): auto reads this week's P(win) and your playoff odds, so a 0-4 long shot chases ceiling and a heavy favourite protects its floor, and says when that differs from the points-optimal lineup ("starting X over Y raises P(win) 41%→44% although mean −0.6") · `project_players` (this week's points, one or many, with Sleeper's projection as a labelled second opinion) · `get_ros_projections` (rest-of-season + fantasy-playoff points in your scoring, every later week blended with Sleeper's projection for it, with each player's `value_trajectory`: sell-high / buy-low and why) · `get_opportunity_projections` · `get_usage_trends` · `get_weekly_retro` (after the games: actual vs projection, points left on the bench) · `get_projection_accuracy` (how accurate the logged projections were, week by week: MAE/bias per position, source and signal)
 
 **🗓️ Matchup, schedule & environment**
 `get_bye_week_plan` (which upcoming weeks byes leave your lineup short, what to add, free agents who fill it) · `get_defense_rankings` (all defenses, or one via `opponent_team`) · `analyze_roster_matchups` (your roster's matchups this week) · `get_strength_of_schedule` (any week range, or `playoff_weeks=True` from your league's playoff window) · `get_streaming_options` · `get_weather_forecast` · `get_vegas_lines` (games, per-team environment via `teams`, or your whole roster via `league_id`+`roster_id`) · `get_stack_opportunities`
 
 **🔄 Trades, waivers & FAAB**
-`get_waiver_targets` (**who to pick up** in your league; unsigned free agents are named, not ranked) · `get_player_ownership` (**who owns X / is X a free agent** — teamless players included, ambiguous and unmatched names reported) · `recommend_faab_bid` · `get_waiver_log` (processed/failed claims, summary, re-entries; `sections`, `player` filter) · `audit_ir_slots` · `get_handcuff_map` · `find_trade_targets` (trades both lineups gain from — one-for-one and packages up to `max_package_size` a side, ranked with a sell-high / buy-low timing bonus; reads the trade deadline) · `analyze_trade` (ROS lineup change per side, market fairness, per-player value trajectory and timing notes) · `get_player_values` (market consensus; one or many players)
+`get_waiver_targets` (**who to pick up** in your league; unsigned free agents are named, not ranked) · `get_player_ownership` (**who owns X / is X a free agent** — teamless players included, ambiguous and unmatched names reported) · `recommend_faab_bid` · `get_waiver_log` (processed/failed claims, summary, re-entries; `sections`, `player` filter) · `audit_ir_slots` · `get_handcuff_map` · `find_trade_targets` (trades both lineups gain from — one-for-one and packages up to `max_package_size` a side, ranked with a sell-high / buy-low timing bonus; reads the trade deadline) · `analyze_trade` (ROS lineup change per side, market fairness, per-player value trajectory and timing notes; `suggest_counters=True` for counter offers) · `get_trade_market` (**the league's trade market** — every team's needs, surpluses and situation, your natural partners with pre-scored packages and an `acceptance_likelihood`, counter offers for an incoming offer) · `get_player_values` (market consensus; one or many players)
 
 **🏆 Season strategy & opponents**
 `get_playoff_odds` (Monte-Carlo) · `analyze_opponent`
