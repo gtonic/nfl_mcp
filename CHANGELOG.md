@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two weeks rather than one. ESPN fills a date on nearly every report — for
   a reserve list often just the next game — so on IR/PUP it never shortens
   the minimum stint.
+- **PUP / NFI since preseason.** These lists only carry over from camp, so
+  ROS counts their minimum stint from week 1 (`expected_absence(...,
+  season_week=)`) even with no recorded placement; from week 5 the ESPN
+  return date or "this week" decides. Zach Charbonnet (PUP-R, back 10-15):
+  4 → 1 week.
 - `refresh_data` scope `usage` (the last completed week's usage stats).
   `get_data_freshness` — and so `refresh_data`, the briefing's
   `data_freshness` and `/health` (`database.data_freshness`) — reports

@@ -298,8 +298,9 @@ def availability(status: str | None) -> str:
 # limited or better on the latest report usually suits up, one who has not
 # practised usually does not. Applied only to a *reported* practice line on top
 # of a questionable designation; with no report the flat 0.9 stands. Heuristic
-# weights (not backtested — the calibration set has no practice data), kept
-# mild on the upside and firm on the downside.
+# weights (not backtested yet — see `practice_report_history` and
+# `evals/backtest/signal_history.py`), kept mild on the upside and firm on
+# the downside.
 QUESTIONABLE_BY_PRACTICE = {"FP": 0.97, "REST": 0.97, "LP": 0.9, "DNP": 0.65}
 
 
@@ -311,8 +312,10 @@ QUESTIONABLE_BY_PRACTICE = {"FP": 0.97, "REST": 0.97, "LP": 0.9, "DNP": 0.65}
 # (`QUESTIONABLE_BY_PRACTICE`), so neither share is charged twice. Read off the
 # week's pattern: one DNP so far (the Wednesday report) is weak evidence —
 # most of those practise later in the week — while DNP on every day reported
-# is the questionable player who usually sits. Heuristic, not backtested (no
-# practice history in the backtest data); kept mild. A DNP week at 0.75 puts
+# is the questionable player who usually sits. Heuristic, not backtested yet;
+# kept mild. Every reported practice row is kept in `practice_report_history`
+# (schema v17) and `evals/backtest/signal_history.py` measures these values
+# once a few weeks are collected. A DNP week at 0.75 puts
 # the blend at ~0.72 of a healthy projection, between the questionable tag
 # alone (0.91) and Out.
 PRACTICE_BLEND_MULT = {"DNP_SINGLE": 0.90, "DNP": 0.75, "LP_WORSENING": 0.95}

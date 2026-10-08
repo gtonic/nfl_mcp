@@ -35,8 +35,11 @@ news; our model only sees volume. ``benched`` / ``committee`` /
 ``lead_role`` / ``expected_to_play`` add confidence; the rest are reported.
 When `role_shift` already found a lost role the model's volume is
 reweighted from the break week, so a ``benched`` / ``committee`` flag then
-moves confidence only. Not backtested: there is no history of the blurbs
-(the table keeps the latest one per player), so the weights are kept mild.
+moves confidence only. Not backtested yet, so the weights are kept mild:
+the live table keeps the latest blurb per player, but every distinct blurb
+is now kept in ``injury_news_history`` (schema v17) and
+``evals/backtest/signal_history.py`` measures these effects once a few weeks
+are collected.
 
 :func:`player_news` is the entry point for other modules (one player, from
 the database); :func:`build_index` / :func:`signals_for` serve a batch.

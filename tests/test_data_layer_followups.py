@@ -93,6 +93,22 @@ class TestReturnDate:
                                              today=date(2026, 10, 8))
         assert weeks == 2 and "return date" in reason
 
+    def test_pup_since_preseason_has_served_the_minimum(self):
+        """Zach Charbonnet, week 6: on PUP since camp, no placement recorded,
+        ESPN return 10-15. The minimum is served by week 5."""
+        today = date(2026, 10, 8)
+        assert ros.expected_absence("PUP", "PUP-R", "2026-10-15", today)[0] == ros.IR_MIN_WEEKS
+        weeks, reason = ros.expected_absence("PUP", "PUP-R", "2026-10-15", today, season_week=6)
+        assert weeks == 1 and "return date" in reason
+        weeks, reason = ros.expected_absence("PUP", "designated to return", None, today,
+                                             season_week=6)
+        assert weeks == 1 and "before week 1" in reason
+        # Early in the season the rest of the minimum still holds.
+        assert ros.expected_absence("PUP", None, "2026-09-14", date(2026, 9, 10),
+                                    season_week=2)[0] == 3
+        # IR is placed in season: the season week says nothing.
+        assert ros.expected_absence("IR", None, None, today, season_week=6)[0] == ros.IR_MIN_WEEKS
+
     def test_projections_absence_detail_carries_it(self):
         from nfl_mcp.projections import _report_absence
         got = _report_absence({"injury_description": "hamstring", "return_date": "2026-10-18",

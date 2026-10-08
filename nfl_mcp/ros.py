@@ -192,10 +192,17 @@ def is_reserve(status: str | None) -> bool:
             or s.startswith(("reserve", "pup", "injured reserve", "nfi")))
 
 
+def is_preseason_list(status: str | None) -> bool:
+    """True for PUP / NFI: lists a player can only carry over from the
+    preseason, so their stint starts before week 1."""
+    s = (status or "").strip().lower().replace("reserve/", "").replace("reserve-", "")
+    return s.startswith(("pup", "nfi", "physically unable", "non-football"))
+
+
 def expected_absence(
     status: str | None, description: str | None = None,
     return_date: str | None = None, today: date | None = None,
-    placed_on: date | None = None,
+    placed_on: date | None = None, season_week: int | None = None,
 ) -> tuple[int, str | None]:
     """``(weeks_missed_from_this_week, reason)`` for an injury designation.
 
@@ -210,6 +217,11 @@ def expected_absence(
     `placed_on` is when the reserve designation was first seen (see
     `reserve_since`): the minimum stint counts from then rather than from
     today, so a player three weeks into IR is not stashed for four more.
+
+    `season_week`: a PUP / NFI player has been on the list since before
+    week 1 (only a preseason list player can stay on it), so his minimum is
+    served once ``season_week - 1`` games are played, whether or not the
+    placement was recorded -- then the return date or "this week" decides.
     """
     from .projections import availability  # deferred: projections is heavy
 
@@ -227,6 +239,12 @@ def expected_absence(
             base = max(1, IR_MIN_WEEKS - served)
             reason = (f"{status}: {base} more week(s) of the {IR_MIN_WEEKS}-week minimum "
                       f"(on the list since {placed_on.isoformat()})")
+    if reserve and season_week and is_preseason_list(status):
+        played = max(0, int(season_week) - 1)
+        if played and IR_MIN_WEEKS - played < base:
+            base = max(1, IR_MIN_WEEKS - played)
+            reason = (f"{status}: {base} more week(s) of the {IR_MIN_WEEKS}-week minimum "
+                      f"(on the list since before week 1; {played} game(s) played)")
 
     stated = _weeks_from_return_date(return_date, today or datetime.now(UTC).date())
     if stated is not None:
@@ -595,7 +613,7 @@ async def ros_projections(
         injury = p.get("injury") or {}
         absent, absence_reason = expected_absence(
             injury.get("status"), injury.get("description"), injury.get("return_date"), today,
-            placed_on=injury.get("placed_on"))
+            placed_on=injury.get("placed_on"), season_week=week)
         # A stated return date is a calendar date; every other window (the
         # reserve minimum, a suspension, "out 2 weeks") is games missed, so a
         # bye inside it does not use one up.
