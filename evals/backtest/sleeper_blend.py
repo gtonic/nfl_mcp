@@ -39,6 +39,17 @@ METHOD (leak-free, walk-forward)
     ``RETURNING_KEEP_WEIGHT`` of its rate, the rest is the rate over the games
     together (the rank prior with none).
 
+    ``--qb-coupling`` prices ``qb_coupling`` on the rows it applies to: a
+    WR/TE whose team's starter (most pass attempts over its last six games)
+    did not start (nflverse ``games.csv`` starting QB -- realised, where live
+    reads the Out/Doubtful designation), the backup's tier from his
+    previous-season rank (live: market rank), Sleeper's share times the
+    multiplier and the model's scaled by the share of the player's trailing
+    games the starter played; and a QB whose top-two pass catchers by
+    targets have no stat line that week. Reported against the position's
+    other rows (total-points ratio) and a uniform-cut sweep, so a gain from
+    the skew of fantasy points is not read as a quarterback effect.
+
     Reported: MAE / bias / Spearman per position for model-raw (no
     regression), model, Sleeper and the live blend, a sweep of the model
     weight, band coverage at the live volatility (and the width that would
@@ -56,6 +67,7 @@ RUN
     python -m evals.backtest.sleeper_blend --seasons 2025 --include-dnp
     python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025 --role-shift
     python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025 --returning
+    python -m evals.backtest.sleeper_blend --seasons 2023 2024 2025 --qb-coupling
 """
 
 from __future__ import annotations
@@ -68,7 +80,7 @@ from collections import defaultdict
 
 import httpx
 
-from nfl_mcp import role_shift, usage_trends
+from nfl_mcp import qb_coupling, role_shift, usage_trends
 from nfl_mcp import sleeper_projections as sp
 from nfl_mcp.matchup_tools import attach_prior_season, compute_defense_rankings, matchup_ratio
 from nfl_mcp.opportunity import project_opportunity
@@ -162,9 +174,59 @@ def _returning_weeks(pid: str, prior: list[dict], week: int, team: str, pos: str
     return out
 
 
+def _qb_coupling_read(pid: str, pos: str, prior: list[dict], week: int, team: str,
+                      team_games: dict[str, dict[int, dict]], team_weeks: list[int],
+                      started_by: str | None, ranks: dict) -> dict | None:
+    """The QB <-> pass-catcher read for one row (see module doc), or None.
+
+    WR/TE: the team's starter (most pass attempts over its last six games
+    before `week`) did not start (nflverse ``games.csv``), with the backup's
+    tier from his previous-season rank. QB: he starts, and one or both of
+    the team's top-two pass catchers by targets over those games have no
+    stat line this week. ``with_frac`` is the share of the player's trailing
+    games in which the missing teammate(s) did play -- what is left for the
+    model's own volume to have missed.
+    """
+    window = team_weeks[-6:]
+    if not window:
+        return None
+    mine = [g["week"] for g in prior[-6:]]
+    qbs: dict[str, float] = defaultdict(float)
+    for mate, gs in team_games.items():
+        for w in window:
+            g = gs.get(w)
+            if g is not None and g["position"] == "QB":
+                qbs[mate] += g.get("attempts", 0.0)
+    starter = max(qbs, key=qbs.get) if qbs else None
+    if pos in ("WR", "TE"):
+        if not starter or not started_by or started_by == starter:
+            return None
+        played = [w for w in mine
+                  if (team_games.get(starter, {}).get(w) or {}).get("attempts", 0.0)
+                  >= qb_coupling.QB_PLAYED_ATTEMPTS]
+        return {"kind": "qb_out", "tier": qb_coupling.qb_tier(ranks.get(started_by)),
+                "with_frac": len(played) / len(mine) if mine else 1.0}
+    if pos != "QB" or started_by != pid:
+        return None
+    targets: dict[str, float] = defaultdict(float)
+    for mate, gs in team_games.items():
+        for w in window:
+            g = gs.get(w)
+            if g is not None and g["position"] in ("WR", "TE", "RB"):
+                targets[mate] += g["targets"]
+    top = sorted(targets, key=targets.get, reverse=True)[:2]
+    missing = [m for m in top if week not in team_games.get(m, {})]
+    if not missing:
+        return None
+    fracs = [sum(1 for w in mine if w in team_games.get(m, {})) / len(mine) if mine else 1.0
+             for m in missing]
+    return {"kind": "catchers_out", "n": len(missing), "with_frac": sum(fracs) / len(fracs)}
+
+
 def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
                   min_trailing: float = 5.0, include_dnp: bool = False,
-                  with_role: bool = False, with_returning: bool = False) -> list[dict]:
+                  with_role: bool = False, with_returning: bool = False,
+                  with_qb: bool = False) -> list[dict]:
     samples: list[dict] = []
     for season in seasons:
         records = load_season(season)
@@ -178,7 +240,10 @@ def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
         # (team, position) -> {player: {week: game for that team}}
         rooms: dict[tuple[str, str], dict[str, dict[int, dict]]] = defaultdict(
             lambda: defaultdict(dict))
+        # team -> {player: {week: game}}, every position (QB coupling).
+        squads: dict[str, dict[str, dict[int, dict]]] = defaultdict(lambda: defaultdict(dict))
         for r in records:
+            squads[r["team"]][r["player_id"]][r["week"]] = r
             by_player[r["player_id"]].append(r)
             teams_played[r["week"]].add(r["team"])
             team_carries[(r["team"], r["week"])] += r["carries"]
@@ -233,6 +298,14 @@ def build_samples(seasons: list[int], start_week: int = 3, min_prior: int = 2,
                         "model_role": regressed_rate(opp_role, base_ppg(pos, ranks.get(pid)), n)
                         * mf * env,
                     })
+                if with_qb and game is not None:
+                    team_weeks = sorted(w for w in teams_played if w < week
+                                        and team in teams_played[w])
+                    read = _qb_coupling_read(
+                        pid, pos, prior, week, team, squads[team], team_weeks,
+                        (games.get((season, week, team)) or {}).get("qb_id"), ranks)
+                    if read:
+                        sample["qb_coupling"] = read
                 if with_returning and game is not None:
                     missed = _returning_weeks(pid, prior, week, team, pos,
                                               rooms[(team, pos)], ranks)
@@ -321,6 +394,55 @@ def report_role(samples: list[dict]) -> None:
                   f"{mae([_blend_role(s, w) for s in rows], act):.3f}")
 
 
+def _qb_mults(s: dict) -> tuple[float, float]:
+    """``(model_mult, sleeper_mult)`` production's coupling gives a row
+    (``qb_coupling.receiver_context``; the QB side is ``CATCHER_MULT``)."""
+    read = s.get("qb_coupling") or {}
+    if read.get("kind") == "qb_out":
+        m = qb_coupling.RECEIVER_MULT[s["position"]][read["tier"]]
+        if read["with_frac"] == 0:
+            return 1.0, 1.0
+        return 1 - (1 - m) * read["with_frac"], m
+    if read.get("kind") == "catchers_out":
+        return qb_coupling.CATCHER_MULT, qb_coupling.CATCHER_MULT
+    return 1.0, 1.0
+
+
+def report_qb(samples: list[dict]) -> None:
+    w = sp.BLEND_MODEL_WEIGHT
+    matched = [s for s in samples if s["sleeper"] is not None]
+
+    def after(s: dict, scale: float | None = None) -> float:
+        if s["sleeper_status"] == "not_projected":
+            return 0.0
+        mm, sm = _qb_mults(s)
+        if scale is not None:  # a uniform cut, for the sweep
+            mm, sm = 1 - (1 - scale) * s["qb_coupling"]["with_frac"], scale
+        return w * s["model"] * mm + (1 - w) * s["sleeper"] * sm
+
+    print("\nQB coupling: blend MAE / bias before -> after on the affected rows; "
+          "total-points ratio (actual / blend) vs the position's other rows")
+    groups: dict = defaultdict(list)
+    for s in matched:
+        read = s.get("qb_coupling")
+        if read:
+            key = read["tier"] if read["kind"] == "qb_out" else f"{read['n']} out"
+            groups[(read["kind"], s["position"], key)].append(s)
+            groups[(read["kind"], s["position"], "ALL")].append(s)
+    for (kind, pos, key), rows in sorted(groups.items()):
+        act = [s["actual"] for s in rows]
+        before = [_blend(s, w) for s in rows]
+        adj = [after(s) for s in rows]
+        ctrl = [s for s in matched if s["position"] == pos and "qb_coupling" not in s]
+        ctrl_ratio = sum(s["actual"] for s in ctrl) / max(1e-9, sum(_blend(s, w) for s in ctrl))
+        ratio = sum(act) / max(1e-9, sum(before))
+        sweep = " ".join(f"{m:g}:{mae([after(s, m) for s in rows], act):.3f}"
+                         for m in (0.95, 0.9, 0.85))
+        print(f"  {kind:12s} {pos} {key:13s} n={len(rows):4d} {mae(before, act):5.3f} "
+              f"{bias(before, act):+5.2f} -> {mae(adj, act):5.3f} {bias(adj, act):+5.2f} | "
+              f"ratio {ratio:.3f} vs {ctrl_ratio:.3f} | uniform cut {sweep}")
+
+
 def report_returning(samples: list[dict]) -> None:
     w = sp.BLEND_MODEL_WEIGHT
     rows = [s for s in samples if "model_returning" in s and s["sleeper"] is not None]
@@ -395,14 +517,19 @@ def main() -> None:
                     help="also price the role-shift read the live engine applies")
     ap.add_argument("--returning", action="store_true",
                     help="also price the returning-teammate deflation")
+    ap.add_argument("--qb-coupling", action="store_true",
+                    help="also price the QB <-> pass-catcher coupling")
     args = ap.parse_args()
     samples = build_samples(args.seasons, args.start_week, include_dnp=args.include_dnp,
-                            with_role=args.role_shift, with_returning=args.returning)
+                            with_role=args.role_shift, with_returning=args.returning,
+                            with_qb=args.qb_coupling)
     report(samples)
     if args.role_shift:
         report_role(samples)
     if args.returning:
         report_returning(samples)
+    if args.qb_coupling:
+        report_qb(samples)
 
 
 if __name__ == "__main__":

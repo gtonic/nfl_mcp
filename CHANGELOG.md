@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **QB ↔ pass-catcher coupling.** New `qb_coupling` module: a WR whose
+  starting QB (top QB by market rank) is Out / IR / suspended is multiplied
+  by the backup's tier (low 0.87, mid 0.90, starter-grade 1.0; Doubtful at
+  75%) on Sleeper's share — whose line did not move for Egbuka with Mayfield
+  out — and, scaled by the share of his trailing games the starter played,
+  on ours. TEs are flagged, not cut; a QB whose top-two pass catchers are
+  Out/Doubtful gets `teammate_context` and −5 confidence, no multiplier.
+  `qb_context` / `teammate_context` with reasons; ROS carries the
+  multiplier through the starter's expected absence. Backtest
+  (`sleeper_blend --qb-coupling`, 2023-25): WR with a low/mid backup
+  (n=396) blend MAE 5.103 → 4.887, bias +0.82 → −0.34; a uniform cut on the
+  other WRs does not help, TEs (+17% vs the blend) and the QB side showed no
+  cut worth making.
+- **News-text signals.** New `news_signals` module: a rule-based,
+  negation-aware classifier over the stored report text (own blurb plus
+  teammates' blurbs that name the player) → `news_flags` (`benched`,
+  `committee`, `lead_role`, `limited_snaps`, `week_to_week`,
+  `designated_to_return`, `expected_to_play`, `unlikely_to_play`,
+  `ruled_out`) with snippet, date and recency weight (half-life 4 days).
+  Benched / committee / limited snaps take a small multiplier on our share
+  only (floor 0.80; skipped when `role_shift` already found a lost role),
+  lead role / expected to play add confidence. On projection and ROS rows;
+  `player_news(db, name, team)` for other modules. Not backtested — the
+  table keeps only the latest blurb, so there is no history.
+- **Trend-aware waivers and drops.** `role_security` (−2..+2 with reasons:
+  role read, news, volume borrowed from an absent or returning teammate) on
+  every waiver target and drop candidate; targets rank by
+  `rank_score = upgrade + 0.75 × role_security`, drops' keep score moves
+  0.08 per unit, and a paired drop's note says why.
 - **Trend-aware projections.** New `role_shift` module reads the last one or
   two played weeks against the ones before (snap, carries and target share,
   red-zone opportunities; byes and missed weeks skipped) and classifies
@@ -108,6 +137,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lopsided" when both ROS lineups improve: the verdict says market values
   lean one way ("expect a counter-offer") and the warning names the market,
   not the trade.
+- ROS: an Out player whose report says "week-to-week" is expected out two
+  games, not one.
+- `get_waiver_targets` hands the database to the projection engine, which
+  otherwise ran blind (no teammate statuses, depth pricing or news) when
+  waivers were the first tool called.
 - `analyze_lineup`: suggestions follow the optimal lineup's move chains, so a
   fill is always slot-legal ("move Washington FLEX→WR, start Wilson at FLEX",
   not "fill WR with Wilson (RB)") and each swap is paired with the starter it

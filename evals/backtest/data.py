@@ -118,8 +118,9 @@ def load_season(season: int, use_cache: bool = True) -> list[dict]:
 def load_games(season: int, use_cache: bool = True) -> dict:
     """Return per-game weather keyed by both teams.
 
-    ``{(season, week, team): {"wind": float, "roof": str}}`` for regular-season
-    games, from the nflverse schedule (recorded wind mph + roof).
+    ``{(season, week, team): {"wind": float, "roof": str, "implied": float,
+    "qb_id": str}}`` for regular-season games, from the nflverse schedule
+    (recorded wind mph + roof, closing line, the starting quarterback).
     """
     os.makedirs(_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(_CACHE_DIR, "games.csv")
@@ -157,6 +158,9 @@ def load_games(season: int, use_cache: bool = True) -> dict:
         for side in ("home_team", "away_team"):
             team = _TEAM_FIX.get((row.get(side) or "").upper(), (row.get(side) or "").upper())
             if team:
-                out[(int(season), int(wk), team)] = {"wind": wind, "roof": roof,
-                                                     "implied": implied.get(side)}
+                out[(int(season), int(wk), team)] = {
+                    "wind": wind, "roof": roof, "implied": implied.get(side),
+                    # The quarterback who started for this side (nflverse
+                    # gsis id, the player_stats `player_id`).
+                    "qb_id": (row.get(f"{side[:4]}_qb_id") or "").strip() or None}
     return out
