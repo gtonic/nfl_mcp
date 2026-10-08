@@ -1294,7 +1294,8 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
         week_tasks.append(get_matchups(league_id, effective_week))
         week_keys.append("matchups")
     if "transactions" in wanted:
-        week_tasks.append(get_transactions(league_id, week=effective_week))
+        # The current week includes the previous leg (the Wednesday waiver run).
+        week_tasks.append(get_transactions(league_id, week=effective_week, include_previous_leg=None))
         week_keys.append("transactions")
 
     # Execute week-dependent parallel tasks

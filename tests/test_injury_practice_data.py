@@ -253,6 +253,10 @@ def test_only_rest_or_personal_is_rest(injury, expected):
 
 
 # 10 --------------------------------------------------------------------------
+# Sleeper's week 3 of 2026 (the calendar week turns on Wednesday).
+_WEEK3_WEDNESDAY = datetime(2026, 9, 23, 18, 0, tzinfo=UTC)
+
+
 class TestShortWeekLookup:
     def test_week_lookup_reads_next_week_and_keeps_the_latest_practice_week(self, db):
         db.upsert_practice_status([
@@ -265,7 +269,13 @@ class TestShortWeekLookup:
             {"player_name": "Thu Guy", "team": "NYG", "date": "2026-09-22", "status": "LP",
              "season": 2026, "week": 4, "source": "nfl.com"},
         ])
-        got = pr.lookup_practice(db, "Thu Guy", "NYG", season=2026, week=3)
+        # Week 3 has to be the *current* week: a past week deliberately does
+        # not read week + 1 (reads_next_week). Pin the clock rather than
+        # depend on the day the suite runs.
+        real = pr.reads_next_week
+        with patch.object(pr, "reads_next_week",
+                          lambda _db, s, w, now=None: real(_db, s, w, now=_WEEK3_WEDNESDAY)):
+            got = pr.lookup_practice(db, "Thu Guy", "NYG", season=2026, week=3)
         assert got["pattern"] == "DNP-LP"
         assert got["latest_date"] == "2026-09-22"
 

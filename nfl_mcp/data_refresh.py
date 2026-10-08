@@ -1,0 +1,226 @@
+"""Manual data refresh: the prefetch loop's feeds, on demand.
+
+The background prefetch (``server._prefetch_loop``) keeps injuries, practice
+reports, athletes, schedule and snaps current while the host is awake. A
+sleeping laptop stops it: after a night the athletes table was 43h old and the
+injury reports 10h, with nothing to do about it short of a restart. Running the
+fetchers by hand did not help either -- they are gated by
+``NFL_MCP_ADVANCED_ENRICH``, which a script without ``.env`` does not have, so
+``_fetch_injuries()`` returned 0 rows without a word.
+
+``refresh_data`` runs the same fetchers and writes the same way the loop does
+(injuries pruned only for completely crawled teams), regardless of that flag,
+and reports per-scope counts, durations and the resulting freshness. An
+injury crawl is ~1900 ESPN requests and takes minutes, so a refresh can also
+run in the background and be polled by job id.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+import uuid
+from datetime import UTC, datetime
+
+from .health import env_int
+
+logger = logging.getLogger(__name__)
+
+REFRESH_SCOPES = ("injuries", "practice", "athletes", "schedule", "snaps")
+DEFAULT_SCOPES = ("injuries", "practice")
+
+# A feed younger than this is left alone unless ``force``: a second refresh a
+# minute after the first only re-crawls the same pages.
+MIN_REFRESH_AGE_HOURS = {"injuries": 0.25, "practice": 0.25, "athletes": 6.0}
+# Scope -> key in NFLDatabase.get_data_freshness().
+_FRESHNESS_FEED = {"injuries": "injuries", "practice": "practice_status", "athletes": "athletes"}
+# NFL regular season, for the schedule look-ahead.
+_LAST_REGULAR_WEEK = 18
+# Finished background jobs kept for polling.
+MAX_KEPT_JOBS = 20
+
+_jobs: dict[str, dict] = {}
+# Strong references: a task only referenced by the loop can be collected.
+_tasks: dict[str, asyncio.Task] = {}
+# scope -> id of the job currently refreshing it.
+_scope_owner: dict[str, str] = {}
+
+
+def _schedule_weeks() -> int:
+    return env_int("NFL_MCP_PREFETCH_SCHEDULE_WEEKS", 4)
+
+
+async def _refresh_injuries(db, season: int, week: int) -> dict:
+    from . import sleeper_tools
+    injuries, complete = await sleeper_tools._fetch_injuries(with_complete_teams=True, force=True)
+    written = 0
+    if injuries or complete:
+        # As the prefetch: reports a team's complete crawl no longer lists are
+        # cleared; partially crawled teams are left alone.
+        written = await asyncio.to_thread(
+            db.upsert_injuries, injuries, prune_missing=True, complete_teams=complete)
+    return {"fetched": len(injuries), "written": written, "complete_teams": len(complete)}
+
+
+async def _refresh_practice(db, season: int, week: int) -> dict:
+    from . import sleeper_tools
+    reports = await sleeper_tools._fetch_practice_reports(season, week, db=db, force=True)
+    written = await asyncio.to_thread(db.upsert_practice_status, reports) if reports else 0
+    return {"fetched": len(reports), "written": written, "week": week}
+
+
+async def _refresh_athletes(db, season: int, week: int) -> dict:
+    from . import athlete_tools
+    res = await athlete_tools.fetch_athletes(db)
+    if not res.get("success"):
+        raise RuntimeError(res.get("error") or "athletes fetch failed")
+    return {"fetched": res.get("athletes_count", 0), "written": db.get_athlete_count()}
+
+
+async def _refresh_schedule(db, season: int, week: int) -> dict:
+    from . import sleeper_tools
+    weeks = list(range(week, min(week + _schedule_weeks(), _LAST_REGULAR_WEEK + 1)))
+    fetched = written = 0
+    for wk in weeks:
+        rows = await sleeper_tools._fetch_week_schedule(season, wk, force=True)
+        fetched += len(rows or [])
+        if rows:
+            written += await asyncio.to_thread(db.upsert_schedule_games, rows)
+    return {"fetched": fetched, "written": written, "weeks": weeks}
+
+
+async def _refresh_snaps(db, season: int, week: int) -> dict:
+    from . import sleeper_tools
+    # The current week may not have been played yet; the last one has.
+    weeks = [w for w in (week, week - 1) if w >= 1]
+    fetched = written = 0
+    for wk in weeks:
+        rows = await sleeper_tools._fetch_week_player_snaps(season, wk, force=True)
+        fetched += len(rows or [])
+        if rows:
+            written += await asyncio.to_thread(db.upsert_player_week_stats, rows)
+    return {"fetched": fetched, "written": written, "weeks": weeks}
+
+
+_REFRESHERS = {
+    "injuries": _refresh_injuries,
+    "practice": _refresh_practice,
+    "athletes": _refresh_athletes,
+    "schedule": _refresh_schedule,
+    "snaps": _refresh_snaps,
+}
+
+
+def _freshness(db) -> dict:
+    try:
+        return db.get_data_freshness()
+    except Exception as e:
+        logger.debug(f"freshness unavailable: {e}")
+        return {}
+
+
+async def _run_scope(scope: str, db, season: int, week: int) -> dict:
+    started = time.monotonic()
+    try:
+        out = await _REFRESHERS[scope](db, season, week)
+        out["status"] = "ok"
+    except Exception as e:
+        logger.warning(f"[Refresh] {scope} failed: {e}")
+        out = {"status": "error", "error": str(e)}
+    out["duration_s"] = round(time.monotonic() - started, 1)
+    return out
+
+
+async def _run(job: dict, db, season: int, week: int) -> dict:
+    """Refresh the job's scopes concurrently (they hit different upstreams)."""
+    started = time.monotonic()
+    scopes = job["scopes_to_run"]
+    try:
+        results = await asyncio.gather(*(_run_scope(s, db, season, week) for s in scopes))
+        job["scopes"].update(dict(zip(scopes, results, strict=True)))
+    finally:
+        for s in scopes:
+            if _scope_owner.get(s) == job["job_id"]:
+                _scope_owner.pop(s, None)
+    job["freshness"] = _freshness(db)
+    job["duration_s"] = round(time.monotonic() - started, 1)
+    job["finished_at"] = datetime.now(UTC).isoformat()
+    job["status"] = ("error" if scopes and all(job["scopes"][s]["status"] == "error" for s in scopes)
+                     else "done")
+    return job
+
+
+def _prune_jobs() -> None:
+    done = [j for j, v in _jobs.items() if v.get("status") != "running"]
+    for job_id in done[:-MAX_KEPT_JOBS] if len(done) > MAX_KEPT_JOBS else []:
+        _jobs.pop(job_id, None)
+        _tasks.pop(job_id, None)
+
+
+def _public(job: dict) -> dict:
+    out = {k: v for k, v in job.items() if k != "scopes_to_run"}
+    out["success"] = job.get("status") != "error"
+    return out
+
+
+async def refresh_data(scope: list[str] | None = None, force: bool = False,
+                       background: bool = False, job_id: str | None = None,
+                       db=None) -> dict:
+    """Run the prefetch loop's refreshes now. See the module docstring."""
+    if job_id:
+        job = _jobs.get(job_id)
+        if job is None:
+            return {"success": False, "error": f"Unknown job_id {job_id!r}",
+                    "jobs": sorted(_jobs)}
+        return _public(job)
+
+    scopes = [str(s).strip().lower() for s in (scope or DEFAULT_SCOPES) if str(s).strip()]
+    unknown = sorted(set(scopes) - set(REFRESH_SCOPES))
+    if unknown:
+        return {"success": False,
+                "error": f"Unknown scope(s) {unknown}; valid: {list(REFRESH_SCOPES)}"}
+    scopes = list(dict.fromkeys(scopes))
+    if db is None:
+        from .database import get_shared_db
+        db = get_shared_db()
+
+    from .week_context import current_season_week
+    state = await current_season_week(db)
+    season, week = int(state["season"]), int(state["week"])
+
+    before = _freshness(db)
+    job = {
+        "job_id": uuid.uuid4().hex[:12],
+        "status": "running",
+        "season": season,
+        "week": week,
+        "force": force,
+        "started_at": datetime.now(UTC).isoformat(),
+        "freshness_before": before,
+        "scopes": {},
+    }
+    to_run = []
+    for s in scopes:
+        owner = _scope_owner.get(s)
+        if owner:
+            job["scopes"][s] = {"status": "already_running", "job_id": owner}
+            continue
+        age = (before.get(_FRESHNESS_FEED.get(s, "")) or {}).get("age_hours")
+        floor = MIN_REFRESH_AGE_HOURS.get(s)
+        if not force and age is not None and floor is not None and age < floor:
+            job["scopes"][s] = {"status": "skipped_fresh", "age_hours": age,
+                                "note": f"younger than {floor}h; pass force=true to refresh anyway"}
+            continue
+        to_run.append(s)
+        _scope_owner[s] = job["job_id"]
+    job["scopes_to_run"] = to_run
+    _jobs[job["job_id"]] = job
+    _prune_jobs()
+
+    if background and to_run:
+        _tasks[job["job_id"]] = asyncio.create_task(_run(job, db, season, week))
+        out = _public(job)
+        out["note"] = (f"Running in the background; poll with refresh_data(job_id="
+                       f"\"{job['job_id']}\"). An injury crawl takes a few minutes.")
+        return out
+    return _public(await _run(job, db, season, week))

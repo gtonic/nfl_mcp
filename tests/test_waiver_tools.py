@@ -182,7 +182,7 @@ class TestGetWaiverLog:
             ]
         }
 
-        async def mock_get_transactions(league_id, round):
+        async def mock_get_transactions(league_id, round, **_kwargs):
             return mock_transactions
 
         with patch('nfl_mcp.waiver_tools.get_transactions', side_effect=mock_get_transactions):
@@ -199,7 +199,7 @@ class TestGetWaiverLog:
             "error": "Failed to fetch"
         }
 
-        async def mock_get_transactions(league_id, round):
+        async def mock_get_transactions(league_id, round, **_kwargs):
             return mock_transactions
 
         with patch('nfl_mcp.waiver_tools.get_transactions', side_effect=mock_get_transactions):
@@ -223,7 +223,7 @@ class TestGetWaiverLog:
             ]
         }
 
-        async def mock_get_transactions(league_id, round):
+        async def mock_get_transactions(league_id, round, **_kwargs):
             return mock_transactions
 
         with patch('nfl_mcp.waiver_tools.get_transactions', side_effect=mock_get_transactions):
@@ -263,7 +263,7 @@ class TestCheckReEntryStatus:
             ]
         }
 
-        async def mock_get_transactions(league_id, round):
+        async def mock_get_transactions(league_id, round, **_kwargs):
             return mock_transactions
 
         with patch('nfl_mcp.waiver_tools.get_transactions', side_effect=mock_get_transactions):
@@ -280,7 +280,7 @@ class TestCheckReEntryStatus:
             "error": "Failed to fetch"
         }
 
-        async def mock_get_transactions(league_id, round):
+        async def mock_get_transactions(league_id, round, **_kwargs):
             return mock_transactions
 
         with patch('nfl_mcp.waiver_tools.get_transactions', side_effect=mock_get_transactions):
@@ -357,7 +357,7 @@ class TestNullAddsDrops:
              "created": 2, "adds": {"1234": 7}, "drops": None, "roster_ids": [7]},
         ]
 
-        async def fake_get_transactions(league_id, week):
+        async def fake_get_transactions(league_id, week, **_kwargs):
             return {"success": True, "transactions": transactions}
 
         monkeypatch.setattr(
@@ -401,7 +401,7 @@ class TestFailedClaims:
 
     @pytest.mark.asyncio
     async def test_waiver_log_reports_failed_claims_separately(self):
-        async def _txns(league_id, round):
+        async def _txns(league_id, round, **_kwargs):
             return {"success": True, "transactions": self.TXNS}
 
         with patch("nfl_mcp.waiver_tools.get_transactions", side_effect=_txns):

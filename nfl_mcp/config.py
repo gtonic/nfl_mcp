@@ -102,6 +102,10 @@ _rate_limiters: dict[str, OutboundRateLimiter] = {}
 _DEFAULT_API_RATE_LIMITS: dict[str, int] = {
     "sleeper": 600,
     "espn": 120,
+    # ESPN's core API (injury lists/details) is CDN-cached JSON. An injury crawl
+    # is ~1900 requests -- one per listed report -- and at the 120/min of the
+    # site API it took 16-30 minutes; it ran unthrottled before the limiter.
+    "espn_core": 600,
     "odds_api": 30,
     "nflverse": 60,
     "fantasycalc": 60,
@@ -116,6 +120,7 @@ _DEFAULT_API_RATE_LIMITS: dict[str, int] = {
 _HOST_RATE_LIMITERS: tuple[tuple[str, str], ...] = (
     ("sleeper.app", "sleeper"),
     ("sleeper.com", "sleeper"),
+    ("sports.core.api.espn.com", "espn_core"),  # before the espn.com suffix
     ("espn.com", "espn"),
     ("the-odds-api.com", "odds_api"),
     ("github.com", "nflverse"),

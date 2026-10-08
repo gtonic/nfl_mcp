@@ -32,15 +32,15 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server has **72 MCP tools** (including `get_league_leaders`, behind the
+The server has **73 MCP tools** (including `get_league_leaders`, behind the
 `league_leaders` feature flag, enabled by default). Which of them are registered
 depends on the tool profile, `NFL_MCP_TOOL_PROFILE`:
 
 | Profile | Tools | Registered |
 |---|---|---|
-| `season` (default) | 55 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
-| `offseason` | 43 | draft and coaching; not the in-season-only tools (briefing, retro, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder, usage/opportunity), admin or `get_cbs_expert_picks` |
-| `full` | 72 | everything |
+| `season` (default) | 56 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
+| `offseason` | 44 | draft and coaching; not the in-season-only tools (briefing, retro, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder, usage/opportunity), admin or `get_cbs_expert_picks` |
+| `full` | 73 | everything |
 
 The profile and count are logged at startup and returned by `GET /health`
 under `tools`. Every tool also ships its own parameter schema over MCP, so an
@@ -183,7 +183,10 @@ Comprehensive fantasy football league management:
 - **`get_fantasy_context`**: Aggregated league data in one call
 
 #### Transaction & Activity Tools
-- **`get_transactions`**: League transactions by week
+- **`get_transactions`**: League transactions by week. For the current week
+  (or no week) the previous leg is merged in, deduped by transaction_id:
+  Sleeper files the Wednesday waiver run under the leg it closes, so on the
+  Wednesday of week 5 that morning's claims are in leg 4 (`legs`, `leg_note`)
 - **`get_traded_picks`**: Draft pick trades
 
 #### Draft Tools
@@ -468,6 +471,17 @@ The prefetch system automatically:
 5. Fetches practice reports (Thursday–Saturday only)
 6. Refreshes the athletes cache (player names/teams/positions) at startup and daily
 7. Refreshes on configured intervals
+
+**Manual refresh** — `refresh_data(scope=[...], force=False, background=False)`
+runs the same fetchers on demand (scopes `injuries`, `practice`, `athletes`,
+`schedule`, `snaps`; default injuries + practice), regardless of
+`NFL_MCP_ADVANCED_ENRICH`, and returns per-scope `fetched`/`written`/
+`duration_s` plus the resulting `freshness`. Use it when tools report stale
+data (the loop pauses while the host sleeps). A feed younger than its minimum
+age (15 min injuries/practice, 6h athletes) is skipped unless `force=True`.
+An injury crawl is ~1900 ESPN requests (a few minutes): pass `background=True`
+and poll `refresh_data(job_id=...)`. The athletes refresh also runs whenever
+the table is older than its interval by wall clock, so a slept host catches up.
 
 Each cycle fetches only the **previous** week, so a server started mid-season
 never acquires the earlier ones. Use `scripts/backfill_usage.py` to fill a week

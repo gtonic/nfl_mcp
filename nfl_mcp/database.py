@@ -1980,6 +1980,22 @@ class NFLDatabase:
             logger.debug(f"get_team_injuries_from_cache failed: {e}")
             return []
 
+    def get_injury_player_names(self) -> dict[str, str]:
+        """``{player_id: player_name}`` for every stored injury report with a
+        real name. Seeds the crawl's athlete-name cache: a cold process used
+        to fetch one ESPN athlete page per report (~1900) just for names it
+        had already stored."""
+        try:
+            with self._pool.get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT player_id, player_name FROM player_injuries "
+                    "WHERE player_name IS NOT NULL AND player_name NOT IN ('', 'Unknown')"
+                ).fetchall()
+            return {str(r[0]): r[1] for r in rows}
+        except Exception as e:
+            logger.debug(f"get_injury_player_names failed: {e}")
+            return {}
+
     def get_player_injury_from_cache(
         self,
         player_id: str,

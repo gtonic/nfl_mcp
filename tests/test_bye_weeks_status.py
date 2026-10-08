@@ -9,6 +9,7 @@ lookup and week inference start/sit does, `Inactive`/`Reserve` projected at
 flat zero in the other, and an Out player was reported as practising fully.
 """
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -26,10 +27,19 @@ _PLAYING = ["BUF", "NYJ", "NE", "BAL", "CIN", "CLE", "PIT", "HOU", "IND", "JAX",
             "MIN", "ATL", "CAR", "NO", "TB", "ARI", "LAR", "SF"]
 
 
+# Before the fixture schedule's week-5 kickoffs (2026-10-04T17:00Z). On the
+# real clock those games have started from that afternoon on, every playing
+# player is locked, and "Playing WR" could neither win a slot comparison nor be
+# suggested off the bench.
+_BEFORE_KICKOFF = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
-    """No nflverse download: week > 1 would otherwise fetch the game logs."""
+    """No nflverse download: week > 1 would otherwise fetch the game logs.
+    The lock clock is pinned before kickoff (see _BEFORE_KICKOFF)."""
     monkeypatch.setattr(pj.opportunity_tools, "_fetch_game_logs", AsyncMock(return_value={}))
+    monkeypatch.setattr(lo, "_now", lambda: _BEFORE_KICKOFF)
 
 
 def _schedule_rows(season=2026, week=5, teams=_PLAYING):

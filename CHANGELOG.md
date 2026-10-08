@@ -34,12 +34,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model with Sleeper.
 
 ### Fixed
+- `analyze_lineup`: suggestions follow the optimal lineup's move chains, so a
+  fill is always slot-legal ("move Washington FLEX→WR, start Wilson at FLEX",
+  not "fill WR with Wilson (RB)") and each swap is paired with the starter it
+  displaces. Swaps under the 2-point noise bar are listed in
+  `marginal_changes` instead of vanishing while `optimal_lineup` made them.
+- `get_transactions` (and the waiver log / fantasy context) for the current
+  week also reads the previous leg, deduped by transaction_id: Sleeper files
+  the Wednesday waiver run under the leg it closes.
+- `analyze_trade`: positional need comes from rest-of-season lineup impact
+  (`positional_needs_basis: ros_lineup_gain`), and a side whose ROS lineup the
+  trade does not raise gets no positional-fit bonus.
+- Injury crawl: ESPN's core API gets its own 600/min limiter (was paced at
+  the site API's 120/min — 16-30 min per crawl), list pages hold 200 reports,
+  and the athlete-name cache is seeded from stored reports.
+- Prefetch refreshes athletes when the table is older than its interval by
+  wall clock (the cycle count stalls while the host sleeps).
 - Evals scored truth with nflverse `fantasy_points_ppr` (INT −2, dropped
   fumbles / 2-pt columns, 2025 interceptions read as 0) while the model
   predicts Sleeper defaults; truth is now priced by `ScoringModel` on the full
   stat line.
 
 ### Added
+- `refresh_data` tool (every profile): runs the prefetch's injuries /
+  practice / athletes / schedule / snaps refreshes on demand, regardless of
+  `NFL_MCP_ADVANCED_ENRICH`, with per-scope counts, durations and resulting
+  freshness; `background=True` + `job_id` polling for long crawls.
 - `evals/backtest/sleeper_blend.py`: model vs Sleeper vs blend, weight sweep,
   band coverage and start/sit accuracy; Sleeper history fetched once and
   cached (network on first run).

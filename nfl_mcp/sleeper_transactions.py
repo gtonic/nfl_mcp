@@ -4,6 +4,7 @@ get_transactions (week-inferring, robust with snapshot fallback) and
 get_traded_picks. Consumers of the core Sleeper primitives + the enrichment
 layer; re-exported from sleeper_tools for backward compatibility.
 """
+import asyncio
 import logging
 
 import httpx
@@ -27,7 +28,8 @@ from .sleeper_tools import _enrich_single, _init_db, get_nfl_state
 logger = logging.getLogger(__name__)
 
 
-async def get_transactions(league_id: str, round: int | None = None, week: int | None = None) -> dict:
+async def get_transactions(league_id: str, round: int | None = None, week: int | None = None,
+                           include_previous_leg: bool | None = False) -> dict:
     """Get COMPLETED transactions for a week of a Sleeper league.
 
     IMPORTANT — pending waiver claims are not here. Sleeper exposes a claim only
@@ -38,6 +40,14 @@ async def get_transactions(league_id: str, round: int | None = None, week: int |
 
     There is no public endpoint for pending claims. The league app is the only
     place to see them.
+
+    Legs: Sleeper files the Wednesday waiver run under the leg it closes, so on
+    the Wednesday of week N (``nfl_state.week`` N) the claims processed that
+    morning are in leg N-1 and leg N is still empty. ``include_previous_leg``
+    True merges leg N-1 into the answer (deduped by transaction_id, each row
+    keeping Sleeper's ``leg``); None does that only for the current week (or
+    an inferred one); False (the default) reads exactly one leg, which callers
+    that already walk several weeks rely on.
 
     Robustness features:
     - Week auto-inference (existing behavior)
@@ -102,6 +112,70 @@ async def get_transactions(league_id: str, round: int | None = None, week: int |
             {"transactions": [], "week": week, "count": 0}
         )
 
+    if include_previous_leg is None:
+        include_previous_leg = auto_inferred or week == await _current_week()
+    if not include_previous_leg or week <= LIMITS["round_min"]:
+        return await _fetch_week(league_id, week, auto_inferred)
+    current, previous = await asyncio.gather(
+        _fetch_week(league_id, week, auto_inferred),
+        _fetch_week(league_id, week - 1, False),
+    )
+    return _merge_legs(current, previous, week)
+
+
+async def _current_week() -> int | None:
+    """Sleeper's current ``week`` (the leg new moves are filed under), or None."""
+    try:
+        state = await get_nfl_state()
+        week = ((state or {}).get("nfl_state") or {}).get("week")
+        return week if isinstance(week, int) else None
+    except Exception as e:
+        logger.debug(f"NFL state unavailable for the transaction leg: {e}")
+        return None
+
+
+def _merge_legs(current: dict, previous: dict, week: int) -> dict:
+    """One answer for "this week's moves" from the current and previous leg.
+
+    Sleeper files the waiver run under the leg it closes, not the one it opens:
+    on Wednesday of week 5 (``nfl_state.week`` 5) that morning's claims are in
+    leg 4, and leg 5 is still empty. Asking for week 5 alone read as "no claims
+    processed" hours after they had been. Rows are deduped by transaction_id
+    and keep Sleeper's own ``leg`` field, so callers can still tell them apart.
+    """
+    seen: set = set()
+    merged: list = []
+    for resp in (current, previous):
+        for tx in (resp or {}).get("transactions") or []:
+            tid = tx.get("transaction_id") if isinstance(tx, dict) else None
+            if tid is not None and tid in seen:
+                continue
+            if tid is not None:
+                seen.add(tid)
+            merged.append(tx)
+    merged.sort(key=lambda t: (t.get("status_updated") or t.get("created") or 0)
+                if isinstance(t, dict) else 0, reverse=True)
+    out = dict(current or {})
+    out.update({
+        "transactions": merged,
+        "count": len(merged),
+        "week": week,
+        "legs": [week, week - 1],
+        "previous_leg_count": len((previous or {}).get("transactions") or []),
+        "leg_note": (f"Includes leg {week - 1}: Sleeper files the waiver run that opens "
+                     f"week {week} under the previous leg."),
+    })
+    if previous and previous.get("success") is False:
+        out["previous_leg_error"] = previous.get("error") or "unavailable"
+    # One leg answering is an answer; the other's failure is reported above.
+    if out.get("success") is False and previous and previous.get("success") is not False:
+        out["success"] = True
+        out["current_leg_error"] = out.pop("error", None) or "unavailable"
+    return out
+
+
+async def _fetch_week(league_id: str, week: int, auto_inferred: bool) -> dict:
+    """One leg of transactions: retries, enrichment, snapshot fallback."""
     headers = get_http_headers("sleeper_transactions")
     url = f"https://api.sleeper.app/v1/league/{league_id}/transactions/{week}"
     retry_delays = [0.0, 0.4, 1.0]
