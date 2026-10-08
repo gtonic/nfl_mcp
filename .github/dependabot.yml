@@ -22,7 +22,7 @@ updates:
         patterns: ["*"]
     labels: ["dependencies", "ci"]
 
-  # Base image of the Dockerfile (python:3.13-slim)
+  # Base image of the Dockerfile (python:3.14-slim)
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
