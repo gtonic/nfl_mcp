@@ -607,10 +607,13 @@ def _returning_teammates(
 
 
 def _volume_change(opp_index: dict, name: str, week: int, exclude: frozenset[int],
-                   break_week: int | None) -> dict[str, dict]:
+                   break_week: int | None, skip: frozenset[int] = frozenset()
+                   ) -> dict[str, dict]:
     """``{field: {trailing, with_teammate}}`` for the volume a returning
-    teammate's weeks inflated (only the fields that drop)."""
-    full = opportunity_tools.trailing_volume(opp_index, name, week, break_week=break_week) or {}
+    teammate's weeks inflated (only the fields that drop). `skip`: weeks left
+    out of both (injury-shortened games)."""
+    full = opportunity_tools.trailing_volume(opp_index, name, week, break_week=break_week,
+                                             exclude_weeks=skip or None) or {}
     kept = opportunity_tools.trailing_volume(opp_index, name, week, exclude_weeks=exclude,
                                              break_week=break_week) or {}
     return {f: {"trailing": round(v, 2), "with_teammate": round(kept.get(f, 0.0), 2)}
@@ -789,13 +792,24 @@ class ProjectionEngine:
                                       for n in shares}
         # A lost role (role_shift) weights the games since it from that week.
         break_week = (role or {}).get("reweight_from_week")
+        # Injury-shortened games (`role_shift.injury_exit_weeks`: a 12%-snap
+        # exit, a concussion in the first quarter) are not his rate: left out
+        # of the volume like a missed game, unless that leaves too few games.
+        skip = frozenset((role or {}).get("injury_exit_weeks") or [])
         deflated_volume: dict[str, dict] = {}
         deflated_base = deflated_games = None
         if opp_index and week and name:
             opp_base = opportunity_tools.opportunity_base_for(
                 opp_index, name, position, week, ppr=ppr,
                 extra_volume=vacated or None, scoring=model, break_week=break_week,
+                exclude_weeks=skip or None,
             )
+            if opp_base is None and skip:
+                skip = frozenset()
+                opp_base = opportunity_tools.opportunity_base_for(
+                    opp_index, name, position, week, ppr=ppr,
+                    extra_volume=vacated or None, scoring=model, break_week=break_week,
+                )
             if opp_base is not None:
                 base = round(opp_base, 1)
                 base_source = "opportunity"
@@ -804,13 +818,13 @@ class ProjectionEngine:
                     # price the inherited part only while the starter is out.
                     own = opportunity_tools.opportunity_base_for(
                         opp_index, name, position, week, ppr=ppr, scoring=model,
-                        break_week=break_week)
+                        break_week=break_week, exclude_weeks=skip or None)
                     own_base = round(own, 1) if own is not None else None
             if returning and opp_base is not None:
                 # His own base from the games he played *with* them: one game
                 # will do (it is regressed by its count), none and it is the
                 # rank prior.
-                exclude = frozenset(w for r in returning for w in r["missed_weeks"])
+                exclude = frozenset(w for r in returning for w in r["missed_weeks"]) | skip
                 kept = opportunity_tools.opportunity_base_for(
                     opp_index, name, position, week, ppr=ppr, scoring=model,
                     exclude_weeks=exclude, break_week=break_week, min_games=1)
@@ -824,7 +838,8 @@ class ProjectionEngine:
                 if deflated_base >= (own_base if own_base is not None else base):
                     returning, deflated_base, deflated_games = [], None, None
                 else:
-                    deflated_volume = _volume_change(opp_index, name, week, exclude, break_week)
+                    deflated_volume = _volume_change(opp_index, name, week, exclude, break_week,
+                                                     skip)
 
         # 2) Matchup vs opponent defense
         matchup_tier = "unknown"
@@ -910,7 +925,8 @@ class ProjectionEngine:
 
         sample = None
         if base_source == "opportunity" and opp_index and week and name:
-            sample = opportunity_tools.usage_sample(opp_index, name, week)
+            sample = opportunity_tools.usage_sample(opp_index, name, week,
+                                                    exclude_weeks=skip or None)
 
         # Two or three games of opportunity are a small sample: the rate is
         # regressed toward the rank bucket exactly as ROS prices later weeks
@@ -1018,6 +1034,8 @@ class ProjectionEngine:
                 # The first week of a lost role, weighted up in the volume
                 # (`opportunity.POST_BREAK_WEIGHT`); None without one.
                 "role_reweight_from_week": break_week,
+                # Injury-shortened games left out of the volume like a miss.
+                "injury_exit_weeks": sorted(skip),
             },
             # A recent change of role (`role_shift`): the read, the multiplier
             # on Sleeper's share of the blend, and what moved.
@@ -1219,7 +1237,11 @@ async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
         team = normalize_team(p.get("team")) or entry.get("team") or ""
         rows = role_shift.player_rows(entry, team, weeks, team_carries, played_teams,
                                       week_stats, p.get("player_id"))
-        reads.append(role_shift.classify(rows, position))
+        read = role_shift.classify(rows, position)
+        # Injury-shortened games, whatever the read (an insufficient or
+        # stable one carries none): the volume base leaves them out.
+        read["injury_exit_weeks"] = sorted(r["week"] for r in rows if r.get("injury_exit"))
+        reads.append(read)
 
     def _played(pid) -> set[int]:
         pid = str(pid or "")

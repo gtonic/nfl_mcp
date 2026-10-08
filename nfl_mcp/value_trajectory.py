@@ -15,7 +15,11 @@ miss:
 * a role that just changed (``role_trend``, from `role_shift`) moves the
   market a week or two after the snaps and carries do;
 * our per-game rate can rank a player well above or below the market's
-  positional rank (FantasyCalc, ``market_position_rank``).
+  positional rank (FantasyCalc, ``market_position_rank``);
+* the report text (``news_flags``, `news_signals`): "benched", "gonna
+  rotate" or "the lead back" is a role change the usage has not shown yet,
+  and a player of his own "designated to return" from a reserve list is due
+  back sooner than the reserve minimum says.
 
 Each signal is a share of his current value expected to move within
 `TRAJECTORY_HORIZON_GAMES`. The first three are structural (a date, a rate
@@ -78,6 +82,17 @@ MARKET_GAP_MIN_RANKS = 4
 MARKET_GAP_MIN_RATIO = 0.25
 MARKET_GAP_SCALE = 0.12
 MARKET_GAP_MAX_CHANGE = 0.07
+# News flags (`news_signals`, recency-weighted): benched / committee read as
+# a shrinking role, lead_role as a growing one, at NEWS_ROLE_CHANGE x the
+# flag's weight -- a soft signal in the role's place, never added to a role
+# read the same way (the same change, seen twice). Kept below
+# ROLE_SHIFT_CHANGE: the text is untested and one blurb is one quote.
+NEWS_ROLE_CHANGE = 0.04
+NEWS_ROLE_FLAGS = {"benched": -1.0, "committee": -1.0, "lead_role": 1.0}
+# A player of his own designated to return (practice window opened): back
+# within this many games, whatever the reserve minimum still says. The same
+# reading as `projections.DESIGNATED_RETURN_GAMES` for a teammate.
+DESIGNATED_RETURN_GAMES = 2
 # Fewer players than this at a position and a rank among them means nothing.
 MARKET_GAP_MIN_POOL = 12
 # Bounds on the summed change.
@@ -210,7 +225,12 @@ def assess(entry: dict, *, week: int | None = None, rank: int | None = None) -> 
                 f"~{inherited_games} game(s)" + (f" (week {ends})" if ends else ""))
             signals.append({"kind": "inherited_volume_ends", "change": round(change, 3)})
 
-    # 3) His own return from a multi-week absence.
+    # 3) His own return from a multi-week absence. A reserve player whose
+    #    practice window is open is back sooner than the minimum says.
+    news = {f.get("flag"): f for f in entry.get("news_flags") or []}
+    if absent > TRAJECTORY_HORIZON_GAMES and "designated_to_return" in news:
+        absent = DESIGNATED_RETURN_GAMES
+        reasons.append(f"{name} designated to return: \"{news['designated_to_return'].get('snippet', '')[:90]}\"")
     if INJURY_RETURN_MIN_GAMES <= absent <= TRAJECTORY_HORIZON_GAMES:
         back = entry.get("injury_weeks") or []
         back_week = (max(back) + 1) if back else (week + absent if week else None)
@@ -236,6 +256,21 @@ def assess(entry: dict, *, week: int | None = None, rank: int | None = None) -> 
                 1.0 if _two_week_role(flags) else ROLE_ONE_WEEK_WEIGHT)
             reasons.append(f"role {'rising' if sign > 0 else 'shrinking'}: {text}")
             signals.append({"kind": role, "change": round(role_change, 3)})
+    # The report text's role read: in place of a usage read, never on top of
+    # one the same way.
+    # (A lead role while a teammate is out is the absence again, not counted.)
+    news_change = sum(sign * NEWS_ROLE_CHANGE * float(news[flag].get("weight") or 0.0)
+                      for flag, sign in NEWS_ROLE_FLAGS.items()
+                      if flag in news and not (sign > 0 and absence_role))
+    news_change = max(-NEWS_ROLE_CHANGE, min(NEWS_ROLE_CHANGE, news_change))
+    if news_change and role_change and (news_change > 0) == (role_change > 0):
+        news_change = 0.0  # the usage already shows it
+    if abs(news_change) >= MIN_REPORTED_CHANGE / 2:
+        snippet = next((news[f].get("snippet", "") for f in NEWS_ROLE_FLAGS if f in news), "")
+        reasons.append(f"news: {'growing' if news_change > 0 else 'shrinking'} role — "
+                       f"\"{snippet[:90]}\"")
+        signals.append({"kind": "news_role", "change": round(news_change, 3)})
+        role_change += news_change
 
     gap = market_gap(entry, rank)
     gap_change = 0.0
@@ -257,7 +292,7 @@ def assess(entry: dict, *, week: int | None = None, rank: int | None = None) -> 
         soft = role_change + gap_change
 
     structural = sum(s["change"] for s in signals
-                     if s["kind"] not in ("role_up", "role_down", "market_gap"))
+                     if s["kind"] not in ("role_up", "role_down", "market_gap", "news_role"))
     total = max(-MAX_CHANGE, min(MAX_CHANGE, structural + soft))
     if total >= TRAJECTORY_MIN_CHANGE:
         trajectory, signal = "rising", "buy_low"

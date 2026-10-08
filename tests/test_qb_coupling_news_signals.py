@@ -393,7 +393,8 @@ class TestRos:
             [{"name": "Wide One", "position": "WR", "team": "TB"}],
             season=2026, week=5, settings={"playoff_week_start": 15})
         entry = out["players"][0]
-        assert entry["news_flags"] == flags and entry["role_trend"] == "stable"
+        assert entry["news_flags"] == flags
+        assert "role_trend" not in entry  # only a moved role is passed on (#247)
         weekly = entry["weekly_points"]
         # Week 5 is the weekly projection; week 6 the second game without the
         # starter (x0.9); week 7 on, the full rate.
@@ -459,3 +460,77 @@ class TestWaiverRanking:
         assert wr["role_security"]["label"] == "shrinking"
         assert wr["rank_score"] == round(wr["upgrade_points"] - 0.75, 2)
         assert wr["verdict"] == "upgrade"  # the verdict rests on the points alone
+
+
+class TestInjuryExitWeeks:
+    def _project(self, games, role):
+        logs = _index([{"player_id": "w", "name": "Wide One", "position": "WR", "team": "TB",
+                        "games": games}])
+        return _engine()._project_one(
+            {"name": "Wide One", "position": "WR", "team": "TB", "opponent": "DAL"},
+            {"list": []}, {}, {}, logs, 5, 1.0, role=role)
+
+    def test_an_injury_shortened_game_is_left_out_of_the_base(self):
+        """Jefferson's 12%-snap exit, Chase's concussion game: not his rate."""
+        games = _games([1, 2, 3], targets=9.0) + _games([4], targets=1.0)
+        plain = self._project(games, None)
+        exited = self._project(games, {"injury_exit_weeks": [4]})
+        assert exited["breakdown"]["injury_exit_weeks"] == [4]
+        assert plain["breakdown"]["injury_exit_weeks"] == []
+        assert exited["breakdown"]["usage_games"] == plain["breakdown"]["usage_games"] - 1
+        assert exited["breakdown"]["base_ppg"] > plain["breakdown"]["base_ppg"]
+        assert exited["projected_points"] > plain["projected_points"]
+
+    @pytest.mark.asyncio
+    async def test_exits_reach_the_base_even_without_a_role_read(self, monkeypatch):
+        """Jefferson: 92% / 100% / 12% (hurt) / out -- too few games for a
+        role read, but week 3 still has to leave his volume."""
+        logs = {"j": {"player_id": "j", "name": "Wide One", "position": "WR", "team": "MIN",
+                      "games": [{**g, "team": "MIN"} for g in _games([1, 2, 3], targets=9.0)]}}
+        rows = [{"week": 1, "status": "played", "snap_share": 92.0, "target_share": 39.0},
+                {"week": 2, "status": "played", "snap_share": 100.0, "target_share": 32.0},
+                {"week": 3, "status": "played", "snap_share": 12.0, "target_share": 8.0,
+                 "injury_exit": True},
+                {"week": 4, "status": "did_not_play"}]
+        monkeypatch.setattr(projections.role_shift, "player_rows", lambda *a, **k: rows)
+        reads, _ = await projections._role_reads(
+            [{"name": "Wide One", "position": "WR", "team": "MIN"}], logs,
+            opportunity_tools.build_name_index(logs), 2026, 5)
+        assert reads[0]["role_trend"] == "insufficient_data"
+        assert reads[0]["injury_exit_weeks"] == [3]
+
+    def test_too_few_games_left_keeps_them(self):
+        games = _games([3], targets=9.0) + _games([4], targets=1.0)
+        p = self._project(games, {"injury_exit_weeks": [4]})
+        assert p["breakdown"]["base_source"] == "opportunity"
+        assert p["breakdown"]["injury_exit_weeks"] == []
+
+
+class TestTrajectoryNews:
+    def _assess(self, **extra):
+        from nfl_mcp import value_trajectory
+        weeks = list(range(5, 18))
+        e = {"player": "Back", "player_id": "Back", "position": "RB", "team": "LAC",
+             "per_game": 10.0, "weekly_points": dict.fromkeys(weeks, 10.0),
+             "expected_absence_games": 0, **extra}
+        return value_trajectory.assess(e, week=5)
+
+    def test_committee_is_a_soft_falling_signal_never_a_call_alone(self):
+        t = self._assess(news_flags=[{"flag": "committee", "weight": 1.0,
+                                      "snippet": "the backs are gonna rotate"}])
+        assert any(s["kind"] == "news_role" and s["change"] < 0 for s in t["signals"])
+        assert t["signal"] == "hold"
+        assert "gonna rotate" in t["reasons"][0]
+
+    def test_news_does_not_double_a_usage_read(self):
+        t = self._assess(role_trend="role_down",
+                         role_flags=["carries share 60%→30% (weeks 3-4)"],
+                         news_flags=[{"flag": "committee", "weight": 1.0, "snippet": "rotate"}])
+        assert not any(s["kind"] == "news_role" for s in t["signals"])
+
+    def test_own_designation_to_return_is_a_hard_signal(self):
+        t = self._assess(expected_absence_games=4, injury_status="IR", news_flags=[
+            {"flag": "designated_to_return", "weight": 1.0,
+             "snippet": "The Seahawks opened his 21-day practice window."}])
+        assert t["signal"] == "buy_low"
+        assert any(s["kind"] == "injury_return" for s in t["signals"])

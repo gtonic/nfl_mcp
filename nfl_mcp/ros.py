@@ -46,9 +46,9 @@ fantasy-playoff window (``playoff_points``, from the league's
   projection's model multiplier (``qb_context``, `qb_coupling`) for the
   starter's expected absence. "Week-to-week" in an Out player's report is
   read as two games, not one.
-- News: the weekly projection's ``news_flags`` (`news_signals`) and
-  ``role_trend`` are passed through on every entry, for the tools that weigh
-  a role's security (waivers, drops, trades); they do not move ROS points.
+- News: the weekly projection's ``news_flags`` (`news_signals`) are passed
+  through on every entry, for the tools that weigh a role's security
+  (waivers, drops, value trajectory); they do not move ROS points.
 - K / DEF: later weeks are priced per opponent off the offense read the weekly
   engine falls back to (``streaming_tools.unit_matchup``).
 """
@@ -655,10 +655,9 @@ async def ros_projections(
             "injury_window": absence_reason,
             "expected_absence_games": absent,
             "weekly_points": {row["week"]: row["points"] for row in weekly},
-            # What the report text says about his role (`news_signals`) and
-            # his usage read (`role_shift`), from this week's projection.
-            "news_flags": list(proj.get("news_flags") or []),
-            "role_trend": proj.get("role_trend"),
+            # What the report text says about his role (`news_signals`), from
+            # this week's projection (`value_trajectory` reads it too).
+            "news_flags": list(proj.get("news_flags") or rate_src.get("news_flags") or []),
         }
         if qb_games:
             # The backup quarterback's multiplier on his later weeks.

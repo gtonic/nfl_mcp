@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lead role / expected to play add confidence. On projection and ROS rows;
   `player_news(db, name, team)` for other modules. Not backtested — the
   table keeps only the latest blurb, so there is no history.
+- **News in the value trajectory.** `benched` / `committee` / `lead_role`
+  are a soft role signal (±0.04 × recency, never a call alone, never on top
+  of a usage read the same way); a player's own `designated_to_return`
+  shortens a reserve absence to two games, so his return reads as buy-low.
+  Flag rate in both live leagues stays at 14% / 15%.
 - **Trend-aware waivers and drops.** `role_security` (−2..+2 with reasons:
   role read, news, volume borrowed from an absent or returning teammate) on
   every waiver target and drop candidate; targets rank by
@@ -137,6 +142,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lopsided" when both ROS lineups improve: the verdict says market values
   lean one way ("expect a counter-offer") and the warning names the market,
   not the trade.
+- Injury-shortened games (`role_shift` `injury_exit` weeks) are left out of
+  the opportunity base like a missed game (`breakdown.injury_exit_weeks`),
+  also when the role read has too few weeks: Justin Jefferson's 12%-snap
+  week 3 had his base at 7.0 per game, now 12.2 (blend 10.5 → 13.0).
 - ROS: an Out player whose report says "week-to-week" is expected out two
   games, not one.
 - `get_waiver_targets` hands the database to the projection engine, which
