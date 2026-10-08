@@ -317,7 +317,11 @@ _LP_RE = re.compile(
 _DNP_RE = re.compile(
     r"\bnon-participant\b|\bdid not participate\b|\bdidn't participate\b|"
     r"\bdid not practice\b|\bdidn't practice\b|\bsat out (?:\w+'s )?practice\b|"
-    r"\bwas held out of (?:\w+'s )?practice\b|\bdid not take part\b",
+    r"\bwas held out of (?:\w+'s )?practice\b|\bdid not take part\b|"
+    # "remained absent from practice Thursday" (Lamar Jackson, week 5 2026).
+    r"\b(?:was|remained|stayed) absent from (?:\w+'s )?practice\b|"
+    r"\b(?:was|remained|stayed) out of (?:\w+'s )?practice\b|"
+    r"\bmissed (?:\w+'s )?practice\b",
     re.I,
 )
 # Lines that are never a practice report.
@@ -331,7 +335,8 @@ _FORWARD_RE = re.compile(
     re.I,
 )
 _PAST_PREFIX_RE = re.compile(r"\b(?:was|were)\s+(?:a\s+|an\s+)?$", re.I)
-_PAST_PHRASES = ("was ", "practiced ", "did not ", "didn't ", "sat out ")
+_PAST_PHRASES = ("was ", "practiced ", "did not ", "didn't ", "sat out ", "remained ",
+                 "stayed ", "missed ")
 
 
 def _is_past_tense(text: str, m: re.Match) -> bool:
@@ -519,6 +524,38 @@ def lookup_practice(db, player_name: str | None, team: str | None,
         logger.debug(f"practice lookup failed for {player_name}: {e}")
         return None
     return summarize(rows if isinstance(rows, list) else None)
+
+
+def lookup_practice_with_note(db, player_name: str | None, team: str | None,
+                              note: str | None = None, posted: str | None = None,
+                              today: date | None = None) -> dict | None:
+    """``summarize`` of this practice week's stored reports plus the day a
+    current report blurb names (`parse_espn_practice_note`).
+
+    The stored rows lag the news: the ESPN note "remained absent from practice
+    Thursday" is the injury table's description hours before a refresh writes
+    the day (or NFL.com posts it). A note dated outside the current practice
+    week is ignored, and a stored row for the same day wins.
+    """
+    team = normalize_team(team)
+    if not player_name or not team:
+        return None
+    rows: list[dict] = []
+    if db is not None and hasattr(db, "get_practice_reports"):
+        try:
+            got = db.get_practice_reports(player_name, team)
+            rows = list(got) if isinstance(got, list) else []
+        except Exception as e:
+            logger.debug(f"practice lookup failed for {player_name}: {e}")
+    parsed = parse_espn_practice_note(note, posted) if note and posted else None
+    if parsed:
+        today = today or to_eastern(datetime.now(UTC)).date()
+        floor = min(practice_week_start(today), practice_week_start(today, include_monday=True))
+        if (floor.isoformat() <= parsed["date"] <= today.isoformat()
+                and parsed["date"] not in {r.get("date") for r in rows}):
+            rows.append({"date": parsed["date"], "status": parsed["status"],
+                         "estimated": parsed["estimated"], "source": SOURCE_ESPN_NEWS})
+    return summarize(latest_practice_week(rows))
 
 
 def practice_fields(summary: dict | None) -> dict:

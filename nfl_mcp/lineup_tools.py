@@ -43,7 +43,8 @@ def _search_rank(row: dict) -> int:
 
 
 def name_candidates(db, name: str | None, team: str | None = None,
-                    position: str | None = None) -> tuple[list[dict], bool]:
+                    position: str | None = None,
+                    include_free_agents: bool = False) -> tuple[list[dict], bool]:
     """``(candidates, ambiguous)``: athlete rows for a name, best match first.
 
     Ranked by the team/position hint, then a fantasy position with a team,
@@ -51,6 +52,13 @@ def name_candidates(db, name: str | None, team: str | None = None,
     when there are any. `ambiguous` is True when two or more exact-name
     fantasy players on a team fit the hints (two "Mike Williams"): the first
     is still the best guess, but the caller should say so.
+
+    `include_free_agents`: a player without an NFL team (released, unsigned)
+    counts like one with a team -- a fantasy position, an active status and
+    the market rank decide -- and takes part in the ambiguity check. For
+    ownership questions: Tyreek Hill had no team and is still rostered in a
+    league, so a lookup that preferred (or required) a team answered "free
+    agent" for nobody in particular.
     """
     from .opportunity_tools import norm_name
 
@@ -67,12 +75,21 @@ def name_candidates(db, name: str | None, team: str | None = None,
 
     def fits(h: dict) -> bool:
         pos = (h.get("position") or "").upper()
-        return (bool(h.get("team_id")) and pos in _FANTASY
+        return ((include_free_agents or bool(h.get("team_id"))) and pos in _FANTASY
                 and (not team or normalize_team(h.get("team_id")) == team)
                 and (not position or pos == position))
 
     def score(h: dict) -> tuple:
         pos = (h.get("position") or "").upper()
+        if include_free_agents:
+            return (
+                bool(team) and normalize_team(h.get("team_id")) == team,
+                bool(position) and pos == position,
+                pos in _FANTASY,
+                (h.get("status") or "").lower() == _ACTIVE_STATUS,
+                -_search_rank(h),
+                bool(h.get("team_id")),
+            )
         return (
             bool(team) and normalize_team(h.get("team_id")) == team,
             bool(position) and pos == position,

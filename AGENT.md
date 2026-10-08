@@ -32,15 +32,15 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server has **73 MCP tools** (including `get_league_leaders`, behind the
+The server has **74 MCP tools** (including `get_league_leaders`, behind the
 `league_leaders` feature flag, enabled by default). Which of them are registered
 depends on the tool profile, `NFL_MCP_TOOL_PROFILE`:
 
 | Profile | Tools | Registered |
 |---|---|---|
-| `season` (default) | 56 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
-| `offseason` | 44 | draft and coaching; not the in-season-only tools (briefing, retro, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder, usage/opportunity), admin or `get_cbs_expert_picks` |
-| `full` | 73 | everything |
+| `season` (default) | 57 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
+| `offseason` | 45 | draft and coaching; not the in-season-only tools (briefing, retro, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder, usage/opportunity), admin or `get_cbs_expert_picks` |
+| `full` | 74 | everything |
 
 The profile and count are logged at startup and returned by `GET /health`
 under `tools`. Every tool also ships its own parameter schema over MCP, so an
@@ -215,7 +215,7 @@ Comprehensive fantasy football league management:
   - Returns: weeks, crunch_weeks, thin_weeks, suggestions, free_agent_options,
     core_starters, trade_deadline, method
 
-### 7. Waiver Wire Analysis Tools (2 tools)
+### 7. Waiver Wire Analysis Tools (3 tools)
 
 Advanced waiver wire intelligence:
 
@@ -237,6 +237,19 @@ Advanced waiver wire intelligence:
   - Returns: waiver_log + failed_claims (log), dashboard_summary (summary),
     re_entry_players + volatile_players (re_entries). Pending claims are never
     visible — Sleeper exposes a claim only once processed.
+
+- **`get_player_ownership`**: **START HERE for "is X a free agent?" / "who owns
+  X?"** — never conclude "free agent" from `search_athletes` + `get_rosters`
+  by hand
+  - Parameters: `league_id`, `players` (list of names, up to 25)
+  - Resolves names including players without an NFL team (released / unsigned
+    veterans are still rostered in leagues), flags ambiguous names with every
+    candidate, and lists names it cannot match under `unresolved` (unknown, not
+    free agents)
+  - Returns per player: `player_id`, `team` ("FA" without an NFL team),
+    `status` (`rostered` with roster_id / owner / team_name / slot incl. IR and
+    taxi, or `free_agent` / `on_waivers` with `waiver_timing` — the same
+    estimate as `get_waiver_targets`)
 
 ### 8. Trade Analysis Tools (2 tools)
 

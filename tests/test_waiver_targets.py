@@ -171,6 +171,19 @@ class TestWaiverTargets:
         assert "Their Stud RB" not in [t["name"] for t in out["targets"]]
 
     @pytest.mark.asyncio
+    async def test_teamless_free_agents_are_named_not_ranked(self, db, monkeypatch):
+        import time
+        db.upsert_athletes({"u1": {
+            "player_id": "u1", "full_name": "Unsigned Vet WR", "position": "WR", "team": None,
+            "status": "Active", "active": True, "search_rank": 145,
+            "news_updated": int(time.time() * 1000)}})
+        _stub_sleeper(monkeypatch, {"Unsigned Vet WR": 30.0})
+        out = await get_waiver_targets(LEAGUE, roster_id=7)
+        assert "Unsigned Vet WR" not in [t["name"] for t in out["targets"]]
+        assert [u["name"] for u in out["unsigned_free_agents"]] == ["Unsigned Vet WR"]
+        assert "Unsigned Vet WR (WR)" in out["unsigned_note"]
+
+    @pytest.mark.asyncio
     async def test_skips_inactive_players_and_byes(self, db, monkeypatch):
         _stub_sleeper(monkeypatch, {"Practice Squad Guy": 20.0, "Bye Week Guy": 20.0})
         out = await get_waiver_targets(LEAGUE, roster_id=7)

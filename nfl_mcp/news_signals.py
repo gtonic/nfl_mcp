@@ -73,6 +73,7 @@ PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "unlikely_to_play": (
         r"\b(?:not|isn't|is not|aren't|unlikely) (?:expected |likely |going |set )?to (?:play|suit up)\b",
+        r"\b(?:only )?an? (?:outside|slim|small|long-?shot) chance (?:to|of) (?:play|suit up|go)",
     ),
     "expected_to_play": (
         r"\b(?:expected|set|on track|slated|poised|cleared|plans?|good|ready) to (?:play|suit up|go)\b",
@@ -119,6 +120,8 @@ PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "week_to_week": (
         r"\bweek[- ]to[- ]week\b",
+        r"\bmiss(?:es|ing)?\s+(?:multiple|several|a few|a couple(?: of)?)\s+"
+        r"(?:more\s+)?(?:games|weeks)\b",
     ),
     "designated_to_return": (
         r"designated (?:for|to) return",

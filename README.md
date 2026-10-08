@@ -6,7 +6,7 @@
 [![Data-source watchdog](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml/badge.svg)](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml)
 [![Docker image](https://img.shields.io/badge/image-ghcr.io%2Fgtonic%2Fnfl__mcp-2496ED?logo=docker&logoColor=white)](https://github.com/gtonic/nfl_mcp/pkgs/container/nfl_mcp)
 [![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/gtonic/nfl_mcp)
-[![56 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-56%20in--season%20%7C%2073%20total-8A2BE2)](#-whats-inside)
+[![57 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-57%20in--season%20%7C%2074%20total-8A2BE2)](#-whats-inside)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 NFL MCP turns real NFL & fantasy data into a decisive edge — a suite of tools that plug
@@ -110,7 +110,7 @@ Co-managers work too: pass your own Sleeper `user_id` and the roster is found vi
 
 ## 🧰 What's inside
 
-56 MCP tools in the default in-season profile (73 in total), grouped by what they do.
+57 MCP tools in the default in-season profile (74 in total), grouped by what they do.
 Every tool ships its own parameter schema over MCP, so your assistant can introspect
 them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration guidance.
 
@@ -118,9 +118,9 @@ them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration g
 
 | Profile | Tools | Hides |
 |---|---|---|
-| `season` (default) | 56 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
-| `offseason` | 44 | in-season-only tools (lineups, waivers, Vegas, weather, byes, playoff odds, …), admin, `get_cbs_expert_picks` |
-| `full` | 73 | nothing |
+| `season` (default) | 57 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
+| `offseason` | 45 | in-season-only tools (lineups, waivers, Vegas, weather, byes, playoff odds, …), admin, `get_cbs_expert_picks` |
+| `full` | 74 | nothing |
 
 The active profile and its tool count are logged at startup and reported by `GET /health` (`tools`).
 
@@ -131,7 +131,7 @@ The active profile and its tool count are logged at startup and reported by `GET
 `get_bye_week_plan` (which upcoming weeks byes leave your lineup short, what to add, free agents who fill it) · `get_defense_rankings` (all defenses, or one via `opponent_team`) · `analyze_roster_matchups` (your roster's matchups this week) · `get_strength_of_schedule` (any week range, or `playoff_weeks=True` from your league's playoff window) · `get_streaming_options` · `get_weather_forecast` · `get_vegas_lines` (games, per-team environment via `teams`, or your whole roster via `league_id`+`roster_id`) · `get_stack_opportunities`
 
 **🔄 Trades, waivers & FAAB**
-`get_waiver_targets` (**who to pick up** in your league) · `recommend_faab_bid` · `get_waiver_log` (processed/failed claims, summary, re-entries; `sections`, `player` filter) · `audit_ir_slots` · `get_handcuff_map` · `find_trade_targets` (trades both lineups gain from — one-for-one and packages up to `max_package_size` a side, ranked with a sell-high / buy-low timing bonus; reads the trade deadline) · `analyze_trade` (ROS lineup change per side, market fairness, per-player value trajectory and timing notes) · `get_player_values` (market consensus; one or many players)
+`get_waiver_targets` (**who to pick up** in your league; unsigned free agents are named, not ranked) · `get_player_ownership` (**who owns X / is X a free agent** — teamless players included, ambiguous and unmatched names reported) · `recommend_faab_bid` · `get_waiver_log` (processed/failed claims, summary, re-entries; `sections`, `player` filter) · `audit_ir_slots` · `get_handcuff_map` · `find_trade_targets` (trades both lineups gain from — one-for-one and packages up to `max_package_size` a side, ranked with a sell-high / buy-low timing bonus; reads the trade deadline) · `analyze_trade` (ROS lineup change per side, market fairness, per-player value trajectory and timing notes) · `get_player_values` (market consensus; one or many players)
 
 **🏆 Season strategy & opponents**
 `get_playoff_odds` (Monte-Carlo) · `analyze_opponent`
