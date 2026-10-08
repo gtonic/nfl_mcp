@@ -46,15 +46,22 @@ from .ros import SEASON_ENDING_WEEKS
 TRAJECTORY_HORIZON_GAMES = 3
 # Total expected change (share of value) that makes a trajectory rising or
 # falling; below it the signals are reported but the call is "hold".
+#
+# Calibration (2026 week 5, two live 12-team leagues): the soft signals are
+# sized so that neither makes a call alone -- only a role shift and a market
+# gap that agree do -- and the hard ones (a teammate back, inherited volume
+# ending, his own return) carry most calls. Before: 31% / 32% of rostered
+# players flagged, most on a role shift alone; after: 15% / 15%, about
+# two thirds of them hard signals.
 TRAJECTORY_MIN_CHANGE = 0.08
 # A role that just moved (role_shift role_up / role_down), held for two
 # games; one game counts for ROLE_ONE_WEEK_WEIGHT of it (a single game can be
-# game script, or an in-game injury). A two-game shift alone makes a call, a
-# one-game one only corroborates.
-ROLE_SHIFT_CHANGE = 0.08
+# game script). Games he left injured are not part of the read (see
+# `role_shift.injury_exit_weeks`). Corroborates; never a call on its own.
+ROLE_SHIFT_CHANGE = 0.06
 ROLE_ONE_WEEK_WEIGHT = 0.5
 # Added when the role and the market gap point the same way.
-SOFT_AGREEMENT_BONUS = 0.03
+SOFT_AGREEMENT_BONUS = 0.02
 # A structural change smaller than this is not worth a reason line.
 MIN_REPORTED_CHANGE = 0.02
 # A player out for at least INJURY_RETURN_MIN_GAMES and due back inside the
@@ -65,12 +72,12 @@ INJURY_RETURN_MIN_GAMES = 2
 # market's positional rank. The gap counts once it is at least
 # MARKET_GAP_MIN_RANKS places and MARKET_GAP_MIN_RATIO of the larger rank; it
 # moves the value by MARKET_GAP_SCALE x that ratio, at most
-# MARKET_GAP_MAX_CHANGE — so on its own only a gap of about half the rank
-# (our RB12 vs the market's RB26) makes a call.
+# MARKET_GAP_MAX_CHANGE -- never a call alone; with a role shift the same way
+# from a gap of about half the rank (our RB12 vs the market's RB24).
 MARKET_GAP_MIN_RANKS = 4
 MARKET_GAP_MIN_RATIO = 0.25
-MARKET_GAP_SCALE = 0.15
-MARKET_GAP_MAX_CHANGE = 0.10
+MARKET_GAP_SCALE = 0.12
+MARKET_GAP_MAX_CHANGE = 0.07
 # Fewer players than this at a position and a rank among them means nothing.
 MARKET_GAP_MIN_POOL = 12
 # Bounds on the summed change.

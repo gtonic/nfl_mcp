@@ -74,18 +74,25 @@ class TestReturningTeammate:
 
 
 class TestRoleAndInjury:
-    def test_a_two_week_rising_role_is_a_buy_low(self):
+    def test_a_rising_role_is_flagged_but_alone_is_not_a_call(self):
         e = _entry(name="Jeremiyah Love", team="ARI", role_trend="role_up",
                    role_flags=["carries share 43%→66% (weeks 3-4)"])
         t = assess(e, week=5)
-        assert t["trajectory"] == "rising" and t["signal"] == "buy_low"
+        assert t["signal"] == "hold"
+        assert t["signals"] == [{"kind": "role_up", "change": 0.06}]
         assert t["reasons"] == ["role rising: carries share 43%→66% (weeks 3-4)"]
+
+    def test_a_rising_role_the_market_has_not_seen_is_a_buy_low(self):
+        e = _entry(name="Jeremiyah Love", team="ARI", role_trend="role_up",
+                   role_flags=["carries share 43%→66% (weeks 3-4)"], market_position_rank=30)
+        t = assess(e, week=5, rank=14)
+        assert t["trajectory"] == "rising" and t["signal"] == "buy_low"
 
     def test_a_one_week_role_change_is_flagged_but_not_a_call(self):
         e = _entry(role_trend="role_down", role_flags=["snap share 94%→20% (week 4)"])
         t = assess(e, week=5)
         assert t["signal"] == "hold"
-        assert t["signals"] == [{"kind": "role_down", "change": -0.04}]
+        assert t["signals"] == [{"kind": "role_down", "change": -0.03}]
 
     def test_back_from_a_multi_week_absence_is_rising(self):
         e = _entry(name="Jaxson Dart", position="QB", team="NYG", injury_status="IR",
@@ -108,13 +115,18 @@ class TestMarketGap:
         # Too few at a position to rank against.
         assert value_trajectory._rank_pool(pool[:5]) == {}
 
-    def test_a_big_gap_makes_a_call_and_a_small_one_does_not(self):
+    def test_a_gap_alone_is_reported_but_never_a_call(self):
         cheap = _entry(market_position_rank=28)
         gap = market_gap(cheap, 13)
         assert gap["read"] == "market_lower" and gap["gap"] == 15
-        assert assess(cheap, week=5, rank=13)["signal"] == "buy_low"
+        t = assess(cheap, week=5, rank=13)
+        assert t["signal"] == "hold" and t["signals"][0]["kind"] == "market_gap"
         rich = _entry(market_position_rank=13)
-        assert assess(rich, week=5, rank=32)["signal"] == "sell_high"
+        assert assess(rich, week=5, rank=32)["signal"] == "hold"
+        # With a teammate back it corroborates the hard signal.
+        assert assess(_warren(market_position_rank=8), week=5, rank=19)[
+            "expected_value_change"]["pct"] < assess(_warren(), week=5)[
+            "expected_value_change"]["pct"]
         assert market_gap(_entry(market_position_rank=17), 19)["read"] == "in_line"
         assert assess(_entry(market_position_rank=17), week=5, rank=19)["signal"] == "hold"
 
@@ -122,7 +134,8 @@ class TestMarketGap:
         e = _entry(market_position_rank=13, role_trend="role_up",
                    role_flags=["carries share 43%→66% (weeks 3-4)"])
         t = assess(e, week=5, rank=20)
-        assert t["signal"] == "buy_low"
+        assert t["signal"] == "hold"            # the role alone, not cancelled
+        assert t["expected_value_change"]["pct"] == pytest.approx(6.0)
         assert not any(s["kind"] == "market_gap" for s in t["signals"])
 
     def test_agreeing_soft_signals_count_once_plus_a_bonus(self):
@@ -167,7 +180,8 @@ class TestTiming:
     def test_notes_and_score(self):
         sell = {"name": "Warren", "value_trajectory": assess(_warren(), week=5)}
         buy = {"name": "Love", "value_trajectory": assess(_entry(
-            role_trend="role_up", role_flags=["carries share 43%→66% (weeks 3-4)"]), week=5)}
+            role_trend="role_up", role_flags=["carries share 43%→66% (weeks 3-4)"],
+            market_position_rank=30), week=5, rank=14)}
         notes = value_trajectory.side_notes([sell], [buy])
         assert notes[0].startswith("You are selling high on Warren (Rico Dowdle")
         assert notes[1].startswith("You are buying low on Love")

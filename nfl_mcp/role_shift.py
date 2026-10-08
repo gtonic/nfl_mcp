@@ -102,8 +102,82 @@ def _mean(values: list[float]) -> float:
 
 
 def _played(rows: list[dict]) -> list[dict]:
-    return sorted((r for r in rows or [] if r.get("status") == "played"),
+    # A game he left hurt is not a role: it is skipped like a missed week.
+    return sorted((r for r in rows or []
+                   if r.get("status") == "played" and not r.get("injury_exit")),
                   key=lambda r: r["week"])
+
+
+# --------------------------------------------------------------------------
+# Injury-shortened games
+# --------------------------------------------------------------------------
+# A receiver concussed in the first quarter plays 30% of the snaps; read as a
+# role that was lost, it priced Ja'Marr Chase and Justin Jefferson as
+# shrinking roles. A played week is injury-shortened when his snap share fell
+# below INJURY_EXIT_SNAP_RATIO of his earlier played weeks' mean AND either
+#   * an injury designation started with that game: a non-Active report
+#     recorded between kickoff and INJURY_EXIT_REPORT_DAYS after it, when the
+#     report before kickoff (if any) was Active, or
+#   * he missed his team's next game.
+# A healthy benching (D'Andre Swift, 65% -> 36% with no in-game report) has
+# neither, and stays a lost role. Practice reports are not used: they start
+# mid-week for every questionable player, benched or not.
+INJURY_EXIT_SNAP_RATIO = 0.6
+INJURY_EXIT_REPORT_DAYS = 2
+_MISSED = {"injured", "inactive", "did_not_play"}
+
+
+def _low_snap_weeks(rows: list[dict]) -> list[int]:
+    """Played weeks whose snap share fell below `INJURY_EXIT_SNAP_RATIO` of
+    the mean of up to `PRIOR_WEEKS` played weeks before them."""
+    played = sorted((r for r in rows or [] if r.get("status") == "played"),
+                    key=lambda r: r["week"])
+    out = []
+    for i, r in enumerate(played):
+        share = r.get("snap_share")
+        before = [p["snap_share"] for p in played[:i][-PRIOR_WEEKS:]
+                  if p.get("snap_share") is not None]
+        if share is None or not before:
+            continue
+        if share < INJURY_EXIT_SNAP_RATIO * _mean(before):
+            out.append(r["week"])
+    return out
+
+
+def _designation_started(history: list[dict] | None, kickoff: str | None) -> bool:
+    """A non-Active report recorded within `INJURY_EXIT_REPORT_DAYS` after
+    kickoff, with nothing but Active (or nothing) on file before it."""
+    from datetime import timedelta
+    ko = usage_trends._parse_time(kickoff)
+    if ko is None or not history:
+        return False
+    dated = sorted(((when, (row.get("injury_status") or "").strip().lower())
+                    for row in history
+                    if (when := usage_trends._parse_time(row.get("recorded_at")))),
+                   key=lambda x: x[0])
+    before = [s for when, s in dated if when <= ko]
+    if before and before[-1] not in ("", "active"):
+        return False
+    end = ko + timedelta(days=INJURY_EXIT_REPORT_DAYS)
+    return any(ko < when <= end and s not in ("", "active") for when, s in dated)
+
+
+def injury_exit_weeks(rows: list[dict], history: list[dict] | None = None,
+                      kickoffs: dict[int, str] | None = None) -> set[int]:
+    """Played weeks that were injury-shortened (see above). Pure.
+
+    `history` is his ``injury_history`` (plus the current report as a row
+    dated when it was reported), `kickoffs` ``{week: kickoff}`` for his team.
+    """
+    by_week = {r["week"]: r for r in rows or []}
+    out = set()
+    for wk in _low_snap_weeks(rows):
+        later = [by_week[w] for w in sorted(by_week) if w > wk
+                 and by_week[w].get("status") != "bye"]
+        missed_next = bool(later) and later[0].get("status") in _MISSED
+        if missed_next or _designation_started(history, (kickoffs or {}).get(wk)):
+            out.add(wk)
+    return out
 
 
 def _fmt(metric: str, value: float) -> str:
@@ -210,6 +284,7 @@ def classify(rows: list[dict], position: str | None) -> dict:
         "recent_weeks": recent_n,
         "metrics": shifts,
         "role_flags": flags,
+        "injury_exit_weeks": sorted(r["week"] for r in rows or [] if r.get("injury_exit")),
     }
 
 
@@ -221,15 +296,65 @@ def player_rows(
     played_teams: dict[int, set[str]],
     week_stats: dict[int, dict] | None = None,
     sleeper_id: str | None = None,
+    injury_history: list[dict] | None = None,
+    kickoffs: dict[int, str] | None = None,
 ) -> list[dict]:
     """His `usage_trends.week_row` rows over `weeks`, from data already loaded:
     the nflverse logs entry (``build_name_index`` value) and, when given, the
-    Sleeper weekly stat lines ``{week: {sleeper_id: stats}}``. Pure."""
+    Sleeper weekly stat lines ``{week: {sleeper_id: stats}}``.
+
+    Injury-shortened games are marked ``injury_exit`` (see
+    `injury_exit_weeks`), and `classify` skips them. The report history and
+    kickoffs are read from the server's database when not passed -- only for
+    a player with a low-snap week, and never creating a database.
+    """
     games = {g["week"]: g for g in (entry or {}).get("games", [])}
     stats = week_stats or {}
-    return [
+    rows = [
         usage_trends.week_row(
             wk, games.get(wk), (stats.get(wk) or {}).get(str(sleeper_id or "")),
             team, team_carries, played_teams.get(wk))
         for wk in weeks
     ]
+    if not _low_snap_weeks(rows):
+        return rows
+    if injury_history is None and kickoffs is None:
+        injury_history, kickoffs = _injury_context((entry or {}).get("name"), team, weeks)
+    for wk in injury_exit_weeks(rows, injury_history, kickoffs):
+        for r in rows:
+            if r["week"] == wk:
+                r["injury_exit"] = True
+    return rows
+
+
+def _season_of(today=None) -> int:
+    """The NFL season in progress: September to February belongs to the
+    year it started in."""
+    from datetime import UTC, datetime
+    today = today or datetime.now(UTC).date()
+    return today.year if today.month >= 3 else today.year - 1
+
+
+def _injury_context(name: str | None, team: str, weeks: list[int],
+                    season: int | None = None) -> tuple[list[dict], dict[int, str]]:
+    """``(injury history incl. the current report, {week: kickoff})`` for one
+    player from the shared database, if the server has one open."""
+    from . import database
+    db = database._shared_db  # never build one here: tests and evals have none
+    if db is None or not name:
+        return [], {}
+    season = season or _season_of()
+    try:
+        index = usage_trends._injury_index(db)
+        history = list(usage_trends._injury_history(db, index, name, team))
+        from .injury_match import find_report
+        report = find_report({"full_name": name}, index, team) or {}
+        if report.get("injury_status") and report.get("date_reported"):
+            # The current report, dated when it was first reported.
+            history.append({"injury_status": report["injury_status"],
+                            "recorded_at": report["date_reported"]})
+        kickoffs = {wk: k for wk in weeks
+                    if (k := usage_trends._kickoffs(db, season, wk).get(team))}
+    except Exception:
+        return [], {}
+    return history, kickoffs

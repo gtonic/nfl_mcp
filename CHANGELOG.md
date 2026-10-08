@@ -44,7 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back this week — Jaylen Warren's 12.9 pts/game came without him; 11.8 with
   him (carries 15.1→10.7/game)"). A role that grew while a teammate was out
   is not read as rising; a market rank above ours is not held against a
-  rising role. Heuristic thresholds (named constants), no backtest yet.
+  rising role. The hard signals (teammate back, inherited volume ending, own
+  return) carry the calls; a role shift or a market gap alone never makes
+  one, only both agreeing. Calibrated on two live 12-team leagues (week 5):
+  31% / 32% of rostered players flagged before, 15% / 15% after. Heuristic
+  thresholds (named constants), no backtest yet.
   `get_ros_projections` returns `value_trajectory` per player (ranked
   against every rostered player in the league; `include_trajectory`).
 - **Package trades in `find_trade_targets`.** New `max_package_size`
@@ -92,6 +96,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model with Sleeper.
 
 ### Fixed
+- **Injury-shortened games are not a lost role.** `role_shift` skips a
+  played week whose snap share fell below 60% of his prior mean when an
+  injury designation started with that game (a non-Active report within two
+  days after kickoff, Active or nothing before it) or he missed the next
+  game (`injury_exit_weeks`; rows marked `injury_exit`). Ja'Marr Chase
+  (concussion, 30% of snaps) and Justin Jefferson (12%, then out) no longer
+  read as role_down, so the weekly role_down multiplier stops penalising
+  them; a healthy benching (D'Andre Swift) still does.
 - `analyze_trade` no longer calls a trade "unfair" / "significantly
   lopsided" when both ROS lineups improve: the verdict says market values
   lean one way ("expect a counter-offer") and the warning names the market,
