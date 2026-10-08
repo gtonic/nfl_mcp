@@ -32,15 +32,15 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server has **74 MCP tools** (including `get_league_leaders`, behind the
+The server has **75 MCP tools** (including `get_league_leaders`, behind the
 `league_leaders` feature flag, enabled by default). Which of them are registered
 depends on the tool profile, `NFL_MCP_TOOL_PROFILE`:
 
 | Profile | Tools | Registered |
 |---|---|---|
-| `season` (default) | 57 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
-| `offseason` | 45 | draft and coaching; not the in-season-only tools (briefing, retro, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder, usage/opportunity), admin or `get_cbs_expert_picks` |
-| `full` | 74 | everything |
+| `season` (default) | 58 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
+| `offseason` | 45 | draft and coaching; not the in-season-only tools (briefing, retro, projection accuracy, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder, usage/opportunity), admin or `get_cbs_expert_picks` |
+| `full` | 75 | everything |
 
 The profile and count are logged at startup and returned by `GET /health`
 under `tools`. Every tool also ships its own parameter schema over MCP, so an
@@ -277,7 +277,10 @@ Trade evaluation and discovery:
   - Parameters: `league_id` (required), `roster_id` / `player_ids` /
     `player_names`, `season`, `week`, `include_weekly`
   - Returns: per player ros_points, playoff_points, total_points,
-    weeks_counted, bye_weeks, injury_weeks, injury_window, per_game
+    weeks_counted, bye_weeks, injury_weeks, injury_window, per_game,
+    ros_source (`sleeper_blend` / `model` / `mixed`: each later week is 0.25
+    our rate + 0.75 Sleeper's projection for that week, our model alone where
+    Sleeper has none), `sleeper_ros` meta
   - **Gains are this week's lineup points, not rest-of-season value.** Run the
     chosen deal through `analyze_trade` before sending it
 
@@ -320,6 +323,7 @@ covers the real outcome ~68% of the time, measured in
   - Returns: league, week, record, win_probability, projected_points, opponent_projected_points, recommended_lineup, changes, bench, injury_changes, not_projected
 
 - **`get_weekly_retro`**: Post-game review of a finished week (default: the last completed one). Each starter's actual points against the projection logged before kickoff, points left on the bench (exact hindsight lineup under the league's slot rules), result vs the opponent and whether the hindsight lineup would have flipped it, biggest misses/hits, and projection calibration over every logged week. A week with no logged projection is re-projected and labelled `projection_source: "recomputed"`.
+- **`get_projection_accuracy`**: How accurate the logged pre-kickoff projections were (all leagues, or `league_id`), graded against the points actually scored in each projection's own scoring. Parameters: `weeks`, `position`, `by_signal` (default True), `season`, `league_id`. Returns overall / by_position / by_projection_source MAE and bias (projected − actual), `components` (our model vs Sleeper vs the blend on the same rows), `trend` per week, `by_signal` (with vs without: role_down/up, returning_teammates, qb_coupling, practice_dnp, questionable, news flags, …) and an `interpretation`. Finished weeks are graded on the fly (and by the prefetch loop / `refresh_data(scope=["accuracy"])`).
   - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional), `include_calibration` (optional, default True)
   - Returns: result, projected_total, projection_source, starters, bench, hindsight, biggest_misses, biggest_hits, opponent, calibration
 
@@ -487,7 +491,7 @@ The prefetch system automatically:
 
 **Manual refresh** — `refresh_data(scope=[...], force=False, background=False)`
 runs the same fetchers on demand (scopes `injuries`, `practice`, `athletes`,
-`schedule`, `snaps`; default injuries + practice), regardless of
+`schedule`, `snaps`, `usage`, `accuracy`; default injuries + practice), regardless of
 `NFL_MCP_ADVANCED_ENRICH`, and returns per-scope `fetched`/`written`/
 `duration_s` plus the resulting `freshness`. Use it when tools report stale
 data (the loop pauses while the host sleeps). A feed younger than its minimum

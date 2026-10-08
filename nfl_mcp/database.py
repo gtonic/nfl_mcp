@@ -237,7 +237,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
 
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 17
+    CURRENT_SCHEMA_VERSION = 18
 
     def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
@@ -321,6 +321,7 @@ class NFLDatabase:
             15: self._migration_v15_projection_log_and_checks,
             16: self._migration_v16_snapshot_dedup,
             17: self._migration_v17_return_dates_freshness_signal_history,
+            18: self._migration_v18_projection_accuracy,
         }
 
     def _migration_v1_initial_schema(self, conn: sqlite3.Connection) -> None:
@@ -856,6 +857,62 @@ class NFLDatabase:
             ) VALUES(?,?,?,?,?,?,?,?,?,?)
             """,
             [r for r in news if r],
+        )
+
+    def _migration_v18_projection_accuracy(self, conn: sqlite3.Connection) -> None:
+        """Migration v18: the weekly accuracy loop (``projection_accuracy``).
+
+        - ``projection_log.signals``: the signals active when a projection was
+          logged (role trend, returning teammates, practice pattern, QB
+          coupling, news flags, injury status, projection source, our and
+          Sleeper's numbers), as JSON. Rows logged before v18 have none.
+        - ``projection_accuracy``: one graded row per (week, scoring, player):
+          the last pre-kickoff projection against the actual points in that
+          scoring and in neutral half-PPR, with the signals unpacked into
+          columns so they can be grouped on.
+        """
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(projection_log)")}
+        if "signals" not in cols:
+            conn.execute("ALTER TABLE projection_log ADD COLUMN signals TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS projection_accuracy (
+                season INTEGER NOT NULL,
+                week INTEGER NOT NULL,
+                scoring_key TEXT NOT NULL,
+                player_id TEXT NOT NULL,
+                league_id TEXT,
+                player_name TEXT,
+                position TEXT,
+                team TEXT,
+                projected REAL NOT NULL,
+                model_projection REAL,
+                sleeper_projection REAL,
+                floor REAL,
+                ceiling REAL,
+                actual REAL NOT NULL,
+                actual_half_ppr REAL,
+                actual_source TEXT,
+                played INTEGER,
+                projection_source TEXT,
+                injury_status TEXT,
+                practice_status TEXT,
+                practice_pattern TEXT,
+                role_trend TEXT,
+                returning_teammates INTEGER,
+                qb_mult REAL,
+                news_flags TEXT,
+                signals TEXT,
+                log_source TEXT,
+                projected_at TEXT,
+                graded_at TEXT NOT NULL,
+                PRIMARY KEY (season, week, scoring_key, player_id)
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_projection_accuracy_week
+               ON projection_accuracy(season, week, position)"""
         )
 
     # Kickoffs are stored in UTC; shifted by the EST offset every kickoff
@@ -2505,10 +2562,12 @@ class NFLDatabase:
                         """INSERT INTO projection_log
                            (season, week, player_id, scoring_key, ppr, projected_points,
                             floor, ceiling, player_name, position, team, league_id,
-                            source, recorded_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            source, recorded_at, signals)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (season, week, str(pid), scoring_key, ppr, *new, r.get("name"),
-                         r.get("position"), r.get("team"), league_id, source, now),
+                         r.get("position"), r.get("team"), league_id, source, now,
+                         json.dumps(r["signals"], separators=(",", ":"), default=str)
+                         if r.get("signals") else None),
                     )
                     written += 1
                 conn.commit()
@@ -2565,6 +2624,108 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"get_logged_projection_weeks failed: {e}")
             return []
+
+    def get_logged_week_rows(self, season: int, week: int) -> list[dict]:
+        """The latest logged row per (scoring, player) for one week, every
+        scoring -- the last pre-kickoff projection, which the accuracy loop
+        grades (``projection_accuracy``)."""
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    """SELECT * FROM (
+                            SELECT *, ROW_NUMBER() OVER (
+                                PARTITION BY scoring_key, player_id
+                                ORDER BY recorded_at DESC, id DESC) AS rn
+                            FROM projection_log WHERE season=? AND week=?
+                        ) WHERE rn = 1""",
+                    (season, week),
+                )
+                return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_logged_week_rows failed: {e}")
+            return []
+
+    def get_logged_weeks(self, season: int) -> list[int]:
+        """Weeks of a season with any logged projection (every scoring)."""
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT DISTINCT week FROM projection_log WHERE season=? ORDER BY week",
+                    (season,))
+                return [row[0] for row in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_logged_weeks failed: {e}")
+            return []
+
+    _ACCURACY_COLUMNS = (
+        "season", "week", "scoring_key", "player_id", "league_id", "player_name",
+        "position", "team", "projected", "model_projection", "sleeper_projection",
+        "floor", "ceiling", "actual", "actual_half_ppr", "actual_source", "played",
+        "projection_source", "injury_status", "practice_status", "practice_pattern",
+        "role_trend", "returning_teammates", "qb_mult", "news_flags", "signals",
+        "log_source", "projected_at", "graded_at",
+    )
+
+    def upsert_projection_accuracy(self, rows: list[dict]) -> int:
+        """Write graded rows (replacing a week's earlier grading of the same
+        player, e.g. after a stat correction). Returns rows written."""
+        if not rows:
+            return 0
+        cols = self._ACCURACY_COLUMNS
+        sql = (f"INSERT OR REPLACE INTO projection_accuracy ({', '.join(cols)}) "
+               f"VALUES ({', '.join('?' * len(cols))})")
+
+        def _cell(v):
+            return json.dumps(v, separators=(",", ":"), default=str) \
+                if isinstance(v, dict | list) else v
+        try:
+            with self._pool.get_connection() as conn:
+                conn.executemany(sql, [tuple(_cell(r.get(c)) for c in cols) for r in rows])
+                conn.commit()
+            return len(rows)
+        except Exception as e:
+            logger.warning(f"upsert_projection_accuracy failed: {e}")
+            return 0
+
+    def get_projection_accuracy(
+        self, season: int, weeks: list[int] | None = None, position: str | None = None,
+        scoring_key: str | None = None, league_id: str | None = None,
+    ) -> list[dict]:
+        """Graded rows for a season, optionally filtered."""
+        where, params = ["season=?"], [season]
+        if weeks:
+            where.append(f"week IN ({','.join('?' * len(weeks))})")
+            params.extend(int(w) for w in weeks)
+        if position:
+            where.append("position=?")
+            params.append(position)
+        if scoring_key:
+            where.append("scoring_key=?")
+            params.append(scoring_key)
+        if league_id:
+            where.append("league_id=?")
+            params.append(str(league_id))
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    f"SELECT * FROM projection_accuracy WHERE {' AND '.join(where)} "
+                    "ORDER BY week, scoring_key, player_id", params)
+                return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_projection_accuracy failed: {e}")
+            return []
+
+    def get_accuracy_graded_weeks(self, season: int) -> dict[int, str]:
+        """``{week: last graded_at}`` for the season's graded weeks."""
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT week, MAX(graded_at) FROM projection_accuracy WHERE season=? "
+                    "GROUP BY week", (season,))
+                return {row[0]: row[1] for row in cur.fetchall()}
+        except Exception as e:
+            logger.debug(f"get_accuracy_graded_weeks failed: {e}")
+            return {}
 
     def get_league_last_check(self, league_id: str, roster_id: int) -> str | None:
         """When this roster's league changes were last read (ISO), or None."""

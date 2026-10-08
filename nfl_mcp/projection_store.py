@@ -59,6 +59,9 @@ def log_projections(
             "name": p.get("player") or p.get("name"),
             "position": p.get("position"),
             "team": p.get("team"),
+            # What was active when it was made, for the accuracy loop
+            # (`projection_accuracy`); the briefing passes them precomputed.
+            "signals": p.get("signals") or signals_of(p),
         })
     if not rows:
         return 0
@@ -68,6 +71,37 @@ def log_projections(
     except Exception as e:  # logging is a side effect; never fail the caller on it
         logger.warning(f"projection log write failed: {e}")
         return 0
+
+
+def signals_of(proj: dict) -> dict:
+    """The signals active on a projection row, compact (Nones dropped).
+
+    What the accuracy loop (`projection_accuracy`) groups errors by: the
+    projection's source and its two inputs (ours, Sleeper's), the injury and
+    practice read, the role trend (`role_shift`), returning teammates and
+    inherited volume, the backup-QB multiplier (`qb_coupling`), the news
+    flags (`news_signals`) and the matchup tier.
+    """
+    bd = proj.get("breakdown") or {}
+    qb = proj.get("qb_context") or {}
+    flags = [f.get("flag") if isinstance(f, dict) else str(f)
+             for f in proj.get("news_flags") or []]
+    out = {
+        "projection_source": proj.get("projection_source"),
+        "model_projection": proj.get("model_projection"),
+        "sleeper_projection": proj.get("sleeper_projection"),
+        "injury_status": proj.get("injury_status"),
+        "practice_status": proj.get("practice_status"),
+        "practice_pattern": proj.get("practice_pattern"),
+        "role_trend": proj.get("role_trend"),
+        "returning_teammates": len(bd.get("returning_teammates") or []) or None,
+        "inherited_volume": True if bd.get("inherited_from") else None,
+        "qb_mult": qb.get("model_mult") if qb.get("applied") else None,
+        "qb_sleeper_mult": qb.get("sleeper_mult") if qb.get("applied") else None,
+        "news_flags": [f for f in flags if f] or None,
+        "matchup_tier": proj.get("matchup_tier"),
+    }
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def scoring_key(scoring) -> str:

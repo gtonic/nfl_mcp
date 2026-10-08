@@ -151,7 +151,7 @@ variables take precedence.
 | `NFL_MCP_DB_PATH` | Path to the SQLite cache file (default `nfl_data.db`, relative to the working dir). Point it at a mounted volume — e.g. `/data/nfl_data.db` — to persist the warmed cache across restarts. |
 | `NFL_MCP_ALLOW_PRIVATE_URLS` | `1` lets `crawl_url` reach private/loopback addresses. Off by default (SSRF protection — see [SECURITY.md](../SECURITY.md)). |
 | `NFL_MCP_PREFETCH` | `1` enables background data prefetch (cache warming). |
-| `NFL_MCP_TOOL_PROFILE` | Which tools are registered: `season` (default, 57 tools — no draft, coaching, admin cache refreshes, `get_league_leaders`, `get_cbs_expert_picks`), `offseason` (45 — draft and coaching, no in-season-only tools) or `full` (all 74). Logged at startup and reported by `/health` under `tools`. |
+| `NFL_MCP_TOOL_PROFILE` | Which tools are registered: `season` (default, 58 tools — no draft, coaching, admin cache refreshes, `get_league_leaders`, `get_cbs_expert_picks`), `offseason` (45 — draft and coaching, no in-season-only tools) or `full` (all 75). Logged at startup and reported by `/health` under `tools`. |
 | `NFL_MCP_PREFETCH_INTERVAL` | Prefetch interval, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SNAPS_TTL` | Snap-data TTL, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SCHEDULE_WEEKS` | Weeks of schedule to prefetch (default 4). |
@@ -276,6 +276,29 @@ most 3 rows per key; schema v16 pruned the backlog to the newest row per key.
   `python -m evals.backtest.signal_history --db nfl_data.db --season 2026`
   backtests the practice and news multipliers from them.
 
+### Weekly accuracy loop (schema v18)
+
+- **Logged with signals.** `projection_log.signals` (JSON) keeps what was
+  active on each pre-kickoff projection (`projection_store.signals_of`):
+  projection source, ours and Sleeper's numbers, injury status, practice
+  status/pattern, role trend, returning teammates, inherited volume, QB
+  coupling multipliers, news flags, matchup tier.
+- **Graded once final.** `projection_accuracy.grade_week` takes the *last*
+  pre-kickoff row per (scoring, player) and the actual points in that scoring
+  (Sleeper's `players_points` for a league that logged it, else the stat line
+  from `v1/stats/nfl/regular/<season>/<week>` priced with the league's
+  weights; no stat line = 0) plus a neutral half-PPR actual, into
+  `projection_accuracy` (PK season/week/scoring/player; a regrade replaces).
+  The prefetch loop runs scope `accuracy` from week 2: a week is graded once
+  `last_completed_week` reaches it and regraded once 36 h after its last
+  kickoff (stat corrections); `refresh_data(scope=["accuracy"])` on demand.
+- **Read back.** `get_projection_accuracy(weeks, position, by_signal,
+  league_id)`: MAE/bias (projected − actual) overall, per position, per
+  projection source, model vs Sleeper vs blend on the same rows, per signal
+  (with vs without), per week, and an interpretation. Projected-0/scored-0
+  rows are excluded. `python -m evals.backtest.accuracy_report --db … [--grade]`
+  prints the same as tables. Rows logged before v18 have no signals.
+
 ### Weekly projections (Sleeper-first)
 
 Every tool that projects a week — `project_players`, start/sit,
@@ -301,9 +324,26 @@ model_projection = regressed_rate(opportunity, rank_bucket, games)   # k = 2
   `projection_source` (`sleeper_blend` / `model_only` / `bye`); floor and
   ceiling are `mean × (1 ± volatility)` around the blend, calibrated to ~68%.
 - Streaming blends each week's K/DEF schedule projection with Sleeper's team
-  K/DEF the same way. ROS later weeks stay on our model (per-game rate =
-  the same regressed rate): Sleeper publishes future weeks, but there is no
-  point-in-time history to backtest a ROS blend on.
+  K/DEF the same way.
+- **ROS later weeks** blend the same way with Sleeper's projection *for that
+  week* (`ros.ROS_MODEL_WEIGHT` = 0.25 ours; Sleeper publishes every week of
+  the season). Fetched in parallel (6 at a time) for up to
+  `ROS_SLEEPER_WEEKS_AHEAD` weeks and cached 12 h per week
+  (`sleeper_projections.fetch_weeks`; an empty week is not re-asked for 30
+  min). Ours keeps the matchup, returning-teammate deflation and inherited
+  volume; Sleeper's share takes the role multiplier and, through the
+  starter's absence, the backup-QB multiplier. Our injury window is zero
+  whatever Sleeper says; after it a hurt player Sleeper does not project
+  stays 0 until the next week it does (its return timeline), and one it
+  never projects again is priced on the model alone; a healthy unprojected
+  player keeps 0.25 of ours. Each player has `ros_source`
+  (`sleeper_blend` / `model` / `mixed`) and `weekly[].source`. No
+  point-in-time history of Sleeper's look-ahead numbers exists, so
+  `evals/backtest/ros_sleeper_backtest.py` brackets it (2023-25, as of weeks
+  4-10, per-game rate MAE): model 2.79, with Sleeper's week-W line as a
+  flat stand-in (leak-free lower bound) 2.69, with each later week's own
+  pre-game line (upper bound, leaky) 2.04. Cost: ~+0.9 s on a cold Sleeper
+  cache, ~+0.3 s warm, for a 12-team league pool.
 - The weight is reproducible: `python -m evals.backtest.sleeper_blend`
   (fetches and caches Sleeper's projection history on first run).
 - **Quarterback coupling** (`qb_coupling`): a WR whose starting QB (top QB by

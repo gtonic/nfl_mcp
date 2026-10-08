@@ -30,6 +30,7 @@ from . import (
     ownership_tools,
     player_values,
     playoff_tools,
+    projection_accuracy,
     projections,
     retro_tools,
     ros,
@@ -99,7 +100,8 @@ ADMIN_TOOLS = frozenset({"fetch_athletes", "fetch_all_players", "fetch_teams"})
 NICHE_TOOLS = frozenset({"get_league_leaders", "get_cbs_expert_picks"})
 # Only meaningful while games are being played.
 IN_SEASON_TOOLS = frozenset({
-    "get_weekly_briefing", "get_weekly_retro", "get_league_changes", "get_bye_week_plan",
+    "get_weekly_briefing", "get_weekly_retro", "get_projection_accuracy",
+    "get_league_changes", "get_bye_week_plan",
     "get_playoff_odds", "get_playoff_bracket", "get_matchups", "get_waiver_targets",
     "recommend_faab_bid", "get_waiver_log", "audit_ir_slots", "get_start_sit_recommendation",
     "compare_players_for_slot", "analyze_lineup", "get_win_probability_lineup",
@@ -177,6 +179,7 @@ def _registered_tools() -> list[Callable]:
     get_fantasy_context,
         get_weekly_briefing,
         get_weekly_retro,
+        get_projection_accuracy,
         get_league_changes,
 
         # Season planning
@@ -542,7 +545,8 @@ async def refresh_data(
 
     Parameters:
         scope: any of "injuries", "practice", "athletes", "schedule", "snaps",
-            "usage" (default ["injuries", "practice"])
+            "usage", "accuracy" (grade finished weeks' logged projections for
+            get_projection_accuracy) (default ["injuries", "practice"])
         force: refresh even a feed younger than its minimum age
             (15 min for injuries/practice, 6h for athletes)
         background: start the refresh and return a job_id at once — an injury
@@ -1506,13 +1510,17 @@ async def get_ros_projections(
     planning. project_players answers "how many points THIS week" (a player on
     bye or out one game projects 0 there); this sums every remaining week:
 
-        this week = the weekly projection
-        later     = per-game baseline (trailing opportunity in the league's full
-                    scoring_settings, regressed toward the position prior for
-                    small samples) × that week's defense-vs-position matchup
+        this week = the weekly projection (Sleeper-first blend)
+        later     = 0.25 × our per-game baseline (trailing opportunity in the
+                    league's full scoring_settings, regressed toward the
+                    position prior for small samples) × that week's
+                    defense-vs-position matchup
+                    + 0.75 × Sleeper's projection for that week (priced in the
+                    league's scoring; our model alone where Sleeper has none)
         0 on bye weeks (cached schedule, missing weeks fetched) and inside the
         expected injury absence (report text when it states a timeline, else
-        1 week for Out, 4 for IR/PUP/NFI).
+        1 week for Out, 4 for IR/PUP/NFI; a hurt player Sleeper does not
+        project until a later week stays at 0 until then).
 
     Parameters:
         league_id (str, required): Sleeper league id (scoring, playoff window).
@@ -1525,8 +1533,11 @@ async def get_ros_projections(
     Returns: {players: [{player, position, team, ros_points (rest of regular
               season), playoff_points (league's playoff weeks), total_points,
               weeks_counted, bye_weeks, injury_weeks, injury_window, per_game,
-              baseline_source, value_trajectory, weekly?}], regular_season_weeks,
-              playoff_weeks, unresolved, elapsed_seconds, success}
+              baseline_source, ros_source (sleeper_blend|model|mixed),
+              week_sources, value_trajectory, weekly? [{week, opponent, points,
+              source, model_points, sleeper_points, reason}]}],
+              regular_season_weeks, playoff_weeks, sleeper_ros {active, weeks,
+              weeks_missing, model_weight}, unresolved, elapsed_seconds, success}
 
     value_trajectory per player: where his TRADE value is headed over the next
     ~3 games — {trajectory: rising|falling|stable, signal: buy_low|sell_high|
@@ -3216,6 +3227,63 @@ async def get_weekly_retro(
     return await retro_tools.get_weekly_retro(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
         week=week, season=season, include_calibration=include_calibration,
+    )
+
+
+@timing_decorator("get_projection_accuracy", tool_type="fantasy")
+async def get_projection_accuracy(
+    weeks: list[int] | None = None,
+    position: str | None = None,
+    by_signal: bool = True,
+    season: int | None = None,
+    league_id: str | None = None,
+) -> dict:
+    """How accurate were the projections, week by week — and which signals help?
+
+    Grades every pre-kickoff projection logged by get_weekly_briefing,
+    project_players and get_league_changes (the last one before kickoff) against
+    the points actually scored, in the scoring it was made in (plus a neutral
+    half-PPR actual). Finished weeks not graded yet are graded on the fly; the
+    background prefetch grades each week once it is final.
+
+    Use for "are the projections any good", "do we over-project QBs", "does
+    the role-change / returning-teammate / QB-coupling adjustment work". For
+    one roster's week (bench points, lineup mistakes) use get_weekly_retro.
+
+    Parameters:
+        weeks (list[int], optional): default every graded week of the season
+        position (optional): QB/RB/WR/TE/K/DEF
+        by_signal (bool, default True): MAE/bias with vs without each signal
+            (role_down/role_up, returning_teammates, inherited_volume,
+            qb_coupling, practice_dnp/limited, questionable, doubtful,
+            model_only, sleeper_disagreement, news:<flag>)
+        season (optional): default current
+        league_id (optional): only that league's logged projections
+
+    Returns: {season, weeks, overall {n, mae, bias}, by_position,
+              by_projection_source, components {model, sleeper, blend} (same
+              rows), trend [{week, n, mae, bias}], by_signal {signal: {with,
+              without, bias_gap, mae_gap, small_sample}}, interpretation [..],
+              graded_now, definitions, success}
+        bias = projected − actual (+ = projections too high).
+
+    Example: get_projection_accuracy()
+    Example: get_projection_accuracy(position="WR", weeks=[3, 4])
+    """
+    if league_id is not None:
+        try:
+            league_id = validate_string_input(league_id, 'league_id', max_length=50)
+        except ValueError as e:
+            return {"success": False, "error": f"Invalid input: {e!s}"}
+    if isinstance(weeks, int):
+        weeks = [weeks]
+    try:
+        weeks = [int(w) for w in weeks] if weeks else None
+    except (TypeError, ValueError):
+        return {"success": False, "error": "weeks must be a list of week numbers"}
+    return await projection_accuracy.get_projection_accuracy(
+        weeks=weeks, position=position, by_signal=bool(by_signal), season=season,
+        league_id=league_id, db=get_db(),
     )
 
 

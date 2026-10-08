@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **ROS later weeks are Sleeper-first.** Every week after the current one is
+  `0.25 × our rate + 0.75 × Sleeper's projection for that week` (Sleeper
+  publishes all weeks of the season), so trades, drops, waivers, FAAB,
+  playoff odds and value trajectory price the rest of the season on the
+  better projection, not on our model alone. Ours keeps the matchup,
+  returning-teammate deflation and inherited volume; Sleeper's share takes the
+  role and backup-QB multipliers. A hurt player Sleeper does not project
+  stays at 0 until the week it does (its return timeline); weeks without a
+  Sleeper number fall back to the model. New fields: `ros_source`,
+  `week_sources`, `weekly[].source/model_points/sleeper_points`,
+  `sleeper_return_week`, `sleeper_ros`. Weeks are fetched in parallel and
+  cached 12 h (`sleeper_projections.fetch_weeks`): ~+0.9 s cold, ~+0.3 s warm
+  for a league pool. Backtest (`evals/backtest/ros_sleeper_backtest.py`,
+  per-game ROS rate MAE): model 2.79 → 2.69 with Sleeper's current line as a
+  flat stand-in (lower bound); 2.04 with each week's own line (upper bound).
+
+### Added
+- **Weekly accuracy loop.** Pre-kickoff projections are logged with the
+  signals active at the time (schema v18: `projection_log.signals`); once a
+  week is final they are graded against the actual points (league scoring and
+  neutral half-PPR) into `projection_accuracy` — by the prefetch loop, by
+  `refresh_data(scope=["accuracy"])`, or on demand.
+- **`get_projection_accuracy`** tool (in-season and full profiles: 58 / 75
+  tools): MAE/bias per position, projection source and signal (with vs
+  without), model vs Sleeper vs blend, trend over weeks and an
+  interpretation. `evals/backtest/accuracy_report.py` prints the same.
+
 ## [0.9.5] - 2026-10-08
 
 0.9.0 gave the tools the league's real scoring and real practice data. This

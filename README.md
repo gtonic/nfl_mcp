@@ -6,7 +6,7 @@
 [![Data-source watchdog](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml/badge.svg)](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml)
 [![Docker image](https://img.shields.io/badge/image-ghcr.io%2Fgtonic%2Fnfl__mcp-2496ED?logo=docker&logoColor=white)](https://github.com/gtonic/nfl_mcp/pkgs/container/nfl_mcp)
 [![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/gtonic/nfl_mcp)
-[![57 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-57%20in--season%20%7C%2074%20total-8A2BE2)](#-whats-inside)
+[![58 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-58%20in--season%20%7C%2075%20total-8A2BE2)](#-whats-inside)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 NFL MCP turns real NFL & fantasy data into a decisive edge — a suite of tools that plug
@@ -110,7 +110,7 @@ Co-managers work too: pass your own Sleeper `user_id` and the roster is found vi
 
 ## 🧰 What's inside
 
-57 MCP tools in the default in-season profile (74 in total), grouped by what they do.
+58 MCP tools in the default in-season profile (75 in total), grouped by what they do.
 Every tool ships its own parameter schema over MCP, so your assistant can introspect
 them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration guidance.
 
@@ -118,14 +118,14 @@ them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration g
 
 | Profile | Tools | Hides |
 |---|---|---|
-| `season` (default) | 57 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
+| `season` (default) | 58 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
 | `offseason` | 45 | in-season-only tools (lineups, waivers, Vegas, weather, byes, playoff odds, …), admin, `get_cbs_expert_picks` |
-| `full` | 74 | nothing |
+| `full` | 75 | nothing |
 
 The active profile and its tool count are logged at startup and reported by `GET /health` (`tools`).
 
 **📊 Weekly lineup & projections**
-`get_weekly_briefing` (**start here** — roster, opponent, weather, usage and the lineup changes worth making, in one call; mid-week it scores played games for real and only optimizes what you can still change) · `get_league_changes` (**daily check** — what moved for your roster since you last looked) · `analyze_lineup` (grade the lineup you have set, optimal vs current, swaps, locked players) · `get_start_sit_recommendation` (one player or a list; team, position, opponent, snaps, injury and practice looked up for you) · `compare_players_for_slot` · `get_win_probability_lineup` (lineup that maximises P(beating *this* opponent)) · `project_players` (this week's points, one or many, with Sleeper's projection as a labelled second opinion) · `get_ros_projections` (rest-of-season + fantasy-playoff points in your scoring, with each player's `value_trajectory`: sell-high / buy-low and why) · `get_opportunity_projections` · `get_usage_trends` · `get_weekly_retro` (after the games: actual vs projection, points left on the bench)
+`get_weekly_briefing` (**start here** — roster, opponent, weather, usage and the lineup changes worth making, in one call; mid-week it scores played games for real and only optimizes what you can still change) · `get_league_changes` (**daily check** — what moved for your roster since you last looked) · `analyze_lineup` (grade the lineup you have set, optimal vs current, swaps, locked players) · `get_start_sit_recommendation` (one player or a list; team, position, opponent, snaps, injury and practice looked up for you) · `compare_players_for_slot` · `get_win_probability_lineup` (lineup that maximises P(beating *this* opponent)) · `project_players` (this week's points, one or many, with Sleeper's projection as a labelled second opinion) · `get_ros_projections` (rest-of-season + fantasy-playoff points in your scoring, every later week blended with Sleeper's projection for it, with each player's `value_trajectory`: sell-high / buy-low and why) · `get_opportunity_projections` · `get_usage_trends` · `get_weekly_retro` (after the games: actual vs projection, points left on the bench) · `get_projection_accuracy` (how accurate the logged projections were, week by week: MAE/bias per position, source and signal)
 
 **🗓️ Matchup, schedule & environment**
 `get_bye_week_plan` (which upcoming weeks byes leave your lineup short, what to add, free agents who fill it) · `get_defense_rankings` (all defenses, or one via `opponent_team`) · `analyze_roster_matchups` (your roster's matchups this week) · `get_strength_of_schedule` (any week range, or `playoff_weeks=True` from your league's playoff window) · `get_streaming_options` · `get_weather_forecast` · `get_vegas_lines` (games, per-team environment via `teams`, or your whole roster via `league_id`+`roster_id`) · `get_stack_opportunities`
@@ -158,7 +158,7 @@ The active profile and its tool count are logged at startup and reported by `GET
 `fetch_athletes` · `fetch_all_players` · `fetch_teams` (cache refreshes the prefetch loop already runs) · `get_league_leaders` · `get_cbs_expert_picks` (CBS experts' ATS betting picks)
 
 **🌐 Web, data & health**
-`crawl_url` (SSRF-guarded text extraction) · `refresh_data` (refresh injuries / practice / athletes / schedule / snaps / usage **now** — when the prefetch went stale, e.g. after the host slept; per-scope counts, durations and resulting freshness; `background=True` + `job_id` to poll) · `GET /health` (REST)
+`crawl_url` (SSRF-guarded text extraction) · `refresh_data` (refresh injuries / practice / athletes / schedule / snaps / usage / accuracy grading **now** — when the prefetch went stale, e.g. after the host slept; per-scope counts, durations and resulting freshness; `background=True` + `job_id` to poll) · `GET /health` (REST)
 
 ## 📚 More
 

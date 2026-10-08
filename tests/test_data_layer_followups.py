@@ -150,7 +150,8 @@ class TestMigration:
                 conn.commit()
             NFLDatabase(path).close()
             with sqlite3.connect(path) as conn:
-                assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 17
+                assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] \
+                    == NFLDatabase.CURRENT_SCHEMA_VERSION
                 for table, col in (("player_injuries", "return_date"),
                                    ("injury_history", "return_date"),
                                    ("schedule_games", "updated_at")):
@@ -166,7 +167,8 @@ class TestMigration:
 # 2 ---------------------------------------------------------------------------
 class TestPrefetchSharesRefresh:
     def test_cycle_scopes_keep_the_cadence(self):
-        assert server._cycle_scopes(5, 2) == ["schedule", "snaps", "injuries", "practice", "usage"]
+        assert server._cycle_scopes(5, 2) == ["schedule", "snaps", "injuries", "practice", "usage",
+                                             "accuracy"]
         # No practice reports on Sunday (ET); no completed week before week 2.
         assert server._cycle_scopes(1, 6) == ["schedule", "snaps", "injuries"]
 

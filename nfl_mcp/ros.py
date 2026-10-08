@@ -9,8 +9,10 @@ of starts apart.
 For each remaining week of the fantasy season, a player's expected points are
 
     this week : the weekly projection itself (projections.project_players)
-    later     : per_game × matchup(opponent that week)
+    later     : ROS_MODEL_WEIGHT × ours + (1 − ROS_MODEL_WEIGHT) × Sleeper(week)
+                    ours = per_game × matchup(opponent that week)
                     per_game = baseline regressed toward the position prior
+                    Sleeper(week) = Sleeper's projection for that week
                     0 on a bye, 0 inside the expected injury absence
 
 summed separately over the rest of the regular season (``ros_points``) and the
@@ -51,6 +53,36 @@ fantasy-playoff window (``playoff_points``, from the league's
   (waivers, drops, value trajectory); they do not move ROS points.
 - K / DEF: later weeks are priced per opponent off the offense read the weekly
   engine falls back to (``streaming_tools.unit_matchup``).
+- Sleeper's later weeks: Sleeper publishes a projection for every week of the
+  season (``api.sleeper.app/projections/nfl/<season>/<week>``), refreshed for
+  all of them at once, so each later week is blended the same Sleeper-first way
+  as this one (``ROS_MODEL_WEIGHT`` ours; ``ros_source`` / ``weekly[].source``
+  say which weeks were). Fetched in parallel for up to
+  ``ROS_SLEEPER_WEEKS_AHEAD`` weeks and cached 12 h per week
+  (``sleeper_projections.fetch_weeks``). What each side carries, so nothing is
+  counted twice:
+
+  * ours: the matchup multiplier, the returning-teammate deflation and the
+    inherited volume (Sleeper's line has its own opponent and depth chart, so
+    neither is applied to its share);
+  * Sleeper's share × the role multiplier (as on this week's blend: its line
+    lags a role change) and, through the starter's expected absence, the
+    backup-quarterback multiplier (`qb_coupling`: its line does not move for
+    one);
+  * injuries: our absence window is zero whatever Sleeper says; after it, a
+    hurt player Sleeper lists without points stays at zero until the first
+    week it projects him again (its return timeline); one it never projects
+    again in the fetched weeks is priced on the model alone (no return date
+    from either source). A healthy player Sleeper lists without points (a
+    backup) keeps ``ROS_MODEL_WEIGHT`` of ours. No Sleeper row: the model alone.
+
+  Backtest (``evals/backtest/ros_sleeper_backtest.py``, 2023-25, as of weeks
+  4/6/8/10, n=3904, per-game rate over the rest of the season): our rate MAE
+  2.79; with Sleeper's week-W line as a flat stand-in for its later weeks
+  (leak-free, the lower bound — Sleeper keeps no history of its look-ahead
+  numbers) the 0.25 blend is 2.69 (QB 3.75, RB 2.82, WR 2.63, TE 2.15; the
+  weight's best, 0.4, is 2.67); with each later week's own pre-game Sleeper
+  line (the upper bound, not leak-free) 2.04.
 """
 from __future__ import annotations
 
@@ -83,6 +115,14 @@ PRIOR_GAMES = 2
 # The NFL minimum for a player placed on injured reserve (and PUP/NFI).
 IR_MIN_WEEKS = 4
 SEASON_ENDING_WEEKS = 99
+# Later weeks: our share of the blend with Sleeper's projection for that week
+# (the rest is Sleeper's). The weekly blend's weight, kept for ROS by
+# evals/backtest/ros_sleeper_backtest.py (see the module doc).
+ROS_MODEL_WEIGHT = 0.25
+# How many weeks past the current one Sleeper's projections are fetched for;
+# weeks beyond it are priced on the model alone. Sleeper publishes every week
+# of the regular season, so the default covers the whole fantasy season.
+ROS_SLEEPER_WEEKS_AHEAD = 14
 
 _SKILL = {"QB", "RB", "WR", "TE"}
 _DEFENSE = {"DEF", "DST"}
@@ -325,6 +365,16 @@ async def _defense_rankings() -> dict:
     return await get_defense_analyzer().fetch_defense_rankings()
 
 
+async def _sleeper_weeks(season: int, weeks: list[int]) -> dict[int, dict]:
+    """Sleeper's projection index for each later week (cached; never raises)."""
+    from .sleeper_projections import fetch_weeks
+    try:
+        return await fetch_weeks(season, weeks)
+    except Exception as e:
+        logger.debug(f"Sleeper later-week projections unavailable: {e}")
+        return {}
+
+
 def _rows_to_schedule(rows: list[dict]) -> dict[str, str] | None:
     """``{team: opponent}`` from fetched rows; None when too few teams to prove
     a bye — a partial response would otherwise turn every missing team into
@@ -489,6 +539,58 @@ def _matchup(position: str, opponent: str, rankings: dict, analyzer,
     return matchup_multiplier(position, tier), tier
 
 
+def _sleeper_reads(indexes: dict[int, dict], model, p: dict) -> dict[int, tuple[float | None, str]]:
+    """``{week: (points, status)}`` from Sleeper's later-week projections
+    (`sleeper_projections.points_for`); weeks Sleeper has nothing for at all
+    are left out."""
+    from .sleeper_projections import points_for
+    out = {}
+    for w, index in indexes.items():
+        if not (index or {}).get("by_id"):
+            continue
+        out[w] = points_for(index, model, player_id=p.get("player_id"), name=p["name"],
+                            team=p["team"], position=p["position"])
+    return out
+
+
+def _later_week(model_points: float, read: tuple[float | None, str] | None, *,
+                sleeper_mult: float, injured: bool,
+                sleeper_return: int | None) -> tuple[float, str, str | None, float | None]:
+    """``(points, source, reason, sleeper_points)`` for one week after this one.
+
+    The blend of our number and Sleeper's for that week (see module doc):
+
+    - Sleeper projects him: ``ROS_MODEL_WEIGHT`` × ours + the rest × his line
+      times `sleeper_mult` (the role / backup-QB multipliers its line does not
+      carry).
+    - Sleeper lists him without points while he is hurt and projects him again
+      in a later week (`sleeper_return`, the next week it does): zero for
+      this one -- its return timeline (Josh Jacobs out 2026 wk5, back at 3
+      then 11 points) is better informed than our one-week / four-week
+      default.
+    - Hurt and never projected again in the fetched weeks (`sleeper_return`
+      None): no return date from Sleeper either; our window has priced the
+      absence, so the model alone.
+    - Healthy and listed without points (a backup): Sleeper's explicit zero
+      takes its share, ours keeps ``ROS_MODEL_WEIGHT`` -- unlike this week,
+      where it is zero outright, a role weeks away can still change.
+    - No row at all: the model alone.
+    """
+    points, status = read if read else (None, "missing")
+    if status == "projected" and points is not None:
+        theirs = points * sleeper_mult
+        mixed = ROS_MODEL_WEIGHT * model_points + (1 - ROS_MODEL_WEIGHT) * theirs
+        return round(max(0.0, mixed), 2), "sleeper_blend", None, round(theirs, 2)
+    if status == "not_projected":
+        if injured and sleeper_return is None:
+            return round(model_points, 2), "model", None, 0.0
+        if injured:
+            return 0.0, "sleeper_absence", \
+                f"not projected by Sleeper until week {sleeper_return}", 0.0
+        return round(ROS_MODEL_WEIGHT * model_points, 2), "sleeper_blend", None, 0.0
+    return round(model_points, 2), "model", None, None
+
+
 def _played_this_week(db, season: int, week: int) -> set[str]:
     """Teams whose game this week is already final (their points are banked)."""
     from .game_clock import game_progress
@@ -526,6 +628,7 @@ async def ros_projections(
     week by week.
     """
     from . import projections
+    from .projections import availability
     from .scoring import resolve_scoring
 
     model = resolve_scoring(scoring)
@@ -538,7 +641,9 @@ async def ros_projections(
     windows = season_windows(settings, week)
     weeks = sorted(set(windows["regular"]) | set(windows["playoff"]))
     if not weeks:
-        return {"players": [], "windows": windows, "schedule_unknown_weeks": []}
+        return {"players": [], "windows": windows, "schedule_unknown_weeks": [],
+                "sleeper_ros": {"active": False, "weeks": [], "weeks_missing": [],
+                                "model_weight": ROS_MODEL_WEIGHT}}
     schedules = await schedules_for(db, season, weeks)
     try:
         rankings = await _defense_rankings()
@@ -550,6 +655,11 @@ async def ros_projections(
         from .matchup_tools import get_defense_analyzer
         analyzer = get_defense_analyzer()
     played = _played_this_week(db, season, week)
+    # Sleeper's projection for each later week, fetched in parallel alongside
+    # nothing else of ours (cached per week, `FUTURE_CACHE_TTL`).
+    sleeper_weeks = [w for w in weeks if week < w <= week + ROS_SLEEPER_WEEKS_AHEAD]
+    sleeper_idx = await _sleeper_weeks(season, sleeper_weeks) if sleeper_weeks else {}
+    sleeper_live = sorted(w for w, i in sleeper_idx.items() if (i or {}).get("by_id"))
 
     def _opponent(team: str, w: int) -> str:
         sched = schedules.get(w)
@@ -643,14 +753,26 @@ async def ros_projections(
         # bye inside it does not use one up.
         stated = _weeks_from_return_date(injury.get("return_date"), today)
         by_calendar = stated is not None and max(1, stated) == absent
+        # Sleeper's number for each later week, and what its line does not
+        # carry: the role change our model found (as on this week's blend)
+        # and, through the starter's absence, the backup quarterback.
+        reads = _sleeper_reads(sleeper_idx, model, p) if sleeper_live else {}
+        hurt = absent > 0 or availability(injury.get("status")) != "healthy"
+        projected_weeks = sorted(w for w, (_, st) in reads.items() if st == "projected")
+        role_mult = float(rate_src.get("role_multiplier", 1.0) or 1.0) \
+            if p["position"] in _SKILL else 1.0
+        qb_sleeper = float(qb.get("sleeper_mult") or 1.0) if qb_games else 1.0
 
         ros = playoff = 0.0
         weekly = []
         byes, injured, counted = [], [], 0
+        sources: dict[str, int] = {}
         game_no = 0  # his team's games from this week on, before this one
         for w in weeks:
             opponent = _opponent(p["team"], w)
             reason = None
+            source = None
+            model_points = sleeper_points = None
             is_bye = opponent == "BYE" or (w == week and proj.get("on_bye"))
             missed = (w - week) if by_calendar else game_no
             if not is_bye:
@@ -665,31 +787,59 @@ async def ros_projections(
                 injured.append(w)
             elif w == week and proj:
                 points = float(proj.get("projected_points") or 0.0)
-            elif (unit := units.get((p["position"], p["team"], opponent))) \
-                    and unit.get("projected_points") is not None:
-                points = round(float(unit["projected_points"]), 2)
-                tier = unit.get("matchup_tier") or "unknown"
-                if tier not in ("unknown", "neutral"):
-                    reason = f"{tier} matchup"
+                source = proj.get("projection_source") or "model"
             else:
-                mult, tier = _matchup(p["position"], opponent, rankings, analyzer, model.rec)
-                rate = (per_game + (inherited if game_no - 1 < inherited_games else 0.0)
-                        + (deflation if game_no - 1 < returning_games else 0.0))
-                if game_no - 1 < qb_games:
-                    rate *= qb_mult
-                points = round(rate * mult, 2)
-                if not opponent:
-                    reason = "schedule unknown — counted as playing"
-                elif tier not in ("unknown", "neutral"):
-                    reason = f"{tier} matchup"
+                if (unit := units.get((p["position"], p["team"], opponent))) \
+                        and unit.get("projected_points") is not None:
+                    points = round(float(unit["projected_points"]), 2)
+                    tier = unit.get("matchup_tier") or "unknown"
+                    if tier not in ("unknown", "neutral"):
+                        reason = f"{tier} matchup"
+                    mult_qb = 1.0
+                else:
+                    mult, tier = _matchup(p["position"], opponent, rankings, analyzer,
+                                          model.rec)
+                    rate = (per_game + (inherited if game_no - 1 < inherited_games else 0.0)
+                            + (deflation if game_no - 1 < returning_games else 0.0))
+                    if game_no - 1 < qb_games:
+                        rate *= qb_mult
+                    points = round(rate * mult, 2)
+                    if not opponent:
+                        reason = "schedule unknown — counted as playing"
+                    elif tier not in ("unknown", "neutral"):
+                        reason = f"{tier} matchup"
+                    mult_qb = qb_sleeper if game_no - 1 < qb_games else 1.0
+                model_points = points
+                if w > week:
+                    points, source, why, sleeper_points = _later_week(
+                        model_points, reads.get(w), sleeper_mult=role_mult * mult_qb,
+                        injured=hurt,
+                        sleeper_return=next((x for x in projected_weeks if x > w), None))
+                    if source == "sleeper_absence":
+                        injured.append(w)
+                        reason = why
+                else:
+                    source = "model"
+            if source:
+                sources[source] = sources.get(source, 0) + 1
             if points > 0:
                 counted += 1
             if w in windows["regular"]:
                 ros += points
             if w in windows["playoff"]:
                 playoff += points
-            weekly.append({"week": w, "opponent": opponent or None,
-                           "points": round(points, 2), "reason": reason})
+            row = {"week": w, "opponent": opponent or None,
+                   "points": round(points, 2), "reason": reason, "source": source}
+            if model_points is not None and w > week:
+                row["model_points"] = round(model_points, 2)
+                row["sleeper_points"] = sleeper_points
+            weekly.append(row)
+        later_blend = sum(1 for r in weekly if r["week"] > week and r["source"] in (
+            "sleeper_blend", "sleeper_absence"))
+        later_model = sum(1 for r in weekly if r["week"] > week and r["source"] == "model")
+        ros_source = ("sleeper_blend" if later_blend and not later_model
+                      else "model" if later_model and not later_blend
+                      else "mixed" if later_blend else "none")
 
         entry = {
             "player": p["name"],
@@ -710,10 +860,21 @@ async def ros_projections(
             "injury_window": absence_reason,
             "expected_absence_games": absent,
             "weekly_points": {row["week"]: row["points"] for row in weekly},
+            # Where the later weeks' numbers came from: Sleeper's projection
+            # for that week blended with ours, ours alone, or a mix.
+            "ros_source": ros_source,
+            "week_sources": sources,
+            "this_week_source": proj.get("projection_source"),
             # What the report text says about his role (`news_signals`), from
             # this week's projection (`value_trajectory` reads it too).
             "news_flags": list(proj.get("news_flags") or rate_src.get("news_flags") or []),
         }
+        if absent_sleeper := [r["week"] for r in weekly if r["source"] == "sleeper_absence"]:
+            # Weeks our window did not cover that Sleeper does not project
+            # him for: its return is the next week it does.
+            entry["sleeper_absence_weeks"] = absent_sleeper
+            entry["sleeper_return_week"] = next(
+                (x for x in projected_weeks if x > absent_sleeper[-1]), None)
         if qb_games:
             # The backup quarterback's multiplier on his later weeks.
             entry["qb_context"] = {k: qb.get(k) for k in (
@@ -762,6 +923,12 @@ async def ros_projections(
         "schedule_unknown_weeks": [w for w in weeks if schedules.get(w) is None],
         "matchups_active": bool(rankings),
         "scoring_used": model.summary(),
+        "sleeper_ros": {
+            "active": bool(sleeper_live),
+            "weeks": sleeper_live,
+            "weeks_missing": [w for w in sleeper_weeks if w not in sleeper_live],
+            "model_weight": ROS_MODEL_WEIGHT,
+        },
     }
 
 
@@ -1005,18 +1172,23 @@ async def get_ros_projections(
         "schedule_unknown_weeks": meta["schedule_unknown_weeks"],
         "matchups_active": meta["matchups_active"],
         "scoring_used": meta["scoring_used"],
+        "sleeper_ros": meta.get("sleeper_ros"),
         "elapsed_seconds": round(elapsed, 2),
         "method": (
-            "this week = the weekly projection; each later week = per-game "
-            f"baseline (opportunity regressed toward the rank prior, {PRIOR_GAMES} "
-            "games-equivalent) × that week's matchup multiplier; 0 on byes and "
-            "inside the expected injury absence"
+            "this week = the weekly projection (Sleeper-first blend); each later "
+            f"week = {ROS_MODEL_WEIGHT:g} × our per-game baseline (opportunity regressed "
+            f"toward the rank prior, {PRIOR_GAMES} games-equivalent) × that week's "
+            f"matchup multiplier + {1 - ROS_MODEL_WEIGHT:g} × Sleeper's projection for "
+            "that week (our model alone where Sleeper has none: ros_source / "
+            "weekly[].source); 0 on byes and inside the expected injury absence"
         ),
         "caveats": [
             "Injury return windows are estimates: the report text when it states "
             f"one, otherwise 1 week for Out and {IR_MIN_WEEKS} for IR/PUP/NFI.",
             "Later weeks carry no Vegas or weather adjustment — those lines are "
             "not published that far ahead.",
+            "Sleeper's later-week projections are its current read of each week "
+            "(depth chart, return timelines); they move with news like ours do.",
             "value_trajectory is where trade value is headed over the next "
             "few games (teammate returns, inherited volume ending, a return "
             "from injury, a role shift, our rank vs the market's) — timing, "

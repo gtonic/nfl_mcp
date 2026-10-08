@@ -93,6 +93,7 @@ def _no_sleeper_second_opinion(monkeypatch):
 
     monkeypatch.setattr(sleeper_projections, "_fetch", _empty)
     sleeper_projections._cache.clear()
+    sleeper_projections._empty_until.clear()
 
 
 @pytest.fixture(autouse=True)
