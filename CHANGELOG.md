@@ -23,8 +23,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a league pool. Backtest (`evals/backtest/ros_sleeper_backtest.py`,
   per-game ROS rate MAE): model 2.79 → 2.69 with Sleeper's current line as a
   flat stand-in (lower bound); 2.04 with each week's own line (upper bound).
+- **Questionable players priced by what they really score.** The 2023-25
+  official injury reports (nflverse `injuries`: designation + last practice
+  day) joined to the walk-forward backtest (`evals/backtest/practice_backtest.py`)
+  say a questionable player scores 0.96 of a healthy week after a full
+  Friday, 0.72 [0.65, 0.81] after a limited one (a third sit) and 0.54
+  [0.41, 0.69] after a DNP week; the blend used to put a limited week at
+  ~0.92. Now: our share `QUESTIONABLE_BY_PRACTICE` LP 0.90 → 0.72, DNP 0.65 →
+  0.54 (one DNP so far 0.78, the 2026 mix of how such weeks end), Sleeper's
+  share `PRACTICE_BLEND_MULT` LP 1.0 → 0.78, DNP 0.75 → 0.59, single DNP 0.90
+  → 0.85 (Sleeper already shades a questionable player ~0.92). The value is
+  before inactives; one confirmed active scores ~0.95. The briefing passes
+  the practice pattern too.
+- **Questionable starting QB.** 42% of questionable starters did not start
+  (2023-25, n=43; limited Friday 47%, full 0 of 6): `qb_coupling`
+  `QUESTIONABLE_WEIGHT` 0 → 0.4, limited 0.45, full / "expected to play" 0;
+  the DNP-week weight (0.75) and Doubtful (0.75) are consistent and kept.
+- **Returning teammate.** `RETURNING_KEEP_WEIGHT` 0.5 → 0.6 — the
+  rest-of-season optimum of a sweep that now includes a WR back for a TE
+  (`evals/backtest/trend_calibration.py --cross-position`, 1,974 rows: MAE vs
+  the next four games 3.470 → 3.468; realised drop −10.7% vs predicted
+  −10.7%). The sell-high signal is scaled to the realised size of the drop
+  (`value_trajectory.RETURNING_CHANGE_SCALE`: RB/TE 0.95, WR 0.75). Live,
+  T.J. Hockenson −24% → −18%, Warren −14% → −12%, Doubs −18% → −11% (all
+  still sell-high), Emanuel Wilson −9.3% → −7.9% (now hold).
+- **Role shifts.** Re-swept: a lost role's floor `MIN_MULTIPLIER` 0.80 → 0.85
+  (better in 5 of 6 position-seasons); strength 0.3 and
+  `POST_BREAK_WEIGHT` 1.5 confirmed.
 
 ### Added
+- **A back's gained role is priced, gated.** A role gain held two games, at
+  RB, that no teammate's absence explains (a teammate ahead of him or sharing
+  his role who played before the gain and missed one of its games, or one
+  back / out now) multiplies this week's Sleeper share by
+  `1 + 0.1 × the volume share gain` (`role_shift.UP_STRENGTH`,
+  `role_gain` on the projection). Backtest: gated backs 6.280 → 6.188 MAE
+  (n=79, better in each of 2023-25), all rows 5.3779 → 5.3770; receivers and
+  tight ends still get worse and stay flag-only. Jeremiyah Love ×1.054;
+  Emanuel Wilson (Charbonnet, Price out) and Jaylen Warren (Dowdle) are not
+  priced.
+- **Calibration evals.** `evals/backtest/trend_calibration.py` (returning,
+  role-down and gated role-up sweeps, per season), `practice_backtest.py`
+  (2023-25 report buckets with bootstrap intervals, QB start rates);
+  `signal_history.py --truth sleeper --transitions` scores the live practice
+  history against Sleeper's weekly stats with intervals (2026 weeks 3-4: 18
+  questionable player-weeks, 0.45 [0.21, 0.74] of their trailing rate — too
+  few alone, same direction).
 - **Weekly accuracy loop.** Pre-kickoff projections are logged with the
   signals active at the time (schema v18: `projection_log.signals`); once a
   week is final they are graded against the actual points (league scoring and

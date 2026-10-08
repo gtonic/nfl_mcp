@@ -16,9 +16,11 @@ class TestPracticeBlendMult:
         ("DNP", "DNP-DNP", PRACTICE_BLEND_MULT["DNP"]),
         ("DNP", "DNP-DNP-DNP", PRACTICE_BLEND_MULT["DNP"]),
         ("DNP", "LP-DNP", PRACTICE_BLEND_MULT["DNP"]),             # worsening to a DNP
-        ("LP", "FP-LP", PRACTICE_BLEND_MULT["LP_WORSENING"]),
-        ("LP", "DNP-LP", 1.0),                                      # improving
+        ("LP", "FP-LP", PRACTICE_BLEND_MULT["LP"]),
+        ("LP", "DNP-LP", PRACTICE_BLEND_MULT["LP"]),               # a limited week
+        ("LP", "LP", PRACTICE_BLEND_MULT["LP"]),
         ("FP", "DNP-LP-FP", 1.0),
+        ("REST", "REST", 1.0),
         ("Did Not Participate In Practice", None, PRACTICE_BLEND_MULT["DNP_SINGLE"]),
         (None, None, 1.0),
     ])
@@ -32,6 +34,37 @@ class TestPracticeBlendMult:
 
     def test_the_pattern_alone_is_enough(self):
         assert practice_blend_mult("Q", None, "DNP-DNP") == PRACTICE_BLEND_MULT["DNP"]
+
+
+class TestCalibratedValues:
+    """The 2023-25 report backtest (`evals/backtest/practice_backtest.py`):
+    each bucket's blend lands on the share of a healthy week it scored."""
+
+    def test_sleeper_share_is_the_realised_share_over_sleepers_own_shading(self):
+        for key in ("DNP_SINGLE", "DNP", "LP"):
+            assert PRACTICE_BLEND_MULT[key] == pytest.approx(min(
+                1.0, projections.QUESTIONABLE_REALISED[key]
+                / projections.SLEEPER_QUESTIONABLE_PRICED), abs=0.005)
+
+    def test_buckets_are_ordered(self):
+        r = projections.QUESTIONABLE_REALISED
+        assert r["DNP"] < r["LP"] < r["DNP_SINGLE"] < r["FP"] <= 1.0
+        assert PRACTICE_BLEND_MULT["DNP"] < PRACTICE_BLEND_MULT["LP"] \
+            < PRACTICE_BLEND_MULT["DNP_SINGLE"] < 1.0
+
+    @pytest.mark.parametrize("practice, pattern, key", [
+        ("LP", None, "LP"), ("FP", None, "FP"), ("DNP", "DNP-DNP", "DNP"),
+        ("DNP", "LP-DNP", "DNP"), ("DNP", "DNP", "DNP_SINGLE"), ("DNP", None, "DNP_SINGLE"),
+        (None, "DNP-DNP", "DNP"), ("limited", None, "LP"),
+    ])
+    def test_model_share(self, practice, pattern, key):
+        assert projections.practice_adjusted_mult("Questionable", practice, pattern) \
+            == projections.QUESTIONABLE_REALISED[key]
+
+    def test_model_share_needs_a_questionable_tag(self):
+        assert projections.practice_adjusted_mult(None, "DNP", "DNP-DNP") == 1.0
+        assert projections.practice_adjusted_mult("Out", "LP") == 0.0
+        assert projections.practice_adjusted_mult("Questionable", None) == 0.9
 
 
 def _hurt(pattern):

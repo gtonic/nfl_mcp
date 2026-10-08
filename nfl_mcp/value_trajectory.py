@@ -30,8 +30,9 @@ their sum when they disagree. Two corrections keep them honest:
 
 * a role that grew while a teammate was out is the inflated role itself, not
   a rising one, and is not counted up;
-* our rate does not price a gained role (`role_shift` multiplies only a lost
-  one), so for a player whose role is rising a market rank above ours is the
+* our ROS rate does not price a gained role (only this week's blend does, for
+  a back's gain no absence explains: `role_shift.UP_STRENGTH`), so for a
+  player whose role is rising a market rank above ours is the
   market being early, not him being overvalued, and is not counted down.
 
 The total is ``expected_value_change.pct``. Past `TRAJECTORY_MIN_CHANGE`
@@ -60,6 +61,20 @@ TRAJECTORY_HORIZON_GAMES = 3
 # recent (unregressed) rate and the first return gating it: 19% / 20%,
 # about 70% of them hard.
 TRAJECTORY_MIN_CHANGE = 0.08
+# The returning-teammate signal is read against what the market sees, the
+# unregressed trailing rate (``per_game_recent``) -- the best of the three
+# readings tried in `evals/backtest/trend_calibration.py --only returning
+# --cross-position` (2023-25, 2,006 player-weeks with the teammate back:
+# level MAE vs the next four games 3.469, against the regressed rate 3.488,
+# a raw-to-raw drop 3.586). But it also carries the regression every hot
+# stretch shows, so it runs ahead of the realised drop: at
+# `projections.RETURNING_KEEP_WEIGHT` 0.6 it predicts -12.9% where those
+# players' next four games fell -10.7% against unaffected players', and a
+# per-row fit puts the realised drop at 0.84 x the predicted one: RB 0.94
+# (n=399), WR 0.76 (n=1,118), TE 0.94 (n=440). Its share of value is scaled
+# by the position's factor (QB: the pooled one); the rate and ROS points it
+# reports are not.
+RETURNING_CHANGE_SCALE = {"RB": 0.95, "WR": 0.75, "TE": 0.95, "QB": 0.85}
 # A role that just moved (role_shift role_up / role_down), held for two
 # games; one game counts for ROLE_ONE_WEEK_WEIGHT of it (a single game can be
 # game script). Games he left injured are not part of the read (see
@@ -224,7 +239,8 @@ def assess(entry: dict, *, week: int | None = None, rank: int | None = None) -> 
                 f"{who} {when} — {name}'s {until:.1f} pts/game came without {them}; "
                 f"{per_game:.1f} with {them}" + (f" ({volume})" if volume else "")
                 + (f"; {also}" if also else ""))
-            signals.append({"kind": "returning_teammate", "change": round(change, 3)})
+            signals.append({"kind": "returning_teammate",
+                            "change": round(RETURNING_CHANGE_SCALE.get(pos, 0.85) * change, 3)})
 
     # 2) Inherited volume that ends inside the horizon.
     inherited = float(entry.get("inherited_per_game") or 0.0)

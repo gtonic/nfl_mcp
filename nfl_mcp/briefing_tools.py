@@ -173,6 +173,8 @@ def _build_player(
         player["practice"] = practice
         if injury:
             player["injury"]["practice_status"] = practice["latest"]
+            # The week's days: one DNP so far is priced apart from a DNP week.
+            player["injury"]["practice_pattern"] = practice.get("pattern")
     if team in weather:
         player["weather"] = weather[team]
     snap = (usage.get(player_id) or {}).get("snap_share")

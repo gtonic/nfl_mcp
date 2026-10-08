@@ -415,7 +415,10 @@ class TestSignalBacktestStub:
         assert got[(3, "LV", "brock bowers")] == {"pattern": "LP-DNP", "latest": "DNP",
                                                   "game_status": "Questionable"}
         buckets = sh.practice_buckets(got, {(3, "LV", "brock bowers"): 0.6})
-        assert buckets == {"mult=0.75": [0.6]}
+        from nfl_mcp.projections import PRACTICE_BLEND_MULT
+        assert dict(buckets) == {f"mult={PRACTICE_BLEND_MULT['DNP']:.2f}": [0.6],
+                                 "latest=DNP": [0.6], "questionable": [0.6],
+                                 "not_on_report": []}
 
     def test_ratios_score_a_missed_game_as_zero(self):
         from evals.backtest import signal_history as sh
