@@ -1175,11 +1175,19 @@ async def analyze_trade(
     lineup (every remaining week re-optimised) — prefer it for the call;
     `verdict` leads with it.
 
+    Timing: each traded player carries value_trajectory {trajectory, signal
+    (sell_high / buy_low / hold), expected_value_change, market_gap, reasons}
+    — e.g. a backup whose starter returns is a sell_high — and each side has
+    timing_notes ("You are selling high on X", "buying low on Y", or the
+    reverse as a caution). Timing informs the negotiation; the ROS lineup
+    change stays the verdict.
+
     Returns: {
         recommendation: str (fair, needs_adjustment, unfair, etc.),
         fairness_score: float (0-100, higher = more fair),
         verdict: str, ros_points_delta: {team1, team2}, ros: {...},
-        team1_analysis: {...},
+        team1_analysis: {gives, receives (each with value_trajectory),
+                         positional_needs, timing_notes},
         team2_analysis: {...},
         trade_details: {...},
         warnings: [...],
@@ -1510,8 +1518,16 @@ async def get_ros_projections(
     Returns: {players: [{player, position, team, ros_points (rest of regular
               season), playoff_points (league's playoff weeks), total_points,
               weeks_counted, bye_weeks, injury_weeks, injury_window, per_game,
-              baseline_source, weekly?}], regular_season_weeks, playoff_weeks,
-              unresolved, elapsed_seconds, success}
+              baseline_source, value_trajectory, weekly?}], regular_season_weeks,
+              playoff_weeks, unresolved, elapsed_seconds, success}
+
+    value_trajectory per player: where his TRADE value is headed over the next
+    ~3 games — {trajectory: rising|falling|stable, signal: buy_low|sell_high|
+    hold, expected_value_change {pct, per_game, ros_points}, change_week,
+    market_gap {our_rank, market_rank, gap, read}, reasons}. Read from a
+    teammate due back (the backup's inflated rate ends), inherited volume
+    ending, his own return from a multi-week absence, a recent role shift,
+    and our per-game rank vs the FantasyCalc positional rank.
 
     Example: get_ros_projections(league_id="123", roster_id=7)
     Example: get_ros_projections(league_id="123", player_names=["Puka Nacua"], include_weekly=True)
@@ -3254,14 +3270,26 @@ async def find_trade_targets(
     positions: list[str] | None = None,
     limit: int = 10,
     horizon: str = "ros",
+    max_package_size: int = 2,
 ) -> dict:
     """START HERE for "who should I trade with" - finds the deal, not just grades one.
 
     analyze_trade evaluates a trade you already have in mind; this finds which
     trades are worth proposing. Every one-for-one swap against every other roster
-    is scored by recomputing BOTH teams' best legal starting lineup before and
-    after it, and only trades where both sides gain are returned — a trade the
-    other manager loses is a wish, not a deal.
+    — and, up to max_package_size players a side, package trades (2-for-1,
+    1-for-2, 2-for-2; 3-for-2 at size 3) — is scored by recomputing BOTH teams'
+    best legal starting lineup before and after it, and only trades where both
+    sides gain are returned — a trade the other manager loses is a wish, not a
+    deal. Packages are built from each side's surplus (players who start in
+    under half the remaining weeks) plus at most one starter; a side receiving
+    more players than it sends drops its least valuable active player when the
+    roster is full (reported as your_drops / their_drops).
+
+    Ranking adds a small timing bonus (reported separately in `timing`, never
+    used to pass the both-sides bar): +1 per player you sell high (his value
+    is about to fall — e.g. a backup whose starter returns) or buy low (value
+    rising — a growing role, a return from injury), -1 for the reverse. Each
+    player carries value_trajectory {trajectory, signal, reasons}.
 
     Parameters:
         league_id: Sleeper league id
@@ -3274,11 +3302,17 @@ async def find_trade_targets(
         horizon: "ros" (default) — gains are rest-of-season lineup points: both
             lineups re-optimised for every remaining week (regular season +
             fantasy playoffs, byes and injury absences included) and summed;
-            "week" — this week's lineup only (the old behaviour).
+            "week" — this week's lineup only (the old behaviour, 1-for-1 only).
+        max_package_size: 1 = one-for-one only; 2 (default) adds 2-for-1,
+            1-for-2 and 2-for-2; 3 adds 3-for-2 and 2-for-3 (slower).
 
     Returns: {
-        proposals [{partner, partner_roster_id, you_give, you_get, your_gain,
-                    their_gain, mutual_gain}],
+        proposals [{partner, partner_roster_id, shape, you_give, you_get,
+                    your_gain, their_gain, mutual_gain, timing {score, bonus,
+                    notes}, rank_score}]  (one-for-one, best per partner),
+        package_proposals [{... you_give: [..], you_get: [..], your_drops,
+                    their_drops ...}]  (best package per partner),
+        package_search {shapes, screened, rescored_weekly, search_seconds},
         trade_deadline {deadline_week, passed, urgent, weeks_left, message},
         your_replacement_levels, candidates_considered (every swap scored),
         caveats, league, week, season, success
@@ -3294,7 +3328,7 @@ async def find_trade_targets(
     return await trade_finder_tools.find_trade_targets(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
         week=week, season=season, positions=positions, limit=limit,
-        horizon=horizon,
+        horizon=horizon, max_package_size=max_package_size,
     )
 
 
