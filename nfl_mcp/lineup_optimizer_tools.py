@@ -841,8 +841,10 @@ class LineupOptimizer:
                 analysis.practice_pattern = practice["pattern"]
                 analysis.practice_trend = practice["trend"]
                 analysis.practice_source = practice["source"]
-                # The projection prices the latest report too.
-                injury_data = {**(injury_data or {}), "practice_status": practice["latest"]}
+                # The projection prices the latest report too, and the week's
+                # pattern on Sleeper's share (`projections.practice_blend_mult`).
+                injury_data = {**(injury_data or {}), "practice_status": practice["latest"],
+                               "practice_pattern": practice["pattern"]}
 
         # Apply projection data — or auto-project when the caller didn't supply
         # points, so start/sit works without manual point entry.

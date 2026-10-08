@@ -96,6 +96,22 @@ def _no_sleeper_second_opinion(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_sleeper_week_stats(monkeypatch):
+    """Keep Sleeper's weekly stat lines offline in unit tests.
+
+    The projection engine reads them for the role-shift read (snap share, red
+    zone) whenever game logs are available. Tests of usage trends or role
+    shifts patch `usage_trends._fetch_week_stats` themselves.
+    """
+    from nfl_mcp import usage_trends
+
+    async def _empty(season, week):
+        return {}
+
+    monkeypatch.setattr(usage_trends, "_fetch_week_stats", _empty)
+
+
+@pytest.fixture(autouse=True)
 def _clear_process_caches():
     """Short-lived in-process caches must not leak one test's mocks into the next."""
     from nfl_mcp import handcuff_tools, lineup_tools, nfl_tools, sleeper_tools, weather_tools

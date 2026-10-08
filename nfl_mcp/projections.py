@@ -15,6 +15,20 @@ our own model is built from signals the server already has:
                      × usage_multiplier        # snap% / usage trend (rank bucket only)
                      × injury_multiplier       # availability
 
+Two adjustments ride on Sleeper's share, because Sleeper's stat line is slow
+to show them and charging only our quarter diluted them four times over:
+
+    sleeper_share × role_multiplier     # a lost role (`role_shift`): the
+                                        # model reweights its volume instead
+                  × practice_blend_mult # a questionable player's practice
+                                        # week; the model's share already
+                                        # carries it in injury_mult
+
+A teammate ahead of him who missed games and is back (or due back) takes his
+inflated weeks out of the opportunity base (``returning_teammates``,
+``deflated_volume``); ROS prices the deflated rate from the teammate's
+expected return.
+
 Without a Sleeper projection for the player (an outage, the off-season, a
 player it does not list) the model alone is used, labelled
 ``projection_source: "model_only"`` with a warning. Byes and Out are zero
@@ -37,12 +51,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
-from . import opportunity_tools
+from . import opportunity_tools, role_shift, usage_trends
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .matchup_tools import get_defense_analyzer, matchup_ratio
+from .opportunity import DEFAULT_LOOKBACK, QB_LOOKBACK
 from .player_values import get_values_service
-from .ros import PRIOR_GAMES, regressed_rate
+from .ros import PRIOR_GAMES, SEASON_ENDING_WEEKS, regressed_rate
 from .scoring import ScoringModel, league_scoring, resolve_scoring
 from .teams import normalize_team
 from .vegas_tools import get_vegas_analyzer
@@ -274,6 +290,39 @@ def availability(status: str | None) -> str:
 QUESTIONABLE_BY_PRACTICE = {"FP": 0.97, "REST": 0.97, "LP": 0.9, "DNP": 0.65}
 
 
+# The same practice week on Sleeper's share of the blend. Sleeper's stat line
+# reacts to a designation, if at all, and not to a Wednesday or Thursday
+# practice report, so a questionable DNP used to move only our quarter of the
+# number (0.65 x 0.25: a 9% cut for a player who sat out all week). Applied
+# only where the model share already prices the practice
+# (`QUESTIONABLE_BY_PRACTICE`), so neither share is charged twice. Read off the
+# week's pattern: one DNP so far (the Wednesday report) is weak evidence —
+# most of those practise later in the week — while DNP on every day reported
+# is the questionable player who usually sits. Heuristic, not backtested (no
+# practice history in the backtest data); kept mild. A DNP week at 0.75 puts
+# the blend at ~0.72 of a healthy projection, between the questionable tag
+# alone (0.91) and Out.
+PRACTICE_BLEND_MULT = {"DNP_SINGLE": 0.90, "DNP": 0.75, "LP_WORSENING": 0.95}
+
+
+def practice_blend_mult(status: str | None, practice_status: str | None,
+                        pattern: str | None = None) -> float:
+    """Multiplier on Sleeper's share of the blend for a questionable player's
+    reported practice week (see `PRACTICE_BLEND_MULT`). 1.0 otherwise."""
+    if availability(status) != "questionable":
+        return 1.0
+    days = [d.strip().upper() for d in (pattern or "").split("-") if d.strip()]
+    latest = (practice_status or (days[-1] if days else "")).strip().upper()
+    if latest and latest not in QUESTIONABLE_BY_PRACTICE:
+        from .practice_reports import normalize_practice
+        latest = normalize_practice(latest) or ""
+    if latest == "DNP":
+        return PRACTICE_BLEND_MULT["DNP" if len(days) >= 2 else "DNP_SINGLE"]
+    if latest == "LP" and "FP" in days[:-1]:
+        return PRACTICE_BLEND_MULT["LP_WORSENING"]
+    return 1.0
+
+
 def practice_adjusted_mult(status: str | None, practice_status: str | None) -> float:
     """``_injury_mult`` refined by the latest reported practice.
 
@@ -426,6 +475,134 @@ def _inherited_shares(
     return shares
 
 
+# A reserve-list teammate whose report says he is on his way back is expected
+# within this many games, whatever the reserve minimum still says. "Activated"
+# is deliberately not a cue: the reports say "won't be activated" as often.
+DESIGNATED_RETURN_GAMES = 2
+# Once a teammate is back, the share of the player's full trailing rate that
+# is kept; the rest is the rate from the games they played together.
+# `evals/backtest/sleeper_blend.py --returning` (2023-25, the teammate playing
+# that week standing in for "back"; 1.7k player-weeks): model MAE 5.26 ->
+# 5.15 (bias +0.18 -> -0.55), blend 4.90 -> 4.87 (RB 4.56 -> 4.50, WR 5.12
+# -> 5.10, TE 4.29 -> 4.30). Pricing only the games together (keep 0) moved
+# the blend a little further but left the model ~1.5 points low, and the
+# model alone is what ROS prices every later week on.
+RETURNING_KEEP_WEIGHT = 0.5
+# A teammate valued *below* him still counts as returning when, in the games
+# they played together, he took at least this share of the player's volume:
+# the market re-ranks a backup who has been starting (Warren RB17 over the
+# Dowdle whose absence made him the starter, RB42), the volume split does not.
+RETURNING_MIN_VOLUME_RATIO = 0.5
+
+
+def _volume(g: dict) -> float:
+    return (float(g.get("targets") or 0) + float(g.get("carries") or 0)
+            + float(g.get("attempts") or 0))
+
+
+def _shares_his_role(opp_index: dict, name: str, mate: str, week: int) -> bool:
+    """Whether `mate` took `RETURNING_MIN_VOLUME_RATIO` of `name`'s volume in
+    the games before `week` they both played."""
+    mine = {g["week"]: g for g in opportunity_tools.prior_games(opp_index, name, week)}
+    theirs = {g["week"]: g for g in opportunity_tools.prior_games(opp_index, mate, week)}
+    together = mine.keys() & theirs.keys()
+    his = sum(_volume(mine[w]) for w in together)
+    return bool(together) and his > 0 and (
+        sum(_volume(theirs[w]) for w in together) >= RETURNING_MIN_VOLUME_RATIO * his)
+_DESIGNATED_RE = re.compile(
+    r"designated (?:for|to) return|return(?:ed|s)? to practice|practice window", re.I)
+
+
+def _teammate_return_games(status_of, name: str, team: str, week: int) -> int | None:
+    """Games until an unavailable-or-doubtful teammate plays again; None when
+    he is not coming back this season (or there is nothing to go on)."""
+    from .ros import _starter_absence
+    status = status_of(name, team)
+    kind = availability(status)
+    practice_of = getattr(status_of, "practice", None)
+    practice = (practice_of(name, team) if callable(practice_of) else None) or ""
+    if _injury_mult(status) != 0.0:
+        # Questionable or better plays, unless he has not practised: a
+        # doubtful or questionable-DNP teammate is due back next week.
+        return 1 if kind == "doubtful" or (kind == "questionable" and practice == "DNP") else 0
+    detail = _absence_detail(status_of, name, team)
+    games = _starter_absence(detail)
+    if _DESIGNATED_RE.search(str(detail.get("description") or "")):
+        games = min(games, DESIGNATED_RETURN_GAMES)
+    return None if games >= SEASON_ENDING_WEEKS else games
+
+
+def _returning_teammates(
+    depth: dict[tuple[str, str], list[dict]], team: str, position: str,
+    pos_rank: int | None, value: float | None, status_of, opp_index: dict,
+    name: str, week: int, played_weeks=None,
+) -> list[dict]:
+    """Higher-valued teammates who missed games of his trailing window and
+    are back, or due back, from an absence that is not season-ending.
+
+    The reverse of `_starters_ahead`: while the starter was out the backup's
+    own trailing volume grew, and projecting it forward once the starter
+    returns credits him with a role he no longer has. Teammates are the
+    same depth ranking (`_depth_map`) -- those ranked ahead of him, and those
+    behind who shared his role when both played (`RETURNING_MIN_VOLUME_RATIO`)
+    -- plus, for a receiver or tight end, the other pass-catching position's
+    teammates valued above him: a WR1's targets went to the tight end too.
+    A week counts as missed when the teammate has no stat line for it
+    (nflverse) and no offensive snaps (Sleeper, through
+    `played_weeks(player_id)` when given).
+
+    Each entry: ``{name, status, missed_weeks, games_until_return,
+    expected_return_week}`` (return week ignores byes). A teammate who is out
+    now counts only while his absence runs through the player's latest game:
+    a fresh absence is priced as vacated volume instead.
+    """
+    if pos_rank is None or not opp_index or not name:
+        return []
+    lookback = QB_LOOKBACK if position == "QB" else DEFAULT_LOOKBACK
+    window = [g["week"] for g in opportunity_tools.prior_games(opp_index, name, week)[-lookback:]]
+    if not window:
+        return []
+    candidates = [e for e in depth.get((team, position), [])
+                  if (e.get("position_rank") or 999) < pos_rank
+                  or (e.get("name") and _shares_his_role(opp_index, name, e["name"], week))]
+    other = {"WR": "TE", "TE": "WR"}.get(position)
+    if other and value:
+        candidates += [e for e in depth.get((team, other), [])
+                       if float(e.get("value") or 0) > float(value)]
+    out = []
+    for entry in candidates:
+        mate = entry.get("name")
+        if not mate or opportunity_tools.norm_name(mate) == opportunity_tools.norm_name(name):
+            continue
+        logged = opp_index.get(opportunity_tools.norm_name(mate)) or {}
+        played = {g["week"] for g in logged.get("games", [])}
+        if callable(played_weeks):
+            played |= played_weeks(entry.get("player_id"))
+        missed = [w for w in window if w not in played]
+        status = status_of(mate, team)
+        # Without a single game and without a report he is not a starter
+        # coming back: a rookie who never got on the field, a camp body.
+        if not missed or (not played and not status):
+            continue
+        games = _teammate_return_games(status_of, mate, team, week)
+        if games is None or (games > 0 and missed[-1] != window[-1]):
+            continue
+        out.append({"name": mate, "status": status, "missed_weeks": missed,
+                    "games_until_return": games, "expected_return_week": week + games})
+    return out
+
+
+def _volume_change(opp_index: dict, name: str, week: int, exclude: frozenset[int],
+                   break_week: int | None) -> dict[str, dict]:
+    """``{field: {trailing, with_teammate}}`` for the volume a returning
+    teammate's weeks inflated (only the fields that drop)."""
+    full = opportunity_tools.trailing_volume(opp_index, name, week, break_week=break_week) or {}
+    kept = opportunity_tools.trailing_volume(opp_index, name, week, exclude_weeks=exclude,
+                                             break_week=break_week) or {}
+    return {f: {"trailing": round(v, 2), "with_teammate": round(kept.get(f, 0.0), 2)}
+            for f, v in full.items() if v - kept.get(f, 0.0) >= 0.05}
+
+
 def projection_confidence(
     *,
     has_market: bool,
@@ -533,7 +710,8 @@ class ProjectionEngine:
         self, player: dict, values_index: dict, rankings: dict, lines: dict,
         opp_index: dict | None = None, week: int | None = None, ppr: float = 1.0,
         depth: dict | None = None, status_of=None, schedule: dict | None = None,
-        scoring_model: ScoringModel | None = None,
+        scoring_model: ScoringModel | None = None, role: dict | None = None,
+        played_weeks=None,
     ) -> dict:
         name = player.get("name") or player.get("player_name")
         position = (player.get("position") or "").upper()
@@ -571,20 +749,38 @@ class ProjectionEngine:
         vacated: dict[str, float] = {}
         inherited_from: dict[str, dict] = {}
         own_base = None
+        # The reverse: a higher-valued teammate who missed some of his recent
+        # games and is back (or due back) left him volume that is not his to
+        # keep. From the teammate's return -- this week, or his expected
+        # return in ROS -- half his rate is from the games they played together.
+        returning: list[dict] = []
+        if depth and status_of and team and opp_index and week and name:
+            returning = _returning_teammates(
+                depth, depth_team, position, pos_rank, (market or {}).get("value"),
+                status_of, opp_index, name, week, played_weeks)
+        # Out now, and out through his latest games: his trailing volume
+        # already *is* the bigger role, and a share of the teammate's volume
+        # on top of it counted the absence twice.
+        ongoing = {r["name"] for r in returning if r["games_until_return"] > 0}
         if depth and status_of and team and opp_index and week:
             starters_out = _starters_ahead(depth, depth_team, position, pos_rank, status_of)
             if starters_out:
                 shares = _inherited_shares(depth, depth_team, position, pos_rank,
                                            starters_out, status_of)
+                shares = {n: s for n, s in shares.items() if n not in ongoing}
                 vacated = opportunity_tools.vacated_volume(
                     opp_index, list(shares), week, share=shares)
                 if vacated:
                     inherited_from = {n: _absence_detail(status_of, n, depth_team)
                                       for n in shares}
+        # A lost role (role_shift) weights the games since it from that week.
+        break_week = (role or {}).get("reweight_from_week")
+        deflated_volume: dict[str, dict] = {}
+        deflated_base = deflated_games = None
         if opp_index and week and name:
             opp_base = opportunity_tools.opportunity_base_for(
                 opp_index, name, position, week, ppr=ppr,
-                extra_volume=vacated or None, scoring=model,
+                extra_volume=vacated or None, scoring=model, break_week=break_week,
             )
             if opp_base is not None:
                 base = round(opp_base, 1)
@@ -593,8 +789,28 @@ class ProjectionEngine:
                     # His own volume without the absent starter's, so ROS can
                     # price the inherited part only while the starter is out.
                     own = opportunity_tools.opportunity_base_for(
-                        opp_index, name, position, week, ppr=ppr, scoring=model)
+                        opp_index, name, position, week, ppr=ppr, scoring=model,
+                        break_week=break_week)
                     own_base = round(own, 1) if own is not None else None
+            if returning and opp_base is not None:
+                # His own base from the games he played *with* them: one game
+                # will do (it is regressed by its count), none and it is the
+                # rank prior.
+                exclude = frozenset(w for r in returning for w in r["missed_weeks"])
+                kept = opportunity_tools.opportunity_base_for(
+                    opp_index, name, position, week, ppr=ppr, scoring=model,
+                    exclude_weeks=exclude, break_week=break_week, min_games=1)
+                lookback = QB_LOOKBACK if position == "QB" else DEFAULT_LOOKBACK
+                deflated_games = len(opportunity_tools.prior_games(
+                    opp_index, name, week, exclude)[-lookback:]) if kept is not None else 0
+                deflated_base = round(kept if kept is not None
+                                      else base_ppg(position, pos_rank, ppr, model), 1)
+                # Never a lift: weeks without the teammate that were not
+                # bigger weeks for him are no reason to change his rate.
+                if deflated_base >= (own_base if own_base is not None else base):
+                    returning, deflated_base, deflated_games = [], None, None
+                else:
+                    deflated_volume = _volume_change(opp_index, name, week, exclude, break_week)
 
         # 2) Matchup vs opponent defense
         matchup_tier = "unknown"
@@ -697,6 +913,14 @@ class ProjectionEngine:
             own = own_base if own_base is not None else base
             prior_weight = round(PRIOR_GAMES / (games + PRIOR_GAMES), 2)
             rate = round(regressed_rate(own, prior_ppg, games) + (base - own), 2)
+            if deflated_base is not None and all(
+                    r["games_until_return"] == 0 for r in returning):
+                # The teammate is back: the rate from their games together
+                # takes `1 - RETURNING_KEEP_WEIGHT` of it (ROS does the same
+                # from a later return, `ros._returning`).
+                kept_rate = regressed_rate(deflated_base, prior_ppg, deflated_games or 0)
+                rate = round(RETURNING_KEEP_WEIGHT * rate
+                             + (1 - RETURNING_KEEP_WEIGHT) * (kept_rate + (base - own)), 2)
 
         projected = round(rate * matchup_mult * env_mult * usage_mult * weather_mult * inj_mult, 1)
         vol = _VOLATILITY.get(position, 0.35)
@@ -719,6 +943,8 @@ class ProjectionEngine:
             injury_mult=inj_mult,
             inherits_volume=bool(vacated),
         )
+        role = role or {}
+        conf = max(0, min(100, conf + int(role.get("confidence_delta") or 0)))
         conf_level = "high" if conf >= 80 else "medium" if conf >= 60 else "low"
 
         return {
@@ -765,7 +991,25 @@ class ProjectionEngine:
                 # date, reserve placement -- which ROS prices the absence on.
                 **({"own_base_ppg": own_base, "inherited_from": inherited_from}
                    if own_base is not None else {}),
+                # Higher-valued teammates back (or due back) from an absence
+                # that inflated his trailing volume, and that volume with and
+                # without the weeks they missed. `deflated_base_ppg` is his
+                # base over the `deflated_games` games with them; from the
+                # teammate's return (this week: `regressed_base_ppg`; later:
+                # ROS) it takes half the rate (`RETURNING_KEEP_WEIGHT`).
+                "returning_teammates": returning,
+                "deflated_volume": deflated_volume,
+                **({"deflated_base_ppg": deflated_base, "deflated_games": deflated_games}
+                   if deflated_base is not None else {}),
+                # The first week of a lost role, weighted up in the volume
+                # (`opportunity.POST_BREAK_WEIGHT`); None without one.
+                "role_reweight_from_week": break_week,
             },
+            # A recent change of role (`role_shift`): the read, the multiplier
+            # on Sleeper's share of the blend, and what moved.
+            "role_trend": role.get("role_trend", "insufficient_data"),
+            "role_multiplier": float(role.get("role_multiplier", 1.0)),
+            "role_flags": list(role.get("role_flags") or []),
             "value_source": (
                 "opportunity" if base_source == "opportunity"
                 else "fantasycalc" if market else "baseline"
@@ -819,7 +1063,15 @@ class ProjectionEngine:
             from .opportunity_tools import norm_name
             return _report_absence(reports.get((norm_name(name), team)), db)
 
+        def _practice(name: str, team: str) -> str | None:
+            """A teammate's latest reported practice day this week."""
+            if db is None:
+                return None
+            from .practice_reports import lookup_practice
+            return (lookup_practice(db, name, team) or {}).get("latest")
+
         _get.detail = _detail
+        _get.practice = _practice
         return _get
 
     async def project_many(
@@ -870,11 +1122,16 @@ class ProjectionEngine:
         # of the vacated volume instead of being priced as a backup.
         depth = _depth_map(values_index)
         status_of = self._status_lookup()
+        # Recent role changes, from the same game logs plus Sleeper's weekly
+        # snap counts (cached per week).
+        roles, played_weeks = await _role_reads(players, logs if opp_index else {},
+                                                opp_index, season, week)
 
         projections = [
             self._project_one(p, values_index, rankings, lines, opp_index, week, ppr,
-                              depth, status_of, schedule, scoring_model=model)
-            for p in players
+                              depth, status_of, schedule, scoring_model=model,
+                              role=role, played_weeks=played_weeks)
+            for p, role in zip(players, roles, strict=True)
         ]
         await _apply_unit_fallback(projections, season, model)
         blend_summary = await _apply_sleeper_blend(projections, players, season, week, model)
@@ -894,6 +1151,58 @@ class ProjectionEngine:
             "ppr": ppr,
             "scoring_used": model.summary(),
         }
+
+
+async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
+                      season: int | None, week: int | None):
+    """``([role_shift.classify per player], played_weeks)``.
+
+    The usage rows are `usage_trends`'s, built from the game logs already
+    loaded and Sleeper's weekly stat lines for the last
+    `role_shift.LOOKBACK_WEEKS` weeks (snap share, red zone); without them
+    the read runs on nflverse shares alone. `played_weeks(sleeper_id)` is the
+    set of those weeks a player took an offensive snap, which tells a
+    teammate's absence from a quiet game. Never raises.
+    """
+    neutral = [None] * len(players)
+
+    def _no_snaps(_pid):
+        return set()
+
+    if not logs or not opp_index or not season or not week or week < 2:
+        return neutral, _no_snaps
+    weeks = list(range(max(1, week - role_shift.LOOKBACK_WEEKS), week))
+    try:
+        fetched = await asyncio.gather(
+            *(usage_trends._fetch_week_stats(season, w) for w in weeks), return_exceptions=True)
+    except Exception:
+        fetched = []
+    week_stats = {w: s for w, s in zip(weeks, fetched, strict=False) if isinstance(s, dict)}
+    try:
+        team_carries = usage_trends.team_week_carries(logs)
+        played_teams = usage_trends.teams_with_games(logs)
+    except Exception as e:
+        logger.debug(f"role-shift inputs unavailable: {e}")
+        return neutral, _no_snaps
+    reads = []
+    for p in players:
+        position = (p.get("position") or "").upper()
+        name = p.get("name") or p.get("player_name")
+        entry = opp_index.get(opportunity_tools.norm_name(name)) if name else None
+        if position not in role_shift.ROLE_METRICS or entry is None:
+            reads.append(None)
+            continue
+        team = normalize_team(p.get("team")) or entry.get("team") or ""
+        rows = role_shift.player_rows(entry, team, weeks, team_carries, played_teams,
+                                      week_stats, p.get("player_id"))
+        reads.append(role_shift.classify(rows, position))
+
+    def _played(pid) -> set[int]:
+        pid = str(pid or "")
+        return {w for w, s in week_stats.items()
+                if pid and float((s.get(pid) or {}).get("off_snp") or 0) > 0}
+
+    return reads, _played
 
 
 async def _unit_matchup(position: str, team: str, opponent: str, season: int, model):
@@ -996,7 +1305,17 @@ async def _apply_sleeper_blend(projections: list[dict], inputs: list[dict],
             missing.append(proj.get("player") or "?")
             continue
         inj = float(bd.get("injury_mult", 1.0))
-        blended = sp.blend(ours, theirs, availability(proj.get("injury_status")), inj, status)
+        # Sleeper's share carries the lost role and the practice week its
+        # stat line has not caught up with; ours already prices both (the
+        # change-point weights, injury_mult), so it is left alone.
+        role_mult = float(proj.get("role_multiplier", 1.0) or 1.0)
+        practice_mult = practice_blend_mult(proj.get("injury_status"),
+                                            proj.get("practice_status"),
+                                            proj.get("practice_pattern"))
+        bd["role_mult"] = round(role_mult, 3)
+        bd["practice_blend_mult"] = round(practice_mult, 3)
+        blended = sp.blend(ours, theirs * role_mult * practice_mult,
+                           availability(proj.get("injury_status")), inj, status)
         vol = _VOLATILITY.get((proj.get("position") or "").upper(), 0.35)
         proj.update({
             "projected_points": blended,
