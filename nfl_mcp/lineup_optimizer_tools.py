@@ -307,6 +307,25 @@ def injury_score(status: str | None) -> float:
         return INJURY_STATUS_SCORES[s]
     return _HEALTH_BY_AVAILABILITY[availability(s)]
 
+
+def _gameday_reason(analysis, projection: dict) -> str | None:
+    """Apply the projection's published gameday decision (`gameday_status`,
+    `projections._mark_gameday`) to the analysis's status, so health score and
+    decision read it the way the projection did; the reason line, or None.
+    Officially inactive becomes "Inactive" (must sit); confirmed active
+    becomes "Active" (a Doubtful tag no longer caps him at sit)."""
+    decision = projection.get("gameday_status")
+    if decision not in ("active", "inactive"):
+        return None
+    reported = projection.get("reported_injury_status") or analysis.injury_status
+    note = projection.get("gameday_note")
+    analysis.injury_status = "Inactive" if decision == "inactive" else "Active"
+    tail = f" — {note}" if note else ""
+    if decision == "inactive":
+        return f"🚫 Officially inactive (was {reported}){tail}"
+    was = f" (was {reported})" if reported and availability(reported) != "healthy" else ""
+    return f"✅ Confirmed active{was}{tail}"
+
 # Practice status scores
 PRACTICE_STATUS_SCORES = {
     "full": 100,
@@ -846,6 +865,7 @@ class LineupOptimizer:
                 injury_data = {**(injury_data or {}), "practice_status": practice["latest"],
                                "practice_pattern": practice["pattern"]}
 
+        gameday = None  # the published gameday decision's reason, if any
         # Apply projection data — or auto-project when the caller didn't supply
         # points, so start/sit works without manual point entry.
         if projection_data and projection_data.get("projected_points"):
@@ -885,11 +905,14 @@ class LineupOptimizer:
                     analysis.opponent_implied_total = (
                         pp.get("opponent_implied_total") if pp.get("vegas_active") else None)
                     self._unit_fallback(analysis, pp, injury_data)
+                    gameday = _gameday_reason(analysis, pp)
             except Exception as e:
                 logger.debug(f"Auto-projection failed for {player_name}: {e}")
 
         await self._second_opinion(analysis, player_id, scoring, season, week)
         extra_reasons = self._unit_reasons(analysis) if analysis.position in UNIT_POSITIONS else []
+        if gameday:
+            extra_reasons.insert(0, gameday)
         if analysis.disagreement:
             own = (analysis.model_projection if analysis.model_projection is not None
                    else analysis.projected_points)
@@ -923,9 +946,10 @@ class LineupOptimizer:
             unit_scale=analysis.threshold_scale,
         )
         if availability(analysis.injury_status) == "doubtful":
+            from .injury_status import DOUBTFUL_MULT
             analysis.reasoning.append(
-                "⚠️ Doubtful — risky, avoid: projected at 35% of his points, "
-                "and rarely plays"
+                f"⚠️ Doubtful — risky, avoid: projected at {DOUBTFUL_MULT:.0%} of his "
+                "points, and almost never plays (1 of 60 in 2023-25)"
             )
 
         return analysis

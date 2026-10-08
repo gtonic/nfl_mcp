@@ -63,7 +63,7 @@ class TestPureHelpers:
     def test_usage_and_injury_mult(self):
         assert pj._usage_mult(90, "up") > pj._usage_mult(30, "down")
         assert pj._injury_mult("out") == 0.0
-        assert pj._injury_mult("questionable") == 0.9
+        assert pj._injury_mult("questionable") == 0.74
         assert pj._injury_mult(None) == 1.0
 
     def test_matchup_multiplier_is_position_specific(self):

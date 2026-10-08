@@ -7,7 +7,9 @@ QUESTION
 
     - ``projections.QUESTIONABLE_BY_PRACTICE`` -- the model share's
       multiplier for a questionable player by his latest practice day
-      (FP 0.97, LP 0.90, DNP 0.65; Doubtful 0.35 via ``_injury_mult``);
+      (FP 0.97, LP 0.72, DNP 0.54; without a practice line and Doubtful:
+      ``injury_status.QUESTIONABLE_MULT`` / ``DOUBTFUL_MULT`` via
+      ``_injury_mult``);
     - ``projections.PRACTICE_BLEND_MULT`` -- Sleeper's share for a
       questionable player whose week ends on DNP (0.90 one DNP so far, 0.75
       DNP on two or more days) or on LP after an FP (0.95);
@@ -62,10 +64,12 @@ import httpx
 
 from nfl_mcp import qb_coupling
 from nfl_mcp.projections import (
-    PRACTICE_BLEND_MULT,
-    QUESTIONABLE_BY_PRACTICE,
     SLEEPER_QUESTIONABLE_PRICED,
     _injury_mult,
+    confirmed_active_blend_mult,
+    confirmed_active_mult,
+    practice_adjusted_mult,
+    practice_blend_mult,
 )
 
 from .data import _CACHE_DIR, load_games, load_season
@@ -132,22 +136,47 @@ def implied(rows: list[dict], ref: float, key: str = "model",
     return point, boots[int(0.025 * BOOTSTRAP)], boots[int(0.975 * BOOTSTRAP) - 1]
 
 
+def _bucket_args(practice: str) -> tuple[str | None, str | None]:
+    """``(practice_status, pattern)`` the live code reads for a bucket's final
+    practice day: a final-day DNP is the DNP week (two or more days); "all" /
+    "-" have no practice line."""
+    if practice == "DNP":
+        return "DNP", "DNP-DNP"
+    if practice in ("FP", "LP"):
+        return practice, None
+    return None, None
+
+
 def _live_total(bucket: str) -> float | None:
     """The live blend's multiplier for the bucket against a healthy
-    projection: model share x QUESTIONABLE_BY_PRACTICE (`_injury_mult`
-    without a practice line), Sleeper's x PRACTICE_BLEND_MULT x Sleeper's own
-    shading of a questionable player (``SLEEPER_QUESTIONABLE_PRICED``).
+    projection: model share x `practice_adjusted_mult` (`_injury_mult`
+    without a practice line), Sleeper's x `practice_blend_mult` x Sleeper's
+    own shading of a questionable player (``SLEEPER_QUESTIONABLE_PRICED``).
     Doubtful: the blend's cap (`sleeper_projections.blend`)."""
     from nfl_mcp.sleeper_projections import BLEND_MODEL_WEIGHT as w
     status, practice = bucket.split("/") if "/" in bucket else ("", "")
     if status == "Q":
-        model = QUESTIONABLE_BY_PRACTICE.get(practice, _injury_mult("Questionable"))
-        # A final-day DNP is the DNP week (two or more days).
-        sleeper = PRACTICE_BLEND_MULT.get(practice, 1.0) * SLEEPER_QUESTIONABLE_PRICED
+        args = _bucket_args(practice)
+        model = practice_adjusted_mult("Questionable", *args)
+        sleeper = practice_blend_mult("Questionable", *args) * SLEEPER_QUESTIONABLE_PRICED
         return w * model + (1 - w) * sleeper
     if status == "D":
         return _injury_mult("Doubtful")
     return None
+
+
+def _live_active(bucket: str) -> float | None:
+    """The live blend's multiplier for a player of the bucket confirmed
+    active at inactives (`confirmed_active_mult` on our share,
+    `confirmed_active_blend_mult` x Sleeper's shading on Sleeper's)."""
+    from nfl_mcp.sleeper_projections import BLEND_MODEL_WEIGHT as w
+    status, practice = bucket.split("/") if "/" in bucket else ("", "")
+    tag = {"Q": "Questionable", "D": "Doubtful"}.get(status)
+    if not tag:
+        return None
+    args = _bucket_args(practice)
+    sleeper = confirmed_active_blend_mult(tag, *args) * SLEEPER_QUESTIONABLE_PRICED
+    return w * confirmed_active_mult(tag, *args) + (1 - w) * sleeper
 
 
 def report_practice(samples: list[dict], injuries: dict[int, dict]) -> None:
@@ -175,7 +204,7 @@ def report_practice(samples: list[dict], injuries: dict[int, dict]) -> None:
         live_model = None
         st, pr = b.split("/")
         if st == "Q":
-            live_model = QUESTIONABLE_BY_PRACTICE.get(pr, _injury_mult("Questionable"))
+            live_model = practice_adjusted_mult("Questionable", *_bucket_args(pr))
         elif st == "D":
             live_model = _injury_mult("Doubtful")
         total = _live_total(b)
@@ -208,13 +237,17 @@ def report_practice(samples: list[dict], injuries: dict[int, dict]) -> None:
               + (f"{total:.3f}: {err(total):.3f}" if total is not None else "-")
               + f" | mean {mean_m:.3f}: {err(mean_m):.3f} | 1.0: {err(1.0):.3f}")
     # The played rows only: what a questionable player who suits up scores.
-    print("  given he played (the in-game cost):")
-    for b in ("Q/FP", "Q/LP", "Q/DNP", "D/all"):
+    # The confirmed-active price (`projections.CONFIRMED_ACTIVE_REALISED`).
+    print("  given he played (the in-game cost; live confirmed-active model / blend):")
+    for b in ("Q/FP", "Q/LP", "Q/DNP", "Q/all", "D/all"):
         sub = [s for s in by.get(b) or [] if s["played"]]
         ctrl = [s for s in by["none"] if s["played"]]
         if len(sub) >= 10:
             m, lo, hi = implied(sub, _ratio(ctrl, "actual", "model"))
-            print(f"    {b:8s} n={len(sub):4d} {m:.3f} [{lo:.3f}, {hi:.3f}]")
+            st, pr = b.split("/")
+            tag = {"Q": "Questionable", "D": "Doubtful"}[st]
+            print(f"    {b:8s} n={len(sub):4d} {m:.3f} [{lo:.3f}, {hi:.3f}]   "
+                  f"{confirmed_active_mult(tag, *_bucket_args(pr)):.2f} / {_live_active(b):.3f}")
 
 
 def _starters(records: list[dict]) -> dict[tuple[str, int], str]:

@@ -129,6 +129,7 @@ def _no_risk_mode_odds(monkeypatch):
 def _clear_process_caches():
     """Short-lived in-process caches must not leak one test's mocks into the next."""
     from nfl_mcp import (
+        gameday_inactives,
         handcuff_tools,
         lineup_tools,
         nfl_tools,
@@ -145,6 +146,7 @@ def _clear_process_caches():
     # The projection engine singleton adopts the first database it is handed
     # (a test's temp file); the next test must not read that one.
     projections._engine = None
+    gameday_inactives._gameday_cache.clear()
     yield
     sleeper_tools.clear_nfl_state_cache()
     sleeper_tools.invalidate_roster_cache()
@@ -153,6 +155,7 @@ def _clear_process_caches():
     handcuff_tools.clear_depth_chart_cache()
     lineup_tools.clear_usage_cache()
     projections._engine = None
+    gameday_inactives._gameday_cache.clear()
 
 
 @pytest.fixture(autouse=True)

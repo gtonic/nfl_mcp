@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Gameday decisions override the injury tag.** From the inactives window
+  (~2 h before kickoff) until the game ends, every projection (start/sit,
+  `analyze_lineup`, briefing, win probability, risk mode's P(win)) reads the
+  published decisions (`gameday_inactives`: ESPN gameday notes + Sleeper
+  `Inactive`). Officially inactive → 0 and status `Inactive` (must sit).
+  Confirmed active → the "might sit" part of the discount goes: our share is
+  priced on what a questionable player who plays scores (2023-25 "given he
+  played": limited week 0.947 [0.869, 1.028] → 0.95, DNP week 0.819 [0.670,
+  0.972] → 0.82, all 0.924 [0.866, 0.986] → 0.92 without a line; never below
+  the pre-inactives value; Doubtful-active like the DNP week), Sleeper's
+  share drops its questionable shading, no doubtful cap, and a Sleeper zero
+  (it zero-projects most doubtful players) falls back to our number. The
+  starting QB's decision settles his receivers' coupling
+  (`starter_sit_weight(gameday=...)`: active → no cut, inactive → full
+  weight, basis `gameday`). Outside a window nothing is fetched (cached
+  schedule only); inside, one league-wide read per 5 minutes. New projection
+  fields `gameday_status`, `gameday_note`, `gameday_source`,
+  `reported_injury_status`.
+
 ### Changed
+- **Doubtful 0.35 → 0.02.** 1 of 60 relevant doubtful players played in
+  2023-25 (implied 0.006 [0.000, 0.019], MAE-optimal 0.00; MAE at the live
+  value 3.50 → 0.26); 3 of 390 doubtful QB/RB/WR/TE 2018-25 (0.8% [0.3%,
+  2.2%]). `injury_status.DOUBTFUL_MULT`. Who counts as unavailable this week
+  is now its own threshold (`injury_match.MISSES_WEEK_MAX_MULT` = 0.35), so
+  the recalibration does not change availability semantics.
+- **Questionable without a practice line 0.9 → 0.74** on both shares
+  (`injury_status.QUESTIONABLE_MULT`; Sleeper's `PRACTICE_BLEND_MULT["NONE"]`
+  0.80): all questionable players 2023-25 scored 0.736 [0.676, 0.800] of
+  healthy (n=583); the live blend priced them at 0.915 (MAE 6.57 → 6.25).
+  Unrecognised codes follow it.
 - **ROS later weeks are Sleeper-first.** Every week after the current one is
   `0.25 × our rate + 0.75 × Sleeper's projection for that week` (Sleeper
   publishes all weeks of the season), so trades, drops, waivers, FAAB,
