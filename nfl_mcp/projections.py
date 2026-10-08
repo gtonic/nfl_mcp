@@ -1321,9 +1321,10 @@ class ProjectionEngine:
         _get.practice = _practice
         _get.practice_week = _practice_week
         # The report text's role / availability signals, every player's
-        # (`news_signals`); empty without a database.
+        # (`news_signals`): the injury blurbs and the stored news items of
+        # every source (`news_sources`); empty without a database.
         try:
-            _get.news = news_signals.build_index(rows)
+            _get.news = news_signals.index_for(db, rows)
         except Exception as e:  # never sink a projection on a blurb
             logger.debug(f"news signals unavailable: {e}")
             _get.news = {}

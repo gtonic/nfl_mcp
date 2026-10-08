@@ -237,7 +237,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
 
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 18
+    CURRENT_SCHEMA_VERSION = 19
 
     def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
@@ -322,6 +322,7 @@ class NFLDatabase:
             16: self._migration_v16_snapshot_dedup,
             17: self._migration_v17_return_dates_freshness_signal_history,
             18: self._migration_v18_projection_accuracy,
+            19: self._migration_v19_player_news,
         }
 
     def _migration_v1_initial_schema(self, conn: sqlite3.Connection) -> None:
@@ -915,6 +916,61 @@ class NFLDatabase:
                ON projection_accuracy(season, week, position)"""
         )
 
+    def _migration_v19_player_news(self, conn: sqlite3.Connection) -> None:
+        """Migration v19: per-player news from several sources (``player_news``).
+
+        ``injury_news_history`` keeps the one ESPN injury blurb per player as
+        it changes; the role and availability notes in between ("benched after
+        his fumble", "only an outside chance to play") were overwritten by the
+        next practice note before anything read them. ``player_news`` keeps
+        every item of every news source (`news_sources`: ESPN's fantasy
+        player feed, NBC Sports / Rotoworld, CBS), mapped to the Sleeper id,
+        deduplicated per source on content. ``news_fetch_state`` records each
+        source's last fetch (freshness, incremental paging).
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_news (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content_hash TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL,
+                source_id TEXT,
+                player_id TEXT NOT NULL,
+                espn_id TEXT,
+                player_name TEXT,
+                name_key TEXT NOT NULL DEFAULT '',
+                team TEXT NOT NULL DEFAULT '',
+                position TEXT,
+                headline TEXT,
+                text TEXT NOT NULL,
+                url TEXT,
+                published_at TEXT,
+                recorded_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_player_news_player
+               ON player_news(player_id, published_at)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_player_news_published
+               ON player_news(published_at)"""
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS news_fetch_state (
+                source TEXT PRIMARY KEY,
+                fetched_at TEXT NOT NULL,
+                newest_published TEXT,
+                items INTEGER,
+                written INTEGER,
+                status TEXT,
+                error TEXT
+            )
+            """
+        )
+
     # Kickoffs are stored in UTC; shifted by the EST offset every kickoff
     # (13:00 ET to 20:30 ET) lands on its US Eastern date.
     _KICKOFF_TO_ET_DATE = "date(s.kickoff, '-5 hours')"
@@ -1313,8 +1369,9 @@ class NFLDatabase:
           sees the true previous status and a stable player's next change is
           not reported as a first sighting.
 
-        - ``practice_report_history`` / ``injury_news_history``: calibration
-          data, read by no tool. Kept ``signal_history_days`` and never pruned
+        - ``practice_report_history`` / ``injury_news_history`` /
+          ``player_news``: calibration data (``player_news`` is also read for
+          the news flags, at most two weeks back). Kept ``signal_history_days`` and never pruned
           inside the current NFL season (see ``season_start``), so a whole
           season is always there to backtest against.
 
@@ -1350,7 +1407,7 @@ class NFLDatabase:
                     """,
                     (history_cutoff, history_cutoff),
                 ).rowcount
-                for table in ("practice_report_history", "injury_news_history"):
+                for table in ("practice_report_history", "injury_news_history", "player_news"):
                     deleted[table] = conn.execute(
                         f"DELETE FROM {table} WHERE recorded_at < ?", (signal_cutoff,)
                     ).rowcount
@@ -2208,6 +2265,117 @@ class NFLDatabase:
         except Exception as e:
             logger.warning(f"get_all_current_injuries failed: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # Player news (schema v19, `news_sources`)
+    # ------------------------------------------------------------------
+
+    _PLAYER_NEWS_COLUMNS = ("content_hash", "source", "source_id", "player_id", "espn_id",
+                            "player_name", "name_key", "team", "position", "headline",
+                            "text", "url", "published_at", "recorded_at")
+
+    def upsert_player_news(self, items: list[dict]) -> int:
+        """Store news items; returns how many were new.
+
+        Append-only and deduplicated on ``content_hash`` (source, player and
+        normalized text, see ``news_sources.content_hash``): the same item on
+        every poll is one row. Items without a player id or text are skipped.
+        """
+        now = datetime.now(UTC).isoformat()
+        rows = []
+        for it in items or []:
+            if not it.get("player_id") or not (it.get("text") or "").strip() \
+                    or not it.get("content_hash"):
+                continue
+            row = {**it, "recorded_at": it.get("recorded_at") or now}
+            rows.append(tuple(row.get(c) for c in self._PLAYER_NEWS_COLUMNS))
+        if not rows:
+            return 0
+        cols = ", ".join(self._PLAYER_NEWS_COLUMNS)
+        marks = ", ".join("?" for _ in self._PLAYER_NEWS_COLUMNS)
+        try:
+            with self._pool.get_connection() as conn:
+                before = conn.total_changes
+                conn.executemany(
+                    f"INSERT OR IGNORE INTO player_news({cols}) VALUES({marks})", rows)
+                written = conn.total_changes - before
+                conn.commit()
+                return written
+        except Exception as e:
+            logger.error(f"upsert_player_news failed: {e}")
+            return 0
+
+    def get_player_news(self, player_ids: list[str] | None = None,
+                        since: str | None = None, teams: list[str] | None = None,
+                        limit: int | None = None) -> list[dict]:
+        """Stored news items, newest first.
+
+        `player_ids` (Sleeper ids) and `teams` filter (either matches);
+        `since` (ISO) keeps items published -- or, undated, recorded -- on or
+        after it.
+        """
+        where, params = [], []
+        ors = []
+        if player_ids:
+            ids = [str(i) for i in player_ids if i]
+            ors.append(f"player_id IN ({','.join('?' for _ in ids)})")
+            params += ids
+        if teams:
+            ors.append(f"team IN ({','.join('?' for _ in teams)})")
+            params += list(teams)
+        if ors:
+            where.append("(" + " OR ".join(ors) + ")")
+        if since:
+            where.append("COALESCE(published_at, recorded_at) >= ?")
+            params.append(since)
+        sql = "SELECT * FROM player_news"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY COALESCE(published_at, recorded_at) DESC, id DESC"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        try:
+            with self._pool.get_connection() as conn:
+                return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        except Exception as e:
+            logger.debug(f"get_player_news failed: {e}")
+            return []
+
+    def record_news_fetch(self, source: str, items: int, written: int,
+                          newest_published: str | None = None, status: str = "ok",
+                          error: str | None = None) -> None:
+        """Remember a news source's fetch (freshness, incremental paging).
+        A failed fetch keeps the last good ``newest_published``."""
+        try:
+            with self._pool.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO news_fetch_state(source, fetched_at, newest_published,
+                                                 items, written, status, error)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(source) DO UPDATE SET
+                        fetched_at=excluded.fetched_at,
+                        newest_published=COALESCE(excluded.newest_published,
+                                                  news_fetch_state.newest_published),
+                        items=excluded.items, written=excluded.written,
+                        status=excluded.status, error=excluded.error
+                    """,
+                    (source, datetime.now(UTC).isoformat(), newest_published, items,
+                     written, status, error),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.debug(f"record_news_fetch failed: {e}")
+
+    def get_news_fetch_state(self) -> dict[str, dict]:
+        """``{source: {fetched_at, newest_published, items, written, status, error}}``."""
+        try:
+            with self._pool.get_connection() as conn:
+                return {r["source"]: dict(r) for r in
+                        conn.execute("SELECT * FROM news_fetch_state").fetchall()}
+        except Exception as e:
+            logger.debug(f"get_news_fetch_state failed: {e}")
+            return {}
 
     def get_team_injuries_from_cache(
         self,
@@ -3303,6 +3471,7 @@ class NFLDatabase:
             "practice_status": ("player_practice_status", "updated_at"),
             "schedule": ("schedule_games", "updated_at"),
             "snaps": ("player_week_stats", "updated_at"),
+            "news": ("news_fetch_state", "fetched_at"),
         }
         now = datetime.now(UTC)
         out: dict[str, dict] = {}

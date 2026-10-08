@@ -28,6 +28,7 @@ from . import (
     opponent_analysis_tools,
     opportunity_tools,
     ownership_tools,
+    player_news_tools,
     player_values,
     playoff_tools,
     projection_accuracy,
@@ -150,6 +151,9 @@ def _registered_tools() -> list[Callable]:
         get_team_player_stats,
         get_nfl_standings,
         get_team_schedule,
+
+        # Player news (ESPN fantasy feed, NBC Sports / Rotoworld, CBS)
+        get_player_news,
 
         # CBS Fantasy Tools
         get_cbs_player_news,
@@ -392,6 +396,57 @@ async def get_team_schedule(team_id: str, season: int | None = None) -> dict:
 # CBS FANTASY TOOLS
 # =============================================================================
 
+@timing_decorator("get_player_news", tool_type="nfl")
+async def get_player_news(
+    players: list[str] | None = None,
+    days: int | None = 7,
+    league_id: str | None = None,
+) -> dict:
+    """Player news timeline + role/availability flags ("what is the latest on X?").
+
+    One merged, deduplicated timeline per player from the stored news of
+    every source -- ESPN's fantasy player feed (RotoWire notes), NBC Sports /
+    Rotoworld, CBS -- plus his current injury blurb. A note several sources
+    carry is one entry (`sources` lists each copy with its link). Also the
+    flags the projections read from that text (benched, committee, lead_role,
+    limited_snaps, week_to_week, designated_to_return, expected_to_play,
+    unlikely_to_play, ruled_out), each with source, url and snippet; a
+    teammate's note that names him counts for him. Reads the store only:
+    refresh it with refresh_data(scope=["news"]) (the prefetch loop polls
+    every 45 min, every 15 min on game days).
+
+    Parameters:
+        players: names or Sleeper ids (up to 30), e.g. ["Lamar Jackson", "4881"]
+        days (int, default 7, 1-30): timeline window
+        league_id: Sleeper league; a shared name resolves to the player rostered
+            there, and without `players` every rostered QB/RB/WR/TE/K with news
+            is listed (most flags first, 4 entries each)
+
+    Returns: {
+        players [{query, name, player_id, team, position, injury_status, items,
+                  news_flags [{flag, weight, snippet, date_reported, source, url,
+                  from_player?}], news_adjustment {model_mult, confidence_delta,
+                  applied}?, timeline [{published_at, headline, text, source,
+                  url, sources [{source, url}], flags}], ambiguous?, candidates?}],
+        unresolved [{name, reason}], window_days,
+        sources {source: {label, fetched_at, age_hours, status, newest_item}},
+        notes, warnings?, success
+    }
+
+    Example: get_player_news(players=["Lamar Jackson", "D'Andre Swift"], days=7)
+    Example: get_player_news(league_id="1388610560915959808")
+    """
+    if isinstance(players, str):
+        players = [players]
+    players = [validate_string_input(p, 'player', max_length=100, required=True)
+               for p in (players or []) if isinstance(p, str) and p.strip()]
+    if league_id is not None:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+    days_i = validate_numeric_input(days, min_val=1, max_val=30, default=7, required=False)
+    return await player_news_tools.get_player_news(players=players, days=days_i,
+                                                   league_id=league_id)
+
+
 @timing_decorator("get_cbs_player_news", tool_type="cbs_fantasy")
 async def get_cbs_player_news(limit: int | None = 50) -> dict:
     """Fetch latest fantasy football player news from CBS Sports.
@@ -547,9 +602,11 @@ async def refresh_data(
     Parameters:
         scope: any of "injuries", "practice", "athletes", "schedule", "snaps",
             "usage", "accuracy" (grade finished weeks' logged projections for
-            get_projection_accuracy) (default ["injuries", "practice"])
+            get_projection_accuracy), "news" (player news: ESPN fantasy feed,
+            NBC Sports / Rotoworld, CBS; read by get_player_news and the news
+            flags) (default ["injuries", "practice"])
         force: refresh even a feed younger than its minimum age
-            (15 min for injuries/practice, 6h for athletes)
+            (15 min for injuries/practice/news, 6h for athletes)
         background: start the refresh and return a job_id at once — an injury
             crawl is ~1900 ESPN requests and takes a few minutes
         job_id: poll a background refresh (other parameters are ignored)
@@ -559,7 +616,7 @@ async def refresh_data(
         scopes {scope: {status (ok|error|skipped_fresh|already_running),
                 fetched, written, duration_s, error?}},
         freshness_before, freshness {feed: {updated_at, age_hours}} for
-            injuries, athletes, practice_status, schedule and snaps,
+            injuries, athletes, practice_status, schedule, snaps and news,
         duration_s, success
     }
 

@@ -110,9 +110,15 @@ _DEFAULT_API_RATE_LIMITS: dict[str, int] = {
     "nflverse": 60,
     "fantasycalc": 60,
     "cbs": 30,
+    # NBC Sports' robots.txt asks for Crawl-delay: 10 (player news pages).
+    "nbc": 6,
     "nfl_com": 60,
     "open_meteo": 120,
 }
+
+# Burst capacity where the default (2x the rate, max 200) is too much: a
+# crawl delay is a minimum gap between requests, not an average.
+_DEFAULT_API_BURST: dict[str, int] = {"nbc": 1}
 
 # Outbound host -> limiter name. Every client built by create_http_client
 # acquires a token for its request's host before sending (redirect hops too,
@@ -127,6 +133,7 @@ _HOST_RATE_LIMITERS: tuple[tuple[str, str], ...] = (
     ("githubusercontent.com", "nflverse"),
     ("fantasycalc.com", "fantasycalc"),
     ("cbssports.com", "cbs"),
+    ("nbcsports.com", "nbc"),
     ("nfl.com", "nfl_com"),
     ("open-meteo.com", "open_meteo"),
 )
@@ -176,7 +183,8 @@ def get_rate_limiter(api_name: str) -> OutboundRateLimiter:
 
         _rate_limiters[api_name] = OutboundRateLimiter(
             calls_per_minute=limit,
-            burst_capacity=min(limit * 2, 200)  # Allow burst up to 2x, max 200
+            # Allow burst up to 2x, max 200 (unless pinned in _DEFAULT_API_BURST)
+            burst_capacity=_DEFAULT_API_BURST.get(api_name) or min(limit * 2, 200)
         )
 
     return _rate_limiters[api_name]

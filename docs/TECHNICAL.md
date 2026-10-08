@@ -151,12 +151,17 @@ variables take precedence.
 | `NFL_MCP_DB_PATH` | Path to the SQLite cache file (default `nfl_data.db`, relative to the working dir). Point it at a mounted volume — e.g. `/data/nfl_data.db` — to persist the warmed cache across restarts. |
 | `NFL_MCP_ALLOW_PRIVATE_URLS` | `1` lets `crawl_url` reach private/loopback addresses. Off by default (SSRF protection — see [SECURITY.md](../SECURITY.md)). |
 | `NFL_MCP_PREFETCH` | `1` enables background data prefetch (cache warming). |
-| `NFL_MCP_TOOL_PROFILE` | Which tools are registered: `season` (default, 59 tools — no draft, coaching, admin cache refreshes, `get_league_leaders`, `get_cbs_expert_picks`), `offseason` (45 — draft and coaching, no in-season-only tools) or `full` (all 76). Logged at startup and reported by `/health` under `tools`. |
+| `NFL_MCP_TOOL_PROFILE` | Which tools are registered: `season` (default, 60 tools — no draft, coaching, admin cache refreshes, `get_league_leaders`, `get_cbs_expert_picks`), `offseason` (46 — draft and coaching, no in-season-only tools) or `full` (all 77). Logged at startup and reported by `/health` under `tools`. |
 | `NFL_MCP_PREFETCH_INTERVAL` | Prefetch interval, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SNAPS_TTL` | Snap-data TTL, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SCHEDULE_WEEKS` | Weeks of schedule to prefetch (default 4). |
 | `NFL_MCP_PREFETCH_ATHLETES` | `1` (default) refreshes the Sleeper athletes cache (player names/teams/positions) during prefetch — once at startup and then every interval below. `0` disables it. |
 | `NFL_MCP_PREFETCH_ATHLETES_INTERVAL` | Athletes-cache refresh interval, seconds (default 86400 = daily). |
+| `NFL_MCP_PREFETCH_NEWS` | `1` (default) polls player news during prefetch (`news` scope). |
+| `NFL_MCP_PREFETCH_NEWS_INTERVAL` | News poll interval, seconds (default 2700 = 45 min). |
+| `NFL_MCP_PREFETCH_NEWS_GAMEDAY_INTERVAL` | News poll interval in the game-day windows (Sun 10:00-20:30 ET, Mon/Thu 17:00-20:30, Sat 14:00-20:30), seconds (default 900). |
+| `NFL_MCP_NEWS_SOURCES` | News sources, comma list of `espn_fantasy`, `nbc`, `cbs` (default all). |
+| `NFL_MCP_NEWS_NBC_PAGES` / `NFL_MCP_NEWS_NBC_FIRST_PAGES` | NBC Sports pages read per poll (default 3) and on the first poll (default 12); 10 s apart (robots.txt crawl delay). |
 | `NFL_MCP_TIMEOUT_TOTAL` | Total HTTP request timeout (e.g. `45.0`). |
 | `NFL_MCP_RATE_LIMIT_DEFAULT` | Default outbound rate limit (requests/min). |
 | `NFL_MCP_NFL_NEWS_MAX` | Max NFL news items. |
@@ -250,10 +255,12 @@ most 3 rows per key; schema v16 pruned the backlog to the newest row per key.
 ### Data layer: refresh, freshness, history (schema v17)
 
 - **One refresh path.** `nfl_mcp/data_refresh.py` owns the fetch-and-write per
-  feed (`injuries`, `practice`, `athletes`, `schedule`, `snaps`, `usage`). The
+  feed (`injuries`, `practice`, `athletes`, `schedule`, `snaps`, `usage`,
+  `accuracy`, `news`). The
   prefetch loop calls `run_scope` per scope on its cadence
   (`server._cycle_scopes`: practice not on Sundays ET, usage from week 2,
-  athletes on `NFL_MCP_PREFETCH_ATHLETES_INTERVAL`); the `refresh_data` tool
+  athletes on `NFL_MCP_PREFETCH_ATHLETES_INTERVAL`, news every 45 min and
+  every 15 min in the game-day windows: `server._news_due`); the `refresh_data` tool
   runs the same functions on demand. A scope held by one is `already_running`
   for the other.
 - **Freshness.** `get_data_freshness()` reports `injuries`, `athletes`,
@@ -372,12 +379,27 @@ model_projection = regressed_rate(opportunity, rank_bucket, games)   # k = 2
   `qb_sleeper_mult`; ROS keeps the model multiplier for the starter's
   expected absence. `--qb-coupling` on the backtest: affected WR blend MAE
   5.103 → 4.887.
+- **Player news** (`news_sources`, schema v19 `player_news` +
+  `news_fetch_state`): ESPN's fantasy player feed (RotoWire notes, JSON,
+  queried by ESPN athlete id from the 32 team rosters, 20 ids per request),
+  NBC Sports / Rotoworld (HTML, 10 s between pages per robots.txt) and CBS
+  (HTML, first page). Items map to the Sleeper id via Sleeper's `espn_id`,
+  else exact name + team (+ position for a shared name; never a same-name
+  player at another position), are deduplicated per source on content and
+  kept a season. `get_player_news` merges them per player (near-duplicates
+  across sources are one entry). Rejected: ESPN league news (articles),
+  ESPN core athlete notes (404), RotoWire RSS (5 items, ESPN's text),
+  FantasyPros (no news RSS, `/api/` disallowed), Sleeper (no news endpoint).
 - **News signals** (`news_signals`): a rule-based classifier over the stored
-  report text (`player_injuries.injury_description`, teammates' blurbs that
-  name the player included) yields `news_flags` — `benched`, `committee`,
+  report text (`player_injuries.injury_description` and every `player_news`
+  item of the last 10 days, teammates' notes that name the player included;
+  the same note from two sources read once) yields `news_flags` — `benched`, `committee`,
   `lead_role`, `limited_snaps`, `week_to_week`, `designated_to_return`,
   `expected_to_play`, `unlikely_to_play`, `ruled_out` — each with the
-  snippet, date and a recency weight (half-life 4 days, ignored after 10).
+  snippet, date, source, url and a recency weight (half-life 4 days,
+  ignored after 10). One flag per player whatever the number of items; of
+  the availability flags only those since the week rolled over (Tuesday)
+  and only the newest one count.
   Benched / committee / limited snaps take a small multiplier (0.85 / 0.93 /
   0.90 at full weight, floor 0.80) on *our* share only — Sleeper's
   projections come from the writers of the blurbs — and only when

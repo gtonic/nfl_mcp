@@ -39,106 +39,46 @@ async def get_cbs_player_news(limit: int | None = 50) -> dict:
     """
     Get the latest fantasy football player news from CBS Sports.
 
-    This tool fetches current player news from CBS Sports Fantasy Football section
-    and returns them in a structured format suitable for LLM processing.
+    Parses CBS's player-news list (``ul.player-news-by-sport``; the same parser
+    as the ``news`` refresh, `news_sources.parse_cbs`). CBS serves only the
+    first page (ten items) to non-browser clients -- deeper pages and the
+    per-position pages answer 406 -- so for a player's history use
+    ``get_player_news``, which merges ESPN's fantasy feed, NBC Sports /
+    Rotoworld and these items.
 
     Args:
         limit: Maximum number of news items to retrieve (default: 50, max: 100)
 
     Returns:
         A dictionary containing:
-        - news: List of player news items with headlines, players, descriptions
+        - news: [{player, position, team, headline, description, published,
+          url}] (``published`` is approximate: CBS says "2H ago")
         - total_news: Number of news items returned
-        - success: Whether the request was successful
-        - error: Error message (if any)
-        - error_type: Type of error (if any)
+        - success / error / error_type
     """
-    # Validate and cap the limit
-    limit = validate_limit(
-        limit,
-        1,
-        100,
-        50
-    )
+    from .news_sources import CBS_NEWS_URL, parse_cbs
 
+    limit = validate_limit(limit, 1, 100, 50)
     headers = get_http_headers("cbs_fantasy")
-
-    # CBS Fantasy player news URL
-    url = "https://www.cbssports.com/fantasy/football/players/news/all/"
-
     async with create_http_client() as client:
-        # Fetch the news page from CBS Sports
-        response = await client.get(url, headers=headers, follow_redirects=True)
+        response = await client.get(CBS_NEWS_URL, headers=headers, follow_redirects=True)
         response.raise_for_status()
+        items = parse_cbs(response.text)
 
-        # Parse HTML content
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Extract news items from the page
-        # CBS uses various structures, so we'll try multiple selectors
-        processed_news = []
-
-        # Look for news containers - common patterns in sports sites
-        news_containers = (
-            soup.find_all('article', class_=re.compile(r'player.*news|news.*item|article.*item', re.I)) or
-            soup.find_all('div', class_=re.compile(r'player.*news|news.*item|article.*item', re.I)) or
-            soup.find_all('div', class_=re.compile(r'news.*card|card.*news', re.I))
-        )
-
-        for container in news_containers[:limit]:
-            news_item = {}
-
-            # Extract player name
-            player_elem = (
-                container.find(['a', 'span', 'h3', 'h4'], class_=re.compile(r'player.*name', re.I)) or
-                container.find(['a', 'span', 'h3', 'h4'], attrs={'data-player': True})
-            )
-            if player_elem:
-                news_item['player'] = player_elem.get_text(strip=True)
-
-            # Extract headline/title
-            headline_elem = (
-                container.find(['h2', 'h3', 'h4', 'a'], class_=re.compile(r'headline|title', re.I)) or
-                container.find(['h2', 'h3', 'h4'])
-            )
-            if headline_elem:
-                news_item['headline'] = headline_elem.get_text(strip=True)
-
-            # Extract description/summary
-            desc_elem = (
-                container.find(['p', 'div'], class_=re.compile(r'description|summary|excerpt|content', re.I)) or
-                container.find('p')
-            )
-            if desc_elem:
-                news_item['description'] = desc_elem.get_text(strip=True)
-
-            # Extract timestamp if available
-            time_elem = (
-                container.find('time') or
-                container.find(['span', 'div'], class_=re.compile(r'date|time|timestamp', re.I))
-            )
-            if time_elem:
-                news_item['published'] = time_elem.get('datetime') or time_elem.get_text(strip=True)
-
-            # Extract position if available
-            position_elem = container.find(['span', 'div'], class_=re.compile(r'position|pos', re.I))
-            if position_elem:
-                news_item['position'] = position_elem.get_text(strip=True)
-
-            # Extract team if available
-            team_elem = container.find(['span', 'div', 'a'], class_=re.compile(r'team', re.I))
-            if team_elem:
-                news_item['team'] = team_elem.get_text(strip=True)
-
-            # Only add if we have at least a headline or description
-            if news_item.get('headline') or news_item.get('description'):
-                processed_news.append(news_item)
-
-        return create_success_response({
-            "news": processed_news,
-            "total_news": len(processed_news),
-            "source": "CBS Sports Fantasy Football"
-        })
+    processed_news = [{
+        "player": it.get("name"),
+        "position": it.get("position"),
+        "team": it.get("team"),
+        "headline": it.get("title") or it.get("headline"),
+        "description": " ".join(p for p in (it.get("headline"), it.get("text")) if p),
+        "published": it.get("published_at"),
+        "url": it.get("url"),
+    } for it in items[:limit]]
+    return create_success_response({
+        "news": processed_news,
+        "total_news": len(processed_news),
+        "source": "CBS Sports Fantasy Football",
+    })
 
 
 @handle_http_errors(

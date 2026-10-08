@@ -18,7 +18,9 @@ DATA
     (``NFL_MCP_DB_PATH``, default ``nfl_data.db``): ``practice_report_history``
     (every distinct player/day/status/source) and ``injury_news_history``
     (every distinct blurb with its ``date_reported``), plus ``schedule_games``
-    for kickoffs. Collection starts with the v17 upgrade (2026 week 5); wait
+    for kickoffs. From schema v19 also ``player_news``: every item of the
+    news sources (ESPN fantasy feed, NBC Sports / Rotoworld, CBS) with its
+    ``published_at``, read next to the blurbs as the server reads them. Collection starts with the v17 upgrade (2026 week 5); wait
     for at least four weeks -- a few hundred questionable player-weeks --
     before reading a bucket. Truth is nflverse's weekly PPR (``data.load_season``),
     published a day or two after each week.
@@ -26,8 +28,10 @@ DATA
 METHOD (leak-free)
     For every (week, team) the signals are rebuilt as the server saw them at
     kickoff: practice rows *recorded* before kickoff (the last status per
-    report day), the newest blurb per player recorded before kickoff, read
-    with the live ``news_signals.build_index`` at kickoff time. Each player is
+    report day), the newest blurb per player recorded before kickoff and
+    every news item *published* before kickoff (a first poll backfills two
+    weeks of items, each dated by its source), read with the live
+    ``news_signals.build_index`` at kickoff time. Each player is
     bucketed by the live functions (``practice_blend_mult``, ``adjustment``)
     and scored by ``ratio = actual PPR / trailing PPR per game`` (prior
     weeks, >= ``MIN_TRAILING`` games; a player with no game record that week
@@ -65,7 +69,7 @@ from datetime import datetime
 from statistics import mean
 
 from nfl_mcp.game_clock import parse_kickoff
-from nfl_mcp.news_signals import adjustment, build_index, signals_for
+from nfl_mcp.news_signals import adjustment, build_index, news_rows, signals_for
 from nfl_mcp.opportunity_tools import norm_name
 from nfl_mcp.projections import practice_blend_mult
 from nfl_mcp.teams import normalize_team
@@ -124,9 +128,11 @@ def practice_at_kickoff(rows: list[dict], kicks: dict[tuple[int, str], datetime]
     return out
 
 
-def news_at_kickoff(rows: list[dict], kicks: dict[tuple[int, str], datetime]) -> dict:
+def news_at_kickoff(rows: list[dict], kicks: dict[tuple[int, str], datetime],
+                    items: list[dict] | None = None) -> dict:
     """``(week, team) -> news index`` from the newest blurb per player
-    recorded before that team's kickoff, read at kickoff time."""
+    recorded before that team's kickoff and the team's news items
+    (``player_news``) published before it, read at kickoff time."""
     out = {}
     for (week, team), ko in kicks.items():
         newest: dict[str, dict] = {}
@@ -135,9 +141,12 @@ def news_at_kickoff(rows: list[dict], kicks: dict[tuple[int, str], datetime]) ->
                 continue
             if r["recorded_at"] >= newest.get(r["player_id"], {}).get("recorded_at", ""):
                 newest[r["player_id"]] = r
-        if newest:
+        known = [i for i in items or [] if normalize_team(i.get("team")) == team
+                 and parse_kickoff(i.get("published_at") or i["recorded_at"]) < ko]
+        if newest or known:
             out[(week, team)] = build_index(
-                [{**r, "injury_description": r["text"]} for r in newest.values()], now=ko)
+                [{**r, "injury_description": r["text"]} for r in newest.values()], now=ko,
+                news=news_rows(known))
     return out
 
 
@@ -297,10 +306,19 @@ def main() -> None:
 
     conn = sqlite3.connect(args.db)
     practice_rows = _rows(conn, "SELECT * FROM practice_report_history WHERE season=?", args.season)
-    news_rows = _rows(conn, "SELECT * FROM injury_news_history WHERE recorded_at >= ?",
+    blurb_rows = _rows(conn, "SELECT * FROM injury_news_history WHERE recorded_at >= ?",
                       f"{args.season}-07-01")
+    try:
+        news_items = _rows(conn, "SELECT * FROM player_news WHERE "
+                           "COALESCE(published_at, recorded_at) >= ?", f"{args.season}-07-01")
+    except sqlite3.OperationalError:  # a database from before schema v19
+        news_items = []
     weeks = sorted({r["week"] for r in practice_rows if r["week"]})
-    print(f"practice rows: {len(practice_rows)} (weeks {weeks}); news blurbs: {len(news_rows)}")
+    by_source: dict[str, int] = defaultdict(int)
+    for i in news_items:
+        by_source[i["source"]] += 1
+    print(f"practice rows: {len(practice_rows)} (weeks {weeks}); news blurbs: {len(blurb_rows)}; "
+          f"news items: {len(news_items)} {dict(by_source)}")
     if args.counts:
         return
 
@@ -321,7 +339,7 @@ def main() -> None:
     _report("Practice (questionable players) -- live PRACTICE_BLEND_MULT bucket",
             practice_buckets(practice_at_kickoff(practice_rows, kicks), truth), "not_on_report")
     _report("News flags -- live news_signals.EFFECTS",
-            news_buckets(news_at_kickoff(news_rows, kicks), truth), "none")
+            news_buckets(news_at_kickoff(blurb_rows, kicks, news_items), truth), "none")
 
 
 if __name__ == "__main__":
