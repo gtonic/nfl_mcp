@@ -111,7 +111,7 @@ def _classifier_from(path: str):
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--fixture", default=str(FIXTURE))
-    ap.add_argument("--split", choices=("dev", "holdout"), help="one split only")
+    ap.add_argument("--split", choices=("dev", "holdout", "holdout2"), help="one split only")
     ap.add_argument("--baseline", help="path of another news_signals.py to score instead")
     ap.add_argument("--errors", action="store_true", help="list each disagreement")
     args = ap.parse_args(argv)
