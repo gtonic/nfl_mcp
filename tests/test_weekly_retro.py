@@ -349,3 +349,36 @@ class TestUnplayedWeeks:
         cal = await retro_tools.league_calibration(
             db, "L", 2026, KEY, 2, matchups_by_week={2: _matchups()})
         assert cal["weeks"] == [2]
+
+
+class TestRetroSignalReview:
+    @pytest.mark.asyncio
+    async def test_starters_carry_their_signals_and_the_section_is_added(self, league, db):
+        rows = [{"player_id": "rb1", "projected_points": 15.0, "floor": 9.0, "ceiling": 21.0,
+                 "signals": {"injury_status": "Questionable", "practice_pattern": "LP-LP",
+                             "injury_mult": 0.72}},
+                {"player_id": "qb", "projected_points": 18.0, "floor": 10.0, "ceiling": 26.0,
+                 "signals": {"role_trend": "stable"}}]
+        db.record_projections(2026, 2, KEY, rows, league_id="L", source="briefing",
+                              now="2026-09-13T12:00:00+00:00")
+        db.upsert_projection_accuracy([{
+            "season": 2026, "week": 2, "scoring_key": KEY, "player_id": "rb1",
+            "league_id": "L", "player_name": "Run One", "position": "RB", "projected": 15.0,
+            "actual": 5.0, "injury_status": "Questionable", "news_flags": [],
+            "signals": {"injury_status": "Questionable", "practice_pattern": "LP-LP"},
+            "log_source": "briefing", "graded_at": "2026-09-16T00:00:00+00:00"}])
+        out = await retro_tools.get_weekly_retro("L", roster_id=7, week=2, season=2026,
+                                                 include_signal_review=True)
+        by = {s["player"]: s for s in out["starters"]}
+        assert by["Run One"]["signals"] == ["Questionable (LP-LP) ×0.72 on ours"]
+        assert by["Q Back"]["signals"] == []
+        section = out["signal_review"]
+        assert section["roster_misses"][0]["player"] == "Run One"
+        assert section["roster_misses"][0]["diff"] == -10.0
+        assert "recommendations" in section
+
+    @pytest.mark.asyncio
+    async def test_off_by_default(self, league, db):
+        _log(db, {"qb": 18.0, "rb1": 15.0, "wr1": 12.0, "te": 8.0})
+        out = await retro_tools.get_weekly_retro("L", roster_id=7, week=2, season=2026)
+        assert "signal_review" not in out and "signals" not in out["starters"][0]

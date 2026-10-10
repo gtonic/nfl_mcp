@@ -360,9 +360,9 @@ async def analyze_lineup(
                           "player_id": p["player_id"], "opponent": p["opponent"]}, season, week)
         for p in ctx["players"] if p["player_id"] not in started
     ]
-    opponent_players, opponent_roster_id = None, None
+    opponent_view, opponent_roster_id = None, None
     if risk_mode != "neutral":
-        opponent_players, opponent_roster_id = await _opponent_projection(
+        opponent_view, opponent_roster_id = await _opponent_projection(
             league, league_id, ctx["roster_id"], matchups, season, week, db)
     playoff_pct = None
     if odds_task is not None:
@@ -372,10 +372,25 @@ async def analyze_lineup(
             logger.debug(f"playoff odds unavailable: {e}")
     result = await lineup_optimizer_tools.analyze_full_lineup(
         lineup=built, week=week, league_id=league_id, season=season,
-        empty_slots=empty_slots, opponent_players=opponent_players,
+        empty_slots=empty_slots,
+        opponent_players=opponent_view["set_players"] if opponent_view else None,
+        opponent_best_players=opponent_view["best_players"] if opponent_view else None,
         risk_mode=risk_mode, playoff_pct=playoff_pct)
     if isinstance(result, dict):
         result["opponent_roster_id"] = opponent_roster_id
+        if opponent_view:
+            # The risk block's P(win) is against his SET lineup; his best
+            # available one, and what his set lineup costs him, beside it.
+            from .opponent_lineup import explain
+            result["opponent"] = {
+                "basis": "set_lineup",
+                "set_lineup_points": opponent_view["set_lineup_points"],
+                "best_lineup_points": opponent_view["best_lineup_points"],
+                "points_at_risk": opponent_view["points_at_risk"],
+                "lineup_issues": opponent_view["lineup_issues"],
+                "locked_players": opponent_view["locked"],
+                "note": explain(opponent_view),
+            }
         result["league"] = {"league_id": league_id, "name": league.get("name")}
         result["roster_id"] = ctx["roster_id"]
         result["empty_slots"] = empty_slots
@@ -409,13 +424,20 @@ async def analyze_lineup(
 
 
 async def _opponent_projection(league: dict, league_id: str, roster_id: int,
-                               matchups: list[dict], season, week, db) -> tuple[list[dict] | None, int | None]:
-    """``(the opponent's projected set starters, his roster id)`` this week.
+                               matchups: list[dict], season, week, db) -> tuple[dict | None, int | None]:
+    """``(the opponent's set-vs-best view, his roster id)`` this week.
 
-    ``(None, None)`` without a scheduled opponent or projections. Never raises:
-    the risk block is additive.
+    The view is `opponent_lineup.assess_opponent_lineup`: his set starters
+    (what P(win) is computed against; a starter whose game has kicked off at
+    his actual points), his best available lineup from the players he could
+    still start, and the lineup issues (empty / bye / Out / Doubtful) between
+    the two. ``(None, None)`` without a scheduled opponent or projections.
+    Never raises: the risk block is additive.
     """
     from . import sleeper_tools
+    from .game_clock import week_games
+    from .lineup_slots import starting_slot_list
+    from .opponent_lineup import assess_opponent_lineup, merge_locked_starters
     from .projections import project_players
     from .scoring import league_scoring
     try:
@@ -432,24 +454,56 @@ async def _opponent_projection(league: dict, league_id: str, roster_id: int,
         opp_roster = opp_ctx["roster"]
         held = [*(opp_roster.get("players") or []), *(p["player_id"] for p in opp_ctx["players"])]
         starters, _ = sleeper_tools.set_starters({**opp_roster, "players": held}, opp)
-        by_id = {p["player_id"]: p for p in opp_ctx["players"]}
-        inputs = [player_input(db, {k: by_id[str(pid)][k] for k in
+        games = week_games(db, season, week) if db is not None else {}
+        by_id = {str(p["player_id"]): p for p in opp_ctx["players"]}
+        # A starter whose game has kicked off stays in the matchup (and
+        # scores) even once dropped; the roster copy no longer shows him.
+        matchup_starters = [str(p) for p in opp.get("starters") or []]
+        unknown = [p for p in matchup_starters if p not in by_id and p != "0"]
+        rows = (db.get_athletes_by_ids(unknown) if db is not None and unknown else {}) or {}
+        starters, _ = merge_locked_starters(
+            starters, matchup_starters,
+            lambda pid: (by_id.get(pid) or {}).get("team") or (rows.get(pid) or {}).get("team_id"),
+            games)
+        extra_labels = {pid: {"name": (rows.get(pid) or {}).get("full_name") or pid,
+                              "position": (rows.get(pid) or {}).get("position"),
+                              "team": (rows.get(pid) or {}).get("team_id"),
+                              "reason": "unprojectable"}
+                        for pid in starters if pid in rows and pid not in by_id}
+        projectable = [pid for pid, p in by_id.items() if p.get("opponent") not in ("", "BYE")]
+        inputs = [player_input(db, {k: by_id[pid][k] for k in
                                     ("name", "position", "team", "player_id", "opponent")},
                                season, week)
-                  for pid in starters if pid and str(pid) in by_id
-                  and by_id[str(pid)].get("opponent") not in ("", "BYE")]
+                  for pid in projectable]
         if not inputs:
             return None, opp["roster_id"]
         projected = await project_players(
             inputs, scoring=league_scoring(league),
             num_teams=int(league.get("total_rosters") or 12), season=season, week=week)
-        players = [
-            {"name": p["player"], "position": p["position"], "team": p["team"],
-             "projected_points": p["projected_points"], "floor": p["floor"],
-             "ceiling": p["ceiling"]}
-            for p in (projected or {}).get("projections") or []
-        ]
-        return (players or None), opp["roster_id"]
+        id_of = {(by_id[pid]["name"], by_id[pid]["team"]): pid for pid in projectable}
+        candidates = {}
+        for p in (projected or {}).get("projections") or []:
+            pid = id_of.get((p.get("player"), p.get("team")))
+            if pid is None:
+                continue
+            candidates[pid] = {
+                "name": p["player"], "position": p["position"], "team": p["team"],
+                "projected_points": p["projected_points"], "floor": p["floor"],
+                "ceiling": p["ceiling"], "player_id": pid,
+                **({"injury_status": p["injury_status"]} if p.get("injury_status") else {}),
+                **({"gameday_status": p["gameday_status"]} if p.get("gameday_status") else {}),
+            }
+        labels = {pid: {"name": p.get("name"), "position": p.get("position"),
+                        "team": p.get("team"),
+                        "reason": "bye" if p.get("opponent") == "BYE" else "unprojectable"}
+                  for pid, p in by_id.items() if pid not in candidates}
+        labels.update(extra_labels)
+        on_lineup = {p for p in starters if p and p != "0"}
+        bench = [pid for pid in by_id if pid not in on_lineup]
+        view = assess_opponent_lineup(
+            starting_slot_list(league.get("roster_positions")), starters, candidates, bench,
+            labels, games, opp.get("players_points") or {})
+        return (view if view["set_players"] else None), opp["roster_id"]
     except Exception as e:
         logger.debug(f"opponent projection unavailable: {e}")
         return None, None

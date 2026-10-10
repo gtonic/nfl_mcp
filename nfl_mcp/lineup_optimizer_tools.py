@@ -1819,9 +1819,14 @@ async def analyze_full_lineup(
     opponent_players: list[dict] | None = None,
     risk_mode: str | None = "auto",
     playoff_pct: float | None = None,
+    opponent_best_players: list[dict] | None = None,
 ) -> dict:
     """
     Analyze a complete fantasy lineup with optimal lineup suggestions.
+
+    ``opponent_best_players`` (his best available lineup, `opponent_lineup`)
+    adds the "if he fixes his lineup" P(win) to the risk block; P(win) itself
+    stays against ``opponent_players`` (his set starters).
 
     ``opponent_players`` (the opponent's projected starters: name, position,
     team, projected_points, floor, ceiling) and ``playoff_pct`` feed the
@@ -2090,7 +2095,7 @@ async def analyze_full_lineup(
         efficiency = 0.0
 
     risk = _risk_block(seats, bench_analysis, open_seats, opponent_players,
-                       risk_mode, playoff_pct)
+                       risk_mode, playoff_pct, opponent_best_players)
 
     return create_success_response({
         # Which lineup this team's situation calls for (risk_mode) and what it
@@ -2142,7 +2147,8 @@ def _analysis_input(a: PlayerAnalysis, slot: str | None = None) -> dict:
 def _risk_block(seats: list[tuple[str, PlayerAnalysis | None]],
                 bench: list[PlayerAnalysis], open_seats: list[int],
                 opponent_players: list[dict] | None, risk_mode: str,
-                playoff_pct: float | None) -> dict | None:
+                playoff_pct: float | None,
+                opponent_best_players: list[dict] | None = None) -> dict | None:
     """The risk-adjusted lineup next to the points-optimal one. Never raises."""
     from collections import Counter
 
@@ -2157,7 +2163,9 @@ def _risk_block(seats: list[tuple[str, PlayerAnalysis | None]],
                   if a is not None and a.locked]
         res = optimize_win_probability(
             candidates, opponent_players or None, dict(Counter(slot_names)),
-            locked_players=locked, risk_mode=risk_mode, playoff_pct=playoff_pct)
+            locked_players=locked, risk_mode=risk_mode, playoff_pct=playoff_pct,
+            opponent_best_players=opponent_best_players if opponent_players else None,
+            opponent_basis="set_lineup" if opponent_best_players is not None else "as_given")
     except Exception as e:  # additive; the grade must not fail on it
         logger.warning(f"risk-adjusted lineup unavailable: {e}")
         return None
@@ -2173,6 +2181,10 @@ def _risk_block(seats: list[tuple[str, PlayerAnalysis | None]],
         "projected_points": res["projected_points"],
         "points_optimal_projected": res["points_optimal_projected"],
         "opponent_projected_points": res["opponent_projected_points"],
+        "opponent_projection_basis": res.get("opponent_projection_basis"),
+        "opponent_best_lineup_points": res.get("opponent_best_lineup_points"),
+        "win_probability_if_opponent_fixes_lineup":
+            res.get("win_probability_if_opponent_fixes_lineup"),
         "adjustment": adjustment,
         # Only when it differs: otherwise it is `optimal_lineup`.
         "recommended_lineup": res["recommended_lineup"] if adjustment else None,

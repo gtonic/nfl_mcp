@@ -80,12 +80,26 @@ def signals_of(proj: dict) -> dict:
     projection's source and its two inputs (ours, Sleeper's), the injury and
     practice read, the role trend (`role_shift`), returning teammates and
     inherited volume, the backup-QB multiplier (`qb_coupling`), the news
-    flags (`news_signals`) and the matchup tier.
+    flags (`news_signals`) and the matchup tier. Also the multipliers each
+    signal actually applied (practice share on Sleeper's side, the role
+    multiplier, the availability and news multipliers on ours), the gameday
+    decision, the QB coupling's sit weight and its basis, and whether an
+    injury-shortened game was left out of the volume — what the weekly signal
+    review (`signal_review`) reads to say whether a multiplier is calibrated.
     """
     bd = proj.get("breakdown") or {}
     qb = proj.get("qb_context") or {}
     flags = [f.get("flag") if isinstance(f, dict) else str(f)
              for f in proj.get("news_flags") or []]
+    gain = proj.get("role_gain") or {}
+
+    def _moved(value):
+        """A multiplier only when it moved the number (1.0 = no signal)."""
+        try:
+            return None if value is None or float(value) == 1.0 else round(float(value), 3)
+        except (TypeError, ValueError):
+            return None
+
     out = {
         "projection_source": proj.get("projection_source"),
         "model_projection": proj.get("model_projection"),
@@ -100,6 +114,15 @@ def signals_of(proj: dict) -> dict:
         "qb_sleeper_mult": qb.get("sleeper_mult") if qb.get("applied") else None,
         "news_flags": [f for f in flags if f] or None,
         "matchup_tier": proj.get("matchup_tier"),
+        "gameday_status": proj.get("gameday_status"),
+        "injury_exit": True if bd.get("injury_exit_weeks") else None,
+        "role_mult": _moved(bd.get("role_mult")),
+        "role_gain_priced": True if gain.get("priced") else None,
+        "practice_blend_mult": _moved(bd.get("practice_blend_mult")),
+        "injury_mult": _moved(bd.get("injury_mult")),
+        "news_model_mult": _moved(bd.get("news_model_mult")),
+        "qb_sit_weight": qb.get("starter_sit_weight") if qb.get("applied") else None,
+        "qb_sit_basis": qb.get("starter_sit_basis") if qb.get("applied") else None,
     }
     return {k: v for k, v in out.items() if v is not None}
 

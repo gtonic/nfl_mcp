@@ -8,6 +8,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Weekly signal review** (schema v21): new tool `get_weekly_signal_review`
+  (61 tools in season, 78 in full). For the last graded week and cumulative,
+  per signal (practice buckets Q + FP/LP/DNP/single DNP/no line and
+  Doubtful, gameday active/inactive, role down/up/gain priced, returning
+  teammates, inherited volume, injury exits, QB coupling overall and by the
+  starter's sit-weight basis incl. gameday overrides, every news flag,
+  projection source, Sleeper disagreement): n, the realised/projected ratio,
+  that relative to a baseline (healthy players for injury buckets) with a 95%
+  bootstrap interval, bias/MAE vs the rows without it, the implied multiplier
+  (current × relative) and a recommendation under explicit minimum-sample
+  rules -- read from n≥10, `watch` (keep) below n≥60 or 2 weeks, `review`
+  only past both with a ≥10% shift ("Questionable + limited practice
+  multiplier 0.72 looks too low: realised 0.88 [0.75, 1.01], n=23 over 1
+  week(s) — keep until n≥60 and ≥2 weeks."). Plus the week's biggest misses
+  with the signals that were active (one roster's with league_id +
+  roster_id). The prefetch's `accuracy` scope runs it after grading and
+  stores the JSON summary (`signal_reviews`), so reading it is a lookup.
+  `get_weekly_retro(include_signal_review=True)` lists per starter the
+  signals that moved his projection and adds the week's recommendations and
+  the roster's misses. `signals_of` now also logs the multipliers actually
+  applied (practice share, role, availability, news), the gameday decision,
+  injury exits, a priced role gain and the QB coupling's sit weight / basis.
+  risk_mode choices are lineup-level and not logged per projection.
+- **Opponent: set lineup vs best lineup.** The briefing projected the
+  opponent's set starters (correct) but said nothing about it, so an
+  opponent fixing his lineup read as noise: VLBG week 5 went 53.7 → 80.0
+  overnight because his set lineup had Lamar Jackson and Saquon Barkley (Out,
+  0 points) and Kyle Monangai in it, swapped for Aaron Rodgers, Tony Pollard
+  and Keon Coleman the next day. Win probability and risk_mode still use the
+  set lineup (`opponent_projection_basis: "set_lineup"`), now with
+  `opponent_set_lineup_points`, `opponent_best_lineup_points` (his best
+  lineup from everyone he can still start), `opponent_points_at_risk`,
+  `win_probability_if_opponent_fixes_lineup`, `opponent_lineup_issues`
+  (empty / bye / Out / inactive / Doubtful / unprojectable / projected-0
+  starters), `opponent_best_lineup_changes`, `opponent_set_lineup`,
+  `opponent_locked_players` and a one-line `opponent_projection_note`.
+  `analyze_lineup` reports the same (`opponent`, and in `risk`) and now
+  counts an opponent starter whose game has kicked off at his actual points
+  (it used his projection); `get_win_probability_lineup` takes
+  `opponent_bench` for the best-lineup figure, counts an opponent's
+  `actual_points` once his game has started (warning when missing) and lists
+  `opponent_lineup_issues`.
 - **News source health** (schema v20). NBC and CBS are HTML scrapes, and a
   redesign answered 200 and parsed to nothing -- a quiet news day as far as
   anything could tell. Every selector now lives in one table per site

@@ -125,10 +125,12 @@ async def _refresh_usage(db, season: int, week: int) -> dict:
 
 async def _refresh_accuracy(db, season: int, week: int) -> dict:
     """Grade finished weeks' logged projections (`projection_accuracy`):
-    each week once it is final, and once more after the stat corrections."""
+    each week once it is final, and once more after the stat corrections --
+    then store each newly graded week's signal review (`signal_review`)."""
     from .projection_accuracy import refresh_accuracy
     out = await refresh_accuracy(db, season)
-    return {k: out[k] for k in ("fetched", "written", "weeks")}
+    return {"fetched": out["fetched"], "written": out["written"], "weeks": out["weeks"],
+            "reviewed": out.get("reviewed", [])}
 
 
 async def _refresh_news(db, season: int, week: int) -> dict:

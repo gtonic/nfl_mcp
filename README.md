@@ -6,7 +6,7 @@
 [![Data-source watchdog](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml/badge.svg)](https://github.com/gtonic/nfl_mcp/actions/workflows/contracts.yml)
 [![Docker image](https://img.shields.io/badge/image-ghcr.io%2Fgtonic%2Fnfl__mcp-2496ED?logo=docker&logoColor=white)](https://github.com/gtonic/nfl_mcp/pkgs/container/nfl_mcp)
 [![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/gtonic/nfl_mcp)
-[![60 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-60%20in--season%20%7C%2077%20total-8A2BE2)](#-whats-inside)
+[![61 in-season MCP tools](https://img.shields.io/badge/MCP%20tools-61%20in--season%20%7C%2078%20total-8A2BE2)](#-whats-inside)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 NFL MCP turns real NFL & fantasy data into a decisive edge — a suite of tools that plug
@@ -110,7 +110,7 @@ Co-managers work too: pass your own Sleeper `user_id` and the roster is found vi
 
 ## 🧰 What's inside
 
-60 MCP tools in the default in-season profile (77 in total), grouped by what they do.
+61 MCP tools in the default in-season profile (78 in total), grouped by what they do.
 Every tool ships its own parameter schema over MCP, so your assistant can introspect
 them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration guidance.
 
@@ -118,14 +118,14 @@ them directly; **[AGENT.md](AGENT.md)** documents all of them plus integration g
 
 | Profile | Tools | Hides |
 |---|---|---|
-| `season` (default) | 60 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
+| `season` (default) | 61 | draft (8), coaching (4), cache-refresh admin (3), `get_league_leaders`, `get_cbs_expert_picks` |
 | `offseason` | 46 | in-season-only tools (lineups, waivers, Vegas, weather, byes, playoff odds, …), admin, `get_cbs_expert_picks` |
-| `full` | 77 | nothing |
+| `full` | 78 | nothing |
 
 The active profile and its tool count are logged at startup and reported by `GET /health` (`tools`).
 
 **📊 Weekly lineup & projections**
-`get_weekly_briefing` (**start here** — roster, opponent, weather, usage and the lineup changes worth making, in one call; mid-week it scores played games for real and only optimizes what you can still change) · `get_league_changes` (**daily check** — what moved for your roster since you last looked) · `analyze_lineup` (grade the lineup you have set, optimal vs current, swaps, locked players; `risk_mode` says whether your situation calls for ceiling or floor) · `get_start_sit_recommendation` (one player or a list; team, position, opponent, snaps, injury and practice looked up for you) · `compare_players_for_slot` · `get_win_probability_lineup` (lineup that maximises P(beating *this* opponent)) — lineup tools take `risk_mode` (auto | neutral | seek_variance | protect_floor): auto reads this week's P(win) and your playoff odds, so a 0-4 long shot chases ceiling and a heavy favourite protects its floor, and says when that differs from the points-optimal lineup ("starting X over Y raises P(win) 41%→44% although mean −0.6") · `project_players` (this week's points, one or many, with Sleeper's projection as a labelled second opinion) · `get_ros_projections` (rest-of-season + fantasy-playoff points in your scoring, every later week blended with Sleeper's projection for it, with each player's `value_trajectory`: sell-high / buy-low and why) · `get_opportunity_projections` · `get_usage_trends` · `get_weekly_retro` (after the games: actual vs projection, points left on the bench) · `get_projection_accuracy` (how accurate the logged projections were, week by week: MAE/bias per position, source and signal)
+`get_weekly_briefing` (**start here** — roster, opponent, weather, usage and the lineup changes worth making, in one call; mid-week it scores played games for real and only optimizes what you can still change) · `get_league_changes` (**daily check** — what moved for your roster since you last looked) · `analyze_lineup` (grade the lineup you have set, optimal vs current, swaps, locked players; `risk_mode` says whether your situation calls for ceiling or floor) · `get_start_sit_recommendation` (one player or a list; team, position, opponent, snaps, injury and practice looked up for you) · `compare_players_for_slot` · `get_win_probability_lineup` (lineup that maximises P(beating *this* opponent)) — lineup tools take `risk_mode` (auto | neutral | seek_variance | protect_floor): auto reads this week's P(win) and your playoff odds, so a 0-4 long shot chases ceiling and a heavy favourite protects its floor, and says when that differs from the points-optimal lineup ("starting X over Y raises P(win) 41%→44% although mean −0.6") · `project_players` (this week's points, one or many, with Sleeper's projection as a labelled second opinion) · `get_ros_projections` (rest-of-season + fantasy-playoff points in your scoring, every later week blended with Sleeper's projection for it, with each player's `value_trajectory`: sell-high / buy-low and why) · `get_opportunity_projections` · `get_usage_trends` · `get_weekly_retro` (after the games: actual vs projection, points left on the bench) · `get_projection_accuracy` (how accurate the logged projections were, week by week: MAE/bias per position, source and signal) · `get_weekly_signal_review` (is each signal's weight still right — practice buckets, role trend, QB coupling, news flags — with bootstrap intervals, minimum-sample rules and a keep / watch / review line per signal, plus the week's biggest misses)
 
 **🗓️ Matchup, schedule & environment**
 `get_bye_week_plan` (which upcoming weeks byes leave your lineup short, what to add, free agents who fill it) · `get_defense_rankings` (all defenses, or one via `opponent_team`) · `analyze_roster_matchups` (your roster's matchups this week) · `get_strength_of_schedule` (any week range, or `playoff_weeks=True` from your league's playoff window) · `get_streaming_options` · `get_weather_forecast` · `get_vegas_lines` (games, per-team environment via `teams`, or your whole roster via `league_id`+`roster_id`) · `get_stack_opportunities`

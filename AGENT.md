@@ -32,15 +32,15 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server has **77 MCP tools** (including `get_league_leaders`, behind the
+The server has **78 MCP tools** (including `get_league_leaders`, behind the
 `league_leaders` feature flag, enabled by default). Which of them are registered
 depends on the tool profile, `NFL_MCP_TOOL_PROFILE`:
 
 | Profile | Tools | Registered |
 |---|---|---|
-| `season` (default) | 60 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
+| `season` (default) | 61 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
 | `offseason` | 46 | draft and coaching; not the in-season-only tools (briefing, retro, projection accuracy, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder/market, usage/opportunity), admin or `get_cbs_expert_picks` |
-| `full` | 77 | everything |
+| `full` | 78 | everything |
 
 The profile and count are logged at startup and returned by `GET /health`
 under `tools`. Every tool also ships its own parameter schema over MCP, so an
@@ -330,7 +330,7 @@ Trade evaluation and discovery:
   - Parameters: `players` (optional list of Sleeper ids or names — one works), `scoring` (optional, default 'ppr'), `superflex` (optional, default False), `num_teams` (optional, default 12), `dynasty` (optional, default False), `position` (optional), `limit` (optional, default 100)
   - Returns: values, total, not_found (lookups), format, source, stale, updated_at
 
-### 10. Weekly Projections (7 tools)
+### 10. Weekly Projections (8 tools)
 
 **Scoring matters and is honoured.** `scoring` sets the points scale, not just
 which market values are consulted: both baselines are rebased to the league's
@@ -347,11 +347,14 @@ covers the real outcome ~68% of the time, measured in
 - **`get_weekly_briefing`**: One call for "how should I line up this week". Mid-week, players whose game has kicked off carry their actual points with no remaining variance and their slots leave the optimization.
   - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional), `risk_mode` (optional, default `auto`)
   - Returns: league, week, record, win_probability, projected_points, opponent_projected_points, recommended_lineup, changes, bench, injury_changes, not_projected, risk_mode, risk_reason, playoff_pct, risk_adjustment
+  - The opponent is projected on the lineup he has **set** (`opponent_projection_basis: "set_lineup"`; his starters whose game has kicked off at their actual points) — that is what `win_probability` and `risk_mode` use. Beside it: `opponent_best_lineup_points` (his best lineup from the players he can still start), `opponent_points_at_risk`, `win_probability_if_opponent_fixes_lineup`, `opponent_lineup_issues` (empty slot / bye / Out / inactive / Doubtful starters), `opponent_best_lineup_changes` and `opponent_projection_note`. A jump in `opponent_projected_points` from one day to the next is usually the opponent fixing one of those issues.
 
 - **`get_weekly_retro`**: Post-game review of a finished week (default: the last completed one). Each starter's actual points against the projection logged before kickoff, points left on the bench (exact hindsight lineup under the league's slot rules), result vs the opponent and whether the hindsight lineup would have flipped it, biggest misses/hits, and projection calibration over every logged week. A week with no logged projection is re-projected and labelled `projection_source: "recomputed"`.
 - **`get_projection_accuracy`**: How accurate the logged pre-kickoff projections were (all leagues, or `league_id`), graded against the points actually scored in each projection's own scoring. Parameters: `weeks`, `position`, `by_signal` (default True), `season`, `league_id`. Returns overall / by_position / by_projection_source MAE and bias (projected − actual), `components` (our model vs Sleeper vs the blend on the same rows), `trend` per week, `by_signal` (with vs without: role_down/up, returning_teammates, qb_coupling, practice_dnp, questionable, news flags, …) and an `interpretation`. Finished weeks are graded on the fly (and by the prefetch loop / `refresh_data(scope=["accuracy"])`).
-  - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional), `include_calibration` (optional, default True)
-  - Returns: result, projected_total, projection_source, starters, bench, hindsight, biggest_misses, biggest_hits, opponent, calibration
+  - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `week` (optional), `season` (optional), `include_calibration` (optional, default True), `include_signal_review` (optional, default False: each starter lists the signals that moved his projection, plus a `signal_review` section)
+  - Returns: result, projected_total, projection_source, starters, bench, hindsight, biggest_misses, biggest_hits, opponent, calibration, signal_review?
+- **`get_weekly_signal_review`**: The weekly calibration review of each projection signal for the last graded week and cumulative: practice buckets (Q + FP/LP/DNP/single DNP/no line, Doubtful), gameday active/inactive, role trend down/up/gain priced, returning teammates, inherited volume, injury exits, QB coupling (and by sit-weight basis incl. gameday), news flags, projection source. Per signal: n, realised/projected ratio, ratio relative to a baseline (healthy players for injury buckets) with a 95% bootstrap interval, bias/MAE vs without, the implied multiplier where the signal has one, and a verdict (`review` / `watch` / `calibrated` / `insufficient`) with a recommendation line under explicit minimum-sample rules (read from n≥10; act only at n≥60 over ≥2 weeks with a ≥10% shift). Also the week's biggest misses with the signals that were active (one roster's with `league_id` + `roster_id`). Stored by the prefetch's `accuracy` scope, so cheap.
+  - Parameters: `week`, `league_id`, `roster_id`, `user_id`, `season` (all optional)
 
 - **`get_league_changes`**: The daily delta for one roster since its last check (remembered per league and roster): injury moves on your roster and the opponent's starters, news naming them, league transactions, trending backups of your starters, and projection moves on your starters. Ranked by importance.
   - Parameters: `league_id` (required), `roster_id` (optional), `user_id` (optional), `since` (optional ISO-8601), `mark_seen` (optional, default True), `projection_threshold` (optional, default 2.0), `limit` (optional, default 25)

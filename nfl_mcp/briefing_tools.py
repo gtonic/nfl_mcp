@@ -26,6 +26,7 @@ from .injury_match import (
 )
 from .ir_audit import audit_roster
 from .lineup_slots import starting_slot_list, starting_slots
+from .opponent_lineup import assess_opponent_lineup, explain, merge_locked_starters
 from .practice_reports import lookup_practice, practice_fields
 from .projection_store import log_projections, signals_of
 from .scoring import league_scoring
@@ -313,9 +314,21 @@ async def get_weekly_briefing(
     opp_roster = next((r for r in rosters
                        if opponent_matchup and r.get("roster_id") == opponent_matchup.get("roster_id")),
                       None)
-    opp_set_starters = ([p for p in sleeper_tools.set_starters(opp_roster, opponent_matchup)[0]
-                         if p and p != "0"] if opp_roster
-                        else list((opponent_matchup or {}).get("starters") or []))
+    # Raw, "0" for an empty slot: zipped against the slot list, so an empty
+    # seat keeps its place (and is reported as a lineup issue).
+    opp_starters_raw = ([str(p) for p in sleeper_tools.set_starters(opp_roster, opponent_matchup)[0]]
+                        if opp_roster
+                        else [str(p) for p in (opponent_matchup or {}).get("starters") or []])
+    opp_set_starters = [p for p in opp_starters_raw if p and p != "0"]
+    # Everyone else he could start (his best-lineup risk figure): reserve and
+    # taxi players cannot be started. Unknown roster: the matchup's players.
+    opp_unavailable = {str(p) for p in ((opp_roster or {}).get("reserve") or [])} \
+        | {str(p) for p in ((opp_roster or {}).get("taxi") or [])}
+    opp_pool_ids = [str(p) for p in ((opp_roster or {}).get("players")
+                                     or (opponent_matchup or {}).get("players") or [])
+                    if p and str(p) not in opp_unavailable]
+    opp_bench_ids = ([p for p in opp_pool_ids if p not in set(opp_set_starters)]
+                     if opponent_matchup else None)
 
     # 4) Context shared by every player: opponent, weather, trailing usage.
     #    Opponents come from the cached schedule rather than the odds feed,
@@ -332,9 +345,18 @@ async def get_weekly_briefing(
         row["player_id"]: row
         for row in db.get_usage_for_week(season, max(1, week - 1))
     }
-    athletes = db.get_athletes_by_ids(
-        list(mine.get("players") or []) + list(opp_set_starters)
-    )
+    opp_matchup_starters = [str(p) for p in (opponent_matchup or {}).get("starters") or []]
+    athletes = db.get_athletes_by_ids(list(dict.fromkeys(
+        list(mine.get("players") or []) + list(opp_set_starters) + list(opp_bench_ids or [])
+        + opp_matchup_starters)))
+    # A starter whose game has kicked off stays in the matchup (and scores)
+    # even once dropped or traded; the roster copy no longer shows him.
+    opp_starters_raw, _ = merge_locked_starters(
+        opp_starters_raw, opp_matchup_starters,
+        lambda pid: (athletes.get(pid) or {}).get("team_id"), games)
+    opp_set_starters = [p for p in opp_starters_raw if p and p != "0"]
+    if opp_bench_ids is not None:
+        opp_bench_ids = [p for p in opp_pool_ids if p not in set(opp_set_starters)]
     # Sleeper's player list is not the only injury source, and around kickoff it
     # is routinely the slower one. `player_injuries` holds the ESPN reports.
     injury_index = build_injury_index(db.get_all_current_injuries())
@@ -353,7 +375,9 @@ async def get_weekly_briefing(
             if pid not in unavailable
         ) if p
     ]
-    opp_ids = opp_set_starters
+    # His set starters first, then his bench: the set lineup is what the win
+    # probability is computed against, the bench only feeds his best lineup.
+    opp_ids = list(opp_set_starters) + list(opp_bench_ids or [])
     opp_inputs = [
         p for p in (
             _build_player(pid, athletes, opponents, weather, usage, injury_index,
@@ -375,6 +399,9 @@ async def get_weekly_briefing(
                 "name": p["player"], "position": p["position"], "team": p["team"],
                 "projected_points": p["projected_points"],
                 "floor": p["floor"], "ceiling": p["ceiling"],
+                # Read by the opponent's lineup issues (`opponent_lineup`).
+                **({"injury_status": p["injury_status"]} if p.get("injury_status") else {}),
+                **({"gameday_status": p["gameday_status"]} if p.get("gameday_status") else {}),
             }
             for p in (result or {}).get("projections") or []
         ]
@@ -438,7 +465,22 @@ async def get_weekly_briefing(
         if c.get("player_id") not in started_ids
         and progress_of(games.get(normalize_team(c.get("team")) or "")) <= 0.0
     ]
-    opp_locked, opp_open = _settled(opp_all, opp_points)
+    # The opponent: his set lineup (what P(win) is computed against, locked
+    # starters at their actual points) and his best available lineup (the
+    # "if he fixes it" risk figure), with what his set lineup costs him.
+    opp_by_id = {c["player_id"]: c for c in opp_all if c.get("player_id")}
+    opp_labels = {}
+    for pid in opp_ids:
+        if pid in opp_by_id:
+            continue
+        row = athletes.get(pid) or {}
+        is_bye = bool(row) and bye_check(row.get("team_id"), None, schedule, week)["status"] == BYE
+        opp_labels[pid] = {"name": row.get("full_name") or normalize_team(row.get("team_id")) or pid,
+                           "position": row.get("position"), "team": row.get("team_id"),
+                           "reason": "bye" if is_bye else "unprojectable"}
+    opp_view = assess_opponent_lineup(
+        slot_names, opp_starters_raw, opp_by_id, opp_bench_ids, opp_labels, games, opp_points,
+    ) if opponent_matchup else None
 
     playoff_pct = None
     if odds_task is not None:
@@ -452,11 +494,13 @@ async def get_weekly_briefing(
     # lineup is chosen without one rather than against an empty roster.
     lineup = await get_win_probability_lineup(
         your_players=my_open,
-        opponent_players=(opp_locked + opp_open) if opponent_matchup else None,
+        opponent_players=opp_view["set_players"] if opp_view else None,
         slots=lineup_slots or None,
         locked_players=my_locked,
         risk_mode=risk_mode,
         playoff_pct=playoff_pct,
+        opponent_best_players=opp_view["best_players"] if opp_view else None,
+        opponent_basis="set_lineup",
     )
 
     # 6) What to actually change, named rather than left as a diff to eyeball
@@ -611,8 +655,23 @@ async def get_weekly_briefing(
         "points_optimal_projected": (lineup or {}).get("points_optimal_projected"),
         "projected_points": (lineup or {}).get("projected_points"),
         "projected_sd": (lineup or {}).get("projected_sd"),
+        # The opponent on the lineup he has SET (what win_probability and
+        # risk_mode use); his best available lineup is the risk figure. A jump
+        # in opponent_projected_points between two days is usually him fixing
+        # an empty / bye / Out slot listed in opponent_lineup_issues.
         "opponent_projected_points": (lineup or {}).get("opponent_projected_points"),
         "opponent_projected_sd": (lineup or {}).get("opponent_projected_sd"),
+        "opponent_projection_basis": "set_lineup" if opp_view else None,
+        "opponent_set_lineup_points": (opp_view or {}).get("set_lineup_points"),
+        "opponent_best_lineup_points": (opp_view or {}).get("best_lineup_points"),
+        "opponent_points_at_risk": (opp_view or {}).get("points_at_risk"),
+        "win_probability_if_opponent_fixes_lineup":
+            (lineup or {}).get("win_probability_if_opponent_fixes_lineup"),
+        "opponent_lineup_issues": (opp_view or {}).get("lineup_issues") or [],
+        "opponent_best_lineup_changes": (opp_view or {}).get("best_lineup_changes"),
+        "opponent_set_lineup": (opp_view or {}).get("set_lineup"),
+        "opponent_locked_players": (opp_view or {}).get("locked") or [],
+        "opponent_projection_note": explain(opp_view) if opp_view else None,
         "recommended_lineup": recommended,
         "changes": changes,
         "bench": bench,

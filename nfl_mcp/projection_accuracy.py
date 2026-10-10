@@ -20,7 +20,8 @@ active on each one (``projection_store.signals_of``). Once a week is over,
 Rows go to ``projection_accuracy`` (one per week, scoring and player; a regrade
 replaces them). The prefetch loop grades each week once it is final and once
 more a day and a half after its last kickoff (Sleeper's stat corrections);
-``refresh_data(scope=["accuracy"])`` does the same on demand.
+``refresh_data(scope=["accuracy"])`` does the same on demand; both then run the
+weekly signal review (`signal_review`) of each newly graded week and store it.
 
 :func:`get_projection_accuracy` reads it back: MAE and bias per position, per
 projection source and per signal (rows with vs without it), the trend over
@@ -267,8 +268,13 @@ async def refresh_accuracy(db, season: int | None = None, weeks: list[int] | Non
     todo = sorted(set(weeks)) if weeks else weeks_to_grade(db, season, through)
     todo = [w for w in todo if 1 <= w <= through]
     results = [await grade_week(db, season, w) for w in todo]
+    # The weekly signal review of each newly graded week, stored so reading
+    # it back (`get_weekly_signal_review`, the retro) is a lookup.
+    from .signal_review import store_review
+    reviewed = [r["week"] for r in results
+                if r.get("graded") and await store_review(db, season, r["week"])]
     return {"fetched": len(todo), "written": sum(r.get("graded", 0) for r in results),
-            "weeks": todo, "season": season, "results": results}
+            "weeks": todo, "season": season, "results": results, "reviewed": reviewed}
 
 
 # --------------------------------------------------------------------------

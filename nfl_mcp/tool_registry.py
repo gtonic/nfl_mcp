@@ -35,6 +35,7 @@ from . import (
     projections,
     retro_tools,
     ros,
+    signal_review,
     sleeper_tools,
     sos_tools,
     streaming_tools,
@@ -102,7 +103,7 @@ NICHE_TOOLS = frozenset({"get_league_leaders", "get_cbs_expert_picks"})
 # Only meaningful while games are being played.
 IN_SEASON_TOOLS = frozenset({
     "get_weekly_briefing", "get_weekly_retro", "get_projection_accuracy",
-    "get_league_changes", "get_bye_week_plan",
+    "get_weekly_signal_review", "get_league_changes", "get_bye_week_plan",
     "get_playoff_odds", "get_playoff_bracket", "get_matchups", "get_waiver_targets",
     "recommend_faab_bid", "get_waiver_log", "audit_ir_slots", "get_start_sit_recommendation",
     "compare_players_for_slot", "analyze_lineup", "get_win_probability_lineup",
@@ -184,6 +185,7 @@ def _registered_tools() -> list[Callable]:
         get_weekly_briefing,
         get_weekly_retro,
         get_projection_accuracy,
+        get_weekly_signal_review,
         get_league_changes,
 
         # Season planning
@@ -2448,6 +2450,7 @@ async def get_win_probability_lineup(
     risk_mode: str = "auto",
     league_id: str | None = None,
     roster_id: int | None = None,
+    opponent_bench: list[dict] | None = None,
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
 
@@ -2472,8 +2475,17 @@ async def get_win_probability_lineup(
             points; "seek_variance" / "protect_floor" = beat a target above /
             below your own expectation.
         league_id, roster_id (optional): read your playoff odds for auto.
+        opponent_bench (list, optional): the opponent's other startable
+            players. P(win) stays against opponent_players (the lineup he has
+            SET); his best lineup from both is reported as the "if he fixes
+            his lineup" risk figure. An opponent player whose game has kicked
+            off counts his `actual_points` when given.
 
     Returns: {
+        opponent_projection_basis ("as_given"), opponent_best_lineup_points,
+        win_probability_if_opponent_fixes_lineup (with opponent_bench),
+        opponent_lineup_issues [{player, issue: bye|out|inactive|doubtful|
+            zero_projection}], opponent_locked_players, warnings?,
         risk_mode, risk_reason, risk_objective, playoff_pct,
         risk_adjustment {swaps, mean_delta, summary} | null,
         recommended_lineup (each with kickoff, kickoff_local, locked),
@@ -2498,6 +2510,7 @@ async def get_win_probability_lineup(
         risk_mode=risk_mode,
         league_id=league_id,
         roster_id=roster_id,
+        opponent_bench=opponent_bench,
     )
 
 
@@ -3288,6 +3301,18 @@ async def get_weekly_briefing(
         points_optimal_win_probability, points_optimal_projected,
         league {name, scoring, slots}, week, record, win_probability,
         projected_points, opponent_projected_points, recommended_lineup,
+        opponent_projection_basis ("set_lineup": win_probability and
+            risk_mode use the lineup the opponent has SET, his kicked-off
+            starters at their actual points), opponent_set_lineup_points,
+            opponent_best_lineup_points (his best lineup from players he can
+            still start), opponent_points_at_risk,
+            win_probability_if_opponent_fixes_lineup,
+            opponent_lineup_issues [{slot, player, issue: empty|bye|out|
+            inactive|doubtful|unprojected|zero_projection}],
+            opponent_best_lineup_changes, opponent_set_lineup,
+            opponent_locked_players, opponent_projection_note — a day-to-day
+            jump in opponent_projected_points is usually him fixing one of
+            those issues,
         changes [{slot, start, projected_points}],
         bench: names of CURRENT starters the recommendation moves to the bench
                (not your bench players),
@@ -3317,6 +3342,7 @@ async def get_weekly_retro(
     week: int | None = None,
     season: int | None = None,
     include_calibration: bool = True,
+    include_signal_review: bool = False,
 ) -> dict:
     """Post-game review of a FINISHED week: "how did last week go / what did I
     leave on the bench / were the projections any good".
@@ -3336,6 +3362,9 @@ async def get_weekly_retro(
         season: Season (default: current)
         include_calibration: Also return projection accuracy over every logged
             week of the season (default True)
+        include_signal_review: Also list, per starter, the signals that moved
+            his projection, plus a signal_review section (the week's signal
+            recommendations and your players' biggest misses; default False)
 
     Returns: {
         result {points, opponent_points, outcome, margin}, projected_total,
@@ -3350,6 +3379,9 @@ async def get_weekly_retro(
         opponent {roster_id, points, projected, top_scorer},
         calibration {weeks, n, mean_error (actual - projected), mean_abs_error,
                      within_range_share, by_position},
+        signal_review {recommendations, signals_to_watch, roster_misses
+                       [{player, projected, actual, diff, signals}]}
+            (only with include_signal_review; starters then carry signals),
         week_source, notes, success
     }
 
@@ -3360,6 +3392,7 @@ async def get_weekly_retro(
     return await retro_tools.get_weekly_retro(
         league_id=league_id, roster_id=roster_id, user_id=user_id,
         week=week, season=season, include_calibration=include_calibration,
+        include_signal_review=bool(include_signal_review),
     )
 
 
@@ -3417,6 +3450,67 @@ async def get_projection_accuracy(
     return await projection_accuracy.get_projection_accuracy(
         weeks=weeks, position=position, by_signal=bool(by_signal), season=season,
         league_id=league_id, db=get_db(),
+    )
+
+
+@timing_decorator("get_weekly_signal_review", tool_type="fantasy")
+async def get_weekly_signal_review(
+    week: int | None = None,
+    league_id: str | None = None,
+    roster_id: int | None = None,
+    user_id: str | None = None,
+    season: int | None = None,
+) -> dict:
+    """Weekly calibration review of the projection SIGNALS: is each weight
+    (practice buckets, role trend, QB coupling, news flags, ...) still right?
+
+    For the last graded week (and cumulative over the season) every signal
+    gets n, the realised/projected ratio of its rows, that ratio relative to a
+    baseline (healthy players for injury/practice buckets, all other rows
+    otherwise) with a 95% bootstrap interval, bias and MAE vs the rows without
+    it, the implied multiplier where the signal has one, and a recommendation
+    under explicit minimum-sample rules (n>=10 to read, n>=60 over >=2 weeks
+    before anything is worth changing). Also the week's biggest individual
+    misses with the signals that were active. The prefetch stores each newly
+    graded week's review, so this is cheap.
+
+    Use for "which adjustments are miscalibrated", "is the questionable / LP
+    discount right", "review last week's signals". Overall MAE/bias per
+    position: get_projection_accuracy. One roster's week: get_weekly_retro.
+
+    Parameters:
+        week (optional): default the last graded week
+        league_id (optional): only that league's logged projections, and its
+            players' misses
+        roster_id / user_id (optional, with league_id): misses of that
+            roster's players only
+        season (optional): default current
+
+    Returns: {season, week, weeks_cumulative, rows_week, rows_cumulative,
+              overall_week, overall_cumulative {n, mae, bias},
+              signals [{signal, group, label, baseline, param, current?,
+                        implied?, implied_ci?, week {...}, cumulative {n, weeks,
+                        realised_ratio, baseline_ratio, relative_ratio,
+                        relative_ci, bias, mae, baseline_bias, baseline_mae,
+                        mae_gap}, verdict (review|watch|calibrated|
+                        insufficient), recommendation}],
+              recommendations [..], biggest_misses [{player, projected, actual,
+              diff, signals [..]}], misses_scope, rules, source
+              (stored|computed), graded_now, success}
+
+    Example: get_weekly_signal_review()
+    Example: get_weekly_signal_review(week=5, league_id="123", roster_id=7)
+    """
+    try:
+        if league_id is not None:
+            league_id = validate_string_input(league_id, 'league_id', max_length=50)
+        if week is not None:
+            week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
+    except ValueError as e:
+        return {"success": False, "error": f"Invalid input: {e!s}"}
+    return await signal_review.get_weekly_signal_review(
+        week=week, league_id=league_id, roster_id=roster_id, user_id=user_id,
+        season=season, db=get_db(),
     )
 
 
