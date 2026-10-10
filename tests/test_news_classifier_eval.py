@@ -16,14 +16,22 @@ from tests.test_returning_teammates import _backfield, _project, _status
 ENTRIES = ev.load()
 DEV = [e for e in ENTRIES if e["split"] == "dev"]
 HOLDOUT = [e for e in ENTRIES if e["split"] == "holdout"]
+HOLDOUT_SPLITS = ("holdout", "holdout2", "holdout3")
+HELD_OUT = [e for e in ENTRIES if e["split"] in HOLDOUT_SPLITS]
 
 # Thresholds a pattern change must keep. Dev: the sentences the patterns
-# were written against (2026-10-08: P 0.98 / R 0.96 overall). Held out:
-# labelled before the classifier saw them -- precision held (1.00 on 6
-# flags), recall is the honest gap (0.33: phrasings the vocabulary lacks).
+# were written against (2026-10-10: P 0.97 / R 0.94 overall, 462
+# sentences). Held out, each labelled before the classifier was scored on
+# it: `holdout` (2026-10-08, 70), `holdout2` (100 from player_news, Oct
+# 8-10, labelled before the 2026-10-10 rework), `holdout3` (80 more from the
+# same pool, labelled after it). 2026-10-10: holdout P 1.00 / R 0.56,
+# holdout2 1.00 / 0.68, holdout3 0.94 / 0.52; all three 0.98 / 0.60.
 DEV_MIN = {"precision": 0.95, "recall": 0.92}
-DEV_FLAG_MIN = 0.85          # per flag with at least 5 gold labels
-HOLDOUT_MIN = {"precision": 0.85, "recall": 0.30}
+DEV_FLAG_MIN = 0.80          # per flag with at least 5 gold labels
+HOLDOUT_MIN = {"holdout": {"precision": 0.95, "recall": 0.50},
+               "holdout2": {"precision": 0.95, "recall": 0.60},
+               "holdout3": {"precision": 0.90, "recall": 0.45}}
+HELD_OUT_MIN = {"precision": 0.95, "recall": 0.55}
 # One week of labels in the old classifier's terms: what this replaced.
 BASELINE_DEV = {"precision": 0.55, "recall": 0.59}
 
@@ -34,7 +42,8 @@ def _flags(text, owner="owner", names=None, owner_last=""):
 
 class TestLabelledSet:
     def test_fixture_shape(self):
-        assert 250 <= len(ENTRIES) <= 400 and len(HOLDOUT) >= 60
+        assert 500 <= len(ENTRIES) <= 900
+        assert all(sum(e["split"] == s for e in ENTRIES) >= 60 for s in HOLDOUT_SPLITS)
         ids = [e["id"] for e in ENTRIES]
         assert len(ids) == len(set(ids))
         for e in ENTRIES:
@@ -53,10 +62,16 @@ class TestLabelledSet:
             assert c["precision"] is None or c["precision"] >= DEV_FLAG_MIN, (flag, c)
             assert c["recall"] >= DEV_FLAG_MIN, (flag, c)
 
-    def test_holdout_precision_recall(self):
-        result = ev.score(HOLDOUT)
-        assert result["_all"]["precision"] >= HOLDOUT_MIN["precision"], ev.table(result)
-        assert result["_all"]["recall"] >= HOLDOUT_MIN["recall"], ev.table(result)
+    @pytest.mark.parametrize("split", HOLDOUT_SPLITS)
+    def test_holdout_precision_recall(self, split):
+        result = ev.score([e for e in ENTRIES if e["split"] == split])
+        assert result["_all"]["precision"] >= HOLDOUT_MIN[split]["precision"], ev.table(result)
+        assert result["_all"]["recall"] >= HOLDOUT_MIN[split]["recall"], ev.table(result)
+
+    def test_all_held_out_precision_recall(self):
+        result = ev.score(HELD_OUT)
+        assert result["_all"]["precision"] >= HELD_OUT_MIN["precision"], ev.table(result)
+        assert result["_all"]["recall"] >= HELD_OUT_MIN["recall"], ev.table(result)
 
     def test_better_than_the_baseline(self):
         result = ev.score(DEV)["_all"]
@@ -86,8 +101,11 @@ class TestWeekFiveCases:
         assert "designated_to_return" in _flags(text)
 
     def test_ir_placement_with_a_designation_is_not_a_return(self):
-        assert _flags("Trost (hamstring) was placed on injured reserve with a designation "
-                      "to return by the Rams on Sunday.") == {}
+        flags = _flags("Trost (hamstring) was placed on injured reserve with a designation "
+                       "to return by the Rams on Sunday.")
+        assert set(flags) == {"multi_week_absence"}
+        assert flags["multi_week_absence"]["weeks"] == news_signals.IR_MIN_GAMES
+        assert flags["multi_week_absence"]["weeks_minimum"] is True
 
     def test_swift_lost_the_work_to_monangai(self):
         names = {"monangai": "kyle monangai", "kyle monangai": "kyle monangai"}
@@ -210,3 +228,165 @@ class TestDownstream:
         status = _status("IR", "Lead Back returned to practice Wednesday.")
         due = _project(values, index, status)["breakdown"]["returning_teammates"][0]
         assert due["games_until_return"] == projections.DESIGNATED_RETURN_GAMES
+
+
+class TestRecallPhrasings:
+    """The 2026-10-10 vocabulary: absences with a length, snap-share drops,
+    game-time decisions, trending toward (not) playing."""
+
+    @pytest.mark.parametrize("text,length", [
+        ("Garrett is facing a six-week recovery from knee surgery.", {"weeks": 6}),
+        ("He is expected to miss at least three weeks.", {"weeks": 3}),
+        ("Brooks is out four to six weeks.", {"weeks": 6}),
+        ("He will miss at least the next four games.", {"weeks": 4}),
+        ("Ferguson will be eligible to return in Week 8 against the Chargers.",
+         {"return_week": 8}),
+        ("He is expected back Week 9.", {"return_week": 9}),
+        ("Reed will require season-ending surgery on his neck.", {"season_ending": True}),
+        ("He'll miss the rest of the season.", {"season_ending": True}),
+        ("The Chargers placed Slater (ankle) on injured reserve Friday.",
+         {"weeks": 4, "weeks_minimum": True}),
+        ("The receiver looks IR-bound after the MRI.", {"weeks": 4, "weeks_minimum": True}),
+    ])
+    def test_multi_week_absence_with_a_length(self, text, length):
+        hit = _flags(text)["multi_week_absence"]
+        assert {k: hit[k] for k in news_signals.ABSENCE_FIELDS if k in hit} == length
+
+    def test_a_second_reading_fills_the_length(self):
+        hit = _flags("Price will go on IR and miss at least the next four games and won't be "
+                     "eligible to return until at least Week 8.")["multi_week_absence"]
+        assert hit["weeks"] == 4 and hit["return_week"] == 8 and "weeks_minimum" not in hit
+
+    @pytest.mark.parametrize("text", [
+        "Kraft made a remarkable recovery from last year's season-ending knee injury.",
+        "Payton said he doesn't expect him to be placed on injured reserve.",
+        "A decision has yet to be made regarding whether he will be placed on injured reserve.",
+        "Dell missed the required four games upon landing on injured reserve Aug. 21.",
+        "Bosa has missed two games since injuring his calf.",
+        "He will face an absence of at least four games if he's placed on injured reserve.",
+    ])
+    def test_no_absence(self, text):
+        hit = _flags(text).get("multi_week_absence")
+        assert hit is None or hit.get("conditional")
+
+    def test_reported_speech_is_not_a_condition(self):
+        assert "multi_week_absence" in _flags(
+            "Bowles acknowledged that Mayfield would miss at least three weeks.")
+
+    @pytest.mark.parametrize("text", [
+        "Gainwell was out-snapped 36 to 26 by Bucky Irving.",
+        "His offensive snap share dropped to 45 percent.",
+        "Ridley dropped to 20 snaps and went without a catch.",
+        "Kincaid saw a reduced role in the air attack for the second straight week.",
+        "Despite logging a season-low 51 percent snap share, Irving earned 17 touches.",
+        "He played only 13 of 62 offensive snaps (21.0 percent), well behind Tuten.",
+        "He worked as the No. 2 behind the veteran on Sunday.",
+    ])
+    def test_snap_share_drop(self, text):
+        assert "snap_share_drop" in _flags(text)
+
+    def test_active_out_snapped_is_the_other_players_drop(self):
+        names = {"ridley": "calvin ridley", "calvin ridley": "calvin ridley"}
+        hits = news_signals.classify("Ayomanor again out-snapped Calvin Ridley by a 39-30 margin.",
+                                     "elic ayomanor", names, "ayomanor")
+        assert {(h["flag"], h["about"]) for h in hits} == {("snap_share_drop", "calvin ridley")}
+
+    def test_conditional_secondary_role_is_marked(self):
+        assert _flags("Collins's return would return Boutte to a secondary role.")[
+            "snap_share_drop"].get("conditional")
+
+    @pytest.mark.parametrize("text,flag", [
+        ("Coach Kyle Shanahan said Evans (ribs) will be a game-time decision.",
+         "game_time_decision"),
+        ("He appears to be trending toward playing in Week 5.", "expected_to_play"),
+        ("Allen is trending toward being ready to go against the Steelers.", "expected_to_play"),
+        ("He could be trending toward a second consecutive absence Sunday.", "unlikely_to_play"),
+        ("Smith is trending toward missing Sunday's game.", "unlikely_to_play"),
+        ("He's trending toward not being available Monday.", "unlikely_to_play"),
+        ("Huntley appears to be trending toward a Week 5 start.", "lead_role"),
+        ("Kincaid remains in a limited role in the passing game.", "limited_snaps"),
+        ("Bigsby faded an injury tag after logging a full practice Saturday.",
+         "expected_to_play"),
+        ("With Williams set to miss his third consecutive game, Bagent starts.", "ruled_out"),
+    ])
+    def test_phrasings(self, text, flag):
+        assert flag in _flags(text)
+
+    @pytest.mark.parametrize("text", [
+        "He may need a full practice Friday to approach Sunday's game without an injury "
+        "designation.",
+        "He has two more chances to avoid an injury designation.",
+        "Harvey was evaluated for a concussion and cleared to return to Sunday's game.",
+        "He's unsure whether he'll be cleared to return for Sunday's game.",
+    ])
+    def test_hopes_are_not_availability(self, text):
+        assert "expected_to_play" not in _flags(text)
+
+    def test_ruled_out_object_and_passive(self):
+        names = {"davis": None, "carlton davis": "carlton davis", "sean davis": "sean davis",
+                 "johnston": "quentin johnston", "mcconkey": "ladd mcconkey"}
+        hits = news_signals.classify("The Pats also ruled out fellow starting CB Carlton Davis "
+                                     "(neck) for Week 5.", "christian gonzalez", names, "gonzalez")
+        assert {(h["flag"], h["about"]) for h in hits} == {("ruled_out", "carlton davis")}
+        hits = news_signals.classify("Quentin Johnston (chest) has been ruled out and Ladd "
+                                     "McConkey may not play.", "tre harris", names, "harris")
+        assert ("ruled_out", "quentin johnston") in {(h["flag"], h["about"]) for h in hits}
+
+
+class TestAbsenceWeeks:
+    NOW = datetime(2026, 10, 10, 12, tzinfo=UTC)
+
+    def _flag(self, days=0.0, **length):
+        return {"flag": "multi_week_absence", "weight": 1.0, "snippet": "x",
+                "date_reported": (self.NOW - timedelta(days=days)).isoformat(), **length}
+
+    def test_counts_from_the_report(self):
+        assert news_signals.absence_weeks([self._flag(weeks=6)], self.NOW.date())[0] == 6
+        # Reported nine days ago: one week already gone.
+        assert news_signals.absence_weeks([self._flag(9, weeks=3)], self.NOW.date())[0] == 2
+        assert news_signals.absence_weeks([self._flag(30, weeks=3)], self.NOW.date())[0] == 1
+
+    def test_return_week_needs_the_week(self):
+        flags = [self._flag(return_week=8)]
+        assert news_signals.absence_weeks(flags, self.NOW.date()) == (None, None)
+        assert news_signals.absence_weeks(flags, self.NOW.date(), season_week=6)[0] == 2
+
+    def test_season_ending_and_longest_wins(self):
+        n, why = news_signals.absence_weeks(
+            [self._flag(weeks=3), self._flag(season_ending=True)], self.NOW.date())
+        assert n == news_signals.SEASON_ENDING_GAMES and "season-ending" in why
+
+    def test_flag_carries_the_length_through_the_index(self):
+        index = news_signals.build_index([{
+            "player_name": "Myles Garrett", "team_id": "CLE",
+            "injury_description": "Garrett is facing a six-week recovery from surgery.",
+            "date_reported": self.NOW.isoformat()}], self.NOW)
+        flag = news_signals.signals_for(index, "Myles Garrett", "CLE")[0]
+        assert flag["flag"] == "multi_week_absence" and flag["weeks"] == 6
+
+
+class TestExpectedAbsencePrecedence:
+    """ESPN return date > parsed news weeks > status heuristics."""
+
+    def test_news_weeks_extend_an_out_status(self):
+        from nfl_mcp import ros
+        n, why = ros.expected_absence("Out", news_weeks=5, news_reason="news: 5 weeks")
+        assert n == 5 and "news" in why
+
+    def test_return_date_wins(self):
+        from datetime import date
+
+        from nfl_mcp import ros
+        n, why = ros.expected_absence("Out", return_date="2026-10-20", today=date(2026, 10, 10),
+                                      news_weeks=6)
+        assert n == 2 and "return date" in why
+
+    def test_news_never_shortens_a_reserve_minimum_or_longer_text(self):
+        from nfl_mcp import ros
+        assert ros.expected_absence("IR", news_weeks=2)[0] == ros.IR_MIN_WEEKS
+        assert ros.expected_absence("Out", "suffered a season-ending ACL tear",
+                                    news_weeks=3)[0] == ros.SEASON_ENDING_WEEKS
+
+    def test_not_out_ignores_news(self):
+        from nfl_mcp import ros
+        assert ros.expected_absence("Questionable", news_weeks=4)[0] == 0

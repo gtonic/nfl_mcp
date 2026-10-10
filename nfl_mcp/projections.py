@@ -483,14 +483,23 @@ def _injury_mult(status: str | None) -> float:
     return QUESTIONABLE_MULT
 
 
-def _absence_detail(status_of, name: str, team: str) -> dict:
+def _absence_detail(status_of, name: str, team: str, week: int | None = None) -> dict:
     """What ROS needs to price an absent starter (``ros.expected_absence``):
     his status plus, when the lookup has them, the report text, return date
     and reserve placement date. The status alone gave a starter out with a
     season-ending ACL note a one-week absence."""
     detail = getattr(status_of, "detail", None)
     extra = detail(name, team) if callable(detail) else None
-    return {"status": status_of(name, team), **(extra or {})}
+    out = {"status": status_of(name, team), **(extra or {})}
+    # The length the news states ("a six-week recovery", "placed on IR"):
+    # `ros.expected_absence` uses it where there is no return date.
+    news = getattr(status_of, "news", None)
+    if news:
+        weeks, why = news_signals.absence_weeks(news_signals.signals_for(news, name, team),
+                                                season_week=week)
+        if weeks:
+            out.update(news_weeks=weeks, news_reason=why)
+    return out
 
 
 def _report_absence(row: dict | None, db) -> dict:
@@ -651,7 +660,7 @@ def _teammate_return_games(status_of, name: str, team: str, week: int) -> int | 
         # Questionable or better plays, unless he has not practised: a
         # doubtful or questionable-DNP teammate is due back next week.
         return 1 if kind == "doubtful" or (kind == "questionable" and practice == "DNP") else 0
-    detail = _absence_detail(status_of, name, team)
+    detail = _absence_detail(status_of, name, team, week)
     games = _starter_absence(detail, season_week=week)
     if _DESIGNATED_RE.search(str(detail.get("description") or "")):
         games = min(games, DESIGNATED_RETURN_GAMES)
@@ -961,7 +970,7 @@ class ProjectionEngine:
                 vacated = opportunity_tools.vacated_volume(
                     opp_index, list(shares), week, share=shares)
                 if vacated:
-                    inherited_from = {n: _absence_detail(status_of, n, depth_team)
+                    inherited_from = {n: _absence_detail(status_of, n, depth_team, week)
                                       for n in shares}
         # A gained role is priced only when no teammate's absence explains it
         # (`role_shift.UP_STRENGTH`, `_role_gain`).
@@ -1604,7 +1613,7 @@ def _context_one(proj: dict, depth: dict, status_of, opp_index: dict, week: int 
         if ctx:
             # ROS carries the model multiplier through the starter's absence.
             from .ros import _starter_absence
-            detail = _absence_detail(status_of, ctx["starter"], team)
+            detail = _absence_detail(status_of, ctx["starter"], team, week)
             ctx["games_out"] = _starter_absence(detail, season_week=week)
             if not ctx["games_out"] and ctx.get("applied"):
                 # Questionable / Doubtful, but the report expects more than
