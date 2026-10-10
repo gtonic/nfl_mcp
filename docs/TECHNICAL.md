@@ -151,7 +151,7 @@ variables take precedence.
 | `NFL_MCP_DB_PATH` | Path to the SQLite cache file (default `nfl_data.db`, relative to the working dir). Point it at a mounted volume — e.g. `/data/nfl_data.db` — to persist the warmed cache across restarts. |
 | `NFL_MCP_ALLOW_PRIVATE_URLS` | `1` lets `crawl_url` reach private/loopback addresses. Off by default (SSRF protection — see [SECURITY.md](../SECURITY.md)). |
 | `NFL_MCP_PREFETCH` | `1` enables background data prefetch (cache warming). |
-| `NFL_MCP_TOOL_PROFILE` | Which tools are registered: `season` (default, 60 tools — no draft, coaching, admin cache refreshes, `get_league_leaders`, `get_cbs_expert_picks`), `offseason` (46 — draft and coaching, no in-season-only tools) or `full` (all 77). Logged at startup and reported by `/health` under `tools`. |
+| `NFL_MCP_TOOL_PROFILE` | Which tools are registered: `season` (default, 61 tools — no draft, coaching, admin cache refreshes, `get_league_leaders`, `get_cbs_expert_picks`), `offseason` (46 — draft and coaching, no in-season-only tools) or `full` (all 78). Logged at startup and reported by `/health` under `tools`. |
 | `NFL_MCP_PREFETCH_INTERVAL` | Prefetch interval, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SNAPS_TTL` | Snap-data TTL, seconds (default 900). |
 | `NFL_MCP_PREFETCH_SCHEDULE_WEEKS` | Weeks of schedule to prefetch (default 4). |
@@ -309,6 +309,41 @@ most 3 rows per key; schema v16 pruned the backlog to the newest row per key.
   (with vs without), per week, and an interpretation. Projected-0/scored-0
   rows are excluded. `python -m evals.backtest.accuracy_report --db … [--grade]`
   prints the same as tables. Rows logged before v18 have no signals.
+- **Signal review (schema v21).** `signal_review` reads the graded rows one
+  signal at a time: realised ratio (Σactual / Σprojected) of the rows with
+  it, relative to a baseline (healthy undesignated players for the
+  injury/practice/gameday buckets, every other row with signals otherwise),
+  with a 95% bootstrap interval (signal rows resampled 1000×, the baseline
+  drawn from its delta-method SE), bias/MAE with vs without, for the week and
+  cumulative, and the implied multiplier (current × relative) where the
+  signal has one (`QUESTIONABLE_REALISED`, `DOUBTFUL_MULT`,
+  `CONFIRMED_ACTIVE_REALISED`, or the mean role / QB / news multiplier the
+  rows were logged with). Verdicts: `insufficient` (n < 10), `calibrated`
+  (interval includes 1.0, or shift < 10%), `watch` (excludes 1.0 but n < 60
+  or < 2 weeks: keep the value), `review` (worth a backtest of the weight).
+  `signals_of` now also logs the multipliers actually applied
+  (`practice_blend_mult`, `role_mult`, `injury_mult`, `news_model_mult`),
+  `gameday_status`, `injury_exit`, `role_gain_priced` and the QB coupling's
+  `qb_sit_weight` / `qb_sit_basis`. After grading, the `accuracy` scope stores
+  each week's review in `signal_reviews` (season, week, scope); read back by
+  `get_weekly_signal_review` and `get_weekly_retro(include_signal_review=True)`.
+
+### Opponent projection: set lineup vs best lineup
+
+The briefing, `analyze_lineup`'s risk block and `risk_mode` compute P(win)
+against the opponent's **set** starters (Sleeper's matchup `starters`, read
+through `set_starters`), with each starter whose game has kicked off at his
+actual points (`game_clock.settle`). `opponent_lineup.assess_opponent_lineup`
+also projects his bench and fills his best legal lineup (locked starters stay
+in their slot; bench players whose game started cannot come in): reported as
+`opponent_best_lineup_points` with `win_probability_if_opponent_fixes_lineup`,
+and the set starters that cost him points as `opponent_lineup_issues` (empty
+slot, bye, Out/inactive, Doubtful, unprojectable, projected 0). Without this a
+lineup fix by the opponent read as an unexplained jump: VLBG week 5 2026 went
+53.7 → 80.0 overnight when he replaced Lamar Jackson and Saquon Barkley (both
+Out, 0) and Kyle Monangai with Aaron Rodgers, Tony Pollard and Keon Coleman.
+`get_win_probability_lineup` takes an optional `opponent_bench` for the same
+figure and counts an opponent's `actual_points` once his game has kicked off.
 
 ### Weekly projections (Sleeper-first)
 

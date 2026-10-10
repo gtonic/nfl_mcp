@@ -145,6 +145,8 @@ def optimize_win_probability(
     locked_players: list[dict] | None = None,
     risk_mode: str | None = "auto",
     playoff_pct: float | None = None,
+    opponent_best_players: list[dict] | None = None,
+    opponent_basis: str = "as_given",
 ) -> dict:
     """Pick the lineup maximizing P(win) vs the given opponent — or, with
     ``risk_mode``, the lineup that fits the team's situation (see `risk_mode`).
@@ -168,6 +170,13 @@ def optimize_win_probability(
     with its reason and the trade-off when the two lineups differ.
     ``stack_correlation`` sets the QB↔same-team pass-catcher covariance (0
     disables stacking effects).
+
+    ``opponent_players`` is what P(win) — and so ``risk_mode`` auto — is
+    computed against; ``opponent_basis`` names it ("set_lineup": the
+    opponent's set starters, `opponent_lineup`; "as_given": a caller's list).
+    ``opponent_best_players`` (his best available lineup) adds the "if he
+    fixes his lineup" figures: ``opponent_best_lineup_points`` and the
+    recommended lineup's ``win_probability_if_opponent_fixes_lineup``.
     """
     from . import risk_mode as rm
 
@@ -289,7 +298,19 @@ def optimize_win_probability(
         mean_risk=rec_mean, mean_mean=mo_mean, mean_of=player_mean, sd_of=player_sd,
     )
 
+    best_fields: dict = {}
+    if has_opponent and opponent_best_players is not None:
+        b_mean, b_var = _team_stats(opponent_best_players, stack_correlation)
+        best_fields = {
+            "opponent_best_lineup_points": round(b_mean, 1),
+            "opponent_best_lineup_sd": round(math.sqrt(max(0.0, b_var)), 1),
+            "win_probability_if_opponent_fixes_lineup": round(
+                win_prob(rec_mean, rec_var, b_mean, b_var) * 100, 1),
+        }
+
     return {
+        "opponent_projection_basis": opponent_basis if has_opponent else None,
+        **best_fields,
         "recommended_lineup": locked_fmt + _fmt(current),
         "locked_players": locked_fmt,
         "win_probability": round(current_p * 100, 1) if has_opponent else None,
@@ -358,6 +379,62 @@ async def _split_by_kickoff(
     return movable, locked, unavailable, lock_by_name, season, week
 
 
+async def _settle_opponent(
+    opponent: list[dict], bench: list[dict] | None, season: int | None, week: int | None,
+    db=None,
+) -> tuple[list[dict], list[dict] | None, list[str], int | None, int | None]:
+    """The opponent's players with kickoffs applied: a started game counts
+    his ``actual_points`` (settled, `game_clock.settle`) and he is marked
+    ``locked``; a bench player whose game started can no longer come in."""
+    from .database import get_shared_db
+    from .game_clock import progress_of, settle
+    from .week_context import resolve_season_week
+
+    season, week, _ = await resolve_season_week(season, week)
+    try:
+        games = week_games(db or get_shared_db(), season, week)
+    except Exception:
+        games = {}
+    out, missing = [], []
+    for p in opponent:
+        progress = progress_of(games.get(normalize_team(p.get("team")) or ""))
+        if progress <= 0.0 or p.get("locked"):
+            out.append(p)
+            continue
+        actual = p.get("actual_points", p.get("actual"))
+        if actual is None:
+            missing.append(p.get("name") or p.get("player") or "?")
+            out.append({**p, "locked": True})
+            continue
+        mean, share = settle(player_mean(p), float(actual), progress)
+        out.append({**p, "projected_points": round(mean, 2),
+                    "sd": round(player_sd(p) * share, 2), "locked": True,
+                    "actual_points": float(actual)})
+    if bench is not None:
+        bench = [b for b in bench
+                 if progress_of(games.get(normalize_team(b.get("team")) or "")) <= 0.0]
+    warnings = ([f"Opponent player(s) whose game has kicked off without actual_points: "
+                 f"{', '.join(missing)} — counted at the projection; pass actual_points "
+                 "for a live number."] if missing else [])
+    return out, bench, warnings, season, week
+
+
+def _opponent_best(opponent: list[dict], bench: list[dict], slots: dict | None) -> list[dict]:
+    """His best lineup: locked players stay, the rest of his slots get the
+    best of his open starters and bench (exact assignment)."""
+    slot_list = expand_slots(slots or DEFAULT_SLOTS)
+    locked = [p for p in opponent if p.get("locked")]
+    for p in locked:
+        eligible = [s for s in slot_list if slot_accepts(s, p.get("position"))]
+        if eligible:
+            slot_list.remove(min(eligible, key=lambda s: len(SLOT_ELIGIBILITY.get(s, ()))))
+    pool = [p for p in opponent if not p.get("locked")] + list(bench)
+    best = locked + [p for p in optimal_lineup(pool, slot_list, value=player_mean) if p]
+    if sum(player_mean(p) for p in best) < sum(player_mean(p) for p in opponent):
+        return list(opponent)  # his set list does not fit the slots: never below it
+    return best
+
+
 def _with_kickoffs(entries: list[dict], lock_by_name: dict[str, dict]) -> list[dict]:
     """Lineup entries with their player's kickoff and lock fields."""
     out = []
@@ -386,6 +463,9 @@ async def get_win_probability_lineup(
     playoff_pct: float | None = None,
     league_id: str | None = None,
     roster_id: int | None = None,
+    opponent_bench: list[dict] | None = None,
+    opponent_best_players: list[dict] | None = None,
+    opponent_basis: str = "as_given",
 ) -> dict:
     """Pick the lineup that maximizes P(beating this specific opponent).
 
@@ -418,6 +498,17 @@ async def get_win_probability_lineup(
         playoff_pct: your season playoff odds (percent) for auto; or pass
             league_id + roster_id and they are read (cached) from
             get_playoff_odds.
+        opponent_bench: the opponent's other startable players (same shape).
+            P(win) stays against ``opponent_players`` — the lineup he has set —
+            and his best lineup from both lists is reported beside it
+            (``opponent_best_lineup_points``,
+            ``win_probability_if_opponent_fixes_lineup``).
+
+    An opponent player (with ``team``) whose game has kicked off counts with
+    his ``actual_points`` when given (settled for a game in progress); without
+    them his projection stands and a warning says so. Opponent players on bye,
+    Out / inactive / Doubtful or projected zero are listed in
+    ``opponent_lineup_issues``.
 
     Returns the recommended lineup, its win probability, any QB stacks, the
     points-optimal lineup for comparison, and a floor/ceiling strategy label.
@@ -438,6 +529,7 @@ async def get_win_probability_lineup(
 
     unavailable: list[dict] = []
     lock_by_name: dict[str, dict] = {}
+    kickoffs_unchecked = locked_players is None
     if locked_players is None and any(p.get("team") for p in your_players):
         your_players, locked_players, unavailable, lock_by_name, season, week = (
             await _split_by_kickoff(your_players, season, week))
@@ -448,11 +540,35 @@ async def get_win_probability_lineup(
 
     if playoff_pct is None and risk_mode == "auto" and league_id and roster_id is not None:
         playoff_pct = await rm.playoff_pct_for(league_id, roster_id)
+    from .opponent_lineup import issues_from_players
+    opp_warnings: list[str] = []
+    opp_best = None
+    # Internal callers (the briefing) pass locked_players and an opponent
+    # already settled against the clock; a caller's lists are checked here.
+    if opponent_players and kickoffs_unchecked and any(p.get("team") for p in opponent_players):
+        opponent_players, opponent_bench, opp_warnings, season, week = await _settle_opponent(
+            opponent_players, opponent_bench, season, week)
+    if opponent_best_players is not None:
+        # Internal callers (the briefing) computed it with the league's
+        # own slot order (`opponent_lineup`).
+        opp_best = opponent_best_players
+    elif opponent_players is not None and opponent_bench is not None:
+        opp_best = _opponent_best(opponent_players, opponent_bench, slots)
     result = optimize_win_probability(
         your_players, opponent_players, slots,
         stack_correlation=stack_correlation, locked_players=locked_players,
         risk_mode=risk_mode, playoff_pct=playoff_pct,
+        opponent_best_players=opp_best,
+        opponent_basis=opponent_basis,
     )
+    if opponent_players is not None:
+        result["opponent_lineup_issues"] = issues_from_players(opponent_players)
+        result["opponent_locked_players"] = [
+            {"player": p.get("name") or p.get("player"), "actual": p.get("actual_points"),
+             "counted": p.get("projected_points")}
+            for p in opponent_players if p.get("locked")]
+        if opp_warnings:
+            result["warnings"] = opp_warnings
     if lock_by_name:
         for key in ("recommended_lineup", "locked_players", "points_optimal_lineup"):
             result[key] = _with_kickoffs(result[key], lock_by_name)

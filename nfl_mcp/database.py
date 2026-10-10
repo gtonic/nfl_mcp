@@ -237,7 +237,7 @@ class NFLDatabase:
     """SQLite database manager for NFL athlete and teams data with caching and lookup functionality."""
 
     # Database schema version for migrations
-    CURRENT_SCHEMA_VERSION = 20
+    CURRENT_SCHEMA_VERSION = 21
 
     def __init__(self, db_path: str | None = None, pool_config: ConnectionPoolConfig | None = None):
         """
@@ -324,6 +324,7 @@ class NFLDatabase:
             18: self._migration_v18_projection_accuracy,
             19: self._migration_v19_player_news,
             20: self._migration_v20_news_source_health,
+            21: self._migration_v21_signal_reviews,
         }
 
     def _migration_v1_initial_schema(self, conn: sqlite3.Connection) -> None:
@@ -1015,6 +1016,28 @@ class NFLDatabase:
         conn.execute(
             """UPDATE news_fetch_state SET last_success_at = fetched_at
                WHERE status = 'ok' AND last_success_at IS NULL"""
+        )
+
+    def _migration_v21_signal_reviews(self, conn: sqlite3.Connection) -> None:
+        """Migration v21: the weekly signal review, stored (``signal_reviews``).
+
+        The prefetch's ``accuracy`` scope runs the review (`signal_review`)
+        right after it grades a week and keeps the JSON summary here, one row
+        per (season, week, scope), so reading it back is a single lookup
+        rather than a bootstrap over every graded row.
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_reviews (
+                season INTEGER NOT NULL,
+                week INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                rows_graded INTEGER,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (season, week, scope)
+            )
+            """
         )
 
     # Kickoffs are stored in UTC; shifted by the EST offset every kickoff
@@ -2953,6 +2976,46 @@ class NFLDatabase:
         except Exception as e:
             logger.debug(f"get_projection_accuracy failed: {e}")
             return []
+
+    def save_signal_review(self, season: int, week: int, scope: str, payload: dict,
+                           rows_graded: int | None = None) -> bool:
+        """Store one week's signal review summary (replacing an earlier one)."""
+        try:
+            with self._pool.get_connection() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO signal_reviews (season, week, scope, payload_json,"
+                    " rows_graded, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (int(season), int(week), str(scope),
+                     json.dumps(payload, separators=(",", ":"), default=str),
+                     rows_graded, datetime.now(UTC).isoformat()))
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"save_signal_review failed: {e}")
+            return False
+
+    def get_signal_review(self, season: int, week: int | None = None,
+                          scope: str = "all") -> dict | None:
+        """``{season, week, scope, payload, rows_graded, created_at}`` for a
+        stored review (the newest week when ``week`` is None), or None."""
+        try:
+            with self._pool.get_connection() as conn:
+                if week is None:
+                    row = conn.execute(
+                        "SELECT * FROM signal_reviews WHERE season=? AND scope=?"
+                        " ORDER BY week DESC LIMIT 1", (int(season), str(scope))).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT * FROM signal_reviews WHERE season=? AND week=? AND scope=?",
+                        (int(season), int(week), str(scope))).fetchone()
+            if not row:
+                return None
+            out = dict(row)
+            out["payload"] = json.loads(out.pop("payload_json") or "{}")
+            return out
+        except Exception as e:
+            logger.debug(f"get_signal_review failed: {e}")
+            return None
 
     def get_accuracy_graded_weeks(self, season: int) -> dict[int, str]:
         """``{week: last graded_at}`` for the season's graded weeks."""

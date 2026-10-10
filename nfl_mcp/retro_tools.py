@@ -24,6 +24,7 @@ from .errors import create_success_response
 from .lineup_slots import normalize_position, optimal_lineup, starting_slot_list
 from .projection_store import scoring_key
 from .scoring import league_scoring
+from .signal_review import describe_signals
 from .teams import normalize_team
 from .week_context import last_completed_week, week_opponents
 
@@ -202,6 +203,28 @@ async def league_calibration(
                      "projection logged (byes excluded); error = actual - projected"}
 
 
+async def _signal_section(db, league_id: str, season: int, week: int,
+                          player_ids: set[str]) -> dict:
+    """The retro's signal-review section: the week's recommendations (the
+    stored all-leagues review) and this roster's biggest misses."""
+    from .signal_review import biggest_misses, weekly_signal_review
+    review = await weekly_signal_review(db, season, week)
+    rows = await asyncio.to_thread(db.get_projection_accuracy, season, [week], None, None,
+                                   league_id)
+    return {
+        "week": week,
+        "source": review.get("source"),
+        "error": review.get("error"),
+        "recommendations": review.get("recommendations") or [],
+        "signals_to_watch": [
+            {k: e.get(k) for k in ("signal", "verdict", "current", "implied", "recommendation")}
+            for e in review.get("signals") or [] if e.get("verdict") in ("review", "watch")],
+        "roster_misses": biggest_misses(rows, week, {str(p) for p in player_ids}),
+        "note": "graded rows: the LAST pre-kickoff projection (the starters above show the "
+                "first, the one the lineup was set on); full table: get_weekly_signal_review",
+    }
+
+
 async def get_weekly_retro(
     league_id: str,
     roster_id: int | None = None,
@@ -209,8 +232,15 @@ async def get_weekly_retro(
     week: int | None = None,
     season: int | None = None,
     include_calibration: bool = True,
+    include_signal_review: bool = False,
 ) -> dict:
-    """Grade one finished week for one roster; see the module docstring."""
+    """Grade one finished week for one roster; see the module docstring.
+
+    ``include_signal_review``: each graded starter also lists the signals
+    that moved his projection (``signals``), and a ``signal_review`` section
+    gives the week's signal recommendations (`signal_review`) and this
+    roster's biggest misses with their signals.
+    """
     from . import sleeper_tools
 
     db = get_shared_db()
@@ -301,6 +331,9 @@ async def get_weekly_retro(
     for pid in starters:
         proj, src = _proj(pid)
         row = _grade(pid, points.get(pid), proj, athletes, src)
+        if include_signal_review:
+            # What moved the number the lineup was set on (logged rows only).
+            row["signals"] = describe_signals(logged[pid]) if pid in logged else []
         starter_rows.append({"slot": slot_of.get(pid), **row})
     bench_rows = []
     for pid in pool_ids:
@@ -377,6 +410,15 @@ async def get_weekly_retro(
         except Exception as e:  # additive; never fail the retro on it
             logger.debug(f"calibration unavailable: {e}")
 
+    signal_section = None
+    if include_signal_review:
+        try:
+            signal_section = await _signal_section(
+                db, league_id, season, week, set(pool_ids) | set(starters))
+        except Exception as e:  # additive; never fail the retro on it
+            logger.debug(f"signal review unavailable: {e}")
+            signal_section = {"error": str(e)}
+
     margin = (round(my_points - opp_points, 2)
               if my_points is not None and opp_points is not None else None)
     return create_success_response({
@@ -407,6 +449,7 @@ async def get_weekly_retro(
         "biggest_hits": hits[:_TOP_N],
         "opponent": opponent,
         "calibration": calibration,
+        **({"signal_review": signal_section} if include_signal_review else {}),
         "notes": (
             ["Some projections were recomputed after the fact (no pre-kickoff "
              "projection was logged): they use current market values and no "
