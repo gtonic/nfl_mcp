@@ -757,7 +757,7 @@ async def ros_projections(
         key = (p["name"], p["team"])
         proj = now_proj.get(key) or {}
         rate_src = rate_proj.get(key) or proj
-        per_game, source, prior_weight = _per_game(rate_src, p["position"], model)
+        per_game, baseline_source, prior_weight = _per_game(rate_src, p["position"], model)
         inherited, inherited_games = _inherited(rate_src, today, week)
         # A teammate due back: the inflated rate until his return, the rate
         # from their games together after it (reported as per_game).
@@ -883,7 +883,7 @@ async def ros_projections(
             "weeks_counted": counted,
             "this_week_points": round(float(proj.get("projected_points") or 0.0), 1),
             "per_game": per_game,
-            "baseline_source": source,
+            "baseline_source": baseline_source,
             "prior_weight": prior_weight,
             "bye_weeks": byes,
             "injury_status": injury.get("status"),
@@ -931,6 +931,15 @@ async def ros_projections(
             if recent is not None:
                 entry["per_game_recent"] = round(
                     float(recent) * float(bd.get("usage_mult") or 1.0), 2)
+        # What he has been producing (his trailing opportunity rate, before
+        # the regression toward the rank prior, inherited volume included):
+        # the market's read, which `value_trajectory` compares with the
+        # blended rate of his next weeks.
+        bd = rate_src.get("breakdown") or {}
+        if bd.get("base_source") == "opportunity" and bd.get("base_ppg") is not None:
+            entry["per_game_trailing"] = round(
+                float(bd["base_ppg"]) * float(bd.get("usage_mult") or 1.0), 2)
+            entry["trailing_games"] = int(bd.get("usage_games") or 0)
         if inherited:
             # A share of an absent starter's volume, priced only for his
             # expected absence (`_inherited`).

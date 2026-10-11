@@ -30,6 +30,17 @@ def _entry(name="Jaylen Warren", position="RB", team="PIT", per_game=11.8, **ext
             "expected_absence_games": 0, **extra}
 
 
+def _wilson_blended(**extra):
+    """Emanuel Wilson, week 5 2026, as live ROS priced him: 10.4 a game so
+    far, the Sleeper-first blend of his next weeks falling as Charbonnet
+    (week 6) and Price (week 9) come back."""
+    weekly = {5: 11.2, 6: 7.2, 7: 6.0, 8: 3.7, 9: 4.7, 10: 3.5, 11: 0.0, 12: 3.5, 13: 3.9,
+              14: 3.8, 15: 3.4, 16: 3.3, 17: 4.0}
+    fields = {"weekly_points": weekly, "bye_weeks": [11], "per_game_trailing": 10.4,
+              "trailing_games": 4, "ros_source": "sleeper_blend", **extra}
+    return _entry(name="Emanuel Wilson", team="SEA", per_game=9.53, **fields)
+
+
 def _warren(**extra):
     return _entry(per_game_until_return=13.6,
                   returning_teammates=[{"name": "Rico Dowdle", "expected_return_week": 6,
@@ -86,13 +97,27 @@ class TestReturningTeammate:
                         "games_until_return": 4, "status": "IR"}],
                    role_trend="role_up", role_flags=["carries share 31%→57% (weeks 3-4)"])
         t = assess(e, week=5)
-        assert t["signal"] == "sell_high" and t["change_week"] == 6
+        # Without Sleeper's later weeks (the model's rates): the old size,
+        # reported but under the call line.
+        assert t["change_week"] == 6
         assert t["expected_value_change"]["pct"] == pytest.approx(
             -9.3 * value_trajectory.RETURNING_CHANGE_SCALE["RB"], abs=0.1)
         why = t["reasons"][0]
         assert why.startswith("Zach Charbonnet (SEA, Out) due back week 6")
         assert "10.4 pts/game came without them" in why
         assert "Jadarian Price back later (week 9)" in why
+        # With them (live): Sleeper sees ~2-5 points a week once both are
+        # back, and the blended rate of his next games says sell.
+        live = assess(_wilson_blended(**{k: e[k] for k in (
+            "returning_teammates", "per_game_until_return", "per_game_recent")}), week=5)
+        assert live["signal"] == "sell_high" and live["change_week"] == 6
+        rate = next(s for s in live["signals"] if s["kind"] == "ros_rate")
+        assert rate["change"] < -0.3
+        assert live["rates"]["current"] == 10.4 and live["rates"]["future"] == pytest.approx(5.4)
+        assert live["rates"]["future_weeks"] == [6, 7, 8, 9]
+        assert "Zach Charbonnet (SEA, Out) due back week 6" in live["reasons"][0]
+        assert {"kind": "returning_teammate", "change": 0.0,
+                "explains": "ros_rate"} in live["signals"]
 
     def test_every_teammate_past_the_horizon_is_still_a_hold(self):
         e = _warren(per_game_recent=16.0)
@@ -139,7 +164,7 @@ class TestRoleAndInjury:
     def test_a_rising_role_the_market_has_not_seen_is_a_buy_low(self):
         e = _entry(name="Jeremiyah Love", team="ARI", role_trend="role_up",
                    role_flags=["carries share 43%→66% (weeks 3-4)"], market_position_rank=30)
-        t = assess(e, week=5, rank=14)
+        t = assess(e, week=5, rank=8)
         assert t["trajectory"] == "rising" and t["signal"] == "buy_low"
 
     def test_a_one_week_role_change_is_flagged_but_not_a_call(self):
@@ -235,7 +260,7 @@ class TestTiming:
         sell = {"name": "Warren", "value_trajectory": assess(_warren(), week=5)}
         buy = {"name": "Love", "value_trajectory": assess(_entry(
             role_trend="role_up", role_flags=["carries share 43%→66% (weeks 3-4)"],
-            market_position_rank=30), week=5, rank=14)}
+            market_position_rank=30), week=5, rank=8)}
         notes = value_trajectory.side_notes([sell], [buy])
         assert notes[0].startswith("You are selling high on Warren (Rico Dowdle")
         assert notes[1].startswith("You are buying low on Love")
@@ -560,3 +585,41 @@ class TestRosToolSurfacesTrajectory:
         out = await ros.get_ros_projections("L", roster_id=7, season=2026, week=5, db=object(),
                                             include_trajectory=False)
         assert "value_trajectory" not in out["players"][0]
+
+
+class TestBlendedRate:
+    """`ros_rate`: the blended rate of his next games against what he has
+    been producing, on the position's norm."""
+
+    def test_future_rate_skips_byes_and_absence(self):
+        e = _wilson_blended(injury_weeks=[6])
+        rate, weeks = value_trajectory.future_rate(e, 5)
+        assert weeks == [7, 8, 9, 10] and rate == pytest.approx((6.0 + 3.7 + 4.7 + 3.5) / 4,
+                                                                abs=0.01)
+
+    def test_no_current_rate_falls_back(self):
+        e = _wilson_blended(trailing_games=1)
+        assert value_trajectory.current_rate(e) is None
+        assert assess(e, week=5)["rates"] is None
+
+    def test_model_only_later_weeks_fall_back(self):
+        assert assess(_wilson_blended(ros_source="model"), week=5)["rates"] is None
+
+    def test_a_drop_the_market_already_prices_counts_less(self):
+        full = assess(_wilson_blended(), week=5)
+        priced = assess(_wilson_blended(market_position_rank=60), week=5, rank=50)
+        f = next(s for s in full["signals"] if s["kind"] == "ros_rate")["change"]
+        p = next(s for s in priced["signals"] if s["kind"] == "ros_rate")
+        assert p["market_priced"] and p["change"] == pytest.approx(
+            f * value_trajectory.MARKET_PRICED_WEIGHT, abs=0.002)
+
+    def test_a_small_move_is_a_hold(self):
+        e = _entry(weekly_points=dict.fromkeys(WEEKS, 9.0), per_game_trailing=10.0,
+                   trailing_games=4, ros_source="sleeper_blend")
+        t = assess(e, week=5, baseline=0.9)
+        assert t["signal"] == "hold" and not any(s["kind"] == "ros_rate" for s in t["signals"])
+
+    def test_pool_baselines(self):
+        pool = [_entry(name=f"RB{i}", weekly_points=dict.fromkeys(WEEKS, 9.0),
+                       per_game_trailing=10.0, trailing_games=4) for i in range(12)]
+        assert value_trajectory.position_baselines(pool, 5) == {"RB": 0.9}
