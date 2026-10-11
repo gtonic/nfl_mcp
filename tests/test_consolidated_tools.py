@@ -151,7 +151,7 @@ class _FakeDB:
 @pytest.mark.asyncio
 async def test_start_sit_looks_up_team_position_and_snaps():
     mock = AsyncMock(return_value={"success": True, "recommendation": {}})
-    with patch("nfl_mcp.tool_registry.get_db", return_value=_FakeDB()), \
+    with patch("nfl_mcp.tools._context.get_db", return_value=_FakeDB()), \
          patch("nfl_mcp.lineup_optimizer_tools.get_start_sit_recommendation", mock):
         out = await tool_registry.get_start_sit_recommendation(
             player_name="Bijan Robinson", season=2026, week=3)
@@ -163,7 +163,7 @@ async def test_start_sit_looks_up_team_position_and_snaps():
 @pytest.mark.asyncio
 async def test_start_sit_list_mode_replaces_roster_recommendations():
     mock = AsyncMock(return_value={"success": True, "recommendations": []})
-    with patch("nfl_mcp.tool_registry.get_db", return_value=_FakeDB()), \
+    with patch("nfl_mcp.tools._context.get_db", return_value=_FakeDB()), \
          patch("nfl_mcp.lineup_optimizer_tools.get_roster_recommendations", mock):
         await tool_registry.get_start_sit_recommendation(
             players=["Bijan Robinson", {"name": "KC", "position": "DEF"}], season=2026, week=3)

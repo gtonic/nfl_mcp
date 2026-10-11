@@ -306,9 +306,9 @@ class TestConsumers:
             {"player_id": "2", "player_name": "Somebody Else", "team_id": "ATL",
              "injury_status": "Out"},
         ]
-        with patch.object(tool_registry, "get_db", return_value=db), \
+        with patch("nfl_mcp.tools._context.get_db", return_value=db), \
              patch("nfl_mcp.injury_service.get_injury_reports", AsyncMock(return_value=injuries)), \
-             patch.object(tool_registry, "_current_season_week", AsyncMock(return_value=(2026, 3))), \
+             patch("nfl_mcp.tools.injury._current_season_week", AsyncMock(return_value=(2026, 3))), \
              patch("nfl_mcp.practice_reports.refresh_practice_reports", AsyncMock(return_value=0)):
             out = await tool_registry.get_injury_report(team_ids=["ATL"])
         by_name = {i["player_name"]: i for i in out["injuries"]}

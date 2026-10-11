@@ -170,9 +170,9 @@ class TestToolBudget:
         db = MagicMock()
         db.get_team_injuries_from_cache = MagicMock(
             side_effect=lambda team, _age: stored if team == "KC" else [])
-        monkeypatch.setattr(tool_registry, "GAMEDAY_INJURY_WAIT_SECONDS", 0.2)
+        monkeypatch.setattr("nfl_mcp.tools.injury.GAMEDAY_INJURY_WAIT_SECONDS", 0.2)
         official = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": []}
-        with patch.object(tool_registry, "get_db", return_value=db), \
+        with patch("nfl_mcp.tools._context.get_db", return_value=db), \
              patch("nfl_mcp.gameday_inactives.get_official_inactives", AsyncMock(return_value=official)), \
              patch.object(injury_service, "get_injury_reports", slow_crawl):
             t0 = time.perf_counter()
@@ -188,7 +188,7 @@ class TestToolBudget:
     @pytest.mark.asyncio
     async def test_a_warm_cache_is_not_partial(self):
         official = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": []}
-        with patch.object(tool_registry, "get_db", return_value=MagicMock()), \
+        with patch("nfl_mcp.tools._context.get_db", return_value=MagicMock()), \
              patch("nfl_mcp.gameday_inactives.get_official_inactives", AsyncMock(return_value=official)), \
              patch("nfl_mcp.injury_service.get_injury_reports", AsyncMock(return_value=[])):
             out = await tool_registry.get_gameday_inactives(season=2026, week=4)

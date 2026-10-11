@@ -104,7 +104,7 @@ class TestCompareUnresolved:
                     "team": known[1] if known else None, "player_id": "", "opponent": "OPP",
                     "projection": {"projected_points": 10.0}}
         monkeypatch.setattr(lineup_tools, "player_input", _input)
-        monkeypatch.setattr(tool_registry, "get_db", lambda: None)
+        monkeypatch.setattr("nfl_mcp.tools._context.get_db", lambda: None)
         _optimizer(monkeypatch)
         out = await tool_registry.compare_players_for_slot(
             players=["A", "B", "Nobody Known"], slot="WR", season=2026, week=3)

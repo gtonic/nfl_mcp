@@ -191,7 +191,7 @@ class TestOneVocabulary:
 
     def test_probable_is_healthy_everywhere(self):
         from nfl_mcp.nfl_tools import _is_current_injury
-        from nfl_mcp.tool_registry import _is_healthy_report
+        from nfl_mcp.tools.injury import _is_healthy_report
         assert not _is_current_injury("Probable", None)
         assert _is_healthy_report({"injury_status": "Probable"})
         assert projections.availability("Probable") == "healthy"

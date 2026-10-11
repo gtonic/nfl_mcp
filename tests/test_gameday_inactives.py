@@ -102,12 +102,12 @@ def patched():
         "s2": {"full_name": "Hurt Chief", "team_id": "KC"},
         "s3": {"full_name": "Travis Etienne Jr.", "team_id": "JAX"},
     })
-    with patch.object(tool_registry, "get_db", return_value=db), \
+    with patch("nfl_mcp.tools._context.get_db", return_value=db), \
          patch("nfl_mcp.gameday_inactives.get_official_inactives", AsyncMock(return_value=official)), \
          patch("nfl_mcp.injury_service.get_injury_reports", AsyncMock(return_value=INJURIES)), \
-         patch.object(tool_registry.sleeper_tools, "get_matchups",
+         patch("nfl_mcp.sleeper_tools.get_matchups",
                       AsyncMock(return_value={"matchups": [{"roster_id": 7, "starters": ["s1", "s2", "s3"]}]})), \
-         patch.object(tool_registry.sleeper_tools, "load_rosters",
+         patch("nfl_mcp.sleeper_tools.load_rosters",
                       AsyncMock(return_value={"rosters": [{"roster_id": 7, "players": ["s1", "s2", "s3"],
                                                            "starters": ["s1", "s2", "s3"]}]})):
         yield
@@ -137,7 +137,7 @@ async def test_tool_flags_my_starters(patched):
 
 async def test_fallback_only_before_lists_are_out():
     official = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": []}
-    with patch.object(tool_registry, "get_db", return_value=MagicMock()), \
+    with patch("nfl_mcp.tools._context.get_db", return_value=MagicMock()), \
          patch("nfl_mcp.gameday_inactives.get_official_inactives", AsyncMock(return_value=official)), \
          patch("nfl_mcp.injury_service.get_injury_reports", AsyncMock(return_value=INJURIES)):
         out = await tool_registry.get_gameday_inactives(season=2026, week=3)

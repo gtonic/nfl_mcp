@@ -366,8 +366,8 @@ class TestUpstreamRateLimits:
         db = MagicMock()
         db.get_last_updated.return_value = datetime.now(UTC).isoformat()
         db.get_athlete_count.return_value = 3000
-        with patch.object(tool_registry, "get_db", return_value=db), \
-                patch.object(tool_registry.athlete_tools, "fetch_athletes", AsyncMock()) as fetch:
+        with patch("nfl_mcp.tools._context.get_db", return_value=db), \
+                patch("nfl_mcp.athlete_tools.fetch_athletes", AsyncMock()) as fetch:
             out = await tool_registry.fetch_athletes()
         fetch.assert_not_called()
         assert out["cached"] is True and out["athletes_count"] == 3000
@@ -378,8 +378,8 @@ class TestUpstreamRateLimits:
 
         db = MagicMock()
         db.get_last_updated.return_value = "2020-01-01T00:00:00+00:00"
-        with patch.object(tool_registry, "get_db", return_value=db), \
-                patch.object(tool_registry.athlete_tools, "fetch_athletes",
+        with patch("nfl_mcp.tools._context.get_db", return_value=db), \
+                patch("nfl_mcp.athlete_tools.fetch_athletes",
                              AsyncMock(return_value={"success": True})) as fetch:
             await tool_registry.fetch_athletes()
         fetch.assert_awaited_once()
@@ -387,8 +387,9 @@ class TestUpstreamRateLimits:
     @pytest.mark.asyncio
     async def test_uncached_injury_crawl_limited(self, monkeypatch):
         from nfl_mcp import injury_service, tool_registry
+        from nfl_mcp.tools import injury as injury_tools
 
-        tool_registry._last_uncached_injury_crawl.clear()
+        injury_tools._last_uncached_injury_crawl.clear()
         calls = []
 
         async def _reports(teams=None, db=None, use_cache=True):
@@ -398,7 +399,7 @@ class TestUpstreamRateLimits:
         monkeypatch.setattr(injury_service, "get_injury_reports", _reports)
         first = await tool_registry.get_injury_report(use_cache=False)
         second = await tool_registry.get_injury_report(use_cache=False)
-        tool_registry._last_uncached_injury_crawl.clear()
+        injury_tools._last_uncached_injury_crawl.clear()
         assert calls == [False, True]
         assert "note" not in first and "use_cache=False ignored" in second["note"]
 
