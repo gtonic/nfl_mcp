@@ -220,7 +220,7 @@ async def get_bye_week_plan(
                                return_exceptions=True),
                 timeout=FREE_AGENT_TIMEOUT_SECONDS)
             for w, res in zip(worst, results, strict=True):
-                if isinstance(res, Exception):
+                if isinstance(res, BaseException):
                     logger.debug(f"free agents for week {w} failed: {res}")
                     continue
                 free_agents[w] = cast("list[dict]", res)

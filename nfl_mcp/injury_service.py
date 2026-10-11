@@ -343,7 +343,7 @@ class InjuryAggregator:
                     all_injuries.extend(result)
                     if result:
                         successful_teams += 1
-                elif isinstance(result, Exception):
+                elif isinstance(result, BaseException):
                     logger.debug(f"[InjuryAggregator] Team {teams[i]} failed: {result}")
 
             logger.info(f"[InjuryAggregator] ESPN: fetched {len(all_injuries)} injuries from {successful_teams}/{len(teams)} teams")
