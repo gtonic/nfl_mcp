@@ -8,6 +8,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **News classifier recall** (`news_signals`): new flags `multi_week_absence`
+  (an absence with a length: "a six-week recovery", "miss at least three
+  weeks", "eligible to return in Week 8", placed on IR / IR-bound,
+  season-ending; the length is parsed into `weeks` / `return_week` /
+  `season_ending`), `snap_share_drop` ("out-snapped by", "dropped to 20
+  snaps", season-low snap share, reduced / secondary role, "worked as the
+  No. 2"; prices like a lost role) and `game_time_decision` (an availability
+  flag); more phrasings for the existing flags ("trending toward
+  playing / missing / an absence / a Week 5 start", "multi-week absence",
+  "miss consecutive games", "set to miss Week 5", "faded an injury tag", "not
+  on the final injury report", "cleared to return from", "favorite to
+  start", "spotted at Friday's practice"), plus precision fixes (an active
+  "the Pats ruled out Carlton Davis" is Davis's; "despite saying he feels
+  ready to play"; "may need a full practice to approach Sunday without a
+  designation"; "assuming Barkley is ruled out"; reported speech is not a
+  condition; "No." no longer ends a sentence). Two new held-out sets labelled
+  from `player_news` before the patterns were scored on them (`holdout2`,
+  100 sentences; `holdout3`, 80), 206 dev sentences added; thresholds per
+  split in `tests/test_news_classifier_eval.py`. All held-out: precision
+  0.84 → 0.98, recall 0.39 → 0.60.
+- **Parsed news absence feeds ROS**: `ros.expected_absence(news_weeks=)` --
+  precedence ESPN return date > parsed news weeks (counted from the report
+  date) > status heuristics; the longer of news and report text wins and
+  neither shortens a reserve minimum. Wired for the player himself and for
+  absent teammates (`projections._absence_detail`).
+
+### Changed
+- **Value trajectory on the blended ROS** (`value_trajectory`): the core
+  read is now `ros_rate` -- the trailing (unregressed) opportunity rate
+  (`per_game_trailing`, new ROS field) against the mean of his next four
+  games' Sleeper-first blended ROS points, relative to the position's median
+  ratio in the league pool, scaled per position from a new backtest
+  (`trend_calibration --only trajectory`: realised on predicted slope RB
+  0.94 / WR 0.97 / TE 0.85, 0.62 for a TE with a teammate back). Returning
+  teammates / inherited volume ending are kept as the explanation of the
+  rate change (their old model-rate sizing, `RETURNING_CHANGE_SCALE`, stays
+  only as the fallback without a trailing rate or Sleeper weeks). A rate
+  change the market's positional rank already prices counts at 0.4; the
+  market gap ranks the blended rate. Call line 0.08 → 0.10; flagged share of
+  rostered skill players in the two live leagues 18% / 22% → 19% / 23%.
+  Emanuel Wilson: −9% → −44% (sell high). `baseline_source` no longer
+  reports the last week's source.
 - **Weekly signal review** (schema v21): new tool `get_weekly_signal_review`
   (61 tools in season, 78 in full). For the last graded week and cumulative,
   per signal (practice buckets Q + FP/LP/DNP/single DNP/no line and
