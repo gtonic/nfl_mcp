@@ -195,8 +195,11 @@ security:
 nfl_mcp/
 ├── nfl_mcp/                 # Main package
 │   ├── server.py           # FastMCP server (thin: lifespan + health + registry)
-│   ├── tool_registry.py    # Single place every MCP tool is registered
-│   ├── database.py         # SQLite cache + schema migrations
+│   ├── tool_registry.py    # Single place every MCP tool is registered (+ profiles)
+│   ├── tools/              # The tool wrappers, one module per domain (league, lineup,
+│   │                       #   waiver, trade, projection, matchup, injury, news, ...)
+│   ├── database.py         # NFLDatabase (assembled from db/ mixins) + shared instance
+│   ├── db/                 # Connection pool, schema migrations, one mixin per concern
 │   ├── config.py           # Shared config, HTTP client, validation, SSRF guard
 │   ├── config_manager.py   # Env/file configuration model
 │   ├── projections.py      # Transparent weekly point projections
@@ -214,8 +217,10 @@ nfl_mcp/
 ```
 
 Design principles:
-- **Single tool registry** — every tool is registered in `tool_registry.py`; the
-  server module stays thin.
+- **Single tool registry** — every tool is registered in `tool_registry.py`
+  (functions in `nfl_mcp/tools/`); the server module stays thin. AGENT.md's
+  tool index and counts are generated from it (`scripts/gen_agent_docs.py`,
+  checked by `tests/test_agent_docs.py`).
 - **ContextVar-based DB injection** — async-safe database access without a
   mutable global.
 - **SQLite as cache only** — ephemeral, repopulates from APIs; no persistence
