@@ -1451,8 +1451,7 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
     if not league_resp.get("success"):
         return create_error_response(
             league_resp.get("error", "Failed to fetch league"),
-            # None when absent (not the UNEXPECTED default); kept as is.
-            error_type=league_resp.get("error_type"),  # type: ignore[arg-type]
+            error_type=league_resp.get("error_type") or ErrorType.UNEXPECTED,
             data={"context": {}, "league_id": league_id}
         )
     if "league" in wanted:
@@ -1473,7 +1472,7 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
     if parallel_tasks:
         results = await asyncio.gather(*parallel_tasks, return_exceptions=True)
         for key, result in zip(task_keys, results, strict=False):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning(f"[Fantasy Context] Failed to fetch {key}: {result}")
             elif cast(dict, result).get("success"):
                 context[key] = cast(dict, result).get(key)
@@ -1508,7 +1507,7 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
     if week_tasks:
         results = await asyncio.gather(*week_tasks, return_exceptions=True)
         for key, result in zip(week_keys, results, strict=False):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning(f"[Fantasy Context] Failed to fetch {key}: {result}")
             elif cast(dict, result).get("success"):
                 context[key] = cast(dict, result).get(key)

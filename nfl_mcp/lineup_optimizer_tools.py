@@ -1001,7 +1001,7 @@ class LineupOptimizer:
 
         # Group by position
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error(f"Analysis failed: {result}")
                 continue
 

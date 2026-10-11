@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connections (no DB `ResourceWarning` on 3.14).
 
 ### Fixed
+- `asyncio.gather(return_exceptions=True)` loops now treat any `BaseException`
+  (e.g. a child's `CancelledError`) as a failed result instead of passing it on
+  as data; `get_fantasy_context` reports `unexpected_error` instead of a null
+  `error_type` when the league fetch fails without one.
 - **`get_gameday_inactives` no longer hangs.** It ran past the MCP client's
   300 s on 2026-09-27. Root cause: with the stored injury reports older than
   the adaptive TTL (2 h on game days) the tool ran the full ESPN injury crawl
