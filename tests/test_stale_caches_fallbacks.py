@@ -171,6 +171,9 @@ class TestSeasonCacheTTL:
             assert client.get.call_count == 1
             ts, logs = opportunity_tools._logs_cache[season]
             opportunity_tools._logs_cache[season] = (ts - timedelta(hours=4), logs)
+            # The shared CSV download ages with it.
+            ts, text = matchup_tools._week_csv_cache[season]
+            matchup_tools._week_csv_cache[season] = (ts - timedelta(hours=4), text)
             await opportunity_tools._fetch_game_logs(season)
         assert client.get.call_count == 2
         opportunity_tools._logs_cache.pop(season, None)
@@ -189,6 +192,9 @@ class TestSeasonCacheTTL:
             assert client.get.call_count == 1
             ts, data = matchup_tools._offense_rankings_cache[season]
             matchup_tools._offense_rankings_cache[season] = (ts - timedelta(hours=4), data)
+            # The downloaded CSV (shared with the defense rankings) ages too.
+            ts, text = matchup_tools._week_csv_cache[season]
+            matchup_tools._week_csv_cache[season] = (ts - timedelta(hours=4), text)
             await matchup_tools.fetch_offense_rankings(season)
         assert client.get.call_count == 2
         matchup_tools._offense_rankings_cache.pop(season, None)

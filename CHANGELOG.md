@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`get_gameday_inactives` no longer hangs.** It ran past the MCP client's
+  300 s on 2026-09-27. Root cause: with the stored injury reports older than
+  the adaptive TTL (2 h on game days) the tool ran the full ESPN injury crawl
+  inline -- ~1900 requests behind the ESPN limiter, measured 185 s -- after
+  the ESPN gameday notes and the 5 MB Sleeper dump, also inline, one after
+  another, 30 s timeouts each. Now the published list and the injury report
+  are read at once, every read is bounded (12 s for the feeds, 6 s for the
+  crawl), a read that misses its budget keeps running in the background
+  (one per key; concurrent callers share it; a later call waits at most
+  1-2 s for it) and fills the cache for the next call, and an older copy
+  stands in (stored injury reports, a Sleeper dump up to 6 h, ESPN notes up
+  to 3 h). The answer says so: `partial`, `timed_out_sources`,
+  `stale_sources`, `injury_report_stale`. A fresh Sleeper dump (< 30 min) is
+  never refetched. Measured on a DB copy with 3 h old injury reports: 184.5 s
+  -> 6.0 s (then 1.0 s while the crawl finishes); a simulated window with
+  slow feeds (notes 20 s, dump 25 s, crawl 60 s): 105 s -> 12 s, 2 s on the
+  next call. `get_injury_report` and its practice refresh use the same
+  bounded read.
+- **The projection path never blocks on the gameday feeds.**
+  `gameday_statuses` (#259) waits at most 3 s for a cold read and 1.5 s for
+  an expired one (then serves the older copy, up to 30 min); a partial read
+  is retried after 30 s.
+- **SQLite connections are closed.** `DatabaseConnectionPool.close()` left a
+  connection that was borrowed at the time open forever (it went back into
+  the drained pool); it is now closed on return and the pool reopens on
+  demand. A pool dropped without `close()` closes its idle connections
+  (finalizer). A connection whose PRAGMA setup failed is closed. Borrowing
+  past the idle connections no longer blocks 5 s on the event loop's thread
+  before opening the one the limit allows. `NFLDatabase` is a context
+  manager. Tests close every pool they open (autouse fixture) and
+  `with sqlite3.connect() as conn` (which does not close) became
+  `closing(...)`. Python 3.14 suite warnings: 310 -> 4 (also replacing the
+  deprecated `asyncio.iscoroutinefunction`); `-W always::ResourceWarning`:
+  ~500 unclosed-database warnings -> 8 (all from `with sqlite3.connect()` in
+  three test files touched by other open work). The suite runs in ~20 s
+  instead of ~37 s. `tests/test_db_connection_leaks.py` runs with
+  ResourceWarning as an error.
+- **Cheaper cold ROS / trade calls.** The nflverse weekly stats CSV is
+  downloaded once per season and shared by the defense rankings, the offense
+  rankings and the game logs (was up to four downloads, ~8 s, per cold call);
+  `get_matchups` answers are reused for 30 s and concurrent asks share one
+  fetch (the trade market fetched and enriched every remaining week twice);
+  `slot_accepts` is memoised and `optimal_lineup` reads each player's value
+  and position once (~2M calls per trade search). On a DB copy, cold: ROS
+  10.7 s -> 8.5-9.4 s, get_trade_market 16.8 s -> 11.7 s, find_trade_targets
+  15.8 s -> 10.4-14.6 s; warm: 1.7 -> 1.3 s, 4.1 -> 2.6 s, 2.6 -> 1.3 s.
+- **Handcuff map.** Already parallel and cached since #229 (0.4-0.9 s cold,
+  instant warm on a DB copy); each team's depth chart now has an 8 s timeout
+  (`partial` + `timed_out_teams`), an expired chart (up to 3 days) stands in
+  when ESPN is slow, and the ~400 KB page is parsed off the event loop.
+
 ### Added
 - **News classifier recall** (`news_signals`): new flags `multi_week_absence`
   (an absence with a length: "a six-week recovery", "miss at least three

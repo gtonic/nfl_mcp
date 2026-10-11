@@ -13,6 +13,7 @@ import os
 import sqlite3
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -54,8 +55,44 @@ class ConnectionPoolConfig:
     health_check_interval: float = 60.0
 
 
+class _PooledConnection(sqlite3.Connection):
+    """A pool's connection, tagged with the pool generation it belongs to (a
+    plain ``sqlite3.Connection`` takes no attributes)."""
+
+    pool_generation = 0
+
+
+# Pools opened in this process and not yet garbage-collected (weak), for
+# `open_connection_count` and the test suite's leak check.
+_live_pools: "weakref.WeakSet[DatabaseConnectionPool]" = weakref.WeakSet()
+
+
+def open_connection_count() -> int:
+    """Connections currently open across every live pool (idle + borrowed)."""
+    return sum(p.open_connections for p in list(_live_pools))
+
+
+def _close_idle(queue: Queue) -> None:
+    """Close every connection waiting in ``queue`` (a pool's finalizer)."""
+    while True:
+        try:
+            conn = queue.get_nowait()
+        except Empty:
+            return
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 class DatabaseConnectionPool:
-    """Simple connection pool for SQLite database with thread safety."""
+    """Simple connection pool for SQLite database with thread safety.
+
+    ``close()`` closes the idle connections at once and a borrowed one when it
+    is returned (it belongs to the old generation); the pool stays usable and
+    opens fresh connections on demand. Before, a connection borrowed during
+    ``close()`` went back into the drained pool and was never closed.
+    """
 
     def __init__(self, db_path: str, config: ConnectionPoolConfig):
         self.db_path = db_path
@@ -64,9 +101,20 @@ class DatabaseConnectionPool:
         self._lock = threading.RLock()
         self._total_connections = 0
         self._last_health_check = 0
+        self._generation = 0
+        _live_pools.add(self)
+        # A pool dropped without close() still closes its idle connections
+        # (borrowed ones keep the pool alive until returned). Before, the
+        # garbage collector closed them one by one, each with an "unclosed
+        # database" ResourceWarning.
+        weakref.finalize(self, _close_idle, self._pool)
 
         # Pre-populate pool with initial connections
         self._initialize_pool()
+
+    @property
+    def open_connections(self) -> int:
+        return self._total_connections
 
     def _initialize_pool(self):
         """Initialize the connection pool with initial connections."""
@@ -79,12 +127,15 @@ class DatabaseConnectionPool:
 
     def _create_connection(self) -> sqlite3.Connection | None:
         """Create a new database connection with proper settings."""
+        conn = None
         try:
             conn = sqlite3.connect(
                 self.db_path,
                 timeout=self.config.connection_timeout,
-                check_same_thread=False  # Allow connection sharing between threads
+                check_same_thread=False,  # Allow connection sharing between threads
+                factory=_PooledConnection,
             )
+            conn.pool_generation = self._generation
             conn.row_factory = sqlite3.Row  # Enable dict-like access
 
             # Enable WAL mode for better concurrent access
@@ -98,6 +149,11 @@ class DatabaseConnectionPool:
             return conn
         except Exception as e:
             logger.error(f"Failed to create database connection: {e}")
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             return None
 
     @contextmanager
@@ -105,11 +161,13 @@ class DatabaseConnectionPool:
         """Get a connection from the pool with automatic cleanup."""
         conn = None
         try:
-            # Try to get connection from pool
+            # An idle connection, else a new one while under the limit, else
+            # wait for one to come back. (The idle check used to *block* for
+            # 5 s first -- on the event loop's thread -- before opening the
+            # connection the limit allowed.)
             try:
-                conn = self._pool.get(timeout=5.0)
+                conn = self._pool.get_nowait()
             except Empty:
-                # Pool is empty, try to create new connection if under limit
                 with self._lock:
                     if self._total_connections < self.config.max_connections:
                         conn = self._create_connection()
@@ -117,7 +175,7 @@ class DatabaseConnectionPool:
                             self._total_connections += 1
 
                 if not conn:
-                    # Wait longer for a connection to become available
+                    # Wait for a connection to become available
                     conn = self._pool.get(timeout=self.config.connection_timeout)
 
             if not conn:
@@ -138,14 +196,24 @@ class DatabaseConnectionPool:
 
         finally:
             if conn and self._reset_connection(conn):
-                try:
-                    # Return connection to pool
-                    self._pool.put_nowait(conn)
-                except Full:
-                    # Pool is full, close the connection
-                    conn.close()
-                    with self._lock:
-                        self._total_connections -= 1
+                if getattr(conn, "pool_generation", self._generation) != self._generation:
+                    # Borrowed before close(): close it rather than pool it.
+                    self._discard(conn)
+                else:
+                    try:
+                        # Return connection to pool
+                        self._pool.put_nowait(conn)
+                    except Full:
+                        # Pool is full, close the connection
+                        self._discard(conn)
+
+    def _discard(self, conn: sqlite3.Connection) -> None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with self._lock:
+            self._total_connections = max(0, self._total_connections - 1)
 
     def _reset_connection(self, conn: sqlite3.Connection) -> bool:
         """Roll back whatever the borrower left open; False if ``conn`` was discarded.
@@ -222,15 +290,15 @@ class DatabaseConnectionPool:
             }
 
     def close(self):
-        """Close all connections in the pool."""
+        """Close the idle connections now and the borrowed ones on return."""
         with self._lock:
-            while not self._pool.empty():
+            self._generation += 1
+            while True:
                 try:
                     conn = self._pool.get_nowait()
-                    conn.close()
                 except Empty:
                     break
-            self._total_connections = 0
+                self._discard(conn)
 
 
 class NFLDatabase:
@@ -1207,6 +1275,12 @@ class NFLDatabase:
     def close(self) -> None:
         """Close the database connection pool."""
         self._pool.close()
+
+    def __enter__(self) -> "NFLDatabase":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
     # ------------------------------------------------------------------
     # Roster snapshot helpers

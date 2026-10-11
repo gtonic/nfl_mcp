@@ -39,6 +39,8 @@ class _Client:
 
 
 async def _rank(rows):
+    from nfl_mcp import matchup_tools
+    matchup_tools.clear_week_csv_cache()  # each call brings its own CSV
     analyzer = DefenseRankingsAnalyzer(db=None)
     out = await analyzer._fetch_nflverse_rankings(_Client(_csv(rows)), 2026)
     return {r["team"]: r for r in out["RB"]}

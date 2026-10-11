@@ -8,6 +8,7 @@ This module provides:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -263,7 +264,7 @@ async def retry_with_backoff(
     try:
         for attempt in range(max_retries + 1):
             try:
-                if asyncio.iscoroutinefunction(func):
+                if inspect.iscoroutinefunction(func):
                     result = await func(*args, **kwargs)
                 else:
                     result = func(*args, **kwargs)

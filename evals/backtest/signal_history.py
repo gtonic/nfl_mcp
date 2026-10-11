@@ -324,6 +324,7 @@ def main() -> None:
 
     from .data import load_season
     kicks = kickoffs(conn, args.season)
+    conn.close()
     if args.weeks:
         kicks = {k: v for k, v in kicks.items() if k[0] in args.weeks}
     if args.transitions:

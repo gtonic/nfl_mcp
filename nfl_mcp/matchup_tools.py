@@ -5,6 +5,7 @@ This module provides defense vs position rankings, matchup difficulty analysis,
 and game environment factors to help optimize fantasy lineups.
 """
 
+import asyncio
 import csv
 import logging
 from datetime import UTC, datetime, timedelta
@@ -369,15 +370,12 @@ class DefenseRankingsAnalyzer:
         position over the regular season. Returns None when the season's data
         isn't available yet (e.g. preseason).
         """
-        url = NFLVERSE_PLAYER_STATS_URL.format(season=season)
         try:
-            resp = await client.get(url)
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            text = resp.text
+            text = await nflverse_week_csv(season, client)
         except Exception as e:
             logger.debug(f"nflverse fetch failed for {season}: {e}")
+            return None
+        if text is None:
             return None
 
         weekly: dict = {}           # (opponent, position, week) -> [PPR points, receptions]
@@ -614,6 +612,50 @@ _offense_rankings_cache: dict[int, tuple[datetime, dict[str, dict]]] = {}
 CURRENT_SEASON_CACHE_TTL = timedelta(hours=3)
 
 
+# season -> (fetched_at, CSV text). The weekly player-stats file feeds both the
+# defense and the offense rankings, for this season and the prior one; each
+# used to download it on its own -- four downloads of the same two files on a
+# cold ROS / trade call, ~8 s of a 10-16 s answer.
+_week_csv_cache: dict[int, tuple[datetime, str]] = {}
+
+
+async def nflverse_week_csv(season: int, client: httpx.AsyncClient | None = None) -> str | None:
+    """The season's nflverse weekly player-stats CSV, or None when it is not
+    published (404, preseason). Cached like the rankings (`season_cache_fresh`);
+    concurrent callers share one download. Other failures raise."""
+    hit = _week_csv_cache.get(season)
+    if hit and season_cache_fresh(season, hit[0]):
+        return hit[1]
+    from .upstream import single_flight
+
+    task = single_flight(f"nflverse_week_csv:{season}", lambda: _download_week_csv(season, client))
+    return await asyncio.shield(task)
+
+
+async def _download_week_csv(season: int, client: httpx.AsyncClient | None) -> str | None:
+    url = NFLVERSE_PLAYER_STATS_URL.format(season=season)
+
+    async def _get(c) -> str | None:
+        resp = await c.get(url)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.text
+
+    if client is None:
+        async with create_http_client(timeout=LONG_TIMEOUT) as own:
+            text = await _get(own)
+    else:
+        text = await _get(client)
+    if text is not None:
+        _week_csv_cache[season] = (datetime.now(UTC), text)
+    return text
+
+
+def clear_week_csv_cache() -> None:
+    _week_csv_cache.clear()
+
+
 def _nfl_season_now(now: datetime | None = None) -> int:
     """The NFL season in progress (January and February belong to last year's)."""
     now = now or datetime.now(UTC)
@@ -671,16 +713,12 @@ async def fetch_offense_rankings(season: int) -> dict[str, dict]:
     if cached and season_cache_fresh(season, cached[0]):
         return cached[1]
 
-    url = NFLVERSE_PLAYER_STATS_URL.format(season=season)
     try:
-        async with create_http_client(timeout=LONG_TIMEOUT) as client:
-            resp = await client.get(url)
-            if resp.status_code == 404:
-                return {}
-            resp.raise_for_status()
-            text = resp.text
+        text = await nflverse_week_csv(season)
     except Exception as e:
         logger.debug(f"nflverse offense fetch failed for {season}: {e}")
+        return {}
+    if text is None:
         return {}
 
     weekly: dict = {}       # (team, week) -> summed PPR points

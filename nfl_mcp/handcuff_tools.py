@@ -127,7 +127,11 @@ def _availability(player_id: str | None, rostered: dict[str, int], my_roster_id:
 
 # Depth charts move a few times a week at most.
 DEPTH_CHART_TTL_SECONDS = 6 * 3600
+# An expired chart still beats none when ESPN is slow or down.
+DEPTH_CHART_STALE_MAX_SECONDS = 3 * 86400
 DEPTH_CHART_CONCURRENCY = 6
+# Per team: a hung ESPN page costs that team's handcuff, not the whole call.
+DEPTH_CHART_TIMEOUT_SECONDS = 8.0
 _depth_chart_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
@@ -135,22 +139,33 @@ def clear_depth_chart_cache() -> None:
     _depth_chart_cache.clear()
 
 
-async def _depth_chart(nfl_tools, team: str, sem: asyncio.Semaphore) -> list[dict]:
-    """A team's depth chart, cached for ``DEPTH_CHART_TTL_SECONDS``; [] on failure
-    (a failure is not cached, so the next call retries)."""
+async def _depth_chart(nfl_tools, team: str, sem: asyncio.Semaphore,
+                       timed_out: list[str] | None = None) -> list[dict]:
+    """A team's depth chart, cached for ``DEPTH_CHART_TTL_SECONDS``; on a
+    failed or timed-out fetch the expired copy (up to
+    ``DEPTH_CHART_STALE_MAX_SECONDS``), else []. A failure is not cached, so
+    the next call retries; a timeout is appended to ``timed_out``."""
     hit = _depth_chart_cache.get(team)
-    if hit and time.monotonic() - hit[0] < DEPTH_CHART_TTL_SECONDS:
+    age = time.monotonic() - hit[0] if hit else None
+    if hit and age < DEPTH_CHART_TTL_SECONDS:
         return hit[1]
+    stale = hit[1] if hit and age < DEPTH_CHART_STALE_MAX_SECONDS else []
     async with sem:
         try:
-            dc = await nfl_tools.get_depth_chart(team)
+            dc = await asyncio.wait_for(nfl_tools.get_depth_chart(team), DEPTH_CHART_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.warning(f"depth chart fetch for {team} timed out")
+            if timed_out is not None:
+                timed_out.append(team)
+            return stale
         except Exception as e:
             logger.debug(f"depth chart fetch failed for {team}: {e}")
-            return []
+            return stale
     chart = (dc or {}).get("depth_chart") or []
     if chart:
         _depth_chart_cache[team] = (time.monotonic(), chart)
-    return chart
+        return chart
+    return stale
 
 
 @handle_http_errors(
@@ -214,8 +229,9 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
     # team, one after another, took ~25s for a full roster of RBs.
     teams = sorted({(rb.get("team_id") or "").upper() for rb in my_rbs} - {""})
     sem = asyncio.Semaphore(DEPTH_CHART_CONCURRENCY)
+    timed_out: list[str] = []
     depth_cache: dict[str, list[dict]] = dict(zip(
-        teams, await asyncio.gather(*(_depth_chart(nfl_tools, t, sem) for t in teams)),
+        teams, await asyncio.gather(*(_depth_chart(nfl_tools, t, sem, timed_out) for t in teams)),
         strict=True))
     team_athletes_cache: dict[str, list[dict]] = {}
     handcuffs: list[dict] = []
@@ -262,7 +278,9 @@ async def get_handcuff_map(league_id: str, roster_id: int, db=None) -> dict:
         "count": len(handcuffs),
         "stale": roster_state["stale"],
         "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
-        "warnings": [roster_state["warning"]] if roster_state["warning"] else [],
+        "warnings": ([roster_state["warning"]] if roster_state["warning"] else []) + (
+            [f"depth chart timed out for {', '.join(sorted(timed_out))}"] if timed_out else []),
+        **({"partial": True, "timed_out_teams": sorted(timed_out)} if timed_out else {}),
         "message": (
             f"Mapped {len(handcuffs)} RB handcuff(s); "
             f"{len(free)} securable free-agent handcuff(s) — grab these to protect your backs."

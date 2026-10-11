@@ -8,6 +8,7 @@ of a mutable global, eliminating race conditions and making the code testable.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from contextvars import ContextVar
@@ -2705,12 +2706,21 @@ async def get_injury_report(
     Example: get_injury_report(severity=3, since="2026-09-20")
     Example: get_injury_report(player_ids=["4428633", "4241479"])
     """
-    from .injury_service import InjuryAggregator, get_injury_reports
+    from .injury_service import InjuryAggregator, get_injury_reports, get_injury_reports_bounded
+
+    async def _reports(team_arg):
+        # A cached read waits for a cold crawl only so long, then answers from
+        # the stored reports (the crawl finishes in the background).
+        if use_cache_val:
+            rows, meta = await get_injury_reports_bounded(teams=team_arg, db=get_db())
+            return rows, meta
+        return await get_injury_reports(teams=team_arg, db=get_db(), use_cache=False), None
 
     try:
         use_cache_val = bool(use_cache) if use_cache is not None else True
         team_list = teams or team_ids
         results = []
+        crawl_meta = None
         rate_note = None
         if not use_cache_val and not player_ids:
             use_cache_val, rate_note = _allow_uncached_injury_crawl(team_list)
@@ -2725,9 +2735,9 @@ async def get_injury_report(
             valid_teams = [normalize_team(t) or t.upper() for t in team_list[:32]
                            if isinstance(t, str) and len(t) <= 5]
             if valid_teams:
-                results = await get_injury_reports(teams=valid_teams, db=get_db(), use_cache=use_cache_val)
+                results, crawl_meta = await _reports(valid_teams)
         else:
-            results = await get_injury_reports(db=get_db(), use_cache=use_cache_val)
+            results, crawl_meta = await _reports(None)
 
         healthy_excluded = 0
         if not include_healthy and not player_ids:
@@ -2764,6 +2774,8 @@ async def get_injury_report(
             "practice_week": practice_week,
             "healthy_excluded": healthy_excluded,
             **({"note": rate_note} if rate_note else {}),
+            **({"partial": True, "timed_out_sources": crawl_meta["timed_out_sources"],
+                "stale": True} if crawl_meta and crawl_meta.get("partial") else {}),
             "success": True
         }
 
@@ -2826,6 +2838,9 @@ async def _current_season_week() -> tuple[int | None, int | None]:
     return current["season"], current["week"]
 
 
+PRACTICE_REFRESH_WAIT_SECONDS = 6.0
+
+
 async def _attach_practice(injuries: list[dict]) -> dict:
     """Add this week's reported practice line to each injury row (in place).
 
@@ -2833,11 +2848,15 @@ async def _attach_practice(injuries: list[dict]) -> dict:
     depend on the prefetch loop. A player without a report gets nulls.
     """
     from .practice_reports import lookup_practice, practice_fields, refresh_practice_reports
+    from .upstream import single_flight, wait_bounded
 
     db = get_db()
     season, week = await _current_season_week()
     try:
-        await refresh_practice_reports(db, season, week)
+        # nfl.com + ESPN pages: bounded, the refresh finishes in the background.
+        await wait_bounded(single_flight(f"practice_refresh:{season}:{week}",
+                                         lambda: refresh_practice_reports(db, season, week)),
+                           PRACTICE_REFRESH_WAIT_SECONDS)
     except Exception as e:
         logger.debug(f"practice refresh failed: {e}")
     reported = 0
@@ -2932,6 +2951,13 @@ async def get_injury_trends(
         }
 
 
+# get_gameday_inactives answers within about this long (plus the starters
+# lookup's floor); feeds that need longer are listed in timed_out_sources.
+GAMEDAY_INACTIVES_BUDGET_SECONDS = 20.0
+GAMEDAY_INJURY_WAIT_SECONDS = 6.0
+GAMEDAY_STARTERS_MIN_SECONDS = 5.0
+
+
 @timing_decorator("get_gameday_inactives", tool_type="injury")
 async def get_gameday_inactives(
     teams: list[str] | None = None,
@@ -2983,11 +3009,13 @@ async def get_gameday_inactives(
     Example: get_gameday_inactives(teams=["KC", "SF"], severity_threshold=4)
     """
     from .gameday_inactives import get_official_inactives
-    from .injury_service import get_injury_reports
+    from .injury_service import get_injury_reports_bounded
     from .opportunity_tools import norm_name
     from .teams import normalize_team
+    from .upstream import Budget
 
     try:
+        budget = Budget(GAMEDAY_INACTIVES_BUDGET_SECONDS)
         threshold = int(severity_threshold) if severity_threshold else 3
         threshold = max(1, min(5, threshold))
 
@@ -2996,20 +3024,29 @@ async def get_gameday_inactives(
             cur_season, cur_week = await _current_season_week()
             season, week = season or cur_season, week or cur_week
 
-        official = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": []}
-        if season and week:
+        # The published list and the injury report are independent reads:
+        # both at once, each bounded (a slow feed keeps loading in the
+        # background and the answer says so). Inline and one after another
+        # they ran past the MCP client's 300 s on 2026-09-27.
+        empty_official = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": []}
+
+        async def _official():
+            if not (season and week):
+                return empty_official
             try:
-                official = await get_official_inactives(get_db(), int(season), int(week), teams_list or None)
+                return await get_official_inactives(get_db(), int(season), int(week), teams_list or None)
             except Exception as e:
                 logger.warning(f"official inactives unavailable: {e}")
+                return empty_official
+
+        official, (injuries, injury_meta) = await asyncio.gather(
+            _official(),
+            get_injury_reports_bounded(teams=teams_list or None, db=get_db(),
+                                       wait=budget.remaining(cap=GAMEDAY_INJURY_WAIT_SECONDS)),
+        )
         published = sorted({r["team_id"] for r in official["inactives"]})
         pending = sorted(set(official.get("window_teams") or []) - set(published))
-
-        injuries = await get_injury_reports(
-            teams=teams_list if teams_list else None,
-            db=get_db(),
-            use_cache=True
-        )
+        timed_out = list(official.get("timed_out_sources") or []) + injury_meta["timed_out_sources"]
 
         inactives = []
         for row in official["inactives"]:
@@ -3071,6 +3108,12 @@ async def get_gameday_inactives(
             ],
             "season": season,
             "week": week,
+            # A feed that did not answer within the budget: its rows are from
+            # an older copy (or missing); the read finishes in the background.
+            "partial": bool(timed_out or official.get("partial")),
+            "timed_out_sources": timed_out,
+            **({"stale_sources": official["stale_sources"]} if official.get("stale_sources") else {}),
+            **({"injury_report_stale": True} if injury_meta["stale"] else {}),
             "success": True,
         }
         if mode == "fallback_injury_report":
@@ -3081,11 +3124,16 @@ async def get_gameday_inactives(
             )
 
         if league_id and roster_id is not None and week:
-            result["my_starters"] = await _flag_my_starters(
-                str(league_id), int(roster_id), int(week), inactives,
-                official.get("confirmed_active") or [], set(pending), official.get("games") or {},
-                norm_name,
-            )
+            try:
+                result["my_starters"] = await asyncio.wait_for(_flag_my_starters(
+                    str(league_id), int(roster_id), int(week), inactives,
+                    official.get("confirmed_active") or [], set(pending), official.get("games") or {},
+                    norm_name,
+                ), budget.remaining(floor=GAMEDAY_STARTERS_MIN_SECONDS))
+            except TimeoutError:
+                result["my_starters"] = {"error": "timed out loading your starters"}
+                result["partial"] = True
+                result["timed_out_sources"].append("sleeper_starters")
         return result
 
     except Exception as e:

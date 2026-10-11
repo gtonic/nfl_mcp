@@ -1,6 +1,7 @@
 """Injury status history: recorded on change, queryable as a trend."""
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def _injury(status, injury_type="Hamstring", player_id="1", team="BUF"):
 
 
 def _count(db):
-    with sqlite3.connect(db.db_path) as conn:
+    with closing(sqlite3.connect(db.db_path)) as conn, conn:
         return conn.execute("SELECT COUNT(*) FROM injury_history").fetchone()[0]
 
 

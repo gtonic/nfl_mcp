@@ -15,6 +15,7 @@ other way round, to Sleeper's ``DEF``.
 """
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Callable, Iterable
 
@@ -101,6 +102,17 @@ def slot_accepts(slot: str | None, position: str | None) -> bool:
     An unknown slot falls back to an exact position match rather than to
     "anything goes".
     """
+    try:
+        return _slot_accepts(slot, position)
+    except TypeError:  # an unhashable argument: answer it uncached
+        return _slot_accepts.__wrapped__(slot, position)
+
+
+# Memoised: the trade search fills ~14k lineups per call, each asking every
+# slot about every player -- ~2M calls, a quarter of the CPU time of a cold
+# get_trade_market, all spent re-normalising the same few strings.
+@functools.lru_cache(maxsize=4096)
+def _slot_accepts(slot: str | None, position: str | None) -> bool:
     s, p = normalize_slot(slot), normalize_position(position)
     if not p:
         return False
@@ -215,20 +227,21 @@ def optimal_lineup(
     if not slot_list:
         return []
     # Highest value first so ties resolve the way a greedy fill would.
-    pool = sorted(players, key=value, reverse=True)
+    scored = sorted(((value(p), p) for p in players), key=lambda vp: vp[0], reverse=True)
+    pool = [p for _, p in scored]
+    weights = [-(_FILL_BONUS + v) for v, _ in scored]
+    positions = [position(p) for p in pool]
     width = max(len(pool), len(slot_list))
     cost = []
     for slot in slot_list:
-        row = []
-        for p in pool:
-            row.append(-(_FILL_BONUS + value(p)) if slot_accepts(slot, position(p)) else 0.0)
+        row = [w if slot_accepts(slot, pos) else 0.0 for w, pos in zip(weights, positions, strict=True)]
         row.extend([0.0] * (width - len(pool)))
         cost.append(row)
     picks = _hungarian(cost)
     lineup: list[dict | None] = []
     for slot, j in zip(slot_list, picks, strict=True):
         p = pool[j] if 0 <= j < len(pool) else None
-        lineup.append(p if p is not None and slot_accepts(slot, position(p)) else None)
+        lineup.append(p if p is not None and slot_accepts(slot, positions[j]) else None)
     return lineup
 
 

@@ -4,6 +4,7 @@ The markup and blurbs below are trimmed copies of the live NFL.com report page
 and ESPN injury notes fetched on 2026-09-23 (week 3, ATL@GB on Thursday).
 """
 import tempfile
+from contextlib import closing
 from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -225,7 +226,7 @@ class TestStorage:
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "old.db")
             NFLDatabase(path).close()
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn, conn:
                 # Back to a v13 database: every later version un-applied.
                 conn.execute("DELETE FROM schema_version WHERE version >= 14")
                 conn.execute("DROP TABLE player_practice_status")
@@ -236,7 +237,7 @@ class TestStorage:
                              "('4426348','2026-09-20','DNP','espn_injuries','2026-09-20')")
                 conn.commit()
             migrated = NFLDatabase(path)
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn, conn:
                 assert conn.execute("SELECT COUNT(*) FROM player_practice_status").fetchone()[0] == 0
                 cols = {r[1] for r in conn.execute("PRAGMA table_info(player_practice_status)")}
             assert {"name_key", "team", "source_rank", "game_status", "week"} <= cols

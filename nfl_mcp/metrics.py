@@ -4,7 +4,7 @@ Provides: MetricsCollector, get_metrics_collector, timing_decorator.
 """
 from __future__ import annotations
 
-import asyncio
+import inspect
 import threading
 import time
 from collections import defaultdict, deque
@@ -141,7 +141,7 @@ def get_metrics_collector() -> MetricsCollector:
 
 def timing_decorator(metric_name: str, **labels):
     def decorator(func: Callable) -> Callable:
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             @wraps(func)
             async def async_wrapper(*args, **kwargs):
                 start = time.time()

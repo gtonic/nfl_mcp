@@ -20,18 +20,26 @@ What the feeds carry, checked on 2026-09-23 against week 2:
   most once per ``SLEEPER_FRESH_TTL`` per process, only inside a window). When
   neither is fresh, Sleeper is not listed in ``sources_checked``.
 
+Every feed read is bounded (``OFFICIAL_BUDGET_SECONDS`` in total, both feeds
+at once): a feed that misses the budget keeps downloading in the background,
+an older copy stands in where there is one, and the answer says so
+(``partial``, ``timed_out_sources``, ``stale_sources``).
+
 A note only counts for the game it was posted around (from three hours before
 kickoff to the end of the game); anything older is last week's.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .game_clock import GAME_LENGTH, parse_kickoff
 from .opportunity_tools import norm_name
 from .teams import normalize_team
+from .upstream import Budget, inflight, single_flight, wait_bounded
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +158,38 @@ SLEEPER_FRESH_TTL = timedelta(minutes=30)
 # Process cache of the full Sleeper player dump: (fetched_at, players).
 _SLEEPER_DUMP_TTL = SLEEPER_FRESH_TTL
 _sleeper_dump: tuple[datetime, dict] | None = None
+# A dump past the TTL is still served while a fresh one downloads (its
+# Inactive rows are still right; it can miss a late scratch), up to this age.
+# It never counts as Sleeper having been checked.
+SLEEPER_STALE_MAX = timedelta(hours=6)
+# ESPN's league injury payload (the gameday notes): re-read at most this often,
+# and served stale up to ESPN_NOTES_STALE_MAX while a re-read is under way.
+ESPN_NOTES_TTL = timedelta(minutes=2)
+ESPN_NOTES_STALE_MAX = timedelta(hours=3)
+_espn_notes: tuple[datetime, dict] | None = None
+
+# Per-request timeouts (seconds), and the total wait of one read of the
+# published inactives. Both sources are read at once; one that misses the
+# budget keeps downloading in the background (the next call finds it cached)
+# and the answer lists it in `timed_out_sources` with `partial: true`. Before,
+# every source ran inline, one after another, with 30 s timeouts each.
+ESPN_NOTES_TIMEOUT = 10.0
+SLEEPER_DUMP_TIMEOUT = 20.0
+SCOREBOARD_TIMEOUT = 8.0
+OFFICIAL_BUDGET_SECONDS = 12.0
+# With a stale copy in hand: how long to wait for the refresh before serving it.
+STALE_GRACE_SECONDS = 1.5
+# A download already in flight from an earlier call: wait at most this long.
+INFLIGHT_WAIT_SECONDS = 2.0
+SOURCE_SCOREBOARD = "espn_scoreboard"
+
+
+def clear_caches() -> None:
+    """Forget the cached feeds (tests)."""
+    global _sleeper_dump, _espn_notes
+    _sleeper_dump = None
+    _espn_notes = None
+    _gameday_cache.clear()
 
 
 def _stored_sleeper_players(db, teams: set[str],
@@ -192,28 +232,94 @@ def _stored_sleeper_players(db, teams: set[str],
     return players, oldest
 
 
-async def _sleeper_players(db, teams: set[str], client,
-                           now: datetime) -> tuple[dict | None, dict | None]:
-    """``(players, freshness)`` for the window teams: stored athletes when
-    refreshed within ``SLEEPER_FRESH_TTL``, else the dump (cached for the same
-    TTL). ``(None, None)`` when neither is fresh -- the caller must then not
-    claim Sleeper was checked."""
+async def _get(client, url: str, headers: dict | None, timeout: float):
+    """GET with the caller's client, else a short-lived one of our own (a
+    background read outlives the call that started it, so it cannot borrow
+    a client that call closes)."""
+    if client is not None:
+        return await client.get(url, headers=headers, timeout=timeout)
+    from .config import create_http_client
+    async with create_http_client() as own:
+        return await own.get(url, headers=headers, timeout=timeout)
+
+
+async def _download_sleeper_dump(client, now: datetime) -> dict | None:
     global _sleeper_dump
-    stored, as_of = _stored_sleeper_players(db, teams, fresh_since=now - SLEEPER_FRESH_TTL)
-    if stored:
-        return stored, _freshness("stored_athletes", as_of, now)
-    if _sleeper_dump and timedelta(0) <= now - _sleeper_dump[0] < _SLEEPER_DUMP_TTL:
-        return _sleeper_dump[1], _freshness("sleeper_dump", _sleeper_dump[0], now)
     from .config import get_http_headers
-    resp = await client.get(SLEEPER_PLAYERS_URL, headers=get_http_headers("sleeper_players"),
-                            timeout=30.0)
+    resp = await _get(client, SLEEPER_PLAYERS_URL, get_http_headers("sleeper_players"),
+                      SLEEPER_DUMP_TIMEOUT)
     if resp.status_code != 200:
-        return None, None
+        return None
     players = resp.json()
     if not isinstance(players, dict) or not players:
-        return None, None
+        return None
     _sleeper_dump = (now, players)
-    return players, _freshness("sleeper_dump", now, now)
+    return players
+
+
+async def _download_espn_notes(client, now: datetime) -> dict | None:
+    global _espn_notes
+    from .config import get_http_headers
+    resp = await _get(client, ESPN_INJURIES_URL, get_http_headers("nfl_teams"), ESPN_NOTES_TIMEOUT)
+    if resp.status_code != 200:
+        return None
+    payload = resp.json()
+    if not isinstance(payload, dict):
+        return None
+    _espn_notes = (now, payload)
+    return payload
+
+
+async def _cached_read(key: str, cached: tuple[datetime, Any] | None, ttl: timedelta,
+                       stale_max: timedelta, download, now: datetime,
+                       wait: float) -> tuple[Any, datetime | None, str]:
+    """``(value, as_of, status)`` from a process cache with stale-while-revalidate.
+
+    ``status``: ``fresh`` (cached within ``ttl`` or just downloaded),
+    ``stale`` (the download missed the wait or failed; an older copy within
+    ``stale_max`` is served), ``timeout`` (nothing usable in time) or
+    ``failed``. A download that misses the wait keeps running. Never raises.
+    """
+    age = now - cached[0] if cached else None
+    if cached and timedelta(0) <= age < ttl:
+        return cached[1], cached[0], "fresh"
+    stale = cached if cached and timedelta(0) <= age < stale_max else None
+    if inflight(key):
+        # An earlier call's download is still running and already missed its
+        # own budget: do not wait the full budget for it again.
+        wait = min(wait, INFLIGHT_WAIT_SECONDS)
+    try:
+        task = single_flight(key, download)
+        done, value = await wait_bounded(task, min(wait, STALE_GRACE_SECONDS) if stale else wait)
+    except Exception as e:
+        logger.warning(f"[Inactives] {key} read failed: {e}")
+        done, value = True, None
+    if done and value is not None:
+        return value, now, "fresh"
+    if stale:
+        return stale[1], stale[0], "stale"
+    return None, None, "failed" if done else "timeout"
+
+
+async def _sleeper_players(db, teams: set[str], client, now: datetime,
+                           wait: float = OFFICIAL_BUDGET_SECONDS
+                           ) -> tuple[dict | None, dict | None, str]:
+    """``(players, freshness, status)`` for the window teams: stored athletes
+    when refreshed within ``SLEEPER_FRESH_TTL``, else the dump (cached for the
+    same TTL; see `_cached_read` for ``status``). ``(None, None, ...)`` when
+    neither is usable -- the caller must then not claim Sleeper was checked."""
+    stored, as_of = _stored_sleeper_players(db, teams, fresh_since=now - SLEEPER_FRESH_TTL)
+    if stored:
+        return stored, _freshness("stored_athletes", as_of, now), "fresh"
+    players, as_of, status = await _cached_read(
+        "gameday_sleeper_dump", _sleeper_dump, _SLEEPER_DUMP_TTL, SLEEPER_STALE_MAX,
+        lambda: _download_sleeper_dump(client, now), now, wait)
+    if players is None:
+        return None, None, status
+    freshness = _freshness("sleeper_dump", as_of, now)
+    if status == "stale":
+        freshness["stale"] = True
+    return players, freshness, status
 
 
 def _freshness(source: str, as_of: datetime | None, now: datetime) -> dict:
@@ -236,7 +342,8 @@ async def _week_kickoffs(db, season: int, week: int, client) -> dict[str, str]:
     if kickoffs:
         return kickoffs
     try:
-        resp = await client.get(ESPN_SCOREBOARD_URL.format(season=season, week=week), timeout=15.0)
+        resp = await _get(client, ESPN_SCOREBOARD_URL.format(season=season, week=week), None,
+                          SCOREBOARD_TIMEOUT)
         if resp.status_code == 200:
             for event in (resp.json() or {}).get("events") or []:
                 for comp in event.get("competitions") or []:
@@ -250,59 +357,75 @@ async def _week_kickoffs(db, season: int, week: int, client) -> dict[str, str]:
 
 
 async def get_official_inactives(db, season: int, week: int, teams: list[str] | None = None,
-                                 now: datetime | None = None, client=None) -> dict:
+                                 now: datetime | None = None, client=None,
+                                 budget_seconds: float | None = None) -> dict:
     """Published inactives for games whose inactive window is open.
 
     Returns ``{games: {team: {kickoff, phase}}, window_teams, inactives,
-    confirmed_active, sources_checked}``. Fetches nothing beyond the schedule
-    when no game is inside its window.
+    confirmed_active, sources_checked, sleeper_freshness, partial,
+    timed_out_sources, stale_sources}``. Fetches nothing beyond the schedule
+    when no game is inside its window. Waits at most ``budget_seconds``
+    (default ``OFFICIAL_BUDGET_SECONDS``) for the feeds; a feed that is not in
+    by then is listed in ``timed_out_sources`` (it keeps downloading for the
+    next call), one served from an older copy also in ``stale_sources``.
     """
-    from .config import create_http_client, get_http_headers
-
     now = now or datetime.now(UTC)
+    budget = Budget(OFFICIAL_BUDGET_SECONDS if budget_seconds is None else budget_seconds)
     wanted = {normalize_team(t) for t in teams or [] if normalize_team(t)}
-    own = client is None
-    client = client or create_http_client()
     result = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": [],
-              "sources_checked": [], "sleeper_freshness": None}
+              "sources_checked": [], "sleeper_freshness": None,
+              "partial": False, "timed_out_sources": [], "stale_sources": []}
     try:
-        if own:
-            await client.__aenter__()
-        kickoffs = await _week_kickoffs(db, season, week, client)
-        for team, kickoff in kickoffs.items():
-            if wanted and team not in wanted:
-                continue
-            result["games"][team] = {"kickoff": kickoff, "phase": game_phase(kickoff, now)}
-        window = {t for t, g in result["games"].items()
-                  if g["phase"] in ("inactives_window", "in_progress", "final")}
-        result["window_teams"] = sorted(window)
-        if not window:
-            return result
-        headers = get_http_headers("nfl_teams")
-        try:
-            resp = await client.get(ESPN_INJURIES_URL, headers=headers, timeout=30.0)
-            if resp.status_code == 200:
-                inactive, active = parse_espn_gameday_notes(resp.json(), kickoffs, window)
+        kickoffs = await asyncio.wait_for(_week_kickoffs(db, season, week, client),
+                                          budget.remaining(cap=SCOREBOARD_TIMEOUT + 1))
+    except TimeoutError:
+        kickoffs = {}
+        result["timed_out_sources"].append(SOURCE_SCOREBOARD)
+    for team, kickoff in kickoffs.items():
+        if wanted and team not in wanted:
+            continue
+        result["games"][team] = {"kickoff": kickoff, "phase": game_phase(kickoff, now)}
+    window = {t for t, g in result["games"].items()
+              if g["phase"] in ("inactives_window", "in_progress", "final")}
+    result["window_teams"] = sorted(window)
+    if window:
+        wait = budget.remaining()
+        (payload, _, notes_status), (players, freshness, sleeper_status) = await asyncio.gather(
+            _cached_read("gameday_espn_notes", _espn_notes, ESPN_NOTES_TTL, ESPN_NOTES_STALE_MAX,
+                         lambda: _download_espn_notes(client, now), now, wait),
+            _sleeper_players(db, window, client, now, wait),
+        )
+        if payload is not None:
+            try:
+                inactive, active = parse_espn_gameday_notes(payload, kickoffs, window)
                 result["inactives"].extend(inactive)
                 result["confirmed_active"].extend(active)
-                result["sources_checked"].append(SOURCE_ESPN_NOTE)
-        except Exception as e:
-            logger.warning(f"[Inactives] ESPN notes failed: {e}")
-        try:
-            players, freshness = await _sleeper_players(db, window, client, now)
-            result["sleeper_freshness"] = freshness
-            if players is not None:
-                seen = {(norm_name(r["player_name"]), r["team_id"]) for r in result["inactives"]}
-                for row in parse_sleeper_inactives(players, window):
-                    if (norm_name(row["player_name"]), row["team_id"]) not in seen:
-                        result["inactives"].append(row)
-                result["sources_checked"].append(SOURCE_SLEEPER)
-        except Exception as e:
-            logger.warning(f"[Inactives] Sleeper feed failed: {e}")
-    finally:
-        if own:
-            await client.__aexit__(None, None, None)
+                _note_source(result, SOURCE_ESPN_NOTE, notes_status)
+            except Exception as e:
+                logger.warning(f"[Inactives] ESPN notes failed: {e}")
+        elif notes_status == "timeout":
+            result["timed_out_sources"].append(SOURCE_ESPN_NOTE)
+        result["sleeper_freshness"] = freshness
+        if players is not None:
+            seen = {(norm_name(r["player_name"]), r["team_id"]) for r in result["inactives"]}
+            for row in parse_sleeper_inactives(players, window):
+                if (norm_name(row["player_name"]), row["team_id"]) not in seen:
+                    result["inactives"].append(row)
+            _note_source(result, SOURCE_SLEEPER, sleeper_status)
+        elif sleeper_status == "timeout":
+            result["timed_out_sources"].append(SOURCE_SLEEPER)
+    result["partial"] = bool(result["timed_out_sources"] or result["stale_sources"])
     return result
+
+
+def _note_source(result: dict, source: str, status: str) -> None:
+    """A fresh read counts as checked; a stale copy is listed as such (and the
+    refresh it stood in for as timed out)."""
+    if status == "fresh":
+        result["sources_checked"].append(source)
+    else:
+        result["stale_sources"].append(source)
+        result["timed_out_sources"].append(source)
 
 
 # The projection path's read of the published inactives (`gameday_statuses`):
@@ -310,6 +433,12 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
 # the briefing) asks the feeds once, not once per player. Short: the list fills
 # in team by team as each window opens.
 GAMEDAY_CACHE_TTL = timedelta(minutes=5)
+# An expired read is still served (while a refresh runs) up to this age; a
+# partial one (a feed timed out) is refreshed after GAMEDAY_PARTIAL_TTL.
+GAMEDAY_STALE_MAX = timedelta(minutes=30)
+GAMEDAY_PARTIAL_TTL = timedelta(seconds=30)
+# How long a projection waits for a cold read before going without it.
+GAMEDAY_PROJECTION_WAIT = 3.0
 # Phases in which a published decision prices the projection: from the
 # inactives window to the end of the game (a locked lineup still feeds the live
 # win probability). Upcoming and final games cost nothing to ask about.
@@ -355,21 +484,40 @@ async def gameday_statuses(db, season: int | None, week: int | None,
                            client=None) -> dict[tuple[str, str], dict]:
     """`gameday_index` of the published inactives for the games now in a
     `PRICED_PHASES` phase; ``{}`` when none is (the usual case: one cached
-    schedule read, no network). Never raises."""
+    schedule read, no network). Never raises, and never holds a projection up
+    for long: a cold read waits ``GAMEDAY_PROJECTION_WAIT`` seconds, an
+    expired one ``STALE_GRACE_SECONDS`` before serving the older copy; the
+    read itself carries on in the background either way."""
     now = now or datetime.now(UTC)
     teams = priced_teams(db, season, week, now)
     if not teams:
         return {}
     key = (int(season), int(week))
     hit = _gameday_cache.get(key)
-    if hit and timedelta(0) <= now - hit[0] < GAMEDAY_CACHE_TTL:
+    age = now - hit[0] if hit else None
+    if hit and timedelta(0) <= age < GAMEDAY_CACHE_TTL:
         official = hit[1]
     else:
+        stale = hit[1] if hit and timedelta(0) <= age < GAMEDAY_STALE_MAX else None
+
+        async def _refresh() -> dict:
+            off = await get_official_inactives(db, key[0], key[1], now=now, client=client)
+            # A partial read is kept briefly: the feeds still downloading land
+            # in their own caches and the next refresh picks them up.
+            stamp = (now - GAMEDAY_CACHE_TTL + GAMEDAY_PARTIAL_TTL
+                     if (off or {}).get("partial") else now)
+            _gameday_cache[key] = (stamp, off)
+            return off
+
         try:
-            official = await get_official_inactives(db, int(season), int(week), now=now,
-                                                    client=client)
+            task = single_flight(f"gameday_statuses:{key[0]}:{key[1]}", _refresh)
+            done, official = await wait_bounded(
+                task, STALE_GRACE_SECONDS if stale is not None else GAMEDAY_PROJECTION_WAIT)
         except Exception as e:
             logger.warning(f"[Inactives] gameday read for the projection failed: {e}")
-            return {}
-        _gameday_cache[key] = (now, official)
+            done, official = False, None
+        if not done or official is None:
+            if stale is None:
+                return {}
+            official = stale
     return {k: v for k, v in gameday_index(official).items() if k[1] in teams}
