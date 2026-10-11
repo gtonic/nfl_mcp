@@ -8,6 +8,7 @@ and trade recommendations.
 
 import logging
 from collections import defaultdict
+from typing import Any
 
 from .errors import ErrorType, create_error_response, create_success_response
 from .lineup_slots import normalize_position
@@ -184,7 +185,7 @@ class TradeAnalyzer:
         players = active_enriched(roster)
 
         # Count by position
-        position_counts = defaultdict(int)
+        position_counts: defaultdict[str, int] = defaultdict(int)
 
         for player in players:
             pos = player.get("position", "")
@@ -458,7 +459,7 @@ async def analyze_trade(
 
         # Determine the league's value format (PPR / superflex / size / dynasty)
         # so consensus values match how this league actually plays.
-        league_fmt = {"ppr": 0.0, "num_qbs": 1, "num_teams": len(rosters) or 12,
+        league_fmt: dict[str, Any] = {"ppr": 0.0, "num_qbs": 1, "num_teams": len(rosters) or 12,
                       "is_dynasty": False, "superflex": False}
         league_obj: dict = {}
         try:
@@ -745,6 +746,7 @@ def _risk_view(resolution: dict, playoff_pct: float | None, ros_block: dict | No
     comps = (ros_block or {}).get("team1_risk")
     if not comps:
         return out
+    assert ros_block is not None  # comps came out of it
     delta = ros_block["team1"]["ros_points_delta"]
     weighted = risk_score(delta, resolution["risk_mode"], comps)
     out.update({

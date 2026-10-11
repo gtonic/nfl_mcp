@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from .database import get_shared_db
 from .errors import create_success_response
@@ -54,7 +55,7 @@ _PROJECTABLE = {"QB", "RB", "WR", "TE", "FLEX", "SUPERFLEX", "K",
 
 def _scoring_ppr(league: dict) -> float:
     """Sleeper's per-reception value, defaulting to full PPR when unreadable."""
-    rec = ((league or {}).get("scoring_settings") or {}).get("rec")
+    rec: Any = ((league or {}).get("scoring_settings") or {}).get("rec")
     try:
         return float(rec)
     except (TypeError, ValueError):
@@ -293,6 +294,7 @@ async def get_weekly_briefing(
         if odds_task:
             odds_task.cancel()
         return create_success_response({"success": False, "error": error})
+    assert mine is not None  # find_roster returns a roster whenever error is None
     roster_id = mine["roster_id"]
 
     matchups = (matchups_resp or {}).get("matchups") or []
@@ -486,8 +488,8 @@ async def get_weekly_briefing(
     if odds_task is not None:
         try:
             odds = await odds_task
-            row = (odds.get("by_roster") or {}).get(roster_id)
-            playoff_pct = row.get("playoff_pct") if row else None
+            odds_row = (odds.get("by_roster") or {}).get(roster_id)
+            playoff_pct = odds_row.get("playoff_pct") if odds_row else None
         except Exception as e:  # the season view is additive
             logger.debug(f"playoff odds unavailable for the briefing: {e}")
     # No opponent this week (bye / unscheduled): nothing to beat, so the
@@ -509,10 +511,10 @@ async def get_weekly_briefing(
     # starting and shows up as a change every single week.
     current_names = set()
     for pid in my_set_starters:
-        row = athletes.get(pid)
-        if not row:
+        starter_row = athletes.get(pid)
+        if not starter_row:
             continue
-        name = row.get("full_name") or normalize_team(row.get("team_id")) or pid
+        name = starter_row.get("full_name") or normalize_team(starter_row.get("team_id")) or pid
         current_names.add(name)
     recommended = (lineup or {}).get("recommended_lineup") or []
     recommended_names = {s["player"] for s in recommended}

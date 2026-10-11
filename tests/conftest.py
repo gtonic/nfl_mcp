@@ -247,11 +247,16 @@ def _isolated_db(tmp_path, monkeypatch):
     holds (e.g. a real bye week in the schedule table).
     """
     from nfl_mcp import database
+    from nfl_mcp.tools import _context
 
     monkeypatch.setenv("NFL_MCP_DB_PATH", str(tmp_path / "nfl_data.db"))
     database.reset_shared_db()
+    # The request DB a previous test registered (create_app / initialize_shared)
+    # must not leak into this one.
+    _context._db_token.set(None)
     yield
     database.reset_shared_db()
+    _context._db_token.set(None)
 
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "", None}

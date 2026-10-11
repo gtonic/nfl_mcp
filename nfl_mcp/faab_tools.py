@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import cast
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .game_clock import game_lock, parse_kickoff, week_games
@@ -148,7 +149,7 @@ def _priority_advice(tier: str, upgrade_score: float | None) -> str:
     return "medium" if tier in ("strong", "solid", "speculative") else "low"
 
 
-def _priority_message(advice: str, name: str, tier: str, value: float, upgrade: float,
+def _priority_message(advice: str | None, name: str | None, tier: str, value: float, upgrade: float,
                       has_roster: bool, rolling: bool, clear_days,
                       strategy: dict | None = None, horizons: dict | None = None) -> str:
     cost = (" Rolling waivers: a successful claim sends you to the back of the order."
@@ -157,7 +158,7 @@ def _priority_message(advice: str, name: str, tier: str, value: float, upgrade: 
     # message and get_waiver_targets never give two different answers.
     if strategy:
         cost += f" {strategy['recommendation'].upper()}: {strategy['reason']}"
-    free = bool(strategy) and strategy["recommendation"] == "add_now"
+    free = bool(strategy and strategy["recommendation"] == "add_now")
     gain = f"+{int(upgrade)} to your best lineup" if has_roster else "no roster context"
     if horizons:
         gain = (f"+{horizons['week_gain']} pts this week, +{horizons['ros_gain']} rest of "
@@ -352,7 +353,7 @@ async def recommend_faab_bid(
             # The current week counts while it is still to be played:
             # `regular - wk` said "0 weeks left" going into the last one.
             from .week_context import week_is_final
-            current_done = bool(season) and week_is_final(db, int(season), int(wk)) is True
+            current_done = bool(season and week_is_final(db, int(season), int(wk)) is True)
             weeks_left = max(0, (regular_weeks if regular_weeks > 0 else _FANTASY_REGULAR_WEEKS)
                              - int(wk) + (0 if current_done else 1))
             if weeks_left <= 3:
@@ -371,7 +372,7 @@ async def recommend_faab_bid(
     # Both horizons, this week and rest of season, in lineup points — the
     # same computation and rule get_waiver_targets reports per target.
     horizons = None
-    if has_roster and db is not None and wk_int and season_int:
+    if has_roster and my_roster is not None and db is not None and wk_int and season_int:
         horizons = await _horizon_gains(league, my_roster, target_id, season_int, wk_int, db)
     if horizons and horizons.get("worth") is None:
         horizons = None
@@ -428,7 +429,7 @@ async def recommend_faab_bid(
         now = _now()
         lock = game_lock(timing["game"], now)
         waiver_strategy = priority_strategy(
-            league, my_roster, worth=priority_advice, demand=trend_demand(trend_rank),
+            league, my_roster, worth=cast(str, priority_advice), demand=trend_demand(trend_rank),
             kickoff=timing["kickoff"], previous_kickoff=timing["previous_kickoff"],
             dropped_at=timing["dropped_at"], now=now,
             this_week=bool(horizons and horizons["this_week_only"]),

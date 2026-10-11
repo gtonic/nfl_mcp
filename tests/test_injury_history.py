@@ -130,7 +130,7 @@ class TestInjuryTrendsTool:
     async def test_direction_is_derived_from_severity(self, db, monkeypatch):
         from nfl_mcp import tool_registry
 
-        monkeypatch.setattr(tool_registry, "get_db", lambda: db)
+        monkeypatch.setattr("nfl_mcp.tools._context.get_db", lambda: db)
 
         db.upsert_injuries([_injury("Questionable")])
         db.upsert_injuries([_injury("Out")])          # worse
@@ -150,7 +150,7 @@ class TestInjuryTrendsTool:
         """`limit` is a budget for results, not for rows the filter throws away."""
         from nfl_mcp import tool_registry
 
-        monkeypatch.setattr(tool_registry, "get_db", lambda: db)
+        monkeypatch.setattr("nfl_mcp.tools._context.get_db", lambda: db)
 
         db.upsert_injuries([_injury("Questionable", player_id="hurt")])
         db.upsert_injuries([_injury("Out", player_id="hurt")])  # the one downgrade

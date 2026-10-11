@@ -14,9 +14,11 @@ actionable recommendations for fantasy lineup decisions.
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Any, cast
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .game_clock import game_lock, week_games
@@ -439,7 +441,7 @@ class LineupOptimizer:
         Returns:
             Tuple of (confidence_score, confidence_level, reasoning_list)
         """
-        scores = {}
+        scores: dict[str, float] = {}
         reasoning = []
 
         # 1. Matchup score
@@ -458,7 +460,7 @@ class LineupOptimizer:
             reasoning.append(f"⚠️ Tough matchup ({where})")
 
         # 2. Usage score
-        usage_score = 50  # Base score
+        usage_score: float = 50  # Base score
         if analysis.snap_percentage > 0:
             # Normalize snap percentage to 0-100 score
             usage_score = min(100, analysis.snap_percentage * 1.2)  # 83%+ snaps = 100
@@ -770,7 +772,7 @@ class LineupOptimizer:
             analysis.on_bye = True
             analysis.opponent = "BYE"
             analysis.matchup_tier = "bye"
-            if (injury_data or {}).get("status"):
+            if injury_data and injury_data.get("status"):
                 analysis.injury_status = injury_data["status"]
                 analysis.injury_source = "caller"
             analysis.base_source = "bye"
@@ -1003,10 +1005,11 @@ class LineupOptimizer:
                 logger.error(f"Analysis failed: {result}")
                 continue
 
-            position = result.position
+            player_analysis = cast(PlayerAnalysis, result)
+            position = player_analysis.position
             if position not in analyses_by_position:
                 analyses_by_position[position] = []
-            analyses_by_position[position].append(result)
+            analyses_by_position[position].append(player_analysis)
 
         # Sort each position by projected points; confidence only breaks ties,
         # the same order as the flat recommendation list.
@@ -1536,8 +1539,9 @@ async def compare_players_for_slot(
     if chosen is not None and chosen is not points_winner:
         runner_up = points_winner
         winner = chosen
-        verdict = (f"{risk['summary']} — risk mode {risk['risk_mode']} "
-                   f"({risk['reason']}). On points alone: {verdict}")
+        risk_pick = cast(dict, risk)  # chosen is only set when risk is
+        verdict = (f"{risk_pick['summary']} — risk mode {risk_pick['risk_mode']} "
+                   f"({risk_pick['reason']}). On points alone: {verdict}")
 
     if locked_starter:
         winner = locked_starter
@@ -1659,7 +1663,7 @@ def _slot_risk(analyses: list[PlayerAnalysis], risk_mode: str,
     if not analyses:
         return None
     try:
-        cands = [{"key": a.player_name, "mean": float(a.projected_points or 0.0),
+        cands: list[dict[str, Any]] = [{"key": a.player_name, "mean": float(a.projected_points or 0.0),
                   "sd": max(0.0, (float(a.ceiling or 0.0) - float(a.floor or 0.0)) / 2.0)}
                  for a in analyses]
         playoff_pct = (context or {}).get("playoff_pct")
@@ -1717,7 +1721,7 @@ def _settle_seats(seats: list[tuple[str, PlayerAnalysis | None]],
         for k in open_seats:
             s = best[k]
             j = home.get(id(s)) if s is not None else None
-            if j is None or j == k or j not in open_set:
+            if s is None or j is None or j == k or j not in open_set:
                 continue
             other = best[j]
             if not slot_accepts(seats[j][0], s.position):
@@ -1746,11 +1750,11 @@ def _lineup_changes(seats: list[tuple[str, PlayerAnalysis | None]],
     seat_in_best = {id(b): i for i, b in enumerate(best) if b is not None}
     newcomers = sorted(
         (i for i, b in enumerate(best) if b is not None and id(b) not in starting),
-        key=lambda i: best[i].projected_points, reverse=True,
+        key=lambda i: cast(PlayerAnalysis, best[i]).projected_points, reverse=True,
     )
     changes = []
     for k0 in newcomers:
-        bench_in, in_slot = best[k0], seats[k0][0]
+        bench_in, in_slot = cast(PlayerAnalysis, best[k0]), seats[k0][0]
         moves: list[dict] = []
         benched: PlayerAnalysis | None = None
         k = k0
@@ -1759,7 +1763,7 @@ def _lineup_changes(seats: list[tuple[str, PlayerAnalysis | None]],
         for _ in range(len(seats)):
             held = seats[k][1]
             nxt = seat_in_best.get(id(held)) if held is not None else None
-            if nxt is None:
+            if held is None or nxt is None:
                 benched = held
                 break
             moves.append({"player": held.player_name,
@@ -2028,8 +2032,9 @@ async def analyze_full_lineup(
     # A starter whose game has started keeps his seat, and a bench player
     # whose game has started cannot take one: only the rest is optimized.
     open_seats = [i for i, (_, a) in enumerate(seats) if a is None or not a.locked]
-    open_best = optimal_lineup(
-        [seats[i][1] for i in open_seats if seats[i][1] is not None]
+    # optimal_lineup is annotated for dicts but is generic over value/position.
+    open_best = cast(Callable[..., list[PlayerAnalysis | None]], optimal_lineup)(
+        [a for i in open_seats if (a := seats[i][1]) is not None]
         + [a for a in bench_analysis if not a.locked],
         [normalize_slot(seats[i][0]) for i in open_seats],
         value=lambda a: a.projected_points, position=lambda a: a.position,
@@ -2157,7 +2162,7 @@ def _risk_block(seats: list[tuple[str, PlayerAnalysis | None]],
         slot_names = [normalize_slot(seats[i][0]) for i in open_seats]
         if not slot_names:
             return None
-        candidates = ([_analysis_input(seats[i][1]) for i in open_seats if seats[i][1] is not None]
+        candidates = ([_analysis_input(a) for i in open_seats if (a := seats[i][1]) is not None]
                       + [_analysis_input(a) for a in bench if not a.locked])
         locked = [_analysis_input(a, normalize_slot(key)) for key, a in seats
                   if a is not None and a.locked]

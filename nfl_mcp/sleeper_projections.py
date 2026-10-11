@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .config import LONG_TIMEOUT, create_http_client
 from .opportunity_tools import norm_name
@@ -180,7 +181,7 @@ async def fetch_weeks(season: int, weeks, ttl: timedelta = FUTURE_CACHE_TTL) -> 
     Never raises."""
     import asyncio
 
-    empty = {"by_id": {}, "by_name": {}, "by_def": {}}
+    empty: dict[str, dict] = {"by_id": {}, "by_name": {}, "by_def": {}}
     sem = asyncio.Semaphore(FETCH_CONCURRENCY)
     now = datetime.now(UTC)
 
@@ -203,7 +204,7 @@ async def fetch_weeks(season: int, weeks, ttl: timedelta = FUTURE_CACHE_TTL) -> 
 
 
 async def _fetch(season: int, week: int) -> dict:
-    params = [("season_type", "regular")] + [("position[]", p) for p in PROJECTED_POSITIONS]
+    params: list[tuple[str, Any]] = [("season_type", "regular")] + [("position[]", p) for p in PROJECTED_POSITIONS]
     try:
         async with create_http_client(timeout=LONG_TIMEOUT) as client:
             resp = await client.get(PROJECTIONS_URL.format(season=season, week=week), params=params)
@@ -358,7 +359,7 @@ def second_opinion(ours: float | None, theirs: float | None, ruled_out: bool = F
     disagree = base >= DISAGREE_MIN_POINTS and (
         abs(gap) > DISAGREE_ABSOLUTE
         or (abs(gap) > DISAGREE_RELATIVE * base and abs(gap) >= DISAGREE_MIN_GAP))
-    out = {
+    out: dict[str, Any] = {
         "sleeper_projection": theirs,
         "consensus": 0.0 if ruled_out else round(
             BLEND_MODEL_WEIGHT * ours + (1 - BLEND_MODEL_WEIGHT) * theirs, 1),
@@ -395,7 +396,7 @@ async def annotate(projections: list[dict], inputs: list[dict], season: int | No
     they carry the Sleeper `player_id` the projection output does not. A
     player on bye keeps a zero and is never a disagreement.
     """
-    empty = {"active": False, "source": None, "disagreements": []}
+    empty: dict[str, Any] = {"active": False, "source": None, "disagreements": []}
     if not projections or not season or not week:
         return empty
     index = await fetch_week_projections(season, week)

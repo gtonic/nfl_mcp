@@ -26,7 +26,7 @@ from typing import Any
 
 
 def validate_params(schema: dict[str, dict[str, Any]], values: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    validated = {}
+    validated: dict[str, Any] = {}
     errors: list[str] = []
 
     for name, spec in schema.items():

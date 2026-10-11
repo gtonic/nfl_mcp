@@ -103,11 +103,11 @@ def injury_items(db, since: str, roles: dict[str, str], athletes: dict) -> list[
     """Status moves since ``since``, one item per player (first -> latest)."""
     injury_index = build_injury_index(db.get_all_current_injuries())
     report_to_pid: dict[str, str] = {}
-    for pid in roles:
-        row = athletes.get(pid)
+    for role_pid in roles:
+        row = athletes.get(role_pid)
         report = find_report(row, injury_index, (row or {}).get("team_id")) if row else None
         if report and report.get("player_id"):
-            report_to_pid[str(report["player_id"])] = pid
+            report_to_pid[str(report["player_id"])] = role_pid
     if not report_to_pid:
         return []
     moves = _status_moves(db.get_injury_status_changes(
@@ -166,14 +166,14 @@ async def news_items(since_dt: datetime, roles: dict[str, str], athletes: dict,
         *(fetch(limit=50) for _, fetch, _ in sources), return_exceptions=True
     )
     feeds = []
-    for (label, _, key), resp in zip(sources, responses, strict=True):
+    for (label, _, feed_key), resp in zip(sources, responses, strict=True):
         if isinstance(resp, BaseException):
             errors[f"{label.lower()}_news"] = str(resp)
             continue
         resp = resp or {}
         if resp.get("success") is False:
             errors[f"{label.lower()}_news"] = resp.get("error") or "unavailable"
-        feeds += [(label, a) for a in resp.get(key) or []]
+        feeds += [(label, a) for a in resp.get(feed_key) or []]
 
     items, seen = [], set()
     for source, article in feeds:
@@ -201,11 +201,11 @@ async def news_items(since_dt: datetime, roles: dict[str, str], athletes: dict,
 
 
 async def transaction_items(league_id: str, weeks: list[int], since_dt: datetime,
-                            my_rid: int, opp_rid: int | None, owners: dict[int, str],
+                            my_rid: int, opp_rid: int | None, owners: dict[int, str | None],
                             db, errors: dict) -> list[dict]:
     """Processed adds, drops and trades since ``since_dt``."""
     from . import sleeper_tools
-    txs = []
+    txs: list[dict] = []
     # Every week at once: an empty week is retried with a back-off inside
     # get_transactions, which should not hold up the other week.
     responses = await asyncio.gather(
@@ -399,6 +399,7 @@ async def get_league_changes(
     mine, error = find_roster(rosters, league_id, roster_id, user_id)
     if error:
         return create_success_response({"success": False, "error": error})
+    assert mine is not None  # find_roster returns a roster whenever there is no error
     roster_id = mine["roster_id"]
 
     if since:
@@ -450,7 +451,7 @@ async def get_league_changes(
     athletes = db.get_athletes_by_ids(list(roles))
     rostered = {pid: r.get("roster_id") for r in rosters for pid in (r.get("players") or [])}
 
-    owners: dict[int, str] = {}
+    owners: dict[int, str | None] = {}
     try:
         users = (await sleeper_tools.get_league_users(league_id) or {}).get("users") or []
         names = {u.get("user_id"): u.get("display_name") for u in users}

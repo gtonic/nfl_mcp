@@ -229,7 +229,7 @@ async def _fetch_week(league_id: str, week: int, auto_inferred: bool) -> dict:
 
                 # Enrichment
                 try:
-                    cache = {}
+                    cache: dict = {}
                     # Determine season for usage/opponent enrichment
                     season = None
                     try:
@@ -374,7 +374,7 @@ async def get_traded_picks(league_id: str) -> dict:
 
         try:
             nfl_db = _init_db()
-            cache = {}
+            cache: dict = {}
             if isinstance(traded_picks_data, list):
                 for tp in traded_picks_data:
                     if isinstance(tp, dict) and tp.get("player_id"):

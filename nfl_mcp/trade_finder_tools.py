@@ -33,6 +33,7 @@ both-sides-gain bar is on lineup points alone.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from .briefing_tools import _staleness_warnings
 from .database import get_shared_db
@@ -165,6 +166,7 @@ async def find_trade_targets(
                                             purpose="advise")
     if error:
         return create_success_response({"success": False, "error": error})
+    assert mine is not None  # find_roster returns a roster whenever error is None
     roster_id = mine["roster_id"]
 
     deadline = ros.trade_deadline_status(league.get("settings") or {}, week)
@@ -279,7 +281,7 @@ async def find_trade_targets(
     wanted = {p.upper() for p in (positions or TRADEABLE_POSITIONS)}
     my_candidates = _top_candidates(mine_scored)
 
-    proposals = []
+    proposals: list[dict[str, Any]] = []
     evaluated = 0
     skipped_depth = 0
     for other_id, their_scored in scored_by_roster.items():

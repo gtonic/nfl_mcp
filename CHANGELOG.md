@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Code layout (no behaviour change).** `nfl_mcp/tool_registry.py` (~3,900
+  lines) now only assembles the tools: the wrappers live in
+  `nfl_mcp/tools/<domain>.py` (`nfl_info`, `news`, `athletes`, `league`,
+  `waiver`, `trade`, `draft`, `projection`, `matchup`, `lineup`, `injury`,
+  `coaching`, `reports`) and the request-DB context in
+  `nfl_mcp/tools/_context.py`. `NFLDatabase` (~3,900 lines) is assembled from
+  one mixin per concern in `nfl_mcp/db/` (`migrations`, `snapshots`,
+  `stats`, `injuries`, `news`, `projections`, `rankings`, `athletes`; the pool
+  in `db/pool.py`). Every old import path still works (`tool_registry` and
+  `database` re-export). Tool names, signatures, docstrings, schemas, order and
+  profile counts (61 / 78 / 46) are unchanged (FastMCP `tools/list` dumps
+  diffed); migrations give byte-identical `sqlite_master` on a fresh DB, a
+  v10 -> v21 upgrade and a copy of the live DB. Tests patch the one DB seam
+  `nfl_mcp.tools._context.get_db`.
+- **mypy is a CI gate.** 334 errors -> 0 (annotations and behaviour-preserving
+  narrowing; one scoped `type: ignore`); the `typecheck` job no longer
+  continues on error, and `nfl_mcp/tools`, `nfl_mcp/db`, `tool_registry` and
+  `database` must be fully annotated.
+- **AGENT.md tool index is generated.** `scripts/gen_agent_docs.py` writes the
+  tool index (name, profiles, module, summary) and keeps the AGENT.md/README
+  tool counts and per-section counts in step with the registry;
+  `tests/test_agent_docs.py` fails when they drift or a tool is undocumented.
+  AGENT.md gained `audit_ir_slots` and `refresh_data` entries and corrected
+  section counts.
+- `evals/live/validate_draft.py --season` defaults to the calendar season
+  instead of a literal 2026; test-side `sqlite3.connect` blocks close their
+  connections (no DB `ResourceWarning` on 3.14).
+
 ### Fixed
 - **`get_gameday_inactives` no longer hangs.** It ran past the MCP client's
   300 s on 2026-09-27. Root cause: with the stored injury reports older than

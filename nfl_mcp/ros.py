@@ -754,9 +754,9 @@ async def ros_projections(
     today = today or datetime.now(UTC).date()
     out = []
     for p in clean:
-        key = (p["name"], p["team"])
-        proj = now_proj.get(key) or {}
-        rate_src = rate_proj.get(key) or proj
+        name_key = (p["name"], p["team"])
+        proj = now_proj.get(name_key) or {}
+        rate_src = rate_proj.get(name_key) or proj
         per_game, baseline_source, prior_weight = _per_game(rate_src, p["position"], model)
         inherited, inherited_games = _inherited(rate_src, today, week)
         # A teammate due back: the inflated rate until his return, the rate

@@ -105,10 +105,20 @@ ignore = [
 python_version = "3.11"
 ignore_missing_imports = true
 warn_unused_ignores = false
-# Report-only signal, not a gate (the CI job is non-blocking). This is a
-# dict-heavy, progressively-typed codebase, so some inference noise is expected;
-# the value is catching real type bugs (e.g. attribute typos, None misuse).
+# A CI gate: `mypy nfl_mcp` must report no errors. Untyped function bodies are
+# checked too, so None misuse and attribute typos surface in legacy code.
 check_untyped_defs = true
+
+# The split-out tool and persistence modules (and new code that joins them)
+# must be fully annotated.
+[[tool.mypy.overrides]]
+module = ["nfl_mcp.tools.*", "nfl_mcp.db.*", "nfl_mcp.tool_registry", "nfl_mcp.database"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_reexport = true
+
+# Legacy modules exempt from the gate go here with `ignore_errors = true`.
+# Currently none: every module passes. Keep it that way -- fix, don't list.
 
 [tool.coverage.run]
 source = ["nfl_mcp"]

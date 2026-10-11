@@ -182,7 +182,7 @@ async def league_calibration(
     ), strict=True):
         matchups_by_week[wk] = (resp or {}).get("matchups") or []
     for wk in weeks:
-        points = {}
+        points: dict = {}
         for m in matchups_by_week[wk]:
             points.update(m.get("players_points") or {})
         logged = db.get_logged_projections(season, wk, key, player_ids=list(points))
@@ -284,6 +284,7 @@ async def get_weekly_retro(
         else find_roster(rosters, league_id, roster_id, user_id)
     if error:
         return create_success_response({"success": False, "error": error})
+    assert mine_roster is not None  # find_roster returns a roster whenever there is no error
     roster_id = mine_roster["roster_id"]
 
     matchups = (matchups_resp or {}).get("matchups") or []

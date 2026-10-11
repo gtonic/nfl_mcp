@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from . import news_signals
 from .database import get_shared_db
@@ -52,7 +53,8 @@ def _resolve(db, queries: list[str], held: set[str]) -> tuple[list[dict], list[d
     from .lineup_tools import candidate_summary, name_candidates
     ids = [q for q in queries if q.isdigit()]
     rows = db.get_athletes_by_ids(ids) if ids else {}
-    out, unresolved = [], []
+    out: list[dict] = []
+    unresolved: list[dict] = []
     for q in queries:
         if q.isdigit():
             row = rows.get(q)
@@ -69,7 +71,7 @@ def _resolve(db, queries: list[str], held: set[str]) -> tuple[list[dict], list[d
         if not pick or not pick.get("id"):
             unresolved.append({"name": q, "reason": "no player by that name in the athlete cache"})
             continue
-        entry = {"query": q, "row": pick}
+        entry: dict[str, Any] = {"query": q, "row": pick}
         if ambiguous and str(pick.get("id")) not in held:
             entry["ambiguous"] = True
             entry["candidates"] = candidate_summary(ranked)
@@ -139,6 +141,7 @@ async def get_player_news(players: list[str] | None = None, days: int = DEFAULT_
         return create_success_response({
             "success": False, "error": "give players (names or Sleeper ids) or a league_id"})
     league_wide = not queries
+    resolved: list[dict[str, Any]]
     if league_wide:
         rows = await asyncio.to_thread(db.get_athletes_by_ids, sorted(held))
         resolved = [{"query": pid, "row": row} for pid, row in sorted(rows.items())
@@ -151,8 +154,8 @@ async def get_player_news(players: list[str] | None = None, days: int = DEFAULT_
     warnings += fresh_warnings
     since = (now - timedelta(days=days)).isoformat()
     read_since = (now - timedelta(days=max(days, news_signals.MAX_AGE_DAYS))).isoformat()
-    teams = sorted({normalize_team(p["row"].get("team_id")) for p in resolved
-                    if normalize_team(p["row"].get("team_id"))})
+    teams = sorted({tc for p in resolved
+                    if (tc := normalize_team(p["row"].get("team_id")))})
     ids = [str(p["row"]["id"]) for p in resolved]
     # The players' own items (any team) and their teams' items (attribution).
     stored = await asyncio.to_thread(db.get_player_news, ids, read_since, teams)
@@ -169,7 +172,7 @@ async def get_player_news(players: list[str] | None = None, days: int = DEFAULT_
             names[last] = norm_name(name) if names.get(last, norm_name(name)) == norm_name(name) \
                 else None
 
-    out = []
+    out: list[dict[str, Any]] = []
     cap = LEAGUE_MAX_ITEMS if league_wide else MAX_ITEMS
     for p in resolved:
         row = p["row"]
@@ -195,7 +198,7 @@ async def get_player_news(players: list[str] | None = None, days: int = DEFAULT_
         flags = news_signals.signals_for(index, name, team)
         status = (report or {}).get("injury_status")
         from .injury_status import availability
-        entry = {
+        entry: dict[str, Any] = {
             "query": p["query"], "name": name, "player_id": pid, "team": team or "FA",
             "position": (row.get("position") or "").upper() or None,
             "injury_status": status,

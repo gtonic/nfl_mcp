@@ -7,6 +7,7 @@ player news, projections, and expert picks.
 
 import logging
 import re
+from typing import Any
 
 from bs4 import BeautifulSoup
 
@@ -205,7 +206,7 @@ async def get_cbs_projections(
                 for row in rows:
                     cells = row.find_all(['td', 'th'])
                     if len(cells) >= 2:
-                        projection = {}
+                        projection: dict[str, Any] = {}
 
                         # First cell holds the player (or, for DST, the team).
                         # It may lead with a text-less logo anchor, so take the

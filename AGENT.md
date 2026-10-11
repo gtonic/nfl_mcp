@@ -14,7 +14,8 @@ The Model Context Protocol (MCP) is a standardized protocol that allows AI/LLM s
 
 The NFL MCP Server follows a simplified, maintainable architecture:
 
-- **Single Tool Registry**: All tools defined in one centralized location (`tool_registry.py`)
+- **Single Tool Registry**: Every tool is registered in one place (`tool_registry.py`); the tool
+  functions live in `nfl_mcp/tools/<domain>.py`
 - **FastMCP Framework**: Built on FastMCP 3.0+ for robust MCP protocol support
 - **HTTP Transport**: Runs on HTTP transport (default port 9000)
 - **Database Caching**: SQLite-based persistence for optimal performance
@@ -22,7 +23,10 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ### Core Components
 
-1. **Tool Registry** (`tool_registry.py`): Central registration of all MCP tools
+1. **Tool Registry** (`tool_registry.py`): Which tools exist, their order and profiles; the
+   thin, validated tool wrappers live in `nfl_mcp/tools/` (one module per domain: `league`,
+   `lineup`, `waiver`, `trade`, `projection`, `matchup`, `injury`, `news`, `reports`, …)
+   and the request database is injected via `nfl_mcp/tools/_context.py`
 2. **NFL Tools** (`nfl_tools.py`): ESPN API integration for NFL data
 3. **Sleeper Tools** (`sleeper_tools.py`): Fantasy league management via Sleeper API
 4. **Athlete Tools** (`athlete_tools.py`): Player data management and caching
@@ -47,6 +51,95 @@ under `tools`. Every tool also ships its own parameter schema over MCP, so an
 agent can introspect the authoritative signature at runtime; this list is the
 map. Each tool answers one distinct question — earlier overlapping tools are
 now parameters of the one kept (see the CHANGELOG for the old → new mapping).
+
+### Tool index
+
+<!-- BEGIN GENERATED: tool-index (scripts/gen_agent_docs.py) -->
+<!-- Do not edit by hand: run `python scripts/gen_agent_docs.py`. -->
+
+All 78 tools, grouped by the `nfl_mcp/tools/` module that defines them (season: 61, offseason: 46, full: 78).
+
+| Tool | Profiles | Module | Summary |
+|---|---|---|---|
+| `fetch_athletes` | full | `athletes` | Fetch all NFL players from Sleeper API and store in database. |
+| `get_athletes_by_team` | season, offseason, full | `athletes` | Get all athletes for a specific team. |
+| `lookup_athlete` | season, offseason, full | `athletes` | Look up an athlete by their ID. |
+| `refresh_data` | season, offseason, full | `athletes` | Refresh cached feeds NOW — when injuries/athletes/practice data are stale. |
+| `search_athletes` | season, offseason, full | `athletes` | Search for athletes by name (partial match supported). |
+| `get_all_coaching_staffs` | offseason, full | `coaching` | Get coaching staff information for all 32 NFL teams. |
+| `get_coaching_staff` | offseason, full | `coaching` | Get coaching staff for a specific NFL team from ESPN API. |
+| `get_coaching_tree` | offseason, full | `coaching` | Get coaching tree information for a known NFL coach. |
+| `get_scheme_classification` | offseason, full | `coaching` | Get offensive and defensive scheme classification for an NFL team. |
+| `get_draft_board` | offseason, full | `draft` | Build a tiered, VBD-ranked draft board (the ordering that wins drafts). |
+| `recommend_draft_pick` | offseason, full | `draft` | Recommend the best pick(s) right now in a live Sleeper draft. |
+| `simulate_draft` | offseason, full | `draft` | Rehearse a full snake draft offline (solo, repeatable). |
+| `get_gameday_inactives` | season, full | `injury` | Get gameday inactives: the published list once it is out, the injury report's likely-outs before that. |
+| `get_injury_report` | season, offseason, full | `injury` | Current injury report ("who is hurt"): all teams, some teams, or players. |
+| `get_injury_trends` | season, offseason, full | `injury` | Get injury status CHANGES over a window - who got worse or recovered. |
+| `fetch_all_players` | full | `league` | Fetch full Sleeper players map (cached). Returns counts only to minimize payload. |
+| `get_bye_week_plan` | season, full | `league` | Bye-week plan: which upcoming weeks YOUR lineup runs short, and what to add. |
+| `get_draft` | offseason, full | `league` | Fetch a specific draft. |
+| `get_draft_picks` | offseason, full | `league` | Fetch all picks in a draft. |
+| `get_draft_traded_picks` | offseason, full | `league` | Fetch traded picks in a draft. |
+| `get_fantasy_context` | season, offseason, full | `league` | Aggregate core league context (league, rosters, users, matchups, transactions). |
+| `get_league` | season, offseason, full | `league` | Get league information with input validation. |
+| `get_league_drafts` | offseason, full | `league` | Fetch all drafts for a league. |
+| `get_league_users` | season, offseason, full | `league` | Get league users with input validation. |
+| `get_matchups` | season, full | `league` | Get league matchups with input validation. |
+| `get_nfl_state` | season, offseason, full | `league` | Get NFL state - no validation needed as it has no parameters. |
+| `get_playoff_bracket` | season, full | `league` | Get playoff bracket (winners or losers) with validation. |
+| `get_playoff_odds` | season, full | `league` | Compute playoff probabilities via Monte-Carlo of the rest of the season. |
+| `get_rosters` | season, offseason, full | `league` | Get league rosters with input validation. |
+| `get_traded_picks` | offseason, full | `league` | Get traded picks with input validation. |
+| `get_transactions` | season, offseason, full | `league` | Get COMPLETED league transactions for a week (adds, drops, trades, waivers). |
+| `get_trending_players` | season, offseason, full | `league` | Get trending players with validation (returns objects including counts and 'enriched'). |
+| `get_user` | season, offseason, full | `league` | Fetch a Sleeper user by ID or username. |
+| `get_user_leagues` | season, offseason, full | `league` | Fetch all leagues for a user and season. |
+| `analyze_lineup` | season, full | `lineup` | Grade the lineup YOU have set this week and name the swaps worth making. |
+| `compare_players_for_slot` | season, full | `lineup` | Compare multiple players competing for the same roster slot. |
+| `get_start_sit_recommendation` | season, full | `lineup` | Start or sit? For one player (player_name) or several (players). |
+| `get_win_probability_lineup` | season, full | `lineup` | Pick the lineup that maximizes P(beating this specific opponent). |
+| `analyze_opponent` | season, full | `matchup` | Analyze an opponent's roster to identify weaknesses and exploitation opportunities. |
+| `analyze_roster_matchups` | season, full | `matchup` | This week's defensive matchup for every player on YOUR roster: smash spots and tough matchups. |
+| `get_defense_rankings` | season, offseason, full | `matchup` | NFL defenses ranked by fantasy points allowed per position (QB/RB/WR/TE), or how tough ONE defense is for each position. |
+| `get_stack_opportunities` | season, full | `matchup` | Identify high-total games for stacking opportunities. |
+| `get_streaming_options` | season, full | `matchup` | Rank weekly streaming options per position over the next 1-4 weeks. |
+| `get_strength_of_schedule` | season, offseason, full | `matchup` | Rank NFL teams by schedule difficulty over a week range, per position. |
+| `get_vegas_lines` | season, full | `matchup` | Vegas spreads, totals and implied team totals — per game, per team, or for every player on YOUR roster. |
+| `get_weather_forecast` | season, full | `matchup` | Per-game weather forecast + fantasy impact for an NFL week (Open-Meteo, no key). |
+| `crawl_url` | season, offseason, full | `news` | Crawl URL and extract text content for LLM processing. |
+| `get_cbs_expert_picks` | full | `news` | CBS Sports experts' NFL picks AGAINST THE SPREAD for a week (betting picks per game, not fantasy advice). |
+| `get_cbs_player_news` | season, offseason, full | `news` | Fetch latest fantasy football player news from CBS Sports. |
+| `get_cbs_projections` | season, offseason, full | `news` | CBS Sports SEASON-LONG fantasy projections for one position (not weekly). |
+| `get_player_news` | season, offseason, full | `news` | Player news timeline + role/availability flags ("what is the latest on X?"). |
+| `fetch_teams` | full | `nfl_info` | Fetch all NFL teams from ESPN API and store them in database. |
+| `get_depth_chart` | season, offseason, full | `nfl_info` | Fetch a team's depth chart from ESPN HTML page. |
+| `get_league_leaders` | offseason, full | `nfl_info` | Get NFL league leaders by stat type (feature-flagged). |
+| `get_nfl_news` | season, offseason, full | `nfl_info` | Fetch latest NFL news headlines from ESPN. |
+| `get_nfl_standings` | season, offseason, full | `nfl_info` | Fetch NFL standings (league or conference) from ESPN Core API. |
+| `get_team_player_stats` | season, offseason, full | `nfl_info` | Season-to-date per-player stats for a team (Sleeper season totals). |
+| `get_team_schedule` | season, offseason, full | `nfl_info` | Fetch a team's schedule (Site API) including matchup context. |
+| `get_teams` | season, offseason, full | `nfl_info` | Get all NFL teams from ESPN API. |
+| `get_opportunity_projections` | season, full | `projection` | Opportunity-based projections from trailing volume (beats trailing-PPG). |
+| `get_ros_projections` | season, offseason, full | `projection` | Rest-of-season (ROS) and fantasy-playoff points, in YOUR league's scoring. |
+| `get_usage_trends` | season, full | `projection` | Week-by-week usage and role trends for a roster or a list of players. |
+| `project_players` | season, offseason, full | `projection` | Project THIS WEEK's fantasy points for one or more players (transparent). |
+| `get_league_changes` | season, full | `reports` | START HERE for a daily check-in: "what changed in my league since I last looked" - one ranked delta for YOUR roster, not full reports. |
+| `get_projection_accuracy` | season, full | `reports` | How accurate were the projections, week by week — and which signals help? |
+| `get_weekly_briefing` | season, full | `reports` | START HERE for "how should I line up this week" - one call, not six. |
+| `get_weekly_retro` | season, full | `reports` | Post-game review of a FINISHED week: "how did last week go / what did I leave on the bench / were the projections any good". |
+| `get_weekly_signal_review` | season, full | `reports` | Weekly calibration review of the projection SIGNALS: is each weight (practice buckets, role trend, QB coupling, news flags, ...) still right? |
+| `analyze_trade` | season, offseason, full | `trade` | Analyze a fantasy football trade for fairness and fit. |
+| `find_trade_targets` | season, full | `trade` | START HERE for "who should I trade with" - finds the deal, not just grades one. |
+| `get_player_values` | season, offseason, full | `trade` | Consensus player market values (FantasyCalc; real values, not heuristics). |
+| `get_trade_market` | season, full | `trade` | The league's trade market for YOUR roster: who needs what, who has it, and who would say yes. |
+| `audit_ir_slots` | season, full | `waiver` | IR audit: who to move into the IR slot, who must come out, who is stuck. |
+| `get_handcuff_map` | season, offseason, full | `waiver` | Map each of your RB starters to its handcuff + the handcuff's availability. |
+| `get_player_ownership` | season, offseason, full | `waiver` | Who has these players in a league: rostered (by whom, IR/taxi), free agent or on waivers. |
+| `get_waiver_log` | season, full | `waiver` | What already HAPPENED on this league's waiver wire: processed claims, failed claims, summary counts, and players dropped and re-added. |
+| `get_waiver_targets` | season, full | `waiver` | START HERE for "who should I pick up" - the waiver question, for YOUR league. |
+| `recommend_faab_bid` | season, full | `waiver` | Recommend a FAAB waiver bid for a player (% of budget + absolute). |
+<!-- END GENERATED: tool-index -->
 
 ### 1. NFL Information Tools (8 tools)
 
@@ -132,7 +225,7 @@ Coaching staff information, coaching trees, and scheme analysis:
   keyed on the coach: roughly a quarter of the league changes coordinator every
   offseason, and a per-team table silently becomes last regime's answer.
 
-### 3. Player/Athlete Tools (4 tools)
+### 3. Player/Athlete Tools (5 tools)
 
 Player data management with Sleeper API integration:
 
@@ -155,6 +248,13 @@ Player data management with Sleeper API integration:
   - Parameters: `team_id` (required, e.g., "KC")
   - Use case: Analyze team composition
   - Returns: All athletes on specified team
+
+- **`refresh_data`**: Refresh cached feeds now, when injuries / athletes /
+  practice data are stale (e.g. after the host slept and the prefetch stopped)
+  - Parameters: `scope` (any of injuries, practice, athletes, schedule, snaps,
+    usage, accuracy, news; default injuries + practice), `force`, `background`,
+    `job_id` (poll a background refresh)
+  - Returns: per-scope counts, durations and the resulting data freshness
 
 ### 4. Web Scraping Tools (1 tool)
 
@@ -215,7 +315,7 @@ Comprehensive fantasy football league management:
   - Returns: weeks, crunch_weeks, thin_weeks, suggestions, free_agent_options,
     core_starters, trade_deadline, method
 
-### 7. Waiver Wire Analysis Tools (3 tools)
+### 7. Waiver Wire Analysis Tools (4 tools)
 
 Advanced waiver wire intelligence:
 
@@ -251,7 +351,17 @@ Advanced waiver wire intelligence:
     taxi, or `free_agent` / `on_waivers` with `waiver_timing` — the same
     estimate as `get_waiver_targets`)
 
-### 8. Trade Analysis Tools (3 tools)
+- **`audit_ir_slots`**: IR audit — who to move into the IR slot, who must come
+  out, who is stuck
+  - Parameters: `league_id` (required), `roster_id` or `user_id`
+  - Reads the league's own IR rules (`reserve_slots`, allowed statuses) against
+    Sleeper's injury status, which is what Sleeper enforces; use for "can I put
+    X on IR" / "why can't I add anyone" (`get_weekly_briefing` includes the same
+    moves)
+  - Returns: reserve_slots / used / free, eligible_statuses, moves (`activate`,
+    `move_to_ir`, …) with reasons, message
+
+### 8. Trade Analysis Tools (4 tools)
 
 Trade evaluation and discovery:
 

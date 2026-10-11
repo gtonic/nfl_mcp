@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import IntEnum
+from typing import Any
 
 from . import injury_status
 
@@ -110,7 +111,7 @@ def worst_status(*statuses: str | None) -> str | None:
     if not known:
         return None
     return max(known, key=lambda s: (status_severity(s),
-                                     _TIEBREAK.get(injury_status.normalize(s), 0)))
+                                     _TIEBREAK.get(injury_status.normalize(s) or "", 0)))
 
 
 # Doubtful and Out share a rung on the 1-5 scale, and `max` then kept whichever
@@ -236,7 +237,7 @@ class InjuryAggregator:
         return stats
 
     @classmethod
-    def get_cache_stats(cls) -> dict[str, any]:
+    def get_cache_stats(cls) -> dict[str, Any]:
         """Get statistics about in-memory caches.
 
         Returns:
@@ -492,9 +493,10 @@ class InjuryAggregator:
 
         # Follow only ESPN links, over https: an off-ESPN ref resolves to no
         # report, so its team counts as partially crawled and is not pruned.
-        url = safe_espn_ref(url)
-        if not url:
+        safe_url = safe_espn_ref(url)
+        if not safe_url:
             return None
+        url = safe_url
         try:
             resp = await self._http_client.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             if resp.status_code != 200:
@@ -1020,7 +1022,8 @@ def parse_return_date(item: dict | None) -> str | None:
     """
     if not isinstance(item, dict):
         return None
-    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    raw_details = item.get("details")
+    details = raw_details if isinstance(raw_details, dict) else {}
     raw = details.get("returnDate") or item.get("returnDate")
     if not raw or not isinstance(raw, str):
         return None

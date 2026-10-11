@@ -24,6 +24,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from .health import env_int
@@ -147,7 +148,9 @@ async def _refresh_news(db, season: int, week: int) -> dict:
             **({"warnings": warnings} if warnings else {})}
 
 
-_REFRESHERS = {
+# Every scope but "athletes" needs a season and week; "athletes" is run with
+# neither at startup.
+_REFRESHERS: dict[str, Callable[..., Awaitable[dict]]] = {
     "injuries": _refresh_injuries,
     "practice": _refresh_practice,
     "athletes": _refresh_athletes,
@@ -167,7 +170,7 @@ def _freshness(db) -> dict:
         return {}
 
 
-async def _run_scope(scope: str, db, season: int, week: int) -> dict:
+async def _run_scope(scope: str, db, season: int | None, week: int | None) -> dict:
     started = time.monotonic()
     try:
         out = await _REFRESHERS[scope](db, season, week)

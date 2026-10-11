@@ -31,7 +31,7 @@ _DB_CHECK_TIMEOUT_SECONDS = 3.0
 
 async def _check_database() -> dict[str, Any]:
     """Run the DB health check off the event loop, bounded by a timeout."""
-    from .tool_registry import get_db
+    from .tools._context import get_db
 
     nfl_db = get_db()
     if nfl_db is None:
@@ -51,7 +51,7 @@ async def _news_freshness() -> dict[str, Any]:
     """``{news: {updated_at, age_hours, sources, warnings?}}``: the news
     fetch's per-source health (`news_sources.health_summary`), bounded like
     the database check. {} without a database."""
-    from .tool_registry import get_db
+    from .tools._context import get_db
 
     nfl_db = get_db()
     if nfl_db is None or not hasattr(nfl_db, "get_news_health"):

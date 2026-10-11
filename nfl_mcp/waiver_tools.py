@@ -320,7 +320,7 @@ async def check_re_entry_status(league_id: str, round: int | None = None) -> dic
         ]
 
         # Count all players with waiver activity
-        all_players = set()
+        all_players: set[str] = set()
         for tx in waiver_transactions:
             all_players.update((tx.get('adds') or {}).keys())
             all_players.update((tx.get('drops') or {}).keys())

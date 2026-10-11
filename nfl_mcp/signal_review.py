@@ -44,6 +44,7 @@ import random
 import zlib
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import cast
 
 from .errors import create_success_response
 
@@ -238,7 +239,7 @@ def _catalogue(rows: list[dict]) -> list[dict]:
             "param": "news_signals adjustment",
             "pred": (lambda fl: lambda r: fl in _flags(r))(flag),
             "baseline": "rest", "current": _mean_logged("news_model_mult")})
-    for src in sorted({r.get("projection_source") for r in rows if r.get("projection_source")}):
+    for src in sorted({r["projection_source"] for r in rows if r.get("projection_source")}):
         cat.append({
             "name": f"source:{src}", "group": "projection_source",
             "label": f"Projection source {src}", "param": None,
@@ -592,6 +593,7 @@ async def _roster_player_ids(league_id: str, week: int, roster_id: int | None,
                                                 user_id, purpose="review")
         if error:
             return None, None, error
+        mine = cast(dict, mine)
         rid = mine["roster_id"]
         resp = await sleeper_tools.get_matchups(league_id, week)
         match = next((m for m in (resp or {}).get("matchups") or []
@@ -622,15 +624,16 @@ async def weekly_signal_review(
         review = _stored_fresh(db, season, week)
         source = "stored" if review else "computed"
     if review is None:
-        rows = await asyncio.to_thread(db.get_projection_accuracy, season, None, None, None,
-                                       league_id)
-        if not any(int(r["week"]) == week for r in rows):
+        graded: list[dict] = await asyncio.to_thread(db.get_projection_accuracy, season,
+                                                     None, None, None, league_id)
+        rows = graded
+        if not any(int(r["week"]) == week for r in graded):
             return {"week": week, "error": f"Week {week} has no graded projections"
                     + (f" for league {league_id}" if league_id else "") + "."}
-        review = review_rows(rows, week)
+        review = review_rows(graded, week)
         if not league_id:
             review["biggest_misses_briefing"] = biggest_misses(
-                [r for r in rows if r.get("log_source") == "briefing"], week)
+                [r for r in graded if r.get("log_source") == "briefing"], week)
             review["stored_at"] = datetime.now(UTC).isoformat()
             if hasattr(db, "save_signal_review"):
                 await asyncio.to_thread(db.save_signal_review, season, week, SCOPE_ALL,
@@ -639,12 +642,12 @@ async def weekly_signal_review(
     review["source"] = source
     # The user's rostered players' misses.
     if league_id:
-        rows = rows if rows is not None else await asyncio.to_thread(
+        league_rows: list[dict] = rows if rows is not None else await asyncio.to_thread(
             db.get_projection_accuracy, season, [week], None, None, league_id)
         ids, rid, error = (None, None, None)
         if roster_id is not None or user_id:
             ids, rid, error = await _roster_player_ids(league_id, week, roster_id, user_id)
-        review["biggest_misses"] = biggest_misses(rows, week, ids)
+        review["biggest_misses"] = biggest_misses(league_rows, week, ids)
         review["misses_scope"] = (f"roster {rid} in league {league_id}" if ids is not None
                                   else f"every player logged for league {league_id} "
                                        "(your roster and the opponents' starters the "

@@ -3,6 +3,7 @@ import random
 import re
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -252,8 +253,9 @@ class TestStoreAndTool:
         rows = _healthy(5, 20)
         db.upsert_projection_accuracy(rows)
         db.save_signal_review(2026, 5, sr.SCOPE_ALL, {"signals": [], "stale": True})
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn:
             conn.execute("UPDATE signal_reviews SET created_at='2000-01-01'")
+            conn.commit()
         rev = await sr.weekly_signal_review(db, 2026, 5)
         assert rev["source"] == "computed" and "stale" not in rev
 
@@ -263,9 +265,10 @@ class TestMigration:
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "old.db")
             NFLDatabase(path).close()
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 conn.execute("DELETE FROM schema_version WHERE version >= 21")
                 conn.execute("DROP TABLE signal_reviews")
+                conn.commit()
             d = NFLDatabase(path)
             assert d.save_signal_review(2026, 5, "all", {"a": 1}, 3)
             assert d.get_signal_review(2026, 5)["payload"] == {"a": 1}

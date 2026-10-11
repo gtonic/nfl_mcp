@@ -147,9 +147,9 @@ async def _depth_chart(nfl_tools, team: str, sem: asyncio.Semaphore,
     the next call retries; a timeout is appended to ``timed_out``."""
     hit = _depth_chart_cache.get(team)
     age = time.monotonic() - hit[0] if hit else None
-    if hit and age < DEPTH_CHART_TTL_SECONDS:
+    if hit and age is not None and age < DEPTH_CHART_TTL_SECONDS:
         return hit[1]
-    stale = hit[1] if hit and age < DEPTH_CHART_STALE_MAX_SECONDS else []
+    stale = hit[1] if hit and age is not None and age < DEPTH_CHART_STALE_MAX_SECONDS else []
     async with sem:
         try:
             dc = await asyncio.wait_for(nfl_tools.get_depth_chart(team), DEPTH_CHART_TIMEOUT_SECONDS)

@@ -102,7 +102,7 @@ class TestHealthCheck:
     async def test_health_check_with_no_db(self):
         """Test health check when no DB is initialized."""
         # get_db is imported inside health_check from tool_registry.
-        with patch('nfl_mcp.tool_registry.get_db', return_value=None):
+        with patch('nfl_mcp.tools._context.get_db', return_value=None):
             result = await health_check()
             content = result.body.decode()
             # Should still work, just with empty db_health
@@ -116,7 +116,7 @@ class TestHealthCheck:
         mock_db = MagicMock()
         mock_db.health_check.return_value = {"healthy": True, "pool_size": 2}
 
-        with patch('nfl_mcp.tool_registry.get_db', return_value=mock_db):
+        with patch('nfl_mcp.tools._context.get_db', return_value=mock_db):
             result = await health_check()
             content = result.body
             # Should include database health info
@@ -137,7 +137,7 @@ class TestHealthStatus:
     async def test_healthy_db_no_open_breakers(self):
         import json
 
-        with patch('nfl_mcp.tool_registry.get_db', return_value=self._db()), \
+        with patch('nfl_mcp.tools._context.get_db', return_value=self._db()), \
                 patch('nfl_mcp.retry_utils.get_all_circuit_breaker_status', return_value={}):
             result = await health_check()
         body = json.loads(result.body)
@@ -150,7 +150,7 @@ class TestHealthStatus:
         import json
 
         db = self._db(healthy=False, error="database is locked")
-        with patch('nfl_mcp.tool_registry.get_db', return_value=db):
+        with patch('nfl_mcp.tools._context.get_db', return_value=db):
             result = await health_check()
         assert result.status_code == 503
         assert json.loads(result.body)["status"] == "unhealthy"
@@ -159,7 +159,7 @@ class TestHealthStatus:
     async def test_db_check_raising_is_unhealthy(self):
         db = MagicMock()
         db.health_check.side_effect = RuntimeError("pool exhausted")
-        with patch('nfl_mcp.tool_registry.get_db', return_value=db):
+        with patch('nfl_mcp.tools._context.get_db', return_value=db):
             result = await health_check()
         assert result.status_code == 503
 
@@ -171,7 +171,7 @@ class TestHealthStatus:
             "espn_schedule": {"state": "open", "failure_count": 5},
             "sleeper_snaps": {"state": "closed", "failure_count": 0},
         }
-        with patch('nfl_mcp.tool_registry.get_db', return_value=self._db()), \
+        with patch('nfl_mcp.tools._context.get_db', return_value=self._db()), \
                 patch('nfl_mcp.retry_utils.get_all_circuit_breaker_status', return_value=breakers):
             result = await health_check()
         body = json.loads(result.body)
@@ -182,7 +182,7 @@ class TestHealthStatus:
     @pytest.mark.asyncio
     async def test_db_down_beats_open_breaker(self):
         breakers = {"espn_schedule": {"state": "open"}}
-        with patch('nfl_mcp.tool_registry.get_db', return_value=self._db(healthy=False)), \
+        with patch('nfl_mcp.tools._context.get_db', return_value=self._db(healthy=False)), \
                 patch('nfl_mcp.retry_utils.get_all_circuit_breaker_status', return_value=breakers):
             result = await health_check()
         assert result.status_code == 503

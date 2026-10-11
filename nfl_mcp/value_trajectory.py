@@ -347,7 +347,7 @@ def assess(entry: dict, *, week: int | None = None, rank: int | None = None,
         # Against what he has been producing without them (the unregressed
         # trailing rate the market sees), not the ROS rate until the return.
         until = max(float(until), float(entry.get("per_game_recent") or 0.0))
-        after = fut if blended else per_game
+        after = fut if blended and fut is not None else per_game
         change = (after - until) / until if until > 0 else 0.0
         if soon and (blended or abs(change) >= MIN_REPORTED_CHANGE):
             returning_soon = True
@@ -406,6 +406,7 @@ def assess(entry: dict, *, week: int | None = None, rank: int | None = None,
     #    teammate back / the starter's absence ending, so those explain it.
     rates = None
     if blended:
+        assert cur is not None and fut is not None  # `blended` requires both
         rel = (fut / cur) / base - 1 if base > 0 else 0.0
         rel = max(-RATE_REL_CAP, min(RATE_REL_CAP, rel))
         scale = (RETURNING_RATE_SCALE if returning_soon else RATE_CHANGE_SCALE).get(pos, 0.9)

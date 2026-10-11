@@ -642,7 +642,7 @@ def map_items(db, items: list[dict], roster: dict[str, dict] | None = None,
     stamp = (now or datetime.now(UTC)).isoformat()
     roster = roster or {}
     espn_ids = sorted({i["espn_id"] for i in items if i.get("espn_id")})
-    by_espn = {}
+    by_espn: dict = {}
     if espn_ids and hasattr(db, "get_athletes_by_espn_ids"):
         try:
             by_espn = db.get_athletes_by_espn_ids(espn_ids) or {}

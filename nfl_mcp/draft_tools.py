@@ -178,7 +178,7 @@ def compute_vbd(values: list[dict], num_teams: int, superflex: bool) -> dict[str
 
 def _tier_breaks(players_at_pos: list[dict]) -> list[dict]:
     """Group a position's players into tiers using FantasyCalc's tier field."""
-    tiers: dict[int, list[str]] = {}
+    tiers: dict[int, list[str | None]] = {}
     for p in players_at_pos:
         t = p.get("tier")
         if t is None:

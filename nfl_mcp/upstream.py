@@ -15,9 +15,10 @@ task finishes and fills the cache for the next call.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ def _forget(key: str, task: asyncio.Task) -> None:
         logger.debug(f"[upstream] background read {key} failed: {exc!r}")
 
 
-def single_flight(key: str, factory: Callable[[], Awaitable[Any]]) -> asyncio.Task:
+def single_flight(key: str, factory: Callable[[], Coroutine[Any, Any, Any]]) -> asyncio.Task:
     """The running task for ``key``, or a new one from ``factory()``.
 
     The task holds a strong reference here until it finishes, so it survives
@@ -49,7 +50,7 @@ def single_flight(key: str, factory: Callable[[], Awaitable[Any]]) -> asyncio.Ta
         return task
     task = loop.create_task(factory(), name=f"upstream:{key}")
     _inflight[key] = task
-    task.add_done_callback(lambda t, k=key: _forget(k, t))
+    task.add_done_callback(functools.partial(_forget, key))
     return task
 
 

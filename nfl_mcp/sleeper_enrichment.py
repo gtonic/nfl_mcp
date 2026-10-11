@@ -349,7 +349,7 @@ async def _fetch_injuries(with_complete_teams: bool = False, force: bool = False
     refresh (``data_refresh``) is an explicit request, not opportunistic
     enrichment. Without it a script run without ``.env`` silently got 0 rows.
     """
-    empty = ([], set()) if with_complete_teams else []
+    empty: tuple[list, set] | list = ([], set()) if with_complete_teams else []
     if not advanced_enrich_enabled() and not force:
         logger.warning("[Fetch Injuries] Skipped: NFL_MCP_ADVANCED_ENRICH not enabled "
                        "(pass force=True for an explicit refresh)")
@@ -447,7 +447,7 @@ async def _fetch_weekly_usage_stats(season: int, week: int, force: bool = False)
                 data = resp.json() or {}
                 if isinstance(data, dict):
                     logger.debug(f"[Fetch Usage] Received data for {len(data)} players")
-                    stats = []
+                    stats: list[dict] = []
                     for pid, player_stats in list(data.items())[:3000]:  # cap
                         if not isinstance(player_stats, dict):
                             continue
@@ -641,7 +641,7 @@ def _estimate_snap_pct(depth_rank: int | None, position: str | None = None) -> f
 
     # Position-specific estimates for starters
     if depth_rank == 1:
-        position_estimates = {
+        position_estimates: dict[str | None, float] = {
             "QB": 95.0,  # QBs rarely rotate unless blowout
             "RB": 55.0,  # RBs often in committees
             "WR": 85.0,  # #1 WRs play most snaps
