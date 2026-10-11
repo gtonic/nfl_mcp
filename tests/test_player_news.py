@@ -6,6 +6,7 @@ returned live (2026-10-08).
 """
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -361,13 +362,13 @@ class TestStore:
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "old.db")
             NFLDatabase(path).close()
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 conn.execute("DELETE FROM schema_version WHERE version >= 19")
                 conn.execute("DROP TABLE player_news")
                 conn.execute("DROP TABLE news_fetch_state")
                 conn.commit()
             NFLDatabase(path).close()
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 assert (conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
                         == NFLDatabase.CURRENT_SCHEMA_VERSION)
                 assert conn.execute("SELECT COUNT(*) FROM player_news").fetchone()[0] == 0

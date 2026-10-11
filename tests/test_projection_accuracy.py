@@ -2,6 +2,7 @@
 import json
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -237,13 +238,13 @@ class TestMigration:
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "old.db")
             NFLDatabase(path).close()
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 conn.execute("DELETE FROM schema_version WHERE version >= 18")
                 conn.execute("DROP TABLE projection_accuracy")
                 conn.execute("ALTER TABLE projection_log DROP COLUMN signals")
                 conn.commit()
             NFLDatabase(path).close()
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 assert (conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
                         == NFLDatabase.CURRENT_SCHEMA_VERSION)
                 assert "signals" in {r[1] for r in conn.execute("PRAGMA table_info(projection_log)")}

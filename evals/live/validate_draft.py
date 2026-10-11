@@ -9,7 +9,7 @@ Sleeper API surfaces now, not while you're on the clock.
 Usage (any one of):
     python -m evals.live.validate_draft --draft-id 998877
     python -m evals.live.validate_draft --league-id 555         # newest draft
-    python -m evals.live.validate_draft --username your_name --season 2026
+    python -m evals.live.validate_draft --username your_name [--season 2026]
 Optionally: --my-slot 3
 """
 
@@ -22,6 +22,7 @@ import tempfile
 from nfl_mcp import draft_tools as dt
 from nfl_mcp import sleeper_tools as st
 from nfl_mcp.database import NFLDatabase
+from nfl_mcp.week_context import infer_from_calendar
 
 _results: list[dict] = []
 
@@ -130,7 +131,8 @@ def main() -> int:
     ap.add_argument("--draft-id")
     ap.add_argument("--league-id")
     ap.add_argument("--username")
-    ap.add_argument("--season", type=int, default=2026)
+    # Default: the season the calendar is in (Jan/Feb belong to the previous one).
+    ap.add_argument("--season", type=int, default=infer_from_calendar()[0])
     ap.add_argument("--my-slot", type=int, default=1)
     args = ap.parse_args()
     if not (args.draft_id or args.league_id or args.username):

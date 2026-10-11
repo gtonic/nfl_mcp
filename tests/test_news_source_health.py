@@ -11,6 +11,7 @@ every line of prose replaced by a synthetic one (see the fixture headers).
 import json
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -339,7 +340,7 @@ class TestConfig:
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "old.db")
             NFLDatabase(path).close()
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 conn.execute("DELETE FROM schema_version WHERE version >= 20")
                 conn.execute("DROP TABLE news_fetch_state")
                 conn.execute("""CREATE TABLE news_fetch_state (
