@@ -1,8 +1,11 @@
 """Constants, helpers and the logger shared by the ``nfl_mcp.db`` modules."""
 import logging
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .pool import ConnectionPoolConfig, DatabaseConnectionPool
@@ -40,3 +43,14 @@ class _DBMixinBase:
     db_path: Path
     pool_config: "ConnectionPoolConfig"
     _pool: "DatabaseConnectionPool"
+
+    @contextmanager
+    def _get_connection(self) -> Iterator[sqlite3.Connection]:
+        """Get a database connection with proper cleanup. (Legacy method for compatibility)"""
+        with self._pool.get_connection() as conn:
+            yield conn
+
+    if TYPE_CHECKING:
+        # Implemented by InjuriesMixin; also used by the v17 migration.
+        @staticmethod
+        def _news_history_row(inj: dict, sources: Any, now: str) -> tuple | None: ...

@@ -14,7 +14,6 @@ keeps the public import path (``from nfl_mcp.database import ...``) stable.
 import os
 import sqlite3
 import threading
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -105,12 +104,6 @@ class NFLDatabase(
                     conn.execute("VACUUM")
                 except sqlite3.Error as e:
                     logger.warning(f"VACUUM after migration failed: {e}")
-
-    @contextmanager
-    def _get_connection(self):
-        """Get a database connection with proper cleanup. (Legacy method for compatibility)"""
-        with self._pool.get_connection() as conn:
-            yield conn
 
     def health_check(self) -> dict[str, bool | int | str]:
         """Perform a comprehensive health check of the database."""
