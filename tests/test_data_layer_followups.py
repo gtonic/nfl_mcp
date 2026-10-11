@@ -6,6 +6,7 @@ Offline: ESPN, NFL.com and Sleeper are mocked; databases are temp files.
 import asyncio
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -121,7 +122,7 @@ class TestMigration:
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "old.db")
             NFLDatabase(path).close()
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn, conn:
                 # Back to v16: the v17 columns and tables gone.
                 conn.execute("DELETE FROM schema_version WHERE version >= 17")
                 conn.execute("ALTER TABLE player_injuries DROP COLUMN return_date")
@@ -149,7 +150,7 @@ class TestMigration:
                     " '2026-10-06T18:54:32+00:00')")
                 conn.commit()
             NFLDatabase(path).close()
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn, conn:
                 assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] \
                     == NFLDatabase.CURRENT_SCHEMA_VERSION
                 for table, col in (("player_injuries", "return_date"),
@@ -347,7 +348,7 @@ class TestSignalHistory:
         db.upsert_practice_status([{**base, "status": "DNP", "source": "nfl.com"}])
         # Refused by the live table (lower rank), kept in the history.
         assert db.upsert_practice_status([{**base, "status": "FP", "source": "espn_news"}]) == 0
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             got = conn.execute("SELECT date, status, source FROM practice_report_history"
                                " ORDER BY id").fetchall()
         assert got == [("2026-09-24", "LP", "nfl.com"), ("2026-09-24", "DNP", "nfl.com"),
@@ -362,7 +363,7 @@ class TestSignalHistory:
         db.upsert_injuries([{**a, "injury_description": "Bowers (knee) did not practice Thursday.",
                              "date_reported": "2026-10-08T21:00Z"}])
         db.upsert_injuries([], prune_missing=True, complete_teams={"LV"})  # cleared: not news
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             got = conn.execute("SELECT text, date_reported, return_date, source"
                                " FROM injury_news_history ORDER BY id").fetchall()
         assert got == [
@@ -379,7 +380,7 @@ class TestSignalHistory:
         now = datetime.now(UTC)
         old = (now - timedelta(days=400)).isoformat()
         this_season = max(season_start(now), now - timedelta(days=200)).isoformat()
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             for i, at in enumerate((old, this_season)):
                 conn.execute("INSERT INTO practice_report_history(name_key, team, date, status,"
                              " source, recorded_at) VALUES ('a','LV',?, 'LP','nfl.com',?)",
@@ -390,7 +391,7 @@ class TestSignalHistory:
         deleted = db.prune_old_data()
         assert deleted["practice_report_history"] == 1
         assert deleted["injury_news_history"] == 1
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             assert conn.execute("SELECT recorded_at FROM practice_report_history"
                                 ).fetchall() == [(this_season,)]
 

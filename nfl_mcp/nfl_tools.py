@@ -347,51 +347,57 @@ async def get_depth_chart(team_id: str) -> dict:
         response = await client.get(url, headers=headers)
         response.raise_for_status()
 
-        # Parse HTML content
-        soup = BeautifulSoup(response.text, 'html.parser')
+    # The page is ~400 KB of HTML: parsed off the event loop, so a handcuff map
+    # parsing six teams at once does not stall every other request meanwhile.
+    team_name, depth_chart = await asyncio.to_thread(parse_depth_chart_html, response.text)
+    return create_success_response({
+        "team_id": _espn_team(team_id),
+        "team_name": team_name,
+        "depth_chart": depth_chart
+    })
 
-        # Extract team name (ESPN's <h1> glues city+nickname, e.g.
-        # "San Francisco49ers" -> add a space at the letter/digit boundary).
-        team_name = None
-        team_header = soup.find('h1')
-        if team_header:
-            team_name = re.sub(r'(?<=[A-Za-z])(?=\d)', ' ', team_header.get_text(strip=True))
 
-        # Extract depth chart. ESPN renders each unit as a PAIR of tables: a
-        # 1-column table of position labels (QB/RB/…), immediately followed by a
-        # table whose first row is a header (Starter/2nd/3rd/4th) and whose
-        # remaining rows are the players, aligned row-for-row with the labels.
-        def _clean_name(name):
-            if not name or name == '-':
-                return None
-            # Strip an injury tag glued to the surname ("Jordan JamesQ" -> "…James").
-            return re.sub(r'(?<=[a-z])(IR|PUP|SUS|NFI|Q|O|D|P)$', '', name).strip() or None
+def parse_depth_chart_html(html: str) -> tuple[str | None, list[dict]]:
+    """``(team name, [{position, players}])`` from an ESPN depth chart page."""
+    soup = BeautifulSoup(html, 'html.parser')
 
-        depth_chart = []
-        tables = soup.find_all('table')
-        i = 0
-        while i < len(tables) - 1:
-            pos_rows = tables[i].find_all('tr')
-            player_rows = tables[i + 1].find_all('tr')
-            pos_is_single_col = bool(pos_rows) and len(pos_rows[0].find_all(['td', 'th'])) == 1
-            player_is_grid = bool(player_rows) and len(player_rows[0].find_all(['td', 'th'])) >= 2
-            if pos_is_single_col and player_is_grid:
-                pos_labels = [r.get_text(strip=True) for r in pos_rows]
-                # Row 0 of each is a header ('' and 'Starter …') -> skip it.
-                for pos_label, prow in zip(pos_labels[1:], player_rows[1:], strict=False):
-                    names = [_clean_name(c.get_text(strip=True)) for c in prow.find_all(['td', 'th'])]
-                    names = [n for n in names if n]
-                    if pos_label and names:
-                        depth_chart.append({"position": pos_label, "players": names})
-                i += 2
-            else:
-                i += 1
+    # Extract team name (ESPN's <h1> glues city+nickname, e.g.
+    # "San Francisco49ers" -> add a space at the letter/digit boundary).
+    team_name = None
+    team_header = soup.find('h1')
+    if team_header:
+        team_name = re.sub(r'(?<=[A-Za-z])(?=\d)', ' ', team_header.get_text(strip=True))
 
-        return create_success_response({
-            "team_id": _espn_team(team_id),
-            "team_name": team_name,
-            "depth_chart": depth_chart
-        })
+    # Extract depth chart. ESPN renders each unit as a PAIR of tables: a
+    # 1-column table of position labels (QB/RB/…), immediately followed by a
+    # table whose first row is a header (Starter/2nd/3rd/4th) and whose
+    # remaining rows are the players, aligned row-for-row with the labels.
+    def _clean_name(name):
+        if not name or name == '-':
+            return None
+        # Strip an injury tag glued to the surname ("Jordan JamesQ" -> "…James").
+        return re.sub(r'(?<=[a-z])(IR|PUP|SUS|NFI|Q|O|D|P)$', '', name).strip() or None
+
+    depth_chart = []
+    tables = soup.find_all('table')
+    i = 0
+    while i < len(tables) - 1:
+        pos_rows = tables[i].find_all('tr')
+        player_rows = tables[i + 1].find_all('tr')
+        pos_is_single_col = bool(pos_rows) and len(pos_rows[0].find_all(['td', 'th'])) == 1
+        player_is_grid = bool(player_rows) and len(player_rows[0].find_all(['td', 'th'])) >= 2
+        if pos_is_single_col and player_is_grid:
+            pos_labels = [r.get_text(strip=True) for r in pos_rows]
+            # Row 0 of each is a header ('' and 'Starter …') -> skip it.
+            for pos_label, prow in zip(pos_labels[1:], player_rows[1:], strict=False):
+                names = [_clean_name(c.get_text(strip=True)) for c in prow.find_all(['td', 'th'])]
+                names = [n for n in names if n]
+                if pos_label and names:
+                    depth_chart.append({"position": pos_label, "players": names})
+            i += 2
+        else:
+            i += 1
+    return team_name, depth_chart
 
 
 @handle_http_errors(

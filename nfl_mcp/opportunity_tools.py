@@ -16,7 +16,7 @@ from io import StringIO
 from . import opportunity
 from .config import LONG_TIMEOUT, create_http_client
 from .errors import create_success_response, handle_http_errors, handle_validation_error
-from .matchup_tools import NFLVERSE_PLAYER_STATS_URL, season_cache_fresh
+from .matchup_tools import nflverse_week_csv, season_cache_fresh
 from .player_values import scoring_to_ppr
 from .scoring import ScoringModel, league_scoring, resolve_scoring
 from .teams import normalize_team
@@ -104,14 +104,13 @@ async def _fetch_game_logs(season: int) -> dict[str, dict]:
     cached = _logs_cache.get(season)
     if cached and season_cache_fresh(season, cached[0]):
         return cached[1]
-    url = NFLVERSE_PLAYER_STATS_URL.format(season=season)
     try:
+        # The same file the defense/offense rankings read: one shared download.
         async with create_http_client(timeout=LONG_TIMEOUT) as client:
-            resp = await client.get(url)
-            if resp.status_code == 404:
-                return {}
-            resp.raise_for_status()
-            logs = parse_game_logs(resp.text)
+            text = await nflverse_week_csv(season, client)
+        if text is None:
+            return {}
+        logs = parse_game_logs(text)
     except Exception as e:
         logger.debug(f"opportunity game-log fetch failed for {season}: {e}")
         return {}

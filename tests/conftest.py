@@ -33,6 +33,31 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _close_leaked_databases(monkeypatch):
+    """Close the connection pools a test opened and left open.
+
+    Most tests build an ``NFLDatabase`` on a temp file and never close it; its
+    connections were then closed by the garbage collector, which Python 3.14
+    reports as ~300 "unclosed database" ResourceWarnings per run. Every pool
+    the test creates is held until teardown and closed there. A closed pool
+    reopens on demand, so a database shared across tests still works.
+    """
+    from nfl_mcp import database
+
+    created: list = []
+    init = database.DatabaseConnectionPool.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(database.DatabaseConnectionPool, "__init__", _tracking_init)
+    yield
+    for pool in created:
+        pool.close()
+
+
+@pytest.fixture(autouse=True)
 def _ros_offline(monkeypatch):
     """Keep the rest-of-season engine off the network in the unit suite.
 
@@ -132,13 +157,17 @@ def _clear_process_caches():
         gameday_inactives,
         handcuff_tools,
         lineup_tools,
+        matchup_tools,
         nfl_tools,
         projections,
         sleeper_tools,
+        upstream,
         weather_tools,
     )
     sleeper_tools.clear_nfl_state_cache()
     sleeper_tools.invalidate_roster_cache()
+    sleeper_tools.clear_matchups_cache()
+    matchup_tools.clear_week_csv_cache()
     weather_tools.clear_forecast_cache()
     nfl_tools.clear_season_stats_cache()
     handcuff_tools.clear_depth_chart_cache()
@@ -146,16 +175,20 @@ def _clear_process_caches():
     # The projection engine singleton adopts the first database it is handed
     # (a test's temp file); the next test must not read that one.
     projections._engine = None
-    gameday_inactives._gameday_cache.clear()
+    gameday_inactives.clear_caches()
+    upstream.clear_inflight()
     yield
     sleeper_tools.clear_nfl_state_cache()
     sleeper_tools.invalidate_roster_cache()
+    sleeper_tools.clear_matchups_cache()
+    matchup_tools.clear_week_csv_cache()
     weather_tools.clear_forecast_cache()
     nfl_tools.clear_season_stats_cache()
     handcuff_tools.clear_depth_chart_cache()
     lineup_tools.clear_usage_cache()
     projections._engine = None
-    gameday_inactives._gameday_cache.clear()
+    gameday_inactives.clear_caches()
+    upstream.clear_inflight()
 
 
 @pytest.fixture(autouse=True)

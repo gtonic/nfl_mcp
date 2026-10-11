@@ -740,8 +740,43 @@ async def get_league_users(league_id: str) -> dict:
         })
 
 
+# A short process cache of successful `get_matchups` answers. One tool asks for
+# the same weeks from several places (the trade market: the playoff odds'
+# remaining schedule, then the weekly scores) and each week was downloaded and
+# enriched twice; concurrent asks now share one fetch as well. Short, because a
+# live week's points move.
+MATCHUPS_CACHE_TTL_SECONDS = 30.0
+_matchups_cache: dict[tuple[str, int], tuple[float, dict]] = {}
+
+
+def clear_matchups_cache() -> None:
+    _matchups_cache.clear()
+
+
 async def get_matchups(league_id: str, week: int) -> dict:
-    """Get matchups for a week with robustness (retry + snapshot fallback)."""
+    """Get matchups for a week with robustness (retry + snapshot fallback).
+
+    Successful answers are reused for ``MATCHUPS_CACHE_TTL_SECONDS``; every
+    caller gets its own copy.
+    """
+    from .upstream import single_flight
+
+    key = (str(league_id), week)
+    hit = _matchups_cache.get(key)
+    if hit and time.monotonic() - hit[0] < MATCHUPS_CACHE_TTL_SECONDS:
+        return copy.deepcopy(hit[1])
+
+    async def _fetch() -> dict:
+        res = await _get_matchups_uncached(league_id, week)
+        if isinstance(res, dict) and res.get("success") and not res.get("stale"):
+            _matchups_cache[key] = (time.monotonic(), res)
+        return res
+
+    res = await asyncio.shield(single_flight(f"matchups:{league_id}:{week}", _fetch))
+    return copy.deepcopy(res)
+
+
+async def _get_matchups_uncached(league_id: str, week: int) -> dict:
     try:
         from .param_validator import format_errors, validate_params
         schema = {"week": {"type": int, "required": True, "min": LIMITS["week_min"], "max": LIMITS["week_max"]}}

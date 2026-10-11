@@ -959,6 +959,58 @@ async def get_injury_reports(
         return [inj.to_dict() for inj in injuries]
 
 
+# How long a tool call waits for an injury crawl before answering from the
+# stored reports. A cold crawl (stored reports past the adaptive TTL: 2 h on
+# game days) is ~1900 requests behind the ESPN limiter -- measured 185 s for
+# the league -- and used to run inline in get_gameday_inactives /
+# get_injury_report.
+INJURY_CRAWL_WAIT_SECONDS = 6.0
+INJURY_CRAWL_INFLIGHT_WAIT_SECONDS = 1.0
+# The stored reports served meanwhile: anything newer than this.
+STORED_FALLBACK_MAX_AGE_HOURS = 24 * 14
+SOURCE_INJURY_CRAWL = "espn_injury_crawl"
+
+
+def stored_injury_reports(db, teams: list[str] | None = None,
+                          max_age_hours: int = STORED_FALLBACK_MAX_AGE_HOURS) -> list[dict]:
+    """The stored injury reports for ``teams`` (default all) regardless of the
+    adaptive TTL -- what a timed-out crawl falls back to. No network."""
+    if db is None or not hasattr(db, "get_team_injuries_from_cache"):
+        return []
+    try:
+        aggregator = InjuryAggregator(db=db)
+        return [inj.to_dict() for inj in aggregator._get_cached_injuries(
+            list(teams or InjuryAggregator.NFL_TEAMS), max_age_hours)]
+    except Exception as e:
+        logger.debug(f"[InjuryAggregator] stored reports unavailable: {e}")
+        return []
+
+
+async def get_injury_reports_bounded(teams: list[str] | None = None, db=None,
+                                     wait: float = INJURY_CRAWL_WAIT_SECONDS
+                                     ) -> tuple[list[dict], dict]:
+    """``(reports, meta)``: `get_injury_reports` (cached), but waiting at most
+    ``wait`` seconds. On timeout the crawl keeps running in the background
+    (one per team set; it persists what it finds, so the next call is fresh)
+    and the stored reports are returned with ``meta`` ``{partial: True,
+    timed_out_sources: ["espn_injury_crawl"], stale: True}``."""
+    from .upstream import inflight, single_flight, wait_bounded
+
+    key = "injury_reports:" + (",".join(sorted(teams)) if teams else "*")
+    if inflight(key):
+        # An earlier call's crawl is still running: it will not be done in
+        # a few seconds either.
+        wait = min(wait, INJURY_CRAWL_INFLIGHT_WAIT_SECONDS)
+    task = single_flight(key, lambda: get_injury_reports(teams=teams, db=db, use_cache=True))
+    done, rows = await wait_bounded(task, wait)
+    if done:
+        return rows, {"partial": False, "timed_out_sources": [], "stale": False}
+    logger.warning(f"[InjuryAggregator] crawl for {key} still running after {wait:.0f}s; "
+                   "serving stored reports")
+    return stored_injury_reports(db, teams), {
+        "partial": True, "timed_out_sources": [SOURCE_INJURY_CRAWL], "stale": True}
+
+
 def parse_return_date(item: dict | None) -> str | None:
     """ESPN's estimated return date for an injury item, as ``YYYY-MM-DD``.
 

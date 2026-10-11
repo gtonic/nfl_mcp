@@ -6,6 +6,7 @@ recommendation could be made against a day-old injury report with nothing in
 the output to indicate it.
 """
 import tempfile
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -90,7 +91,7 @@ class TestGetDataFreshness:
             "player_id": "1", "player_name": "X", "team_id": "KC", "position": "TE",
             "injury_status": "Out", "sources": ["ESPN"],
         }])
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             conn.execute("UPDATE player_injuries SET updated_at=?", (_ago(30),))
             conn.commit()
 
@@ -100,7 +101,7 @@ class TestGetDataFreshness:
     def test_a_missing_table_does_not_raise(self, db):
         """Freshness is diagnostics; it must never be the thing that fails."""
         import sqlite3
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS player_practice_status")
             conn.commit()
         out = db.get_data_freshness()
@@ -110,7 +111,7 @@ class TestGetDataFreshness:
     def test_column_names_match_the_real_schema(self, db):
         """Guards the column guess: a wrong name silently returns None forever."""
         import sqlite3
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             for table in ("player_injuries", "athletes", "player_practice_status"):
                 cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
                 assert "updated_at" in cols, f"{table} has no updated_at: {cols}"
