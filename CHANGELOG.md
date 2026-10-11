@@ -7,6 +7,139 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-11
+
+0.9.5 made the recommendations follow role and injury trends. This release
+calibrates them against real outcomes, prices the whole rest of the season
+Sleeper-first, reads far more news, and turns the server into a strategy tool:
+risk-aware lineups, a league trade market, and a weekly check of which signals
+actually worked.
+
+14 PRs (#244, #255–#267). Highlights:
+
+- **Rest of season, Sleeper-first:** later weeks blend 0.25 model + 0.75
+  Sleeper per week; value trajectory compares a player's trailing rate with
+  the next four blended weeks (catches backups about to lose their role).
+- **Calibrated against nflverse 2023–25:** questionable + limited practice
+  ≈0.72 of a healthy week, DNP week ≈0.54, Doubtful ≈0.02; once a player is
+  confirmed active on gameday he is priced at the played-share (~0.95).
+- **Strategy tools:** `risk_mode` (maximise P(win), seek variance as an
+  underdog), `get_trade_market` (needs/surpluses, acceptance likelihood,
+  counter offers), opponent set-vs-best lineup in the briefing.
+- **News:** ESPN fantasy, NBC/Rotoworld and CBS player news (`get_player_news`),
+  classifier precision 0.98 / recall 0.60 on held-out sentences, per-source
+  health and backoff, absence lengths parsed into ROS.
+- **Learning loop:** `get_projection_accuracy` and `get_weekly_signal_review`
+  grade every logged projection and signal after each week.
+- **Robustness:** gameday inactives 184 s → 6 s (bounded upstream reads),
+  connection-pool leak fixed, mypy 334 → 0 and blocking in CI,
+  `tool_registry` / `database` split into modules, Docker image on Python 3.14.
+- Schema v18 → v21.
+
+### Added
+- **News classifier recall** (`news_signals`): new flags `multi_week_absence`
+  (an absence with a length: "a six-week recovery", "miss at least three
+  weeks", "eligible to return in Week 8", placed on IR / IR-bound,
+  season-ending; the length is parsed into `weeks` / `return_week` /
+  `season_ending`), `snap_share_drop` ("out-snapped by", "dropped to 20
+  snaps", season-low snap share, reduced / secondary role, "worked as the
+  No. 2"; prices like a lost role) and `game_time_decision` (an availability
+  flag); more phrasings for the existing flags ("trending toward
+  playing / missing / an absence / a Week 5 start", "multi-week absence",
+  "miss consecutive games", "set to miss Week 5", "faded an injury tag", "not
+  on the final injury report", "cleared to return from", "favorite to
+  start", "spotted at Friday's practice"), plus precision fixes (an active
+  "the Pats ruled out Carlton Davis" is Davis's; "despite saying he feels
+  ready to play"; "may need a full practice to approach Sunday without a
+  designation"; "assuming Barkley is ruled out"; reported speech is not a
+  condition; "No." no longer ends a sentence). Two new held-out sets labelled
+  from `player_news` before the patterns were scored on them (`holdout2`,
+  100 sentences; `holdout3`, 80), 206 dev sentences added; thresholds per
+  split in `tests/test_news_classifier_eval.py`. All held-out: precision
+  0.84 → 0.98, recall 0.39 → 0.60.
+- **Parsed news absence feeds ROS**: `ros.expected_absence(news_weeks=)` --
+  precedence ESPN return date > parsed news weeks (counted from the report
+  date) > status heuristics; the longer of news and report text wins and
+  neither shortens a reserve minimum. Wired for the player himself and for
+  absent teammates (`projections._absence_detail`).
+
+- **Gameday decisions override the injury tag.** From the inactives window
+  (~2 h before kickoff) until the game ends, every projection (start/sit,
+  `analyze_lineup`, briefing, win probability, risk mode's P(win)) reads the
+  published decisions (`gameday_inactives`: ESPN gameday notes + Sleeper
+  `Inactive`). Officially inactive → 0 and status `Inactive` (must sit).
+  Confirmed active → the "might sit" part of the discount goes: our share is
+  priced on what a questionable player who plays scores (2023-25 "given he
+  played": limited week 0.947 [0.869, 1.028] → 0.95, DNP week 0.819 [0.670,
+  0.972] → 0.82, all 0.924 [0.866, 0.986] → 0.92 without a line; never below
+  the pre-inactives value; Doubtful-active like the DNP week), Sleeper's
+  share drops its questionable shading, no doubtful cap, and a Sleeper zero
+  (it zero-projects most doubtful players) falls back to our number. The
+  starting QB's decision settles his receivers' coupling
+  (`starter_sit_weight(gameday=...)`: active → no cut, inactive → full
+  weight, basis `gameday`). Outside a window nothing is fetched (cached
+  schedule only); inside, one league-wide read per 5 minutes. New projection
+  fields `gameday_status`, `gameday_note`, `gameday_source`,
+  `reported_injury_status`.
+
+- **A back's gained role is priced, gated.** A role gain held two games, at
+  RB, that no teammate's absence explains (a teammate ahead of him or sharing
+  his role who played before the gain and missed one of its games, or one
+  back / out now) multiplies this week's Sleeper share by
+  `1 + 0.1 × the volume share gain` (`role_shift.UP_STRENGTH`,
+  `role_gain` on the projection). Backtest: gated backs 6.280 → 6.188 MAE
+  (n=79, better in each of 2023-25), all rows 5.3779 → 5.3770; receivers and
+  tight ends still get worse and stay flag-only. Jeremiyah Love ×1.054;
+  Emanuel Wilson (Charbonnet, Price out) and Jaylen Warren (Dowdle) are not
+  priced.
+- **Calibration evals.** `evals/backtest/trend_calibration.py` (returning,
+  role-down and gated role-up sweeps, per season), `practice_backtest.py`
+  (2023-25 report buckets with bootstrap intervals, QB start rates);
+  `signal_history.py --truth sleeper --transitions` scores the live practice
+  history against Sleeper's weekly stats with intervals (2026 weeks 3-4: 18
+  questionable player-weeks, 0.45 [0.21, 0.74] of their trailing rate — too
+  few alone, same direction).
+- **Risk-aware lineups (`risk_mode`).** `get_weekly_briefing`, `analyze_lineup`,
+  `compare_players_for_slot` (with `roster_id`) and `get_win_probability_lineup`
+  take `risk_mode` = `auto` (default) | `neutral` | `seek_variance` |
+  `protect_floor`. Auto reads this week's P(win) (points-optimal lineup vs the
+  opponent's projected starters, sd from floor/ceiling, QB-stack covariance)
+  and the season's playoff odds (`get_playoff_odds`, 2000 sims, cached 30 min
+  per league): an underdog (< 45%) or a long-shot season (< 20% playoff odds,
+  in a close game) chases ceiling, a favourite (> 55%) protects its floor.
+  Explicit seek/protect maximise P(score > a target ½ sd above / below the
+  points-optimal expectation). Every response reports `risk_mode`, the reason
+  and, when the choice differs from the points-optimal one, the trade-off
+  (`risk_adjustment.summary`: "Starting X over Y raises P(win) 41%→44%
+  although mean −0.6"). The grade and suggested changes of `analyze_lineup`
+  stay on expected points (`risk` block alongside). A bye week no longer
+  drops the briefing's lineup (no opponent: chosen on the risk mode alone).
+- **Risk-weighted trades.** `find_trade_targets(risk_mode=…)` and
+  `analyze_trade(risk_mode=…)`: a long shot weights lineup ceiling
+  (`risk.upside_gain`), a contender (>= 60%) the fantasy-playoff weeks
+  (`risk.playoff_gain`); the pure ROS delta and the both-sides bar are
+  unchanged. `find_trade_targets` gains `per_partner`.
+- **`get_trade_market`** (new tool; season 59 / full 76 / offseason 45 tools):
+  every roster's needs and surpluses by position from ROS lineup impact, bye
+  crunches, injured starters, record, playoff odds and contender / bubble /
+  long_shot; your natural partners (their need ∩ your surplus and vice versa)
+  with packages pre-scored by `find_trade_targets` and an
+  `acceptance_likelihood` (logistic heuristic over their lineup gain,
+  FantasyCalc balance, positional need, depth given up, situation, value
+  timing — each factor reported); `offer` → 1-3 counter offers that keep your
+  gain and raise their acceptance, also as `analyze_trade(...,
+  suggest_counters=True)`. ~3-4 s warm for a 12-team league; the first ROS
+  call of a process pays the cold Sleeper-week fetch (~15 s).
+- **Weekly accuracy loop.** Pre-kickoff projections are logged with the
+  signals active at the time (schema v18: `projection_log.signals`); once a
+  week is final they are graded against the actual points (league scoring and
+  neutral half-PPR) into `projection_accuracy` — by the prefetch loop, by
+  `refresh_data(scope=["accuracy"])`, or on demand.
+- **`get_projection_accuracy`** tool (in-season and full profiles: 58 / 75
+  tools): MAE/bias per position, projection source and signal (with vs
+  without), model vs Sleeper vs blend, trend over weeks and an
+  interpretation. `evals/backtest/accuracy_report.py` prints the same.
+
 ### Changed
 - **Code layout (no behaviour change).** `nfl_mcp/tool_registry.py` (~3,900
   lines) now only assembles the tools: the wrappers live in
@@ -36,90 +169,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of a literal 2026; test-side `sqlite3.connect` blocks close their
   connections (no DB `ResourceWarning` on 3.14).
 
-### Fixed
-- `asyncio.gather(return_exceptions=True)` loops now treat any `BaseException`
-  (e.g. a child's `CancelledError`) as a failed result instead of passing it on
-  as data; `get_fantasy_context` reports `unexpected_error` instead of a null
-  `error_type` when the league fetch fails without one.
-- **`get_gameday_inactives` no longer hangs.** It ran past the MCP client's
-  300 s on 2026-09-27. Root cause: with the stored injury reports older than
-  the adaptive TTL (2 h on game days) the tool ran the full ESPN injury crawl
-  inline -- ~1900 requests behind the ESPN limiter, measured 185 s -- after
-  the ESPN gameday notes and the 5 MB Sleeper dump, also inline, one after
-  another, 30 s timeouts each. Now the published list and the injury report
-  are read at once, every read is bounded (12 s for the feeds, 6 s for the
-  crawl), a read that misses its budget keeps running in the background
-  (one per key; concurrent callers share it; a later call waits at most
-  1-2 s for it) and fills the cache for the next call, and an older copy
-  stands in (stored injury reports, a Sleeper dump up to 6 h, ESPN notes up
-  to 3 h). The answer says so: `partial`, `timed_out_sources`,
-  `stale_sources`, `injury_report_stale`. A fresh Sleeper dump (< 30 min) is
-  never refetched. Measured on a DB copy with 3 h old injury reports: 184.5 s
-  -> 6.0 s (then 1.0 s while the crawl finishes); a simulated window with
-  slow feeds (notes 20 s, dump 25 s, crawl 60 s): 105 s -> 12 s, 2 s on the
-  next call. `get_injury_report` and its practice refresh use the same
-  bounded read.
-- **The projection path never blocks on the gameday feeds.**
-  `gameday_statuses` (#259) waits at most 3 s for a cold read and 1.5 s for
-  an expired one (then serves the older copy, up to 30 min); a partial read
-  is retried after 30 s.
-- **SQLite connections are closed.** `DatabaseConnectionPool.close()` left a
-  connection that was borrowed at the time open forever (it went back into
-  the drained pool); it is now closed on return and the pool reopens on
-  demand. A pool dropped without `close()` closes its idle connections
-  (finalizer). A connection whose PRAGMA setup failed is closed. Borrowing
-  past the idle connections no longer blocks 5 s on the event loop's thread
-  before opening the one the limit allows. `NFLDatabase` is a context
-  manager. Tests close every pool they open (autouse fixture) and
-  `with sqlite3.connect() as conn` (which does not close) became
-  `closing(...)`. Python 3.14 suite warnings: 310 -> 4 (also replacing the
-  deprecated `asyncio.iscoroutinefunction`); `-W always::ResourceWarning`:
-  ~500 unclosed-database warnings -> 8 (all from `with sqlite3.connect()` in
-  three test files touched by other open work). The suite runs in ~20 s
-  instead of ~37 s. `tests/test_db_connection_leaks.py` runs with
-  ResourceWarning as an error.
-- **Cheaper cold ROS / trade calls.** The nflverse weekly stats CSV is
-  downloaded once per season and shared by the defense rankings, the offense
-  rankings and the game logs (was up to four downloads, ~8 s, per cold call);
-  `get_matchups` answers are reused for 30 s and concurrent asks share one
-  fetch (the trade market fetched and enriched every remaining week twice);
-  `slot_accepts` is memoised and `optimal_lineup` reads each player's value
-  and position once (~2M calls per trade search). On a DB copy, cold: ROS
-  10.7 s -> 8.5-9.4 s, get_trade_market 16.8 s -> 11.7 s, find_trade_targets
-  15.8 s -> 10.4-14.6 s; warm: 1.7 -> 1.3 s, 4.1 -> 2.6 s, 2.6 -> 1.3 s.
-- **Handcuff map.** Already parallel and cached since #229 (0.4-0.9 s cold,
-  instant warm on a DB copy); each team's depth chart now has an 8 s timeout
-  (`partial` + `timed_out_teams`), an expired chart (up to 3 days) stands in
-  when ESPN is slow, and the ~400 KB page is parsed off the event loop.
-
-### Added
-- **News classifier recall** (`news_signals`): new flags `multi_week_absence`
-  (an absence with a length: "a six-week recovery", "miss at least three
-  weeks", "eligible to return in Week 8", placed on IR / IR-bound,
-  season-ending; the length is parsed into `weeks` / `return_week` /
-  `season_ending`), `snap_share_drop` ("out-snapped by", "dropped to 20
-  snaps", season-low snap share, reduced / secondary role, "worked as the
-  No. 2"; prices like a lost role) and `game_time_decision` (an availability
-  flag); more phrasings for the existing flags ("trending toward
-  playing / missing / an absence / a Week 5 start", "multi-week absence",
-  "miss consecutive games", "set to miss Week 5", "faded an injury tag", "not
-  on the final injury report", "cleared to return from", "favorite to
-  start", "spotted at Friday's practice"), plus precision fixes (an active
-  "the Pats ruled out Carlton Davis" is Davis's; "despite saying he feels
-  ready to play"; "may need a full practice to approach Sunday without a
-  designation"; "assuming Barkley is ruled out"; reported speech is not a
-  condition; "No." no longer ends a sentence). Two new held-out sets labelled
-  from `player_news` before the patterns were scored on them (`holdout2`,
-  100 sentences; `holdout3`, 80), 206 dev sentences added; thresholds per
-  split in `tests/test_news_classifier_eval.py`. All held-out: precision
-  0.84 → 0.98, recall 0.39 → 0.60.
-- **Parsed news absence feeds ROS**: `ros.expected_absence(news_weeks=)` --
-  precedence ESPN return date > parsed news weeks (counted from the report
-  date) > status heuristics; the longer of news and report text wins and
-  neither shortens a reserve minimum. Wired for the player himself and for
-  absent teammates (`projections._absence_detail`).
-
-### Changed
 - **Value trajectory on the blended ROS** (`value_trajectory`): the core
   read is now `ros_rate` -- the trailing (unregressed) opportunity rate
   (`per_game_trailing`, new ROS field) against the mean of his next four
@@ -247,67 +296,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `evals/backtest/signal_history.py` reads `player_news` (items published
   before kickoff) next to the blurb history.
 
-### Fixed
-- **News flags: precision and recall** (`news_signals`).
-  `designated_to_return` now means an IR / PUP / NFI return only (designated,
-  21-day window, activated / reinstated from a reserve list); a plain
-  "resumed practicing" / "returned to practice" (Pollard, Swift, Goedert in
-  week 5) is the new `practice_progress` flag (this week's news, no effect).
-  `value_trajectory` still reads a return to practice as a return for a
-  player on IR / PUP / NFI, and the returning-teammate logic reads both for
-  an unavailable teammate (`RETURN_CUE_RE`), so neither changes. Losing the
-  work is `benched`: "watched Monangai dominate touches" after a fumble,
-  "didn't see the field again", "saw his snaps dwindle", "lost work to";
-  the teammate who "dominated the touches / carries / looks" is `lead_role`.
-  "(coach's decision) inactive" / "healthy scratch" is the new
-  `inactive_healthy_scratch` (reported, no effect -- a backup's routine; the
-  gameday inactives settle a starter) instead of `benched`; "(foot) is
-  inactive" is `ruled_out`. A phrase inside a condition ("if Hall can't go,
-  Allen would be the lead back", "if he's not cleared to play", "could be
-  primed for a workhorse role if ...") is `conditional`: a conditional lead
-  role counts at half weight, other conditional flags not at all
-  (`get_player_news` timeline: `lead_role?`). A role named as a title
-  ("bell-cow running back Jonathan Taylor", "lead back Breece Hall") is the
-  named player's. Gone: "elevated week-to-week", "a week-to-week role",
-  "more day-to-day than week-to-week", "ruled out of bounds", "prior to
-  being ruled out", "The Eagles will play Week 5 with", a plain "snap count".
-  New phrasings: "more likely than not to sit out", "likely to miss a second
-  straight game", "will miss a second contest", "in the clear for", "expect
-  him to play", "on track to avoid an injury designation", "make the Week 5
-  start", "could manage his snaps", "well under a full workload". Live,
-  week 5: Pollard `designated_to_return` (a teammate's note) →
-  `practice_progress` + `expected_to_play` ("Expect him to play in Week 5");
-  Swift `designated_to_return` → `practice_progress`, `committee` ("ceded 30
-  carries to Monangai"), `benched` (the week-4 fumble note); Monangai gains
-  `lead_role`; Huntley's `lead_role` now from "trending toward the start",
-  not "would be in line to start".
-- **`get_cbs_player_news`** parsed CBS's page with guessed selectors and
-  returned headline/description fragments without player, team or position;
-  it now reads the real list (`news_sources.parse_cbs`): player, position,
-  team, headline, text, approximate time, link. CBS serves only its first
-  page (ten items) to non-browser clients.
-
-### Added
-- **Gameday decisions override the injury tag.** From the inactives window
-  (~2 h before kickoff) until the game ends, every projection (start/sit,
-  `analyze_lineup`, briefing, win probability, risk mode's P(win)) reads the
-  published decisions (`gameday_inactives`: ESPN gameday notes + Sleeper
-  `Inactive`). Officially inactive → 0 and status `Inactive` (must sit).
-  Confirmed active → the "might sit" part of the discount goes: our share is
-  priced on what a questionable player who plays scores (2023-25 "given he
-  played": limited week 0.947 [0.869, 1.028] → 0.95, DNP week 0.819 [0.670,
-  0.972] → 0.82, all 0.924 [0.866, 0.986] → 0.92 without a line; never below
-  the pre-inactives value; Doubtful-active like the DNP week), Sleeper's
-  share drops its questionable shading, no doubtful cap, and a Sleeper zero
-  (it zero-projects most doubtful players) falls back to our number. The
-  starting QB's decision settles his receivers' coupling
-  (`starter_sit_weight(gameday=...)`: active → no cut, inactive → full
-  weight, basis `gameday`). Outside a window nothing is fetched (cached
-  schedule only); inside, one league-wide read per 5 minutes. New projection
-  fields `gameday_status`, `gameday_note`, `gameday_source`,
-  `reported_injury_status`.
-
-### Changed
 - **Doubtful 0.35 → 0.02.** 1 of 60 relevant doubtful players played in
   2023-25 (implied 0.006 [0.000, 0.019], MAE-optimal 0.00; MAE at the live
   value 3.50 → 0.26); 3 of 390 doubtful QB/RB/WR/TE 2018-25 (0.8% [0.3%,
@@ -362,64 +350,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (better in 5 of 6 position-seasons); strength 0.3 and
   `POST_BREAK_WEIGHT` 1.5 confirmed.
 
-### Added
-- **A back's gained role is priced, gated.** A role gain held two games, at
-  RB, that no teammate's absence explains (a teammate ahead of him or sharing
-  his role who played before the gain and missed one of its games, or one
-  back / out now) multiplies this week's Sleeper share by
-  `1 + 0.1 × the volume share gain` (`role_shift.UP_STRENGTH`,
-  `role_gain` on the projection). Backtest: gated backs 6.280 → 6.188 MAE
-  (n=79, better in each of 2023-25), all rows 5.3779 → 5.3770; receivers and
-  tight ends still get worse and stay flag-only. Jeremiyah Love ×1.054;
-  Emanuel Wilson (Charbonnet, Price out) and Jaylen Warren (Dowdle) are not
-  priced.
-- **Calibration evals.** `evals/backtest/trend_calibration.py` (returning,
-  role-down and gated role-up sweeps, per season), `practice_backtest.py`
-  (2023-25 report buckets with bootstrap intervals, QB start rates);
-  `signal_history.py --truth sleeper --transitions` scores the live practice
-  history against Sleeper's weekly stats with intervals (2026 weeks 3-4: 18
-  questionable player-weeks, 0.45 [0.21, 0.74] of their trailing rate — too
-  few alone, same direction).
-- **Risk-aware lineups (`risk_mode`).** `get_weekly_briefing`, `analyze_lineup`,
-  `compare_players_for_slot` (with `roster_id`) and `get_win_probability_lineup`
-  take `risk_mode` = `auto` (default) | `neutral` | `seek_variance` |
-  `protect_floor`. Auto reads this week's P(win) (points-optimal lineup vs the
-  opponent's projected starters, sd from floor/ceiling, QB-stack covariance)
-  and the season's playoff odds (`get_playoff_odds`, 2000 sims, cached 30 min
-  per league): an underdog (< 45%) or a long-shot season (< 20% playoff odds,
-  in a close game) chases ceiling, a favourite (> 55%) protects its floor.
-  Explicit seek/protect maximise P(score > a target ½ sd above / below the
-  points-optimal expectation). Every response reports `risk_mode`, the reason
-  and, when the choice differs from the points-optimal one, the trade-off
-  (`risk_adjustment.summary`: "Starting X over Y raises P(win) 41%→44%
-  although mean −0.6"). The grade and suggested changes of `analyze_lineup`
-  stay on expected points (`risk` block alongside). A bye week no longer
-  drops the briefing's lineup (no opponent: chosen on the risk mode alone).
-- **Risk-weighted trades.** `find_trade_targets(risk_mode=…)` and
-  `analyze_trade(risk_mode=…)`: a long shot weights lineup ceiling
-  (`risk.upside_gain`), a contender (>= 60%) the fantasy-playoff weeks
-  (`risk.playoff_gain`); the pure ROS delta and the both-sides bar are
-  unchanged. `find_trade_targets` gains `per_partner`.
-- **`get_trade_market`** (new tool; season 59 / full 76 / offseason 45 tools):
-  every roster's needs and surpluses by position from ROS lineup impact, bye
-  crunches, injured starters, record, playoff odds and contender / bubble /
-  long_shot; your natural partners (their need ∩ your surplus and vice versa)
-  with packages pre-scored by `find_trade_targets` and an
-  `acceptance_likelihood` (logistic heuristic over their lineup gain,
-  FantasyCalc balance, positional need, depth given up, situation, value
-  timing — each factor reported); `offer` → 1-3 counter offers that keep your
-  gain and raise their acceptance, also as `analyze_trade(...,
-  suggest_counters=True)`. ~3-4 s warm for a 12-team league; the first ROS
-  call of a process pays the cold Sleeper-week fetch (~15 s).
-- **Weekly accuracy loop.** Pre-kickoff projections are logged with the
-  signals active at the time (schema v18: `projection_log.signals`); once a
-  week is final they are graded against the actual points (league scoring and
-  neutral half-PPR) into `projection_accuracy` — by the prefetch loop, by
-  `refresh_data(scope=["accuracy"])`, or on demand.
-- **`get_projection_accuracy`** tool (in-season and full profiles: 58 / 75
-  tools): MAE/bias per position, projection source and signal (with vs
-  without), model vs Sleeper vs blend, trend over weeks and an
-  interpretation. `evals/backtest/accuracy_report.py` prints the same.
+### Fixed
+- `asyncio.gather(return_exceptions=True)` loops now treat any `BaseException`
+  (e.g. a child's `CancelledError`) as a failed result instead of passing it on
+  as data; `get_fantasy_context` reports `unexpected_error` instead of a null
+  `error_type` when the league fetch fails without one.
+- **`get_gameday_inactives` no longer hangs.** It ran past the MCP client's
+  300 s on 2026-09-27. Root cause: with the stored injury reports older than
+  the adaptive TTL (2 h on game days) the tool ran the full ESPN injury crawl
+  inline -- ~1900 requests behind the ESPN limiter, measured 185 s -- after
+  the ESPN gameday notes and the 5 MB Sleeper dump, also inline, one after
+  another, 30 s timeouts each. Now the published list and the injury report
+  are read at once, every read is bounded (12 s for the feeds, 6 s for the
+  crawl), a read that misses its budget keeps running in the background
+  (one per key; concurrent callers share it; a later call waits at most
+  1-2 s for it) and fills the cache for the next call, and an older copy
+  stands in (stored injury reports, a Sleeper dump up to 6 h, ESPN notes up
+  to 3 h). The answer says so: `partial`, `timed_out_sources`,
+  `stale_sources`, `injury_report_stale`. A fresh Sleeper dump (< 30 min) is
+  never refetched. Measured on a DB copy with 3 h old injury reports: 184.5 s
+  -> 6.0 s (then 1.0 s while the crawl finishes); a simulated window with
+  slow feeds (notes 20 s, dump 25 s, crawl 60 s): 105 s -> 12 s, 2 s on the
+  next call. `get_injury_report` and its practice refresh use the same
+  bounded read.
+- **The projection path never blocks on the gameday feeds.**
+  `gameday_statuses` (#259) waits at most 3 s for a cold read and 1.5 s for
+  an expired one (then serves the older copy, up to 30 min); a partial read
+  is retried after 30 s.
+- **SQLite connections are closed.** `DatabaseConnectionPool.close()` left a
+  connection that was borrowed at the time open forever (it went back into
+  the drained pool); it is now closed on return and the pool reopens on
+  demand. A pool dropped without `close()` closes its idle connections
+  (finalizer). A connection whose PRAGMA setup failed is closed. Borrowing
+  past the idle connections no longer blocks 5 s on the event loop's thread
+  before opening the one the limit allows. `NFLDatabase` is a context
+  manager. Tests close every pool they open (autouse fixture) and
+  `with sqlite3.connect() as conn` (which does not close) became
+  `closing(...)`. Python 3.14 suite warnings: 310 -> 4 (also replacing the
+  deprecated `asyncio.iscoroutinefunction`); `-W always::ResourceWarning`:
+  ~500 unclosed-database warnings -> 8 (all from `with sqlite3.connect()` in
+  three test files touched by other open work). The suite runs in ~20 s
+  instead of ~37 s. `tests/test_db_connection_leaks.py` runs with
+  ResourceWarning as an error.
+- **Cheaper cold ROS / trade calls.** The nflverse weekly stats CSV is
+  downloaded once per season and shared by the defense rankings, the offense
+  rankings and the game logs (was up to four downloads, ~8 s, per cold call);
+  `get_matchups` answers are reused for 30 s and concurrent asks share one
+  fetch (the trade market fetched and enriched every remaining week twice);
+  `slot_accepts` is memoised and `optimal_lineup` reads each player's value
+  and position once (~2M calls per trade search). On a DB copy, cold: ROS
+  10.7 s -> 8.5-9.4 s, get_trade_market 16.8 s -> 11.7 s, find_trade_targets
+  15.8 s -> 10.4-14.6 s; warm: 1.7 -> 1.3 s, 4.1 -> 2.6 s, 2.6 -> 1.3 s.
+- **Handcuff map.** Already parallel and cached since #229 (0.4-0.9 s cold,
+  instant warm on a DB copy); each team's depth chart now has an 8 s timeout
+  (`partial` + `timed_out_teams`), an expired chart (up to 3 days) stands in
+  when ESPN is slow, and the ~400 KB page is parsed off the event loop.
+
+- **News flags: precision and recall** (`news_signals`).
+  `designated_to_return` now means an IR / PUP / NFI return only (designated,
+  21-day window, activated / reinstated from a reserve list); a plain
+  "resumed practicing" / "returned to practice" (Pollard, Swift, Goedert in
+  week 5) is the new `practice_progress` flag (this week's news, no effect).
+  `value_trajectory` still reads a return to practice as a return for a
+  player on IR / PUP / NFI, and the returning-teammate logic reads both for
+  an unavailable teammate (`RETURN_CUE_RE`), so neither changes. Losing the
+  work is `benched`: "watched Monangai dominate touches" after a fumble,
+  "didn't see the field again", "saw his snaps dwindle", "lost work to";
+  the teammate who "dominated the touches / carries / looks" is `lead_role`.
+  "(coach's decision) inactive" / "healthy scratch" is the new
+  `inactive_healthy_scratch` (reported, no effect -- a backup's routine; the
+  gameday inactives settle a starter) instead of `benched`; "(foot) is
+  inactive" is `ruled_out`. A phrase inside a condition ("if Hall can't go,
+  Allen would be the lead back", "if he's not cleared to play", "could be
+  primed for a workhorse role if ...") is `conditional`: a conditional lead
+  role counts at half weight, other conditional flags not at all
+  (`get_player_news` timeline: `lead_role?`). A role named as a title
+  ("bell-cow running back Jonathan Taylor", "lead back Breece Hall") is the
+  named player's. Gone: "elevated week-to-week", "a week-to-week role",
+  "more day-to-day than week-to-week", "ruled out of bounds", "prior to
+  being ruled out", "The Eagles will play Week 5 with", a plain "snap count".
+  New phrasings: "more likely than not to sit out", "likely to miss a second
+  straight game", "will miss a second contest", "in the clear for", "expect
+  him to play", "on track to avoid an injury designation", "make the Week 5
+  start", "could manage his snaps", "well under a full workload". Live,
+  week 5: Pollard `designated_to_return` (a teammate's note) →
+  `practice_progress` + `expected_to_play` ("Expect him to play in Week 5");
+  Swift `designated_to_return` → `practice_progress`, `committee` ("ceded 30
+  carries to Monangai"), `benched` (the week-4 fumble note); Monangai gains
+  `lead_role`; Huntley's `lead_role` now from "trending toward the start",
+  not "would be in line to start".
+- **`get_cbs_player_news`** parsed CBS's page with guessed selectors and
+  returned headline/description fragments without player, team or position;
+  it now reads the real list (`news_sources.parse_cbs`): player, position,
+  team, headline, text, approximate time, link. CBS serves only its first
+  page (ten items) to non-browser clients.
 
 ## [0.9.5] - 2026-10-08
 
@@ -2317,7 +2341,8 @@ Low-severity consistency/schema polish from the audit:
 - Aligned `requirements.txt` and `pyproject.toml` dependencies; documented
   `ODDS_API_KEY`; removed a stray dev script.
 
-[Unreleased]: https://github.com/gtonic/nfl_mcp/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/gtonic/nfl_mcp/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/gtonic/nfl_mcp/compare/v0.9.5...v0.10.0
 [0.9.5]: https://github.com/gtonic/nfl_mcp/compare/v0.9.0...v0.9.5
 [0.9.0]: https://github.com/gtonic/nfl_mcp/compare/v0.8.5...v0.9.0
 [0.6.0]: https://github.com/gtonic/nfl_mcp/compare/v0.5.16...v0.6.0
