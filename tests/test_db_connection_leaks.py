@@ -5,6 +5,7 @@ fails the module instead of scrolling past in the warnings summary.
 """
 import gc
 import sqlite3
+import sys
 import threading
 import time
 import warnings
@@ -40,6 +41,10 @@ def test_a_closed_database_leaves_nothing_open(tmp_path):
     assert pools[0].open_connections == 0
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 13),
+    reason="sqlite3 only emits ResourceWarning for unclosed connections from Python 3.13",
+)
 def test_the_check_would_catch_a_leak(tmp_path):
     """Control: a connection dropped unclosed does warn, so the checks here
     mean something."""
