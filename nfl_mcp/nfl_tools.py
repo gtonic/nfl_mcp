@@ -645,7 +645,7 @@ async def _fetch_season_stats(season: int, season_type: str) -> list[dict]:
     hit = _season_stats_cache.get(key)
     if hit and time.monotonic() - hit[0] < _SEASON_STATS_TTL_SECONDS:
         return hit[1]
-    params = [("season_type", season_type)] + [("position[]", p) for p in _STATS_POSITIONS]
+    params: list[tuple[str, Any]] = [("season_type", season_type)] + [("position[]", p) for p in _STATS_POSITIONS]
     # ~2 MB for the whole league: the long timeout, not the default.
     async with create_http_client(timeout=LONG_TIMEOUT) as client:
         response = await client.get(
@@ -736,8 +736,8 @@ async def get_team_player_stats(team_id: str, season: int | None = None, season_
     season_type = season_type or 2
     limit = validate_limit(limit or 50, 1, 100, 50)
     team = normalize_team(team_id)
-    default = {"team_id": team_id, "team_name": None, "season": season,
-               "season_type": season_type, "player_stats": []}
+    default: dict[str, Any] = {"team_id": team_id, "team_name": None, "season": season,
+                               "season_type": season_type, "player_stats": []}
     if not team:
         return handle_validation_error(f"Unknown team '{team_id}'", default)
     if season_type not in _SEASON_TYPES:
@@ -829,7 +829,7 @@ async def get_nfl_standings(season: int | None = None, season_type: int | None =
                 if want in (c.get('abbreviation') or c.get('name') or '').lower()
             ]
 
-        entries = []
+        entries: list = []
         for child in children:
             std = child.get('standings') or {}
             entries.extend(std.get('entries') or [])
@@ -948,7 +948,7 @@ async def get_team_schedule(team_id: str, season: int | None = None) -> dict:
                 # Convert cached format to API response format
                 processed_schedule = []
                 for game in cached_schedule:
-                    processed_game = {
+                    processed_game: dict[str, Any] = {
                         'week': game.get('week'),
                         'opponent': {
                             'abbreviation': game.get('opponent'),
@@ -1220,7 +1220,7 @@ async def get_league_leaders(category: str, season: int | None = None, season_ty
         # Build players per matched token
         cache_stats = {"hits": 0, "misses": 0}
 
-        async def _fetch_json(url: str, client, headers, cache: dict[str, Any]) -> Any:
+        async def _fetch_json(url: str | None, client, headers, cache: dict[str, Any]) -> Any:
             url = _safe_espn_ref(url)
             if not url:
                 return None

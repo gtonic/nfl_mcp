@@ -62,10 +62,10 @@ class DatabaseConnectionPool:
     def __init__(self, db_path: str, config: ConnectionPoolConfig):
         self.db_path = db_path
         self.config = config
-        self._pool = Queue(maxsize=config.max_connections)
+        self._pool: Queue[sqlite3.Connection] = Queue(maxsize=config.max_connections)
         self._lock = threading.RLock()
         self._total_connections = 0
-        self._last_health_check = 0
+        self._last_health_check: float = 0
         self._generation = 0
         _live_pools.add(self)
         # A pool dropped without close() still closes its idle connections

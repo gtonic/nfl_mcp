@@ -40,6 +40,7 @@ import asyncio
 import logging
 import math
 import time
+from typing import cast
 
 from .errors import create_success_response
 
@@ -172,11 +173,11 @@ async def build_context(league_id: str, *, week: int | None = None, season: int 
     for rid, ids in ids_by_roster.items():
         out = []
         for pid in ids:
-            e = by_id.get(pid)
-            if not e or e["position"] not in TRADEABLE_POSITIONS:
+            entry = by_id.get(pid)
+            if not entry or entry["position"] not in TRADEABLE_POSITIONS:
                 continue
-            out.append({**e, "name": e["player"], "on_reserve": pid in reserve_ids,
-                        "projected_points": e["total_points"]})
+            out.append({**entry, "name": entry["player"], "on_reserve": pid in reserve_ids,
+                        "projected_points": entry["total_points"]})
         scored[rid] = out
 
     ctx = {
@@ -758,7 +759,7 @@ async def get_trade_market(
         if ctx.get("_odds_task"):
             ctx["_odds_task"].cancel()
         return create_success_response({"success": False, "error": error})
-    me = mine["roster_id"]
+    me = cast(dict, mine)["roster_id"]
 
     profiles = {rid: roster_profile(ctx, rid) for rid in ctx["scored"]}
     profiled_at = time.monotonic()

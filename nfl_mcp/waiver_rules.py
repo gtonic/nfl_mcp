@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime, time, timedelta
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from .game_clock import local_time
@@ -204,7 +205,7 @@ def waiver_status(
         if clears <= dropped_at:
             clears = next_run(league, dropped_at)
         if clears > now:
-            holds.append((clears, f"dropped {local_time(dropped_at)[:16]}, on waivers "
+            holds.append((clears, f"dropped {cast(str, local_time(dropped_at))[:16]}, on waivers "
                                   f"for {clear_days} clear day(s)"))
     # Without either kickoff the game lock cannot be ruled out, so "free
     # agent" would be a guess — the first failure mode in the module docstring.

@@ -111,6 +111,7 @@ async def get_waiver_log(
     def _involves(tx: dict) -> bool:
         keys = set((tx.get("adds") or {}).keys()) | set((tx.get("drops") or {}).keys())
         keys |= set(tx.get("wanted") or []) | set(tx.get("would_have_dropped") or [])
+        assert ids is not None  # only called under the `ids is not None` filter below
         return bool(keys & ids)
 
     out: dict = {"league_id": league_id, "round": round, "sections": wanted, "success": True, "error": None}

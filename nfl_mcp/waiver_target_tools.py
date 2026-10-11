@@ -75,7 +75,7 @@ def _claim_worth(verdict: str, upgrade: float) -> str:
 
 
 def _without_locked_starters(
-    players: list[dict], slots: dict[str, int], starters: list, roster_positions
+    players: list[dict], slots: dict[str, int], starters: list | None, roster_positions
 ) -> tuple[list[dict], dict[str, int]]:
     """The part of a lineup that can still change: players whose game has not
     started, and the slots not already held by a locked starter.
@@ -390,6 +390,7 @@ async def get_waiver_targets(
                                             purpose="advise")
     if error:
         return create_success_response({"success": False, "error": error})
+    assert mine is not None  # find_roster returns a roster whenever there is no error
     roster_id = mine["roster_id"]
 
     # Everything anyone rosters is off the table — including other teams' IR and

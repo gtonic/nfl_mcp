@@ -142,6 +142,7 @@ def game_lock(game: dict | None, now: datetime | None = None) -> dict:
     if start is None:
         return {"kickoff": None, "kickoff_local": None, "kickoff_weekday": None,
                 "locked": False, "game_status": "unknown", "status_source": None}
+    assert game is not None  # a kickoff was parsed from it
     progress = progress_of(game, now)
     status = "upcoming" if progress <= 0.0 else "final" if progress >= 1.0 else "in_progress"
     state = (game.get("state") or "").lower()

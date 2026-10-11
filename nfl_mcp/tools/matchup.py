@@ -6,6 +6,7 @@ MCP tool wrappers (validation + delegation); registered by
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 
 from .. import (
     matchup_tools,
@@ -276,7 +277,8 @@ async def get_strength_of_schedule(
             if first:
                 start_week, end_week = first, last
     if end_week is None:
-        end_week = max(int(start_week), 17)
+        # start_week is set on every path above (explicit, current or playoff).
+        end_week = max(int(cast(int, start_week)), 17)
     result = await sos_tools.get_strength_of_schedule(
         season=season,
         start_week=start_week,

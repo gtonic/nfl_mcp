@@ -180,7 +180,7 @@ def parse_nfl_com_report(html: str, season: int) -> list[dict]:
     game_date: date | None = None
     team: str | None = None
     for node in soup.find_all(["h2", "div", "table"]):
-        classes = node.get("class") or []
+        classes: list[str] | str = node.get("class") or []
         if node.name == "h2" and "d3-o-section-title" in classes:
             game_date = _header_date(node.get_text(" ", strip=True), season)
         elif node.name == "div" and "d3-o-section-sub-title" in classes:
@@ -301,7 +301,9 @@ def _published_early(snapshot: dict[str, str], day: date | None,
     stored = stored_days.get(day.isoformat())
     # Players on the page only: a stored day can hold rows of an earlier,
     # longer version of the same report.
-    return bool(stored) and any(stored.get(k) != v for k, v in snapshot.items())
+    if not stored:
+        return False
+    return any(stored.get(k) != v for k, v in snapshot.items())
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +454,7 @@ def summarize(rows: list[dict] | None) -> dict | None:
         diff = ranks[-1] - ranks[0] or ranks[-1] - ranks[-2]
         trend = "improving" if diff > 0 else "worsening" if diff < 0 else "steady"
     latest = days[-1]
-    sources = sorted({d.get("source") for d in days if d.get("source")})
+    sources = sorted({d["source"] for d in days if d.get("source")})
     return {
         "latest": latest["status"],
         "latest_date": latest["date"],

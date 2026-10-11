@@ -17,7 +17,7 @@ classify a status string.
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 
 class StatusInfo(NamedTuple):
@@ -190,7 +190,7 @@ def is_healthy(raw: str | None) -> bool:
     Empty and ``Unknown`` are not: neither is a clean bill of health.
     """
     row = info(raw)
-    return bool(row) and row.availability == "healthy"
+    return row is not None and row.availability == "healthy"
 
 
 def severity_map() -> dict[str, int]:
@@ -207,5 +207,5 @@ def severity_map() -> dict[str, int]:
             out.setdefault(spelling, sev)
     # ESPN's mixed-case list names, which neither title() nor upper() produce.
     for spelling in ("Reserve/PUP", "Reserve/NFI", "Reserve/COVID-19", "Day-To-Day"):
-        out.setdefault(spelling, STATUS_TABLE[normalize(spelling)].severity)
+        out.setdefault(spelling, STATUS_TABLE[cast(str, normalize(spelling))].severity)
     return out

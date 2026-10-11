@@ -8,6 +8,7 @@ exploitation recommendations.
 
 import logging
 from collections import defaultdict
+from typing import Any, cast
 
 from .errors import ErrorType, create_error_response, create_success_response
 from .lineup_slots import slot_accepts, starting_slots
@@ -58,7 +59,7 @@ class OpponentAnalyzer:
         }
 
         # Thresholds for weakness detection
-        self.weakness_thresholds = {
+        self.weakness_thresholds: dict[str, Any] = {
             "snap_pct_low": 40.0,
             "depth_count_low": 2,
             "injury_risk_high": ["DNP", "LP"]
@@ -614,8 +615,9 @@ async def analyze_opponent(
             projection = None
             if starters:
                 try:
+                    # a matchup is only fetched when current_week is set
                     projection = await _project_starters(starters, league_id, season,
-                                                         current_week, db)
+                                                         cast(int, current_week), db)
                 except Exception as e:
                     logger.warning(f"Could not project opponent starters: {e}")
             matchup_context = {

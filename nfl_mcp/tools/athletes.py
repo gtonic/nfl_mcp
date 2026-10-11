@@ -50,6 +50,7 @@ async def fetch_athletes() -> dict:
         last_updated = None
     age = _seconds_since(last_updated)
     if age is not None and 0 <= age < _ATHLETES_MIN_REFRESH_SECONDS:
+        assert db is not None  # last_updated came from it
         return {
             "athletes_count": db.get_athlete_count(),
             "last_updated": last_updated,

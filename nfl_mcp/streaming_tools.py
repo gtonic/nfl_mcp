@@ -18,6 +18,7 @@ weather/wind feature lands (wind depresses kicking).
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from . import matchup_tools
 from .errors import create_success_response, handle_http_errors, handle_validation_error
@@ -124,7 +125,7 @@ def compute_streaming_scores(
         team_scores: dict[str, dict] = {}
         for team, wk_opps in opponents_by_week.items():
             games = [(wk, opp) for wk, opp in sorted(wk_opps.items()) if opp]
-            per_week = []
+            per_week: list[dict[str, Any]] = []
             scores: list[float] = []
             fallback_any = False
             byes = sorted(wk for wk in scheduled_weeks if not wk_opps.get(wk))

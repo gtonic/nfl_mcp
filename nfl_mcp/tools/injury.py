@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING, Any, cast
 
 from .. import sleeper_tools
 from ..metrics import timing_decorator
 from ..teams import normalize_team
 from . import _context
 from ._context import _current_season_week
+
+if TYPE_CHECKING:
+    from ..database import NFLDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +123,7 @@ async def get_injury_report(
             results = [r for r in results if not _is_healthy_report(r)]
             healthy_excluded = before - len(results)
 
-        filters = {}
+        filters: dict[str, Any] = {}
         if min_confidence is not None:
             min_conf = max(0, min(100, int(min_confidence)))
             filters["min_confidence"] = min_conf
@@ -275,7 +279,7 @@ async def get_injury_trends(
 
         # The direction filter runs in SQL: applying it to an already-truncated
         # page returns nothing whenever the window opens with a bulk backfill.
-        rows = _context.get_db().get_injury_status_changes(
+        rows = cast("NFLDatabase", _context.get_db()).get_injury_status_changes(
             since=since, teams=teams_list or None, limit=max_rows,
             direction=direction, severity_map=STATUS_SEVERITY,
         )
@@ -392,7 +396,7 @@ async def get_gameday_inactives(
         # both at once, each bounded (a slow feed keeps loading in the
         # background and the answer says so). Inline and one after another
         # they ran past the MCP client's 300 s on 2026-09-27.
-        empty_official = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": []}
+        empty_official: dict[str, Any] = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": []}
 
         async def _official():
             if not (season and week):
@@ -528,7 +532,7 @@ async def _flag_my_starters(league_id, roster_id, week, inactives, confirmed_act
         starters = [p for p in raw if p and p != "0"]
     except Exception as e:
         return {"error": f"could not load starters: {e}"}
-    athletes = _context.get_db().get_athletes_by_ids(starters) if starters else {}
+    athletes = cast("NFLDatabase", _context.get_db()).get_athletes_by_ids(starters) if starters else {}
 
     def key(name, team):
         return norm_name(name), normalize_team(team)
@@ -536,7 +540,7 @@ async def _flag_my_starters(league_id, roster_id, week, inactives, confirmed_act
     official = {key(r["player_name"], r["team_id"]): r for r in inactives if r["official"]}
     at_risk = {key(r["player_name"], r["team_id"]): r for r in inactives if not r["official"]}
     active = {key(r["player_name"], r["team_id"]): r for r in confirmed_active}
-    out = {"inactive": [], "at_risk": [], "confirmed_active": [], "not_yet_published": []}
+    out: dict[str, list] = {"inactive": [], "at_risk": [], "confirmed_active": [], "not_yet_published": []}
     for pid in starters:
         row = athletes.get(pid) or {}
         name, team = row.get("full_name"), normalize_team(row.get("team_id"))

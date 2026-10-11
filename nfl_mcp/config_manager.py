@@ -13,15 +13,17 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
 
 from ._version import get_version
 
@@ -156,7 +158,7 @@ class ConfigManager:
         self.config_file_path = Path(config_file).resolve() if config_file else None
         self.enable_hot_reload = enable_hot_reload
         self._config_lock = threading.RLock()
-        self._observer = None
+        self._observer: BaseObserver | None = None
         self._config: ConfigurationModel | None = None
 
         # Load initial configuration
@@ -172,10 +174,13 @@ class ConfigManager:
             self._observer.stop()
             self._observer.join()
 
-        self._observer = Observer()
+        # Only called once config_file_path is known to exist.
+        config_path = cast(Path, self.config_file_path)
+        observer = Observer()
+        self._observer = observer
         event_handler = ConfigFileHandler(self)
-        self._observer.schedule(event_handler, str(self.config_file_path.parent), recursive=False)
-        self._observer.start()
+        observer.schedule(event_handler, str(config_path.parent), recursive=False)
+        observer.start()
 
     def load_configuration(self):
         """Load configuration from environment variables and config file."""
@@ -199,20 +204,21 @@ class ConfigManager:
     def _load_config_file(self) -> dict[str, Any]:
         """Load configuration from YAML or JSON file."""
         try:
-            with open(self.config_file_path) as f:
-                if self.config_file_path.suffix.lower() in ['.yml', '.yaml']:
+            config_path = cast(Path, self.config_file_path)
+            with open(config_path) as f:
+                if config_path.suffix.lower() in ['.yml', '.yaml']:
                     return yaml.safe_load(f) or {}
-                elif self.config_file_path.suffix.lower() == '.json':
+                elif config_path.suffix.lower() == '.json':
                     return json.load(f)
                 else:
-                    raise ValueError(f"Unsupported configuration file format: {self.config_file_path.suffix}")
+                    raise ValueError(f"Unsupported configuration file format: {config_path.suffix}")
         except Exception as e:
             raise ValueError(f"Failed to load configuration file {self.config_file_path}: {e}") from e
 
     def _load_environment_variables(self, config_dict: dict[str, Any]) -> dict[str, Any]:
         """Load configuration from environment variables."""
         # Environment variable mapping
-        env_mappings = {
+        env_mappings: dict[str, tuple[str, str, Callable[[str], Any]]] = {
             # Timeout configuration
             'NFL_MCP_TIMEOUT_TOTAL': ('timeout', 'total', float),
             'NFL_MCP_TIMEOUT_CONNECT': ('timeout', 'connect', float),

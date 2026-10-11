@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from . import opportunity_tools
 from .config import DEFAULT_TIMEOUT, create_http_client
@@ -391,7 +392,7 @@ async def get_usage_trends(
     `player_names`. The window is the `weeks` completed weeks ending at
     `through_week` (default: the week before the current one).
     """
-    default_data = {"players": []}
+    default_data: dict[str, Any] = {"players": []}
     if not isinstance(weeks, int) or not (2 <= weeks <= MAX_WEEKS):
         return handle_validation_error(f"weeks must be between 2 and {MAX_WEEKS}", default_data)
     if not player_names and not (league_id and roster_id is not None):
@@ -420,6 +421,7 @@ async def get_usage_trends(
     window = list(range(max(1, last - weeks + 1), last + 1))
     name_index = opportunity_tools.build_name_index(logs)
 
+    wanted: list[dict[str, Any]]
     if player_names:
         wanted = []
         for q in player_names[:MAX_PLAYERS]:
@@ -434,6 +436,8 @@ async def get_usage_trends(
         for w in wanted:
             w["sleeper_id"] = _sleeper_id_for(db, w["name"], w["team"], w["position"])
     else:
+        # Guaranteed by the argument check above (no player_names -> both set).
+        assert league_id is not None and roster_id is not None
         roster, error = await _roster_players(league_id, roster_id, db)
         if error:
             return handle_validation_error(error, default_data)
@@ -450,7 +454,7 @@ async def get_usage_trends(
     kickoffs = {wk: _kickoffs(db, season, wk) for wk in window}
     injury_index = _injury_index(db)
 
-    players_out = []
+    players_out: list[dict[str, Any]] = []
     for w in wanted:
         entry = w.get("entry")
         games = {g["week"]: g for g in (entry or {}).get("games", [])}

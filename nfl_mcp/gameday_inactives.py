@@ -213,8 +213,8 @@ def _stored_sleeper_players(db, teams: set[str],
         except Exception:
             continue
         rows = rows if isinstance(rows, list) else []
-        stamps = [parse_kickoff(r.get("updated_at")) for r in rows if isinstance(r, dict)]
-        stamps = [t for t in stamps if t is not None]
+        stamps = [t for t in (parse_kickoff(r.get("updated_at")) for r in rows if isinstance(r, dict))
+                  if t is not None]
         if fresh_since is not None and (not stamps or min(stamps) < fresh_since):
             return {}, None
         if stamps:
@@ -281,9 +281,9 @@ async def _cached_read(key: str, cached: tuple[datetime, Any] | None, ttl: timed
     ``failed``. A download that misses the wait keeps running. Never raises.
     """
     age = now - cached[0] if cached else None
-    if cached and timedelta(0) <= age < ttl:
+    if cached and age is not None and timedelta(0) <= age < ttl:
         return cached[1], cached[0], "fresh"
-    stale = cached if cached and timedelta(0) <= age < stale_max else None
+    stale = cached if cached and age is not None and timedelta(0) <= age < stale_max else None
     if inflight(key):
         # An earlier call's download is still running and already missed its
         # own budget: do not wait the full budget for it again.
@@ -372,7 +372,7 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
     now = now or datetime.now(UTC)
     budget = Budget(OFFICIAL_BUDGET_SECONDS if budget_seconds is None else budget_seconds)
     wanted = {normalize_team(t) for t in teams or [] if normalize_team(t)}
-    result = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": [],
+    result: dict[str, Any] = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": [],
               "sources_checked": [], "sleeper_freshness": None,
               "partial": False, "timed_out_sources": [], "stale_sources": []}
     try:
@@ -492,13 +492,14 @@ async def gameday_statuses(db, season: int | None, week: int | None,
     teams = priced_teams(db, season, week, now)
     if not teams:
         return {}
+    assert season is not None and week is not None  # priced_teams is empty without them
     key = (int(season), int(week))
     hit = _gameday_cache.get(key)
     age = now - hit[0] if hit else None
-    if hit and timedelta(0) <= age < GAMEDAY_CACHE_TTL:
+    if hit and age is not None and timedelta(0) <= age < GAMEDAY_CACHE_TTL:
         official = hit[1]
     else:
-        stale = hit[1] if hit and timedelta(0) <= age < GAMEDAY_STALE_MAX else None
+        stale = hit[1] if hit and age is not None and timedelta(0) <= age < GAMEDAY_STALE_MAX else None
 
         async def _refresh() -> dict:
             off = await get_official_inactives(db, key[0], key[1], now=now, client=client)

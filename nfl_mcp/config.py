@@ -322,7 +322,7 @@ def get_http_headers(service_name: str) -> dict[str, str]:
 
 
 def create_http_client(
-    timeout: httpx.Timeout = None,
+    timeout: httpx.Timeout | None = None,
     follow_redirects: bool = True,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> httpx.AsyncClient:
@@ -394,7 +394,7 @@ def allow_private_urls() -> bool:
     )
 
 
-def _ip_is_disallowed(ip: "ipaddress._BaseAddress") -> bool:
+def _ip_is_disallowed(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if an IP address must not be contacted (SSRF protection)."""
     # Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) to its IPv4 form so the
     # underlying private/loopback address is inspected rather than the wrapper.
@@ -817,7 +817,7 @@ def validate_numeric_input(value: Any, min_val: int | None = None, max_val: int 
     return int_value
 
 
-def validate_limit(value: int, min_val: int, max_val: int, default: int | None = None) -> int:
+def validate_limit(value: int | None, min_val: int, max_val: int, default: int | None = None) -> int:
     """
     Validate and correct a limit parameter.
 

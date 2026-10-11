@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from .teams import normalize_team
 
@@ -121,7 +122,7 @@ def resolve_player(db, name: str | None, team: str | None = None,
     several exact-name fantasy players the result also carries
     ``ambiguous: True`` and ``candidates``.
     """
-    out = {"name": name, "position": (position or "").upper() or None,
+    out: dict[str, Any] = {"name": name, "position": (position or "").upper() or None,
            "team": normalize_team(team) if team else None, "player_id": player_id}
     if db is None:
         return out
@@ -406,8 +407,8 @@ async def analyze_lineup(
              "position": (rows.get(pid) or {}).get("position")}
             for pid in reserve_ids
         ]
-        warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
-        warnings = list(warnings)
+        prior_warnings = result.get("warnings")
+        warnings = list(prior_warnings) if isinstance(prior_warnings, list) else []
         if occupied_unknown:
             warnings.append(
                 f"{len(occupied_unknown)} starting slot(s) hold a player the athlete cache "

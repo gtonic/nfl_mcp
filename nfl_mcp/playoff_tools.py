@@ -33,7 +33,7 @@ import math
 import random
 import statistics
 import time
-from typing import Any
+from typing import Any, cast
 
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .sleeper_tools import (
@@ -109,7 +109,7 @@ async def _projected_strength(league: dict, league_id: str, rosters: list[dict],
         ids_by_roster: dict[int, list[str]] = {}
         for r in rosters:
             taxi = {str(p) for p in (r.get("taxi") or [])}
-            ids_by_roster[r.get("roster_id")] = [
+            ids_by_roster[cast(int, r.get("roster_id"))] = [
                 str(p) for p in (r.get("players") or []) if p and str(p) != "0" and str(p) not in taxi]
         all_ids = [pid for ids in ids_by_roster.values() for pid in ids]
         by_id, meta = await ros.ros_for_ids(all_ids, league=league, season=int(season),
@@ -178,7 +178,7 @@ def _simulate(
     num_sims: int, score_sd: float | dict[int, float], rng: random.Random,
     median_weeks: list[int] | None = None,
     forced: dict[int, int] | None = None,
-) -> dict[int, dict[str, float]]:
+) -> dict[int, dict[str, float | None]]:
     """Monte-Carlo the remaining schedule. teams: [{roster_id, wins, points, mean}].
 
     `forced` pins the winner of a game (schedule index -> roster id): its
@@ -225,7 +225,7 @@ def _simulate(
             made[rid] += 1
             seed_sum[rid] += seed
 
-    out = {}
+    out: dict[int, dict[str, float | None]] = {}
     for rid in ids:
         m = made[rid]
         out[rid] = {
@@ -419,14 +419,14 @@ async def get_playoff_odds(
     # current week
     season = None
     try:
-        season = int(league.get("season")) if league.get("season") else None
+        season = int(raw_season) if (raw_season := league.get("season")) else None
     except (TypeError, ValueError):
         season = None
     if current_week is None:
         try:
             state = await get_nfl_state()
             nfl_state = state.get("nfl_state", {}) if state.get("success") else {}
-            current_week = int(nfl_state.get("week")) if nfl_state.get("week") else None
+            current_week = int(raw_week) if (raw_week := nfl_state.get("week")) else None
             season = season or (int(nfl_state["season"]) if nfl_state.get("season") else None)
         except Exception:
             current_week = None

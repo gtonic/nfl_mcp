@@ -92,7 +92,7 @@ class RankingsMixin(_DBMixinBase):
         """
         try:
             cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
-            rankings = {}
+            rankings: dict[str, list] = {}
 
             with self._pool.get_connection() as conn:
                 if position:

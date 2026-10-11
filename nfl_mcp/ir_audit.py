@@ -12,6 +12,8 @@ player ESPN calls Out whom Sleeper still lists Questionable cannot be moved.
 """
 from __future__ import annotations
 
+from typing import cast
+
 from .errors import create_success_response
 from .injury_match import build_injury_index, find_report, misses_this_week, sleeper_injury_status
 
@@ -163,6 +165,7 @@ async def audit_ir_slots(
                                             purpose="audit")
     if error:
         return create_success_response({"success": False, "error": error})
+    mine = cast(dict, mine)
 
     db = get_shared_db()
     athletes = db.get_athletes_by_ids([str(p) for p in (mine.get("players") or [])])

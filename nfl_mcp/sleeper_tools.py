@@ -11,6 +11,7 @@ import copy
 import json
 import logging
 import time
+from typing import Any, cast
 
 import httpx
 
@@ -64,7 +65,7 @@ def _init_db():
 def _enrich_single(nfl_db, pid, cache):
     if pid in cache:
         return cache[pid]
-    athlete = {}
+    athlete: dict = {}
     if nfl_db:
         try:
             athlete = nfl_db.get_athlete_by_id(pid) or {}
@@ -75,7 +76,7 @@ def _enrich_single(nfl_db, pid, cache):
     return data
 
 def _enrich_id_list(nfl_db, ids):
-    cache = {}
+    cache: dict = {}
     return [_enrich_single(nfl_db, pid, cache) for pid in (ids or [])]
 
 
@@ -858,8 +859,8 @@ async def _get_matchups_uncached(league_id: str, week: int) -> dict:
                         for m in matchups_data:
                             if not isinstance(m, dict):
                                 continue
-                            enriched_players = []
-                            enriched_starters = []
+                            enriched_players: list[dict] = []
+                            enriched_starters: list[dict] = []
                             for key, target_list in [("players", enriched_players), ("starters", enriched_starters)]:
                                 ids = m.get(key)
                                 if not isinstance(ids, list):
@@ -1356,7 +1357,7 @@ async def get_draft_traded_picks(draft_id: str) -> dict:
         data = response.json()
         try:
             nfl_db = _init_db()
-            cache = {}
+            cache: dict = {}
             if isinstance(data, list):
                 for tp in data:
                     if isinstance(tp, dict) and tp.get("player_id"):
@@ -1367,7 +1368,7 @@ async def get_draft_traded_picks(draft_id: str) -> dict:
 
 
 # Player dump caching (large ~5MB) - cache in memory to reduce calls.
-_PLAYERS_CACHE = {"data": None, "fetched_at": 0}
+_PLAYERS_CACHE: dict[str, Any] = {"data": None, "fetched_at": 0}
 _PLAYERS_CACHE_TTL = 60 * 60 * 12  # 12 hours
 # Even force_refresh re-downloads the ~5 MB dump at most this often: Sleeper
 # asks clients to pull it about once a day, and a looping agent must not
@@ -1446,11 +1447,12 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
 
     context: dict = {}
     # Always fetch league first for structural context
-    league_resp = await get_league(league_id) if "league" in wanted else {"success": True}
+    league_resp: dict = await get_league(league_id) if "league" in wanted else {"success": True}
     if not league_resp.get("success"):
         return create_error_response(
             league_resp.get("error", "Failed to fetch league"),
-            error_type=league_resp.get("error_type"),
+            # None when absent (not the UNEXPECTED default); kept as is.
+            error_type=league_resp.get("error_type"),  # type: ignore[arg-type]
             data={"context": {}, "league_id": league_id}
         )
     if "league" in wanted:
@@ -1473,8 +1475,8 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
         for key, result in zip(task_keys, results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(f"[Fantasy Context] Failed to fetch {key}: {result}")
-            elif result.get("success"):
-                context[key] = result.get(key)
+            elif cast(dict, result).get("success"):
+                context[key] = cast(dict, result).get(key)
 
     # Determine effective week (auto inference if needed)
     auto_inferred = False
@@ -1508,8 +1510,8 @@ async def get_fantasy_context(league_id: str, week: int | None = None, include: 
         for key, result in zip(week_keys, results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(f"[Fantasy Context] Failed to fetch {key}: {result}")
-            elif result.get("success"):
-                context[key] = result.get(key)
+            elif cast(dict, result).get("success"):
+                context[key] = cast(dict, result).get(key)
 
     return create_success_response({
         "context": context,

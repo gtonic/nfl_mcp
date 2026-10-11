@@ -111,6 +111,8 @@ async def get_start_sit_recommendation(
             result["unresolved"] = unresolved
         return result
 
+    # Non-empty here: the no-input case returned above and `players` returned.
+    assert player_name is not None
     try:
         player_name = validate_string_input(player_name, 'player_name', max_length=100, required=True)
     except ValueError as e:

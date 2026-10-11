@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 from .teams import normalize_team
 
@@ -110,7 +111,7 @@ def playing_options(rows: list[dict], reference: list[dict] | None = None) -> li
         position = (row.get("position") or "").upper()
         if position in starters:
             team = normalize_team(row.get("team_id") or row.get("team"))
-            team_starters = starters[position].get(team)
+            team_starters = starters[position].get(team) if team else None
             if team_starters is not None and str(row.get("id")) not in team_starters:
                 continue
         kept.append(row)
@@ -137,7 +138,7 @@ def unsigned_free_agents(rows: list[dict], taken: set[str] | None = None,
     market rank first. Pure apart from the clock."""
     now = time.time() if now is None else now
     wanted = {p.upper() for p in positions} if positions else UNSIGNED_POSITIONS
-    out = []
+    out: list[dict[str, Any]] = []
     for row in rows or []:
         position = (row.get("position") or "").upper()
         if (position not in UNSIGNED_POSITIONS or position not in wanted

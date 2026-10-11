@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import cast
 
 from .database import get_shared_db
 from .errors import create_success_response
@@ -180,6 +181,7 @@ async def get_bye_week_plan(
     mine, error = find_roster(rosters, league_id, roster_id, user_id)
     if error:
         return create_success_response({"success": False, "error": error})
+    assert mine is not None  # find_roster returns a roster whenever there is no error
     roster_id = mine["roster_id"]
 
     taxi = {str(p) for p in (mine.get("taxi") or [])}
@@ -221,7 +223,7 @@ async def get_bye_week_plan(
                 if isinstance(res, Exception):
                     logger.debug(f"free agents for week {w} failed: {res}")
                     continue
-                free_agents[w] = res
+                free_agents[w] = cast("list[dict]", res)
         except TimeoutError:
             free_agent_note = (f"Free-agent lookup timed out after {FREE_AGENT_TIMEOUT_SECONDS:.0f}s — "
                                "call get_waiver_targets(week=<crunch week>) directly.")

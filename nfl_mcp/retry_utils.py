@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -304,8 +304,9 @@ async def retry_with_backoff(
         if circuit_breaker and not settled:
             circuit_breaker.release_probe()
 
-    # All retries exhausted
-    raise last_exception
+    # All retries exhausted (cast only for the checker: raising None still
+    # fails with TypeError exactly as before)
+    raise cast(BaseException, last_exception)
 
 
 def get_all_circuit_breaker_status() -> dict[str, dict[str, Any]]:

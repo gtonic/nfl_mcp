@@ -16,6 +16,7 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 # Re-exported (``X as X``) for ``from nfl_mcp.database import ...`` callers.
 from .db._common import _DEFAULT_SEVERITY as _DEFAULT_SEVERITY
@@ -105,9 +106,9 @@ class NFLDatabase(
                 except sqlite3.Error as e:
                     logger.warning(f"VACUUM after migration failed: {e}")
 
-    def health_check(self) -> dict[str, bool | int | str]:
+    def health_check(self) -> dict[str, Any]:
         """Perform a comprehensive health check of the database."""
-        pool_health = self._pool.health_check()
+        pool_health: dict[str, Any] = self._pool.health_check()
 
         if not pool_health["healthy"]:
             return pool_health
@@ -144,7 +145,7 @@ class NFLDatabase(
             })
             return pool_health
 
-    def get_connection_stats(self) -> dict[str, int]:
+    def get_connection_stats(self) -> dict[str, float]:
         """Get connection pool statistics."""
         return {
             "active_connections": self._pool._total_connections,

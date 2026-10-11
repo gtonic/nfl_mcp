@@ -472,8 +472,9 @@ async def _forecasts_for(
 
     stamp = time.monotonic()
     for key in missing:
-        if out.get(key):
-            _forecast_cache[key] = (stamp, out[key])
+        fetched = out.get(key)
+        if fetched:
+            _forecast_cache[key] = (stamp, fetched)
     return out
 
 

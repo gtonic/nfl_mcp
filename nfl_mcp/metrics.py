@@ -127,11 +127,11 @@ class MetricsCollector:
                 labels = self._labels.get(name, {})
                 label_str = ','.join(f'{k}="{v}"' for k, v in labels.items())
                 lines.append(f'{metric_name}{{{label_str}}} {value}' if label_str else f'{metric_name} {value}')
-            for name, value in self._gauges.items():
+            for name, gauge in self._gauges.items():
                 metric_name = name.split('|')[0]
                 labels = self._labels.get(name, {})
                 label_str = ','.join(f'{k}="{v}"' for k, v in labels.items())
-                lines.append(f'{metric_name}{{{label_str}}} {value}' if label_str else f'{metric_name} {value}')
+                lines.append(f'{metric_name}{{{label_str}}} {gauge}' if label_str else f'{metric_name} {gauge}')
             return '\n'.join(lines) + '\n'
 
 _metrics = MetricsCollector()

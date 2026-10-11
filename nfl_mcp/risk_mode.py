@@ -116,7 +116,7 @@ async def season_odds(league_id: str | None, week: int | None = None, db=None,
         except Exception as e:  # pragma: no cover - defensive
             logger.warning(f"playoff odds unavailable for risk mode: {e}")
             return {}
-        if not (res or {}).get("success") or not res.get("odds"):
+        if not res or not res.get("success") or not res.get("odds"):
             return {}
         out = {
             "by_roster": {o["roster_id"]: o for o in res["odds"]},

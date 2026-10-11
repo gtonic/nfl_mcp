@@ -15,12 +15,12 @@ from ._common import (
 class AthletesMixin(_DBMixinBase):
     """Athletes (Sleeper) and teams (ESPN) tables."""
 
-    def upsert_athletes(self, athletes_data: list[dict]) -> int:
+    def upsert_athletes(self, athletes_data: dict[str, dict]) -> int:
         """
         Insert or update athlete records.
 
         Args:
-            athletes_data: List of athlete dictionaries from Sleeper API
+            athletes_data: Mapping of player id -> athlete dict from Sleeper API
 
         Returns:
             Number of athletes processed

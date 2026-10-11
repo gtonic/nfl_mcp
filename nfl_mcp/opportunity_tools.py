@@ -12,6 +12,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from io import StringIO
+from typing import Any
 
 from . import opportunity
 from .config import LONG_TIMEOUT, create_http_client
@@ -83,7 +84,7 @@ def parse_game_logs(csv_text: str) -> dict[str, dict]:
         # The team he played *for* that week: a traded player's share is of
         # the team he was on then, not the one he is on now.
         opp = (row.get("opponent_team") or "").upper()
-        game = {"week": int(wk), "team": normalize_team(team) or team,
+        game: dict[str, Any] = {"week": int(wk), "team": normalize_team(team) or team,
                 "opponent": (normalize_team(opp) or opp) or None}
         for f in _USAGE_FIELDS:
             v = row.get(f)

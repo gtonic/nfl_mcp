@@ -35,6 +35,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .errors import create_success_response
 from .lineup_slots import normalize_position
@@ -183,8 +184,8 @@ async def grade_week(db, season: int, week: int) -> dict:
             continue
         pid = str(r["player_id"])
         line = stats.get(pid)
-        lid = league_of.get(key)
-        league_pts = (points_by_league.get(lid) or {}) if lid else {}
+        row_lid = league_of.get(key)
+        league_pts = (points_by_league.get(row_lid) or {}) if row_lid else {}
         if pid in league_pts:
             actual, source = league_pts[pid], "league_matchup"
         else:
@@ -345,7 +346,7 @@ def accuracy_report(rows: list[dict], by_signal: bool = True) -> dict:
         "sleeper": _stats(both, "sleeper_projection"),
         "blend": _stats(both),
     } if both else None
-    report = {
+    report: dict[str, Any] = {
         "overall": _stats(graded),
         "half_ppr_actual_mean": (round(sum(float(r.get("actual_half_ppr") or 0)
                                            for r in graded) / len(graded), 2)

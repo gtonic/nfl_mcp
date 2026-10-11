@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime
+from typing import Any
 
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .game_clock import game_lock, week_games
@@ -242,6 +243,7 @@ def optimize_win_probability(
             best_gain, best_trial = 1e-9, None
             for i in range(len(current)):
                 for b in bench:
+                    trial: list[dict | None] | None
                     if slot_accepts(slot_list[i], b.get("position")):
                         trial = list(current)
                         trial[i] = b
@@ -515,7 +517,7 @@ async def get_win_probability_lineup(
     """
     from . import risk_mode as rm
 
-    default_data = {"recommended_lineup": [], "win_probability": None}
+    default_data: dict[str, Any] = {"recommended_lineup": [], "win_probability": None}
     try:
         risk_mode = rm.normalize_risk_mode(risk_mode)
     except ValueError as e:

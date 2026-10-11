@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from . import news_signals, opportunity_tools, qb_coupling, role_shift, usage_trends
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
@@ -975,8 +976,8 @@ class ProjectionEngine:
         # A gained role is priced only when no teammate's absence explains it
         # (`role_shift.UP_STRENGTH`, `_role_gain`).
         role_gain = None
-        if (role or {}).get("role_trend") == "role_up" \
-                and float((role or {}).get("gain_multiplier") or 1.0) > 1.0:
+        if role and role.get("role_trend") == "role_up" \
+                and float(role.get("gain_multiplier") or 1.0) > 1.0:
             explained = (_gain_explained_by_absence(
                 depth, depth_team, position, pos_rank, opp_index, name, week,
                 role.get("break_week"), played_weeks) if depth and opp_index and week and name
@@ -1330,18 +1331,21 @@ class ProjectionEngine:
                 logger.debug(f"practice week unavailable for {name}: {e}")
                 return None
 
-        _get.detail = _detail
-        _get.practice = _practice
-        _get.practice_week = _practice_week
+        # Function attributes ride along on the lookup; `Any` because a plain
+        # function type has no such attributes for the checker.
+        lookup: Any = _get
+        lookup.detail = _detail
+        lookup.practice = _practice
+        lookup.practice_week = _practice_week
         # The report text's role / availability signals, every player's
         # (`news_signals`): the injury blurbs and the stored news items of
         # every source (`news_sources`); empty without a database.
         try:
-            _get.news = news_signals.index_for(db, rows)
+            lookup.news = news_signals.index_for(db, rows)
         except Exception as e:  # never sink a projection on a blurb
             logger.debug(f"news signals unavailable: {e}")
-            _get.news = {}
-        return _get
+            lookup.news = {}
+        return lookup
 
     def _qb_depth_order(self) -> dict[str, list[str]]:
         """``{team: [QB names by Sleeper depth_chart_order]}`` from the athlete
@@ -1381,15 +1385,19 @@ class ProjectionEngine:
         # are independent (mostly network) reads: fetched together. Opportunity
         # baseline needs season + week (>1); otherwise the rank-bucket baseline
         # is used (backward compatible).
-        async def _read(fetch, *args):
+        async def _read(fetch, *args) -> Any:
             # Resolved inside the coroutine so a failure of any kind (even a
             # non-awaitable stub) lands in its own slot, as it did sequentially.
             return await fetch(*args)
 
-        async def _no_logs():
+        async def _no_logs() -> dict:
             return {}
 
         use_logs = bool(season and week and week > 1)
+        values_index: Any
+        rankings: Any
+        lines: Any
+        logs: Any
         values_index, rankings, lines, logs = await asyncio.gather(
             _read(lambda: self.values.get_values(ppr, 2 if superflex else 1, num_teams, False)),
             _read(lambda: self.defense.fetch_defense_rankings()),
@@ -1511,11 +1519,12 @@ def _with_gameday(status_of, gameday: dict):
     def _decision(name: str, team: str) -> str | None:
         return (_gameday_hit(gameday, name, team) or {}).get("status")
 
+    lookup: Any = _get  # carries function attributes (see `_status_lookup`)
     for attr in ("detail", "practice", "practice_week", "news"):
         if hasattr(status_of, attr):
-            setattr(_get, attr, getattr(status_of, attr))
-    _get.gameday = _decision
-    return _get
+            setattr(lookup, attr, getattr(status_of, attr))
+    lookup.gameday = _decision
+    return lookup
 
 
 async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
@@ -1549,7 +1558,7 @@ async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
     except Exception as e:
         logger.debug(f"role-shift inputs unavailable: {e}")
         return neutral, _no_snaps
-    reads = []
+    reads: list[dict | None] = []
     for p in players:
         position = (p.get("position") or "").upper()
         name = p.get("name") or p.get("player_name")

@@ -4,6 +4,7 @@ Mixed into ``nfl_mcp.database.NFLDatabase``.
 """
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 from ._common import (
     _DBMixinBase,
@@ -188,7 +189,8 @@ class ProjectionsMixin(_DBMixinBase):
         scoring_key: str | None = None, league_id: str | None = None,
     ) -> list[dict]:
         """Graded rows for a season, optionally filtered."""
-        where, params = ["season=?"], [season]
+        where: list[str] = ["season=?"]
+        params: list[Any] = [season]
         if weeks:
             where.append(f"week IN ({','.join('?' * len(weeks))})")
             params.extend(int(w) for w in weeks)

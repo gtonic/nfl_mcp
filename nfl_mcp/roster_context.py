@@ -56,6 +56,7 @@ async def load_roster_players(
     mine, error = find_roster(rosters, league_id, roster_id, user_id)
     if error:
         return {**base, "error": error}
+    assert mine is not None  # find_roster returns a roster whenever error is None
 
     taxi = {str(p) for p in (mine.get("taxi") or [])}
     reserve = {str(p) for p in (mine.get("reserve") or [])}
