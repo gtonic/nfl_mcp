@@ -50,7 +50,12 @@ fantasy-playoff window (``playoff_points``, from the league's
   read as two games, not one.
 - News: the weekly projection's ``news_flags`` (`news_signals`) are passed
   through on every entry, for the tools that weigh a role's security
-  (waivers, drops, value trajectory); they do not move ROS points.
+  (waivers, drops, value trajectory); they do not move ROS points, except
+  that a ``multi_week_absence`` flag's parsed length ("a six-week
+  recovery", "eligible to return in Week 8") sets the absence window of an
+  Out / reserve player the injury feed gives no return date (precedence:
+  ESPN return date > parsed news weeks > status heuristics; see
+  `expected_absence`).
 - K / DEF: later weeks are priced per opponent off the offense read the weekly
   engine falls back to (``streaming_tools.unit_matchup``).
 - Sleeper's later weeks: Sleeper publishes a projection for every week of the
@@ -263,8 +268,17 @@ def expected_absence(
     status: str | None, description: str | None = None,
     return_date: str | None = None, today: date | None = None,
     placed_on: date | None = None, season_week: int | None = None,
+    news_weeks: int | None = None, news_reason: str | None = None,
 ) -> tuple[int, str | None]:
     """``(weeks_missed_from_this_week, reason)`` for an injury designation.
+
+    Precedence: ESPN's return date > the absence length parsed from the news
+    (`news_weeks`: `news_signals.absence_weeks` over the player's
+    ``multi_week_absence`` flags -- "a six-week recovery", "eligible to
+    return in Week 8", "placed on injured reserve", "season-ending" -- and
+    this report's own text) > the status heuristics (one week for Out, the
+    reserve minimum, two for "week-to-week"). Between the news and the report
+    text the longer reading wins; neither shortens a reserve minimum.
 
     Questionable and doubtful are priced by the weekly projection (0.9 / 0.35)
     and cost no future weeks. A stated return date (ESPN's ``returnDate``)
@@ -313,6 +327,16 @@ def expected_absence(
         if reserve and stated < base:
             return base, f"{reason}; ESPN return date {return_date} is earlier"
         return max(1, stated), f"{status}: return date {return_date}"
+    n, why = _text_absence(status, s, text, base, reason)
+    if news_weeks is not None and int(news_weeks) > n:
+        return int(news_weeks), f"{status}: {news_reason or f'{news_weeks} weeks per the news'}"
+    return n, why
+
+
+def _text_absence(status: str | None, s: str, text: str, base: int,
+                  reason: str) -> tuple[int, str]:
+    """`expected_absence` without a return date: the report text, else the
+    status base."""
     if _SEASON_ENDING_RE.search(text):
         return SEASON_ENDING_WEEKS, f"{status}: season-ending per the report"
     games = _GAMES_RE.search(text)
@@ -473,7 +497,9 @@ def _starter_absence(entry, today: date | None = None, season_week: int | None =
     if not is_reserve(status) and is_reserve(entry.get("game_status")):
         status = entry.get("game_status")
     return expected_absence(status, entry.get("description"), entry.get("return_date"),
-                            today, placed_on=placed, season_week=season_week)[0]
+                            today, placed_on=placed, season_week=season_week,
+                            news_weeks=entry.get("news_weeks"),
+                            news_reason=entry.get("news_reason"))[0]
 
 
 def _inherited(proj: dict, today: date | None = None,
@@ -627,7 +653,7 @@ async def ros_projections(
     ``{week: points}`` map) is always attached for callers that optimise
     week by week.
     """
-    from . import projections
+    from . import news_signals, projections
     from .projections import availability
     from .scoring import resolve_scoring
 
@@ -731,7 +757,7 @@ async def ros_projections(
         key = (p["name"], p["team"])
         proj = now_proj.get(key) or {}
         rate_src = rate_proj.get(key) or proj
-        per_game, source, prior_weight = _per_game(rate_src, p["position"], model)
+        per_game, baseline_source, prior_weight = _per_game(rate_src, p["position"], model)
         inherited, inherited_games = _inherited(rate_src, today, week)
         # A teammate due back: the inflated rate until his return, the rate
         # from their games together after it (reported as per_game).
@@ -745,9 +771,14 @@ async def ros_projections(
         qb_mult = float(qb.get("model_mult") or 1.0) if qb.get("applied") else 1.0
         qb_games = int(qb.get("games_out") or 0) if qb_mult < 1.0 else 0
         injury = p.get("injury") or {}
+        # The news may state a length the feed lacks ("a six-week recovery",
+        # "eligible to return in Week 8"): used where there is no return date.
+        news_weeks, news_reason = news_signals.absence_weeks(
+            proj.get("news_flags") or rate_src.get("news_flags"), today, week)
         absent, absence_reason = expected_absence(
             injury.get("status"), injury.get("description"), injury.get("return_date"), today,
-            placed_on=injury.get("placed_on"), season_week=week)
+            placed_on=injury.get("placed_on"), season_week=week,
+            news_weeks=news_weeks, news_reason=news_reason)
         # A stated return date is a calendar date; every other window (the
         # reserve minimum, a suspension, "out 2 weeks") is games missed, so a
         # bye inside it does not use one up.
@@ -852,7 +883,7 @@ async def ros_projections(
             "weeks_counted": counted,
             "this_week_points": round(float(proj.get("projected_points") or 0.0), 1),
             "per_game": per_game,
-            "baseline_source": source,
+            "baseline_source": baseline_source,
             "prior_weight": prior_weight,
             "bye_weeks": byes,
             "injury_status": injury.get("status"),
@@ -900,6 +931,15 @@ async def ros_projections(
             if recent is not None:
                 entry["per_game_recent"] = round(
                     float(recent) * float(bd.get("usage_mult") or 1.0), 2)
+        # What he has been producing (his trailing opportunity rate, before
+        # the regression toward the rank prior, inherited volume included):
+        # the market's read, which `value_trajectory` compares with the
+        # blended rate of his next weeks.
+        bd = rate_src.get("breakdown") or {}
+        if bd.get("base_source") == "opportunity" and bd.get("base_ppg") is not None:
+            entry["per_game_trailing"] = round(
+                float(bd["base_ppg"]) * float(bd.get("usage_mult") or 1.0), 2)
+            entry["trailing_games"] = int(bd.get("usage_games") or 0)
         if inherited:
             # A share of an absent starter's volume, priced only for his
             # expected absence (`_inherited`).

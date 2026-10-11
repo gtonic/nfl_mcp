@@ -36,6 +36,7 @@ RUN
 from __future__ import annotations
 
 import argparse
+import itertools
 import logging
 
 from nfl_mcp import opportunity, role_shift
@@ -315,6 +316,89 @@ def _bootstrap_mean(d: list[float], n: int = 2000, seed: int = 1) -> tuple[float
     return boots[int(0.025 * n)], boots[int(0.975 * n) - 1]
 
 
+# --------------------------------------------------------------------------
+# Value trajectory on the blended rate
+# --------------------------------------------------------------------------
+TRAJ_BINS = (-9.0, -0.4, -0.25, -0.15, -0.05, 0.05, 0.15, 0.25, 0.4, 9.0)
+
+
+def _median(xs: list[float]) -> float:
+    xs = sorted(xs)
+    n = len(xs)
+    return (xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2) if xs else 0.0
+
+
+def trajectory_rows(samples: list[dict]) -> list[dict]:
+    """Rows for `report_blended_trajectory`: ``current`` the trailing
+    (unregressed) opportunity rate the market sees, ``future`` the blended
+    rate ROS prices later weeks at (``ROS_MODEL_WEIGHT`` x the model -- with
+    the returning-teammate deflation where it applies -- + the rest x
+    Sleeper's week-W line, the leak-free stand-in for its later weeks: it
+    already carries a teammate back that week), ``realised`` the next four
+    games. ``rel_pred`` / ``rel_real``: each ratio to ``current`` over the
+    position's median ratio, minus one (every player regresses from his
+    trailing rate; `value_trajectory.position_baselines` does the same
+    against the league pool)."""
+    from nfl_mcp.ros import ROS_MODEL_WEIGHT
+    rows = [dict(s) for s in samples if s.get("actual_next4") is not None
+            and s["model_raw"] > 0 and s["sleeper"] is not None
+            and s.get("sleeper_status") == "projected"]
+    for s in rows:
+        model = s.get("model_returning", s["model"])
+        s["future"] = ROS_MODEL_WEIGHT * model + (1 - ROS_MODEL_WEIGHT) * s["sleeper"]
+        s["pred_ratio"] = s["future"] / s["model_raw"]
+        s["real_ratio"] = s["actual_next4"] / s["model_raw"]
+    for pos in {s["position"] for s in rows}:
+        sub = [s for s in rows if s["position"] == pos]
+        mp = _median([s["pred_ratio"] for s in sub])
+        mr = _median([s["real_ratio"] for s in sub])
+        for s in sub:
+            s["rel_pred"] = s["pred_ratio"] / mp - 1 if mp else 0.0
+            s["rel_real"] = s["real_ratio"] / mr - 1 if mr else 0.0
+    return rows
+
+
+def report_blended_trajectory(samples: list[dict]) -> None:
+    """Does the blended rate's change against the trailing rate predict the
+    next four games -- the size `value_trajectory` reads as ``ros_rate``?
+    Binned calibration and the slope (realised on predicted, through the
+    origin) per position, for all rows and for the rows with a teammate
+    back this week."""
+    rows = trajectory_rows(samples)
+    print(f"\nBLENDED TRAJECTORY (current = trailing opportunity rate, future = "
+          f"blended rate, realised = next 4 games): n={len(rows)}")
+    for label, sub in (("all", rows),
+                       ("teammate back this week", [s for s in rows if "ret_full_rate" in s]),
+                       ("no teammate back", [s for s in rows if "ret_full_rate" not in s])):
+        print(f"  {label}:")
+        print("    pos     n | slope (through 0) | slope |pred|>=0.15 | corr")
+        for pos in (*_POS, "QB", "ALL"):
+            p = [s for s in sub if pos in ("ALL", s["position"])]
+            if len(p) < 30:
+                continue
+            xs, ys = [s["rel_pred"] for s in p], [s["rel_real"] for s in p]
+            slope = sum(x * y for x, y in zip(xs, ys, strict=True)) / max(1e-9, sum(x * x for x in xs))
+            big = [(x, y) for x, y in zip(xs, ys, strict=True) if abs(x) >= 0.15]
+            slope_big = (sum(x * y for x, y in big) / max(1e-9, sum(x * x for x, _ in big))
+                         if big else float("nan"))
+            mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+            cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
+            sx = sum((x - mx) ** 2 for x in xs) ** 0.5
+            sy = sum((y - my) ** 2 for y in ys) ** 0.5
+            corr = cov / (sx * sy) if sx and sy else float("nan")
+            print(f"    {pos:3s} {len(p):5d} | {slope:6.2f} | {slope_big:6.2f} (n={len(big)}) | "
+                  f"{corr:5.2f}")
+        print("    bin of predicted        n | mean predicted | mean realised | median realised")
+        for lo, hi in itertools.pairwise(TRAJ_BINS):
+            b = [s for s in sub if lo <= s["rel_pred"] < hi]
+            if not b:
+                continue
+            print(f"    [{lo:+5.2f}, {hi:+5.2f})  {len(b):5d} | "
+                  f"{sum(s['rel_pred'] for s in b) / len(b):+6.1%} | "
+                  f"{sum(s['rel_real'] for s in b) / len(b):+6.1%} | "
+                  f"{_median([s['rel_real'] for s in b]):+6.1%}")
+
+
 def by_season(samples: list[dict], fn) -> None:
     seasons = sorted({s["season"] for s in samples})
     for season in seasons:
@@ -326,7 +410,7 @@ def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--seasons", type=int, nargs="+", default=[2023, 2024, 2025])
-    ap.add_argument("--only", nargs="+", choices=("returning", "role_down", "role_up"),
+    ap.add_argument("--only", nargs="+", choices=("returning", "role_down", "role_up", "trajectory"),
                     default=("returning", "role_down", "role_up"))
     ap.add_argument("--cross-position", action="store_true",
                     help="returning teammates also from the other pass-catching position "
@@ -338,7 +422,7 @@ def main() -> None:
                             post_break_weights=POST_BREAK_GRID,
                             cross_position=args.cross_position)
     reports = {"returning": report_returning, "role_down": report_role_down,
-               "role_up": report_role_up}
+               "role_up": report_role_up, "trajectory": report_blended_trajectory}
     for name in args.only:
         reports[name](samples)
         if args.per_season:
