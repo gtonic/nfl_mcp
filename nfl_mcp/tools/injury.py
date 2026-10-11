@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from .. import sleeper_tools
@@ -86,7 +87,7 @@ async def get_injury_report(
     """
     from ..injury_service import InjuryAggregator, get_injury_reports, get_injury_reports_bounded
 
-    async def _reports(team_arg):
+    async def _reports(team_arg: list[str] | None) -> tuple[list[dict], dict | None]:
         # A cached read waits for a cold crawl only so long, then answers from
         # the stored reports (the crawl finishes in the background).
         if use_cache_val:
@@ -173,7 +174,7 @@ _INJURY_UNCACHED_MIN_INTERVAL_SECONDS = 15 * 60
 _last_uncached_injury_crawl: dict[str, float] = {}
 
 
-def _allow_uncached_injury_crawl(team_list) -> tuple[bool, str | None]:
+def _allow_uncached_injury_crawl(team_list: list[str] | None) -> tuple[bool, str | None]:
     """(use_cache, note): whether this use_cache=False call must use the cache."""
     import time
 
@@ -398,7 +399,7 @@ async def get_gameday_inactives(
         # they ran past the MCP client's 300 s on 2026-09-27.
         empty_official: dict[str, Any] = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": []}
 
-        async def _official():
+        async def _official() -> dict[str, Any]:
             if not (season and week):
                 return empty_official
             try:
@@ -514,8 +515,9 @@ async def get_gameday_inactives(
         }
 
 
-async def _flag_my_starters(league_id, roster_id, week, inactives, confirmed_active,
-                            pending, games, norm_name) -> dict:
+async def _flag_my_starters(league_id: str, roster_id: int, week: int, inactives: list[dict],
+                            confirmed_active: list[dict], pending: Any, games: Any,
+                            norm_name: Callable[[str], str]) -> dict:
     """Which of the roster's current starters are inactive / at risk."""
     from ..teams import normalize_team
 
@@ -534,7 +536,7 @@ async def _flag_my_starters(league_id, roster_id, week, inactives, confirmed_act
         return {"error": f"could not load starters: {e}"}
     athletes = cast("NFLDatabase", _context.get_db()).get_athletes_by_ids(starters) if starters else {}
 
-    def key(name, team):
+    def key(name: str, team: str | None) -> tuple[str, str | None]:
         return norm_name(name), normalize_team(team)
 
     official = {key(r["player_name"], r["team_id"]): r for r in inactives if r["official"]}

@@ -3,7 +3,9 @@
 Mixed into ``nfl_mcp.database.NFLDatabase``.
 """
 import hashlib
+import sqlite3
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from ._common import (
     SIGNAL_HISTORY_DAYS,
@@ -22,7 +24,7 @@ class SnapshotsMixin(_DBMixinBase):
     # Rows kept per snapshot key (league[/week]); readers use only the newest.
     SNAPSHOT_ROWS_PER_KEY = 3
 
-    def _save_snapshot(self, conn, table: str, key: dict, payload_json: str, fetched_at: str) -> None:
+    def _save_snapshot(self, conn: sqlite3.Connection, table: str, key: dict, payload_json: str, fetched_at: str) -> None:
         """Insert a snapshot unless it equals the newest one for ``key``.
 
         An unchanged payload only refreshes the newest row's ``fetched_at`` (so
@@ -56,7 +58,7 @@ class SnapshotsMixin(_DBMixinBase):
             (*params, *params, self.SNAPSHOT_ROWS_PER_KEY),
         )
 
-    def save_roster_snapshot(self, league_id: str, rosters) -> None:
+    def save_roster_snapshot(self, league_id: str, rosters: Any) -> None:
         """Persist latest roster payload snapshot (JSON serialized)."""
         try:
             import datetime
@@ -70,7 +72,7 @@ class SnapshotsMixin(_DBMixinBase):
         except Exception as e:
             logger.debug(f"save_roster_snapshot failed: {e}")
 
-    def load_roster_snapshot(self, league_id: str, ttl_minutes: int = 15):
+    def load_roster_snapshot(self, league_id: str, ttl_minutes: int = 15) -> dict | None:
         """Load most recent roster snapshot; mark stale if beyond TTL."""
         try:
             import datetime
@@ -95,7 +97,7 @@ class SnapshotsMixin(_DBMixinBase):
     # ------------------------------------------------------------------
     # Transaction snapshot helpers
     # ------------------------------------------------------------------
-    def save_transaction_snapshot(self, league_id: str, week: int, transactions) -> None:
+    def save_transaction_snapshot(self, league_id: str, week: int, transactions: Any) -> None:
         """Persist latest transactions payload snapshot keyed by league/week."""
         try:
             import datetime
@@ -109,7 +111,9 @@ class SnapshotsMixin(_DBMixinBase):
         except Exception as e:
             logger.debug(f"save_transaction_snapshot failed: {e}")
 
-    def load_transaction_snapshot(self, league_id: str, week: int | None = None, ttl_minutes: int = 15):
+    def load_transaction_snapshot(
+        self, league_id: str, week: int | None = None, ttl_minutes: int = 15
+    ) -> dict | None:
         """Load most recent transactions snapshot for league (and week if provided)."""
         try:
             import datetime
@@ -140,7 +144,7 @@ class SnapshotsMixin(_DBMixinBase):
     # ------------------------------------------------------------------
     # Matchup snapshot helpers
     # ------------------------------------------------------------------
-    def save_matchup_snapshot(self, league_id: str, week: int, matchups) -> None:
+    def save_matchup_snapshot(self, league_id: str, week: int, matchups: Any) -> None:
         try:
             import datetime
             import json
@@ -153,7 +157,7 @@ class SnapshotsMixin(_DBMixinBase):
         except Exception as e:
             logger.debug(f"save_matchup_snapshot failed: {e}")
 
-    def load_matchup_snapshot(self, league_id: str, week: int, ttl_minutes: int = 15):
+    def load_matchup_snapshot(self, league_id: str, week: int, ttl_minutes: int = 15) -> dict | None:
         try:
             import datetime
             import json

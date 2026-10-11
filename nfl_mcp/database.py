@@ -160,7 +160,7 @@ class NFLDatabase(
     def __enter__(self) -> "NFLDatabase":
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
     def get_data_freshness(self) -> dict[str, dict]:

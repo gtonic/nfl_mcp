@@ -39,7 +39,7 @@ jobs:
         run: ruff check .
 
   typecheck:
-    name: Type check (mypy, report-only)
+    name: Type check (mypy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -56,11 +56,10 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
           pip install --no-deps -e .
 
-      # Non-blocking: mypy is a signal while the codebase is progressively
-      # typed, not a merge gate. Surfaces real type bugs without failing CI.
+      # Blocking: the package is mypy-clean (config in pyproject.toml; the new
+      # nfl_mcp/tools and nfl_mcp/db modules must be fully annotated).
       - name: mypy
         run: mypy nfl_mcp
-        continue-on-error: true
 
   test:
     name: Tests
@@ -120,7 +119,7 @@ jobs:
 
   docker:
     name: Build & publish image
-    needs: [lint, test]
+    needs: [lint, typecheck, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read

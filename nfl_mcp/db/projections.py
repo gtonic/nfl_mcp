@@ -172,7 +172,7 @@ class ProjectionsMixin(_DBMixinBase):
         sql = (f"INSERT OR REPLACE INTO projection_accuracy ({', '.join(cols)}) "
                f"VALUES ({', '.join('?' * len(cols))})")
 
-        def _cell(v):
+        def _cell(v: Any) -> Any:
             return json.dumps(v, separators=(",", ":"), default=str) \
                 if isinstance(v, dict | list) else v
         try:

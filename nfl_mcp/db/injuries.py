@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from ..teams import normalize_team
 from ._common import (
@@ -160,7 +161,7 @@ class InjuriesMixin(_DBMixinBase):
             return []
 
     def get_team_practice_days(
-        self, season: int, week: int, before=None, source: str | None = None
+        self, season: int, week: int, before: Any = None, source: str | None = None
     ) -> dict[str, dict[str, str]]:
         """``team -> {name_key: status}`` for each team's latest stored day
         before ``before`` (a date or ISO string) in one week."""
@@ -404,7 +405,7 @@ class InjuriesMixin(_DBMixinBase):
             return 0
 
     @staticmethod
-    def _news_history_row(inj: dict, sources, now: str) -> tuple | None:
+    def _news_history_row(inj: dict, sources: Any, now: str) -> tuple | None:
         """An ``injury_news_history`` row for a report's blurb, or None.
 
         Deduplicated on (player, text, date reported, source): the blurb is the

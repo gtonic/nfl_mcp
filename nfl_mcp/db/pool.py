@@ -3,6 +3,7 @@ import sqlite3
 import threading
 import time
 import weakref
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -81,7 +82,7 @@ class DatabaseConnectionPool:
     def open_connections(self) -> int:
         return self._total_connections
 
-    def _initialize_pool(self):
+    def _initialize_pool(self) -> None:
         """Initialize the connection pool with initial connections."""
         with self._lock:
             for _ in range(min(2, self.config.max_connections)):  # Start with 2 connections
@@ -122,7 +123,7 @@ class DatabaseConnectionPool:
             return None
 
     @contextmanager
-    def get_connection(self):
+    def get_connection(self) -> Iterator[sqlite3.Connection]:
         """Get a connection from the pool with automatic cleanup."""
         conn = None
         try:
@@ -254,7 +255,7 @@ class DatabaseConnectionPool:
                 "last_check": datetime.now(UTC).isoformat()
             }
 
-    def close(self):
+    def close(self) -> None:
         """Close the idle connections now and the borrowed ones on return."""
         with self._lock:
             self._generation += 1
