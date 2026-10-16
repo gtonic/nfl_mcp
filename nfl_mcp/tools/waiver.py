@@ -11,6 +11,7 @@ from .. import (
     faab_tools,
     handcuff_tools,
     ir_audit,
+    move_planner,
     ownership_tools,
     waiver_target_tools,
     waiver_tools,
@@ -305,6 +306,79 @@ async def audit_ir_slots(
     """
     league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
     return await ir_audit.audit_ir_slots(league_id=league_id, roster_id=roster_id, user_id=user_id)
+
+
+@timing_decorator("plan_roster_moves", tool_type="waiver")
+async def plan_roster_moves(
+    league_id: str,
+    roster_id: int,
+    moves: list | None = None,
+    week: int | None = None,
+    suggest: bool = False,
+    goals: list | None = None,
+    verify: bool = False,
+) -> dict:
+    """CHECK A ROSTER PLAN BEFORE ENTERING IT - and verify it afterwards.
+
+    Simulates a sequence of adds, drops, waiver claims, IR moves and lineup
+    changes against the live roster and the league's rules: roster size (a
+    claim without a drop on a full roster fails at the waiver run), IR slots
+    and allowed statuses, free agent vs on-waivers status and when a claim
+    processes, game locks (a player whose game started cannot be dropped,
+    added or moved until the week rolls over), byes and single-slot backups
+    (QB/TE/K/DEF). Nothing is entered in Sleeper. Call it before telling the
+    user a plan works, and call it again with verify=True after the waiver run
+    instead of assuming a move happened.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: Your roster id
+        moves: ordered list of {action, player, drop?, when?, slot?, week?};
+            action is add | drop | claim | ir_move | activate | start | bench.
+            when: "now" (default), "waivers", "after week 6", "week 7",
+            "after the game", "Wed 09:00" (Vienna) or an ISO time. A claim
+            takes effect at the waiver run. Short strings also work:
+            "add Keaton Mitchell drop Tyreek Hill", "start Mitchell at FLEX".
+        week: first week to plan (default the current week)
+        suggest: True = propose a minimal valid move set for `goals` (or,
+            without goals, for the week's empty slots / uncovered QB/TE/K/DEF)
+            from get_waiver_targets and get_streaming_options, then check it
+        goals: e.g. ["fill week-7 FLEX hole", "DEF for bye week 7", "TE backup"]
+        verify: True = compare the planned moves with what actually happened
+            (roster now + processed transactions): done / failed (with
+            Sleeper's note) / taken_by_other / pending_or_not_entered /
+            not_happened
+
+    Returns: {
+        valid, invalid_steps, steps [{step, order, action, player, drop, week,
+            effective_at_local, valid, reason?, fix?, notes, roster_after}],
+        roster {active, reserve, counts}, weeks [{week, lineup, projected_total,
+            projected_total_before, change, empty_slots, status, starters_on_bye}],
+        warnings, lost_backups, checklist [{do, not_before, deadline}] (ordered
+        by deadline), verify_after, suggestion? (suggest), moves/summary
+        (verify), message, success
+    }
+
+    Example: plan_roster_moves(league_id="123", roster_id=1, moves=[
+        {"action": "add", "player": "Keaton Mitchell", "drop": "Tyreek Hill"},
+        {"action": "start", "player": "Keaton Mitchell", "slot": "FLEX"},
+        {"action": "drop", "player": "Emanuel Wilson", "when": "after week 6"},
+        {"action": "activate", "player": "A.J. Brown", "when": "after week 6"}])
+    Example: plan_roster_moves(league_id="123", roster_id=7, week=7, suggest=True)
+    """
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        roster_id = validate_numeric_input(roster_id, min_val=1, max_val=100, required=True)
+        if week is not None:
+            week = validate_numeric_input(week, min_val=LIMITS["week_min"], max_val=LIMITS["week_max"],
+                                          required=False)
+    except ValueError as e:
+        return {"success": False, "error": f"Invalid input: {e!s}"}
+    if moves is not None and not isinstance(moves, list):
+        moves = [moves]
+    return await move_planner.plan_roster_moves(
+        league_id, roster_id, moves, week=week, suggest_moves=bool(suggest),
+        goals=goals, verify=bool(verify), db=_context.get_db())
 
 
 @timing_decorator("get_waiver_targets", tool_type="waiver")

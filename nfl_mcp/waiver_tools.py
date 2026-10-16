@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from .errors import ErrorType, create_error_response, create_success_response
+from .move_planner import failure_code
 from .sleeper_tools import get_transactions
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,10 @@ class WaiverAnalyzer:
                 'would_have_dropped': list((t.get('drops') or {}).keys()),
                 'waiver_bid': (t.get('settings') or {}).get('waiver_bid'),
                 'week': t.get('leg', t.get('week')),
+                # Sleeper's own reason ("...too many players after this
+                # transaction", "This player was claimed by another owner.").
+                'note': (t.get('metadata') or {}).get('notes'),
+                'reason_code': failure_code((t.get('metadata') or {}).get('notes')),
             }
             for t in transactions
             if t.get('type') in ['waiver', 'free_agent'] and self._is_failed(t)

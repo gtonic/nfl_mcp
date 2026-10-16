@@ -36,15 +36,15 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server has **78 MCP tools** (including `get_league_leaders`, behind the
+The server has **79 MCP tools** (including `get_league_leaders`, behind the
 `league_leaders` feature flag, enabled by default). Which of them are registered
 depends on the tool profile, `NFL_MCP_TOOL_PROFILE`:
 
 | Profile | Tools | Registered |
 |---|---|---|
-| `season` (default) | 61 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
+| `season` (default) | 62 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
 | `offseason` | 46 | draft and coaching; not the in-season-only tools (briefing, retro, projection accuracy, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder/market, usage/opportunity), admin or `get_cbs_expert_picks` |
-| `full` | 78 | everything |
+| `full` | 79 | everything |
 
 The profile and count are logged at startup and returned by `GET /health`
 under `tools`. Every tool also ships its own parameter schema over MCP, so an
@@ -57,7 +57,7 @@ now parameters of the one kept (see the CHANGELOG for the old → new mapping).
 <!-- BEGIN GENERATED: tool-index (scripts/gen_agent_docs.py) -->
 <!-- Do not edit by hand: run `python scripts/gen_agent_docs.py`. -->
 
-All 78 tools, grouped by the `nfl_mcp/tools/` module that defines them (season: 61, offseason: 46, full: 78).
+All 79 tools, grouped by the `nfl_mcp/tools/` module that defines them (season: 62, offseason: 46, full: 79).
 
 | Tool | Profiles | Module | Summary |
 |---|---|---|---|
@@ -138,6 +138,7 @@ All 78 tools, grouped by the `nfl_mcp/tools/` module that defines them (season: 
 | `get_player_ownership` | season, offseason, full | `waiver` | Who has these players in a league: rostered (by whom, IR/taxi), free agent or on waivers. |
 | `get_waiver_log` | season, full | `waiver` | What already HAPPENED on this league's waiver wire: processed claims, failed claims, summary counts, and players dropped and re-added. |
 | `get_waiver_targets` | season, full | `waiver` | START HERE for "who should I pick up" - the waiver question, for YOUR league. |
+| `plan_roster_moves` | season, full | `waiver` | CHECK A ROSTER PLAN BEFORE ENTERING IT - and verify it afterwards. |
 | `recommend_faab_bid` | season, full | `waiver` | Recommend a FAAB waiver bid for a player (% of budget + absolute). |
 <!-- END GENERATED: tool-index -->
 
@@ -315,7 +316,7 @@ Comprehensive fantasy football league management:
   - Returns: weeks, crunch_weeks, thin_weeks, suggestions, free_agent_options,
     core_starters, trade_deadline, method
 
-### 7. Waiver Wire Analysis Tools (4 tools)
+### 7. Waiver Wire Analysis Tools (5 tools)
 
 Advanced waiver wire intelligence:
 
@@ -360,6 +361,26 @@ Advanced waiver wire intelligence:
     moves)
   - Returns: reserve_slots / used / free, eligible_statuses, moves (`activate`,
     `move_to_ir`, …) with reasons, message
+
+- **`plan_roster_moves`**: **CHECK A MULTI-STEP ROSTER PLAN before telling the
+  user it works, and VERIFY it after the waiver run** — never assume a claim
+  was entered or processed
+  - Parameters: `league_id`, `roster_id`, `moves` (ordered list of `{action,
+    player, drop?, when?, slot?, week?}`; action add / drop / claim / ir_move /
+    activate / start / bench; when "now", "waivers", "after week 6", "week 7",
+    "after the game", "Wed 09:00" or ISO), `week`, `suggest` + `goals`
+    (propose a minimal valid move set, e.g. "fill week-7 FLEX hole", "TE
+    backup"), `verify`
+  - Checks every step in time order: roster size when a claim *processes* (no
+    drop on a full roster fails), IR slots and allowed statuses (an ineligible
+    player in IR blocks all adds), free agent vs on waivers and when a claim
+    lands, game locks (no drop/add/lineup move once his game started, until the
+    week rolls over), byes and single-slot backups (QB/TE/K/DEF)
+  - Returns: per-step valid / reason / fix, the resulting roster, lineup per
+    affected week (before vs after), bye-crunch and empty-slot warnings for the
+    next 2 weeks, `lost_backups`, a `checklist` with deadlines and
+    `verify_after`. `verify=True` reports each planned move as done / failed
+    (Sleeper's note) / taken_by_other / pending_or_not_entered / not_happened
 
 ### 8. Trade Analysis Tools (4 tools)
 
