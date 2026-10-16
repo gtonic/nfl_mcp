@@ -45,6 +45,7 @@ async def load_roster_players(
     rosters = roster_state["rosters"]
     # A cached snapshot still says who is on the roster; it is flagged, not refused.
     base = {"league": league, "season": season, "week": week, "players": [], "starters": [],
+            "rosters": rosters,
             "stale": roster_state["stale"],
             "snapshot_age_seconds": roster_state["snapshot_age_seconds"],
             "snapshot_fetched_at": roster_state.get("snapshot_fetched_at"),

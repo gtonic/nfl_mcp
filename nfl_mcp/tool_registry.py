@@ -68,6 +68,7 @@ from .tools.league import (
 from .tools.lineup import (
     analyze_lineup,
     compare_players_for_slot,
+    get_lineup_contingencies,
     get_start_sit_recommendation,
     get_win_probability_lineup,
 )
@@ -156,8 +157,10 @@ IN_SEASON_TOOLS = frozenset({
     "get_weekly_briefing", "get_weekly_retro", "get_projection_accuracy",
     "get_weekly_signal_review", "get_league_changes", "get_bye_week_plan",
     "get_playoff_odds", "get_playoff_bracket", "get_matchups", "get_waiver_targets",
-    "recommend_faab_bid", "get_waiver_log", "audit_ir_slots", "plan_roster_moves", "get_start_sit_recommendation",
-    "compare_players_for_slot", "analyze_lineup", "get_win_probability_lineup",
+    "recommend_faab_bid", "get_waiver_log", "audit_ir_slots", "plan_roster_moves",
+    "get_start_sit_recommendation",
+    "compare_players_for_slot", "analyze_lineup", "get_lineup_contingencies",
+    "get_win_probability_lineup",
     "get_gameday_inactives", "get_streaming_options", "get_weather_forecast",
     "analyze_opponent", "analyze_roster_matchups", "get_stack_opportunities",
     "get_vegas_lines", "find_trade_targets", "get_trade_market", "get_opportunity_projections",
@@ -300,6 +303,7 @@ def _registered_tools() -> list[Callable]:
         get_start_sit_recommendation,
         compare_players_for_slot,
         analyze_lineup,
+        get_lineup_contingencies,
         get_win_probability_lineup,
 
         # Vegas Lines Tools (Game Environment Analysis)
