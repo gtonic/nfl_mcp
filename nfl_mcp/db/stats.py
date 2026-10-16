@@ -225,6 +225,41 @@ class StatsMixin(_DBMixinBase):
             logger.debug(f"get_week_game_states failed: {e}")
             return {}
 
+    def get_week_espn_ids(self, season: int, week: int) -> dict[str, dict]:
+        """``{team: {event_id, team_id}}``: ESPN's event id and the team's ESPN
+        id for one week, read out of the stored event (scoreboard and
+        team-schedule payloads both carry ``id`` and
+        ``competitions[0].competitors[].team``). The game roster feed
+        (`gameday_inactives`) is addressed by the two."""
+        import json
+
+        from ..teams import normalize_team
+        out: dict[str, dict] = {}
+        try:
+            with self._pool.get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT team, raw FROM schedule_games WHERE season=? AND week=?",
+                    (season, week),
+                )
+                rows = cur.fetchall()
+        except Exception as e:
+            logger.debug(f"get_week_espn_ids failed: {e}")
+            return {}
+        for row in rows:
+            try:
+                raw = json.loads(row["raw"]) if isinstance(row["raw"], str) else row["raw"]
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(raw, dict) or not raw.get("id"):
+                continue
+            team = normalize_team(row["team"])
+            for comp in (raw.get("competitions") or [])[:1]:
+                for side in comp.get("competitors") or []:
+                    info = side.get("team") or {}
+                    if team and normalize_team(info.get("abbreviation")) == team and info.get("id"):
+                        out[team] = {"event_id": str(raw["id"]), "team_id": str(info["id"])}
+        return out
+
     def get_usage_for_week(self, season: int, week: int) -> list[dict]:
         """All recorded usage rows for one week (empty before it is ingested)."""
         try:

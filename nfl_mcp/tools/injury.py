@@ -341,8 +341,10 @@ async def get_gameday_inactives(
 
     Teams declare inactives ~90 minutes before kickoff. For games starting
     within 2h, in progress or final, the published inactives are read
-    (ESPN gameday notes "X is inactive for Sunday's game", plus Sleeper's
-    `Inactive` status) and marked `official: true`. For every other team — or
+    (ESPN's game-day roster -- the team's complete list, polled every few
+    minutes in the window -- plus the ESPN gameday notes "X is inactive for
+    Sunday's game" and Sleeper's `Inactive` status) and marked
+    `official: true`. For every other team — or
     a team whose list has not been published yet — the old behaviour is the
     fallback: injuries at or above `severity_threshold`, marked
     `official: false` with `basis: "injury_report_severity"`. That is a
@@ -367,7 +369,9 @@ async def get_gameday_inactives(
                      source, note?, severity?, confidence?}],
         total_inactives, severity_threshold_used,
         mode: "official" | "mixed" | "fallback_injury_report",
-        official_published_teams, pending_teams, games {team: {kickoff, phase}},
+        official_published_teams, official_complete_teams (full list out:
+        everyone else on the team is active), official_published_by_source
+        {source: [team]}, pending_teams, games {team: {kickoff, phase}},
         confirmed_active [{player_name, team_id, note}],
         my_starters? {inactive, at_risk, confirmed_active, not_yet_published},
         success, error?
@@ -413,7 +417,12 @@ async def get_gameday_inactives(
             get_injury_reports_bounded(teams=teams_list or None, db=_context.get_db(),
                                        wait=budget.remaining(cap=GAMEDAY_INJURY_WAIT_SECONDS)),
         )
-        published = sorted({r["team_id"] for r in official["inactives"]})
+        # Published: the team's full list is out (ESPN game roster), or at
+        # least one inactive is (a gameday note / Sleeper's status) -- per
+        # source in `official_published_by_source`, complete ones also in
+        # `official_complete_teams`.
+        complete = sorted(official.get("complete_teams") or [])
+        published = sorted({r["team_id"] for r in official["inactives"]} | set(complete))
         pending = sorted(set(official.get("window_teams") or []) - set(published))
         timed_out = list(official.get("timed_out_sources") or []) + injury_meta["timed_out_sources"]
 
@@ -430,6 +439,7 @@ async def get_gameday_inactives(
                 "source": row.get("source"),
                 "note": row.get("note"),
                 "posted": row.get("posted"),
+                **({"name_partial": True} if row.get("name_partial") else {}),
             })
 
         # Fallback: severity filter, for teams without a published list.
@@ -466,6 +476,8 @@ async def get_gameday_inactives(
             "severity_threshold_used": threshold,
             "mode": mode,
             "official_published_teams": published,
+            "official_complete_teams": complete,
+            "official_published_by_source": official.get("published_by_source") or {},
             "pending_teams": pending,
             "games": official.get("games") or {},
             # Which feeds answered, and how current the Sleeper read was.
@@ -494,10 +506,15 @@ async def get_gameday_inactives(
 
         if league_id and roster_id is not None and week:
             try:
+                # On a complete list, everyone not inactive is active.
+                roster_active = [
+                    {"player_name": r.get("player_name"), "team_id": team,
+                     "note": "on the published game-day roster (ESPN)"}
+                    for team, rows_ in (official.get("roster_active") or {}).items() for r in rows_ or []]
                 result["my_starters"] = await asyncio.wait_for(_flag_my_starters(
                     str(league_id), int(roster_id), int(week), inactives,
-                    official.get("confirmed_active") or [], set(pending), official.get("games") or {},
-                    norm_name,
+                    (official.get("confirmed_active") or []) + roster_active, set(pending),
+                    official.get("games") or {}, norm_name,
                 ), budget.remaining(floor=GAMEDAY_STARTERS_MIN_SECONDS))
             except TimeoutError:
                 result["my_starters"] = {"error": "timed out loading your starters"}

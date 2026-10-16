@@ -38,6 +38,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `failed_claims_count`) with Sleeper's `note` and a `reason_code`
   (roster_full, claimed_by_other, insufficient_budget, player_locked, other);
   `get_waiver_log`'s failed claims carry the same two fields.
+- **Late-game risk planner** (`nfl_mcp/late_risk.py`): for every starter with an
+  availability question (Q/D/Out, DNP practice, news "unlikely"/"game-time
+  decision", list not out yet) his kickoff, expected inactives time, expected
+  points, points if active and a P(plays) proxy (2023-25 practice backtest), the
+  replacements that fit his slot (bench and instant-add free agents, directly or
+  via a flex starter; the drop an add costs on a full roster) with their
+  kickoffs, and keep / swap / wait options. The **decision deadline** is the
+  earliest lock among the best replacements still unlocked: a Monday-night
+  starter with only Sunday alternatives (Mike Evans, week 6) has to be decided
+  before Sunday's 19:00 kickoff, while a Sunday-early starter with a later
+  fallback waits for his own list. Times in Europe/Vienna. Surfaced as
+  `late_game_risk` in `get_weekly_briefing` and `analyze_lineup`, and as the new
+  tool `get_lineup_contingencies(league_id, roster_id, week)` (63 / 80 tools with `plan_roster_moves`).
+- **Official inactives from ESPN's game-day roster** (core API
+  `events/<id>/competitions/<id>/competitors/<team>/roster`, `didNotPlay`):
+  the team's complete list, 404 until it is set. Week 5 checked: all 22
+  "is inactive" gameday notes are on it. A team with it is in
+  `official_complete_teams` and everyone else of theirs counts as active
+  (projections, `my_starters`); `official_published_by_source` says which feed
+  published which team. Matched to Sleeper by `espn_id`, else jersey + last
+  name. The prefetch polls the lists every 3 min from T-100 min to kickoff
+  (`NFL_MCP_PREFETCH_INACTIVES_POLL`, 0 = off), so a tool call finds them read;
+  when a list was first seen is logged (the feed has no timestamp). Bounded
+  like the other feeds (`partial` / `timed_out_sources` / `stale_sources`).
 
 ## [0.10.0] - 2026-10-11
 

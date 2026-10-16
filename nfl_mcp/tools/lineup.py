@@ -398,3 +398,66 @@ async def get_win_probability_lineup(
         roster_id=roster_id,
         opponent_bench=opponent_bench,
     )
+
+
+@timing_decorator("get_lineup_contingencies", tool_type="lineup")
+async def get_lineup_contingencies(
+    league_id: str,
+    roster_id: int | None = None,
+    week: int | None = None,
+    user_id: str | None = None,
+    season: int | None = None,
+) -> dict:
+    """When to decide on a questionable starter, and what to do: keep him,
+    swap before the replacement locks, or wait for his inactives.
+
+    Inactives come ~90 min before each kickoff, but every replacement locks at
+    ITS kickoff: a Monday-night starter whose bench and free-agent options all
+    play Sunday has to be decided before Sunday's earliest relevant kickoff.
+    For each starter with an availability question (Q/D/Out, DNP practice,
+    news "unlikely"/"game-time decision", list not out yet) this returns his
+    kickoff and expected inactives time, expected points, points if active,
+    P(plays), the replacements (bench players and instant-add free agents
+    that fit his slot -- directly or by moving a flex starter -- each with
+    kickoff and projection, plus the drop an add needs on a full roster), and
+    the options keep / swap / wait with their expected points. Times are UTC
+    and Europe/Vienna (*_local). The same block is `late_game_risk` in
+    get_weekly_briefing and analyze_lineup.
+
+    Parameters:
+        league_id: Sleeper league id
+        roster_id: your roster id (or pass user_id)
+        week, season: default to the current NFL week
+
+    Returns: {late_game_risk {at_risk [{player, slot, kickoff_local,
+        inactives_expected_local, expected_points, if_active_points,
+        play_probability, replacements [...], options {keep, swap, wait},
+        recommendation (keep|swap_now|wait|no_alternative),
+        decision_deadline_local, summary}], earliest_deadline_local,
+        summary}, roster_id, week, season, success}
+
+    Example: get_lineup_contingencies(league_id="1388610560915959808", roster_id=1)
+    """
+    from .. import lineup_tools
+
+    try:
+        league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
+        if week is not None:
+            week = validate_numeric_input(week, min_val=1, max_val=22, required=False)
+    except ValueError as e:
+        return {"success": False, "error": f"Invalid input: {e!s}"}
+    result = await lineup_tools.analyze_lineup(
+        league_id=league_id, roster_id=roster_id, user_id=user_id, week=week, season=season,
+        db=_context.get_db(), risk_mode="neutral")
+    if not isinstance(result, dict) or not result.get("success"):
+        error = result.get("error") if isinstance(result, dict) else None
+        return {"success": False, "error": error or "lineup unavailable"}
+    return {
+        "success": True,
+        "late_game_risk": result.get("late_game_risk"),
+        "league": result.get("league"),
+        "roster_id": result.get("roster_id"),
+        "week": result.get("week"),
+        "season": result.get("season"),
+        **({"warnings": result["warnings"]} if result.get("warnings") else {}),
+    }

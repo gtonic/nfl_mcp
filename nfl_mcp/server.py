@@ -100,6 +100,7 @@ def _load_runtime_settings() -> None:
     global PREFETCH_SCHEDULE_WEEKS, PREFETCH_ATHLETES, PREFETCH_ATHLETES_INTERVAL_SECONDS
     global DB_PRUNE_INTERVAL_SECONDS
     global PREFETCH_NEWS, PREFETCH_NEWS_INTERVAL_SECONDS, PREFETCH_NEWS_GAMEDAY_INTERVAL_SECONDS
+    global PREFETCH_INACTIVES_POLL_SECONDS
 
     # Prefetch config from environment (prefetch is separate from general config)
     PREFETCH_ENABLED = os.getenv("NFL_MCP_PREFETCH") == "1"
@@ -121,6 +122,10 @@ def _load_runtime_settings() -> None:
     PREFETCH_NEWS_INTERVAL_SECONDS = _env_int("NFL_MCP_PREFETCH_NEWS_INTERVAL", 2700)
     PREFETCH_NEWS_GAMEDAY_INTERVAL_SECONDS = _env_int(
         "NFL_MCP_PREFETCH_NEWS_GAMEDAY_INTERVAL", 900)
+    # Published inactives (`gameday_inactives.warm_inactives`): polled this
+    # often between cycles while a game is 100..0 minutes from kickoff, so a
+    # tool call finds the lists already read. 0 turns it off.
+    PREFETCH_INACTIVES_POLL_SECONDS = _env_int("NFL_MCP_PREFETCH_INACTIVES_POLL", 180)
 
 
 PREFETCH_ENABLED: bool
@@ -133,6 +138,7 @@ DB_PRUNE_INTERVAL_SECONDS: int
 PREFETCH_NEWS: bool
 PREFETCH_NEWS_INTERVAL_SECONDS: int
 PREFETCH_NEWS_GAMEDAY_INTERVAL_SECONDS: int
+PREFETCH_INACTIVES_POLL_SECONDS: int
 _load_runtime_settings()
 _last_prune_at: float | None = None
 # Wall clock of the last news poll (the monotonic clock stops while the host
@@ -243,6 +249,8 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
     )
 
     cycle_count = 0
+    season: int | None = None
+    week: int | None = None
     while not shutdown_event.is_set():
         cycle_count += 1
         cycle_start = datetime.now(UTC)
@@ -284,8 +292,47 @@ async def _prefetch_loop(nfl_db: NFLDatabase, shutdown_event: asyncio.Event):
 
         logger.info(f"[{tag}] Next cycle in {PREFETCH_INTERVAL_SECONDS}s")
 
+        await _wait_polling_inactives(nfl_db, season, week, shutdown_event,
+                                      PREFETCH_INTERVAL_SECONDS)
+
+
+# How long one inactives poll may take before the loop moves on (each feed
+# read is bounded inside; this is the backstop).
+_INACTIVES_POLL_TIMEOUT_SECONDS = 60.0
+
+
+async def _wait_polling_inactives(nfl_db, season: int | None, week: int | None,
+                                  shutdown_event: asyncio.Event, interval: float) -> None:
+    """Sleep until the next cycle (or shutdown). While a game is inside its
+    inactives window, poll the published lists every
+    ``PREFETCH_INACTIVES_POLL_SECONDS`` meanwhile; outside one, wake up when
+    the next window opens."""
+    from . import gameday_inactives as gi
+
+    deadline = time.monotonic() + interval
+    while not shutdown_event.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        step = remaining
+        if PREFETCH_INACTIVES_POLL_SECONDS > 0 and season and week:
+            now = datetime.now(UTC)
+            if gi.warm_due(nfl_db, season, week, now):
+                try:
+                    await asyncio.wait_for(gi.warm_inactives(nfl_db, season, week, now),
+                                           _INACTIVES_POLL_TIMEOUT_SECONDS)
+                except Exception as e:
+                    logger.warning(f"[Inactives] prefetch poll failed: {e}")
+                step = min(deadline - time.monotonic(), PREFETCH_INACTIVES_POLL_SECONDS)
+            else:
+                opens = gi.next_warm_at(nfl_db, season, week, now)
+                if opens is not None:
+                    step = min(remaining, max(1.0, (opens - now).total_seconds()))
+        if step <= 0:
+            return
         try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=PREFETCH_INTERVAL_SECONDS)
+            await asyncio.wait_for(shutdown_event.wait(), timeout=step)
+            return
         except TimeoutError:
             continue
 

@@ -420,6 +420,15 @@ async def analyze_lineup(
             result["warnings"] = warnings
         result["stale"] = ctx.get("stale", False)
         result["snapshot_age_seconds"] = ctx.get("snapshot_age_seconds")
+        # Questionable starters: keep / swap before the replacement locks /
+        # wait for his inactives (see `late_risk`).
+        from . import late_risk
+        result["late_game_risk"] = await late_risk.build_block(
+            [late_risk.from_analysis(a, slot)
+             for slot, rows_ in (result.get("starters") or {}).items() for a in rows_ or []],
+            [late_risk.from_analysis(a) for a in result.get("bench") or []],
+            league=league, rosters=ctx.get("rosters"), mine=roster, db=db,
+            season=season, week=week)
         result["snapshot_fetched_at"] = ctx.get("snapshot_fetched_at")
     return result
 

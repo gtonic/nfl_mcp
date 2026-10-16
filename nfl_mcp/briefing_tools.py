@@ -218,6 +218,30 @@ def _with_ids(candidates: list[dict], inputs: list[dict]) -> list[dict]:
     ]
 
 
+async def _late_game_risk(recommended: list[dict], my_all: list[dict], my_proj: dict | None,
+                          my_inputs: list[dict], games: dict, *, league: dict, rosters: list[dict],
+                          mine: dict, db, season: int, week: int) -> dict:
+    """The `late_risk` block for the recommended lineup. Never raises."""
+    from . import late_risk
+    try:
+        now = late_risk._now()
+        proj_rows = {(p.get("player"), p.get("team")): p for p in (my_proj or {}).get("projections") or []}
+        inputs = {(i.get("name"), i.get("team")): i for i in my_inputs}
+        rows = {}
+        for c in my_all:
+            key = (c.get("name"), c.get("team"))
+            rows[c.get("name")] = late_risk.from_projection(
+                proj_rows.get(key) or {**c, "player": c.get("name")}, inputs.get(key), games, now)
+        starters = [{**rows[s["player"]], "slot": s["slot"]} for s in recommended if s.get("player") in rows]
+        named = {s.get("player") for s in recommended}
+        bench = [r for name, r in rows.items() if name not in named]
+        return await late_risk.build_block(starters, bench, league=league, rosters=rosters, mine=mine,
+                                           db=db, season=season, week=week, now=now)
+    except Exception as e:  # additive
+        logger.warning(f"late-game risk unavailable for the briefing: {e}")
+        return {"at_risk": [], "error": str(e)}
+
+
 async def get_weekly_briefing(
     league_id: str,
     roster_id: int | None = None,
@@ -524,6 +548,13 @@ async def get_weekly_briefing(
     ]
     bench = sorted(current_names - recommended_names)
 
+    # 6b) Questionable starters whose inactives come after the replacements
+    #     lock (a Monday-night starter, Sunday alternatives): when the call
+    #     has to be made, and which one (see `late_risk`).
+    late_game_risk = await _late_game_risk(
+        recommended, my_all, my_proj, my_inputs, games,
+        league=league, rosters=rosters, mine=mine, db=db, season=season, week=week)
+
     # 7) Injury moves on my roster since a week ago
     from datetime import UTC, datetime, timedelta
     since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
@@ -676,6 +707,9 @@ async def get_weekly_briefing(
         "opponent_projection_note": explain(opp_view) if opp_view else None,
         "recommended_lineup": recommended,
         "changes": changes,
+        # Per at-risk starter of the recommended lineup: kickoff, expected
+        # inactives, keep / swap / wait and the decision deadline (Vienna time).
+        "late_game_risk": late_game_risk,
         "bench": bench,
         "injury_changes": injury_changes,
         # Where the two injury feeds disagreed on one of your players. The more

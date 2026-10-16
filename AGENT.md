@@ -36,15 +36,15 @@ The NFL MCP Server follows a simplified, maintainable architecture:
 
 ## Tool Categories
 
-The server has **79 MCP tools** (including `get_league_leaders`, behind the
+The server has **80 MCP tools** (including `get_league_leaders`, behind the
 `league_leaders` feature flag, enabled by default). Which of them are registered
 depends on the tool profile, `NFL_MCP_TOOL_PROFILE`:
 
 | Profile | Tools | Registered |
 |---|---|---|
-| `season` (default) | 62 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
+| `season` (default) | 63 | everything except draft (8), coaching (4), admin cache refreshes (`fetch_athletes`, `fetch_all_players`, `fetch_teams`), `get_league_leaders`, `get_cbs_expert_picks` |
 | `offseason` | 46 | draft and coaching; not the in-season-only tools (briefing, retro, projection accuracy, league changes, bye plan, lineups/start-sit, waivers/FAAB/IR, Vegas, weather, streaming, matchups, opponent, playoff odds/bracket, trade finder/market, usage/opportunity), admin or `get_cbs_expert_picks` |
-| `full` | 79 | everything |
+| `full` | 80 | everything |
 
 The profile and count are logged at startup and returned by `GET /health`
 under `tools`. Every tool also ships its own parameter schema over MCP, so an
@@ -57,7 +57,7 @@ now parameters of the one kept (see the CHANGELOG for the old → new mapping).
 <!-- BEGIN GENERATED: tool-index (scripts/gen_agent_docs.py) -->
 <!-- Do not edit by hand: run `python scripts/gen_agent_docs.py`. -->
 
-All 79 tools, grouped by the `nfl_mcp/tools/` module that defines them (season: 62, offseason: 46, full: 79).
+All 80 tools, grouped by the `nfl_mcp/tools/` module that defines them (season: 63, offseason: 46, full: 80).
 
 | Tool | Profiles | Module | Summary |
 |---|---|---|---|
@@ -97,6 +97,7 @@ All 79 tools, grouped by the `nfl_mcp/tools/` module that defines them (season: 
 | `get_user_leagues` | season, offseason, full | `league` | Fetch all leagues for a user and season. |
 | `analyze_lineup` | season, full | `lineup` | Grade the lineup YOU have set this week and name the swaps worth making. |
 | `compare_players_for_slot` | season, full | `lineup` | Compare multiple players competing for the same roster slot. |
+| `get_lineup_contingencies` | season, full | `lineup` | When to decide on a questionable starter, and what to do: keep him, swap before the replacement locks, or wait for his inactives. |
 | `get_start_sit_recommendation` | season, full | `lineup` | Start or sit? For one player (player_name) or several (players). |
 | `get_win_probability_lineup` | season, full | `lineup` | Pick the lineup that maximizes P(beating this specific opponent). |
 | `analyze_opponent` | season, full | `matchup` | Analyze an opponent's roster to identify weaknesses and exploitation opportunities. |
@@ -503,7 +504,7 @@ covers the real outcome ~68% of the time, measured in
 
 `project_players` also carries Sleeper's own weekly projection, priced in the league's scoring, as a second opinion: `sleeper_projection`, `consensus` (plain average) and `disagreement` (> 4 pts, or > 25% and >= 2 pts). Our `projected_points` stays the number decisions are made on.
 
-### 11. Start/Sit & Lineup Optimization (4 tools)
+### 11. Start/Sit & Lineup Optimization (5 tools)
 
 **`risk_mode`** (briefing, `analyze_lineup`, `compare_players_for_slot`,
 `get_win_probability_lineup`): `auto` (default) | `neutral` | `seek_variance` |
@@ -524,7 +525,11 @@ sentence; it is the decision.
   - Returns: winner (the risk-mode pick), points_winner, risk {risk_mode, reason, p_win, summary}, comparison, confidence_gap, verdict
 - **`analyze_lineup`**: Grade the lineup you have set this week, read from the league.
   - Parameters: `league_id` + `roster_id` or `user_id`, `week`, `season`, `risk_mode`; or `lineup` (dict keyed by slot) for a hypothetical
-  - Returns: risk {risk_mode, reason, win_probability, adjustment, recommended_lineup when it differs}, lineup_grade, lineup_efficiency_pct, total_projected, optimal_projected, optimal_lineup, suggested_changes, locked_players, weak_spots, starters, bench, empty_slots
+  - Returns: risk {risk_mode, reason, win_probability, adjustment, recommended_lineup when it differs}, lineup_grade, lineup_efficiency_pct, total_projected, optimal_projected, optimal_lineup, suggested_changes, locked_players, weak_spots, starters, bench, empty_slots, late_game_risk (as get_lineup_contingencies)
+- **`get_lineup_contingencies`**: When to decide on a questionable starter, and what to do: keep, swap before the replacement locks, or wait for his inactives.
+  - Parameters: `league_id` (required), `roster_id` or `user_id`, `week`, `season`
+  - Inactives come ~90 min before HIS kickoff, but each replacement locks at ITS kickoff: a Monday-night starter with only Sunday alternatives must be decided before Sunday's earliest relevant lock. Times in Europe/Vienna (`*_local`).
+  - Returns: late_game_risk {at_risk [{player, slot, kickoff_local, inactives_expected_local, expected_points, if_active_points, play_probability, replacements [{player, source (bench|free_agent), projected_points, kickoff_local, unlocked_at_his_inactives, drop?, via?}], options {keep, swap, wait}, recommendation (keep|swap_now|wait|no_alternative), decision_deadline_local, summary}], earliest_deadline_local, summary}
 - **`get_win_probability_lineup`**: Pick the lineup that maximizes P(beating this specific opponent).
   - Parameters: `your_players` (required), `opponent_players` (required), `slots` (optional), `stack_correlation` (optional, default 0.35), `risk_mode` (optional), `league_id` + `roster_id` (optional, playoff odds for auto)
   - Returns: risk_mode, risk_reason, risk_adjustment, recommended_lineup, win_probability, projected_points, opponent_projected_points, projected_margin, you_are, strategy, points_optimal_lineup
@@ -565,8 +570,9 @@ sentence; it is the decision.
   - Parameters: `lookback_hours` (optional, default 168), `teams` (optional), `direction` (optional), `limit` (optional, default 50)
   - Returns: changes, player_name, team_id, position, previous_status, injury_status, direction, severity_delta
 - **`get_gameday_inactives`**: Get likely inactive players for upcoming games.
-  - Parameters: `teams` (optional), `severity_threshold` (optional, default 3)
-  - Returns: inactives, player_name, team_id, injury_status, severity
+  - Parameters: `teams` (optional), `severity_threshold` (optional, default 3), `league_id` + `roster_id` (optional: flags your starters)
+  - Sources, inside each game's window (T-2h on): ESPN's game-day roster (the complete list, `official_complete_teams`; polled every 3 min by the prefetch), ESPN gameday notes, Sleeper `Inactive`; before that, the injury report's severity filter (`official: false`).
+  - Returns: inactives, player_name, team_id, injury_status, severity, official_published_teams, official_complete_teams, official_published_by_source, pending_teams, partial, timed_out_sources
 - **`get_player_news`**: One merged news timeline per player, with the news flags the projections read.
   - Sources: ESPN's fantasy player feed (RotoWire notes), NBC Sports / Rotoworld, CBS (stored by `refresh_data(scope=["news"])` / the prefetch loop) plus the current injury blurb; a note several sources carry is one entry.
   - Parameters: `players` (names or Sleeper ids, up to 30), `days` (default 7, 1-30), `league_id` (optional: resolves shared names to the rostered player; alone, lists every rostered QB/RB/WR/TE/K with news)
