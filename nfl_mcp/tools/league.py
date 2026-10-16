@@ -89,10 +89,18 @@ async def get_transactions(league_id: str, week: int | None = None, round: int |
     previous leg in, deduped by transaction_id; each row keeps Sleeper's `leg`
     and the response lists `legs` and `leg_note`. A past week is read alone.
 
+    Failed claims are listed apart under `failed_claims`, each with Sleeper's
+    own `note` ("Unfortunately, your roster will have too many players after
+    this transaction.") and a `reason_code` (roster_full, claimed_by_other,
+    insufficient_budget, player_locked, other). To check a whole plan against
+    what happened, use plan_roster_moves(verify=True).
+
     Parameters:
         league_id (str, required): Sleeper league id.
         week (int, optional): NFL week (alias: `round`); default the current week.
-    Returns: {transactions: [...], week, legs?, count, success, error?}
+    Returns: {transactions: [...], failed_claims [{wanted, would_have_dropped,
+        note, reason_code, roster_ids, processed_at}], failed_claims_count,
+        week, legs?, count, success, error?}
     """
     try:
         league_id = validate_string_input(league_id, 'league_id', max_length=20, required=True)
@@ -101,8 +109,14 @@ async def get_transactions(league_id: str, week: int | None = None, round: int |
         if effective_week is not None:
             effective_week = validate_numeric_input(
                 effective_week, min_val=LIMITS["round_min"], max_val=LIMITS["round_max"], required=True)
-        return await sleeper_tools.get_transactions(
+        result = await sleeper_tools.get_transactions(
             league_id, round=effective_week, week=effective_week, include_previous_leg=None)
+        if isinstance(result, dict):
+            from ..move_planner import failed_claims
+            failed = failed_claims(result.get("transactions"))
+            result["failed_claims"] = failed
+            result["failed_claims_count"] = len(failed)
+        return result
     except ValueError as e:
         return {"transactions": [], "week": week, "count": 0, "success": False, "error": f"Invalid input: {e!s}"}
 

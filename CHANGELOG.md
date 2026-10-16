@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`plan_roster_moves`** (new tool, season/full profiles; 62 / 79 tools): checks
+  a multi-step roster plan — `add`, `drop`, `claim`, `ir_move`, `activate`,
+  `start`, `bench`, each with an optional `drop`, `when` ("now", "waivers",
+  "after week 6", "week 7", "after the game", "Wed 09:00", ISO) and `slot` —
+  before any of it is entered in Sleeper. Steps are replayed in time order (a
+  claim takes effect at the waiver run) against the live roster and the
+  league's rules: active-roster size when the claim processes (a claim without
+  a drop on a full roster is invalid, quoting Sleeper's "too many players"
+  rejection), IR slots and allowed statuses (`ir_audit`), an ineligible player
+  in IR blocking every add, free agent vs on waivers and when a claim lands
+  (`waiver_rules.waiver_status`), game locks (no drop / add / lineup move once
+  his game started, until the week rolls over), byes and single-slot backups
+  (QB/TE/K/DEF). Returns per-step valid / reason / fix (with a concrete drop
+  candidate), the resulting roster, the best lineup per affected week before
+  vs after (forced starts, locked starters kept), bye-crunch and empty-slot
+  warnings for the next two weeks, `lost_backups` (only weeks the plan
+  actually leaves uncovered), a checklist with deadlines ("enter the claim …
+  before the waiver run (~Wed 09:00) — you are 10th of 10; rolling waivers")
+  and what to verify afterwards. `suggest=True` (+ `goals` like "fill week-7
+  FLEX hole", "DEF for bye", "TE backup") proposes a minimal move set from
+  `get_waiver_targets` / `get_streaming_options`, keeping only pickups that
+  raise that week's lineup by at least a point; needs more than two weeks out
+  are listed as "later". `verify=True` diffs the plan against the current
+  roster and processed transactions: done / partial / failed (Sleeper's note) /
+  taken_by_other / pending_or_not_entered / not_happened.
+- `get_transactions` lists failed claims apart (`failed_claims`,
+  `failed_claims_count`) with Sleeper's `note` and a `reason_code`
+  (roster_full, claimed_by_other, insufficient_budget, player_locked, other);
+  `get_waiver_log`'s failed claims carry the same two fields.
+
 ## [0.10.0] - 2026-10-11
 
 0.9.5 made the recommendations follow role and injury trends. This release

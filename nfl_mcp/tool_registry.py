@@ -122,6 +122,7 @@ from .tools.waiver import (
     get_player_ownership,
     get_waiver_log,
     get_waiver_targets,
+    plan_roster_moves,
     recommend_faab_bid,
 )
 
@@ -155,7 +156,7 @@ IN_SEASON_TOOLS = frozenset({
     "get_weekly_briefing", "get_weekly_retro", "get_projection_accuracy",
     "get_weekly_signal_review", "get_league_changes", "get_bye_week_plan",
     "get_playoff_odds", "get_playoff_bracket", "get_matchups", "get_waiver_targets",
-    "recommend_faab_bid", "get_waiver_log", "audit_ir_slots", "get_start_sit_recommendation",
+    "recommend_faab_bid", "get_waiver_log", "audit_ir_slots", "plan_roster_moves", "get_start_sit_recommendation",
     "compare_players_for_slot", "analyze_lineup", "get_win_probability_lineup",
     "get_gameday_inactives", "get_streaming_options", "get_weather_forecast",
     "analyze_opponent", "analyze_roster_matchups", "get_stack_opportunities",
@@ -256,6 +257,7 @@ def _registered_tools() -> list[Callable]:
         get_waiver_targets,
         get_player_ownership,
         audit_ir_slots,
+        plan_roster_moves,
         recommend_faab_bid,
         get_handcuff_map,
 
