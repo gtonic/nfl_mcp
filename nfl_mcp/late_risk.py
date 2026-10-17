@@ -583,6 +583,26 @@ def needed_positions(starters: list[dict]) -> list[str]:
     return sorted(p for p in wanted if p)
 
 
+def attach_news(starters: list[dict], db) -> list[dict]:
+    """Starters with their availability news flags filled in where the row
+    came without them (`analyze_lineup` rows carry none; `project_players`
+    rows do): the same index the projections read (`news_signals.index_for`
+    over the injury blurbs and the stored news items)."""
+    from . import news_signals
+    rows = list(db.get_all_current_injuries() or []) if hasattr(db, "get_all_current_injuries") else []
+    index = news_signals.index_for(db, rows)
+    if not index:
+        return starters
+    out = []
+    for s in starters:
+        if not s.get("news_flags") and (s.get("gameday_status") or "").lower() != "active":
+            flags = news_signals.signals_for(index, s.get("name"), s.get("team"))
+            if flags:
+                s = {**s, "news_flags": flags}
+        out.append(s)
+    return out
+
+
 async def build_block(starters: list[dict], bench: list[dict], *, league: dict | None,
                       rosters: list[dict] | None, mine: dict | None, db, season: int | None,
                       week: int | None, now: datetime | None = None,
@@ -592,6 +612,11 @@ async def build_block(starters: list[dict], bench: list[dict], *, league: dict |
     now = now or _now()
     free_agents: list[dict] | None = None
     note = None
+    if db is not None and any(not s.get("news_flags") for s in starters):
+        try:
+            starters = await asyncio.to_thread(attach_news, starters, db)
+        except Exception as e:  # news is additive
+            logger.debug(f"[late_risk] news flags unavailable: {e}")
     positions = needed_positions(starters)
     open_spots = open_roster_spots(league or {}, mine or {}) if league and mine else None
     if positions and league and rosters is not None and season and week:

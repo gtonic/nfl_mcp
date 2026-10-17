@@ -71,6 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the projection, which prices only the designation and practice week. Mike
   Evans (Q, DNP ×3, "expected to play") showed 85 % next to 8.2 expected points
   (≈10.6 when consistent). New field `expected_points_basis`.
+- **`get_lineup_contingencies` / `analyze_lineup`**: the late-game block now reads the
+  availability news flags itself; `analyze_lineup` rows carry none, so the standalone
+  tool showed Evans at 56 % while the briefing (projection rows) showed 85 %.
 
 ## [0.10.0] - 2026-10-11
 
