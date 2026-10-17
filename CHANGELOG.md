@@ -63,6 +63,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a list was first seen is logged (the feed has no timestamp). Bounded
   like the other feeds (`partial` / `timed_out_sources` / `stale_sources`).
 
+### Fixed
+
+- **`get_lineup_contingencies` / `late_game_risk`**: when an availability news flag
+  (`expected_to_play`, `unlikely_to_play`, `game_time_decision`, `ruled_out`) moves
+  P(plays), the starter's keep value is now P(plays) × his if-active points instead
+  of the projection, which prices only the designation and practice week. Mike
+  Evans (Q, DNP ×3, "expected to play") showed 85 % next to 8.2 expected points
+  (≈10.6 when consistent). New field `expected_points_basis`.
+
 ## [0.10.0] - 2026-10-11
 
 0.9.5 made the recommendations follow role and injury trends. This release
