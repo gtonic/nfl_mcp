@@ -309,3 +309,31 @@ class TestWiring:
                                 "projected_points": 5, "injury_status": "Questionable",
                                 "practice_pattern": "DNP", "kickoff": iso(MNF), "locked": False}, "WR")
         assert row["name"] == "A" and row["slot"] == "WR" and row["kickoff"] == iso(MNF)
+
+
+class TestNewsMovesExpectedPoints:
+    """Evans, week 6: Q + DNP-DNP-DNP but "still expected to play" -- the
+    projection (practice discount only) and P(plays) (news floor 0.85) must
+    not disagree in the keep/swap call."""
+
+    def test_expected_to_play_reprices_keep(self):
+        e = evans(news_flags=[{"flag": "expected_to_play"}])
+        plan = lr.plan_contingencies([e, flex()], [player("Bench RB", "WR", LATE, 9.5)], now=NOW)["at_risk"][0]
+        active = plan["if_active_points"]
+        assert plan["play_probability"] == 0.85
+        assert plan["expected_points"] == round(0.85 * active, 1)
+        assert plan["expected_points"] > 7.9
+        assert plan["options"]["keep"]["expected_points"] == plan["expected_points"]
+        assert "news moved" in plan["expected_points_basis"]
+        assert plan["recommendation"] == "keep"
+
+    def test_unlikely_to_play_lowers_keep(self):
+        e = evans(news_flags=[{"flag": "unlikely_to_play"}])
+        plan = lr.plan_contingencies([e, flex()], [player("Bench WR", "WR", LATE, 6.0)], now=NOW)["at_risk"][0]
+        assert plan["expected_points"] == round(0.25 * plan["if_active_points"], 1)
+        assert plan["recommendation"] == "swap_now"
+
+    def test_no_news_keeps_the_projection(self):
+        plan = lr.plan_contingencies([evans(), flex()], [player("Bench WR", "WR", LATE, 6.0)], now=NOW)["at_risk"][0]
+        assert plan["expected_points"] == 7.9
+        assert plan["expected_points_basis"].startswith("projection")

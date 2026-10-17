@@ -14,7 +14,8 @@ decision", gameday list not published yet) this works out:
 
 - his kickoff, when his inactives are expected (kickoff - 90 min), his
   expected points (the calibrated projection: the questionable discount is
-  already in it), what he scores *if active* (`projections.confirmed_active_mult`)
+  already in it; when an availability news flag moves P(plays), P(plays) x
+  his if-active points instead), what he scores *if active* (`projections.confirmed_active_mult`)
   and a P(plays) proxy (`PLAY_PROBABILITY`, the same 2023-25 practice backtest);
 - the replacements that can take his slot: bench players and instant-add free
   agents, directly or by moving a flex starter into his slot, each with its
@@ -98,12 +99,20 @@ def _practice(player: dict) -> tuple[str | None, list[str]]:
 def play_probability(player: dict) -> tuple[float, str]:
     """``(P(plays), basis)`` -- a proxy from the designation, the practice week,
     news flags and, once published, the gameday list (which settles it)."""
+    p, basis, _ = _play_probability(player)
+    return p, basis
+
+
+def _play_probability(player: dict) -> tuple[float, str, bool]:
+    """`play_probability` plus whether a news flag moved it (the projection
+    does not price availability news: `news_signals` gives those flags
+    ``model_mult`` 1.0)."""
     from .projections import availability
     gameday = (player.get("gameday_status") or "").lower()
     if gameday == "inactive":
-        return 0.0, "gameday: inactive (published)"
+        return 0.0, "gameday: inactive (published)", False
     if gameday == "active":
-        return 1.0, "gameday: active (published)"
+        return 1.0, "gameday: active (published)", False
     kind = availability(player.get("injury_status"))
     latest, days = _practice(player)
     if kind == "questionable":
@@ -119,13 +128,14 @@ def play_probability(player: dict) -> tuple[float, str]:
     else:  # unrecognised designation: treated as questionable elsewhere too
         p, basis = PLAY_PROBABILITY["Q_NONE"], f"status {player.get('injury_status')!r}"
     flags = _flags(player)
+    moved = False
     for flag, cap in NEWS_CAP.items():
         if flag in flags and p > cap:
-            p, basis = cap, f"{basis}; news: {flag.replace('_', ' ')}"
+            p, basis, moved = cap, f"{basis}; news: {flag.replace('_', ' ')}", True
     for flag, floor in NEWS_FLOOR.items():
         if flag in flags and p < floor and kind not in ("out", "doubtful"):
-            p, basis = floor, f"{basis}; news: {flag.replace('_', ' ')}"
-    return round(p, 2), basis
+            p, basis, moved = floor, f"{basis}; news: {flag.replace('_', ' ')}", True
+    return round(p, 2), basis, moved
 
 
 def risk_reasons(player: dict) -> list[str]:
@@ -269,9 +279,16 @@ def plan_starter(starter: dict, starters: list[dict], bench: list[dict],
     check = inactives + CHECK_AFTER if inactives else None
     if check is not None and check < now:
         check = now  # the list should be out: look now
-    p, basis = play_probability(starter)
+    p, basis, news_moved = _play_probability(starter)
     expected = round(float(starter.get("projected_points") or 0.0), 1)
     active_pts = if_active_points(starter)
+    expected_basis = "projection (designation and practice discount)"
+    if news_moved and active_pts is not None:
+        # The projection prices the designation and practice week only; when
+        # news moved P(plays), keep = P(plays) x his if-active points, the
+        # same P the "wait" option uses.
+        expected = round(p * active_pts, 1)
+        expected_basis = "P(plays) x if-active points (news moved P(plays))"
 
     pool = ([{**b, "source": "bench"} for b in bench if float(b.get("projected_points") or 0) > 0]
             + [{**f, "source": "free_agent"} for f in free_agents
@@ -323,6 +340,7 @@ def plan_starter(starter: dict, starters: list[dict], bench: list[dict],
         "kickoff": _iso(kick), "kickoff_local": local_time(kick),
         "inactives_expected": _iso(inactives), "inactives_expected_local": local_time(inactives),
         "expected_points": expected,
+        "expected_points_basis": expected_basis,
         "if_active_points": active_pts,
         "play_probability": p, "play_probability_basis": basis,
         "replacements": [r for _, r in viable[:MAX_REPLACEMENTS]],
