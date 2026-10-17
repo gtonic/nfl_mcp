@@ -337,3 +337,18 @@ class TestNewsMovesExpectedPoints:
         plan = lr.plan_contingencies([evans(), flex()], [player("Bench WR", "WR", LATE, 6.0)], now=NOW)["at_risk"][0]
         assert plan["expected_points"] == 7.9
         assert plan["expected_points_basis"].startswith("projection")
+
+    async def test_build_block_fills_missing_news_flags(self, monkeypatch):
+        """`analyze_lineup` rows carry no news flags: the block reads them."""
+        from nfl_mcp import news_signals
+        monkeypatch.setattr(news_signals, "index_for", lambda db, rows: {"k": []})
+        monkeypatch.setattr(news_signals, "signals_for", lambda index, name, team: (
+            [{"flag": "expected_to_play", "weight": 1.0}] if name == "Mike Evans" else []))
+        db = MagicMock()
+        db.get_all_current_injuries = MagicMock(return_value=[])
+        out = await lr.build_block([evans(), flex()], [player("Bench WR", "WR", LATE, 9.5)],
+                                   league=None, rosters=None, mine=None, db=db, season=2026,
+                                   week=6, now=NOW)
+        plan = out["at_risk"][0]
+        assert plan["play_probability"] == 0.85
+        assert "news moved" in plan["expected_points_basis"]
