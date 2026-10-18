@@ -1238,6 +1238,10 @@ class ProjectionEngine:
                 "role_reweight_from_week": break_week,
                 # Injury-shortened games left out of the volume like a miss.
                 "injury_exit_weeks": sorted(skip),
+                # His team's latest game: active with (near) no offensive
+                # snaps (`active_without_snaps`); priced by `_apply_snap_risk`.
+                **({"active_no_snaps": role["active_no_snaps"]}
+                   if (role or {}).get("active_no_snaps") else {}),
             },
             # A recent change of role (`role_shift`): the read, the multiplier
             # on Sleeper's share of the blend, and what moved.
@@ -1452,6 +1456,7 @@ class ProjectionEngine:
         await _apply_unit_fallback(projections, season, model)
         blend_summary = await _apply_sleeper_blend(projections, players, season, week, model,
                                                    index=sleeper_index)
+        _apply_snap_risk(projections)
         return {
             "projections": projections,
             "projection_sources": blend_summary["sources"],
@@ -1573,6 +1578,9 @@ async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
         # Injury-shortened games, whatever the read (an insufficient or
         # stable one carries none): the volume base leaves them out.
         read["injury_exit_weeks"] = sorted(r["week"] for r in rows if r.get("injury_exit"))
+        idle = active_without_snaps(week_stats, p.get("player_id"))
+        if idle:
+            read["active_no_snaps"] = idle
         reads.append(read)
 
     def _played(pid) -> set[int]:
@@ -1581,6 +1589,98 @@ async def _role_reads(players: list[dict], logs: dict, opp_index: dict,
                 if pid and float((s.get(pid) or {}).get("off_snp") or 0) > 0}
 
     return reads, _played
+
+
+# Snap risk: a player whose snaps are in doubt, not his availability --
+# "limited snaps" / "pitch count" news (`news_signals`), or a last game he
+# was active for and barely played (Ladd McConkey, week 5 2026: active, 0
+# snaps, foot; week 6 no designation, LP-LP-FP, "even with a pitch count").
+# Sleeper's stat line and our trailing volume both read him as a full-time
+# receiver, so the ±1σ band (`_VOLATILITY`, calibrated on all player-weeks)
+# is too narrow below: a capped or aborted day scores near zero. Heuristic,
+# not backtested -- the blurb history has no flagged sample to fit yet (see
+# `news_signals.EFFECTS`) -- and kept conservative: the calibrated widths
+# stay for everyone else; the floor is widened by SNAP_RISK_FLOOR_WIDEN (a
+# WR's band below the mean 0.68 -> 0.88 of it) and the mean cut by
+# SNAP_RISK_MEAN_MULT only after the zero-snap game, which neither Sleeper's
+# line nor our volume prices (news alone already moves our share through
+# `news_signals`' limited_snaps multiplier, so it lowers the floor only).
+SNAP_RISK_SHARE = 10.0           # % of his team's offensive snaps: "near zero"
+SNAP_RISK_PRIOR_SHARE = 30.0     # ... after an earlier week with a real role
+SNAP_RISK_FLOOR_WIDEN = 1.3
+SNAP_RISK_MEAN_MULT = 0.93
+SNAP_RISK_CONFIDENCE = -5
+SNAP_RISK_NEWS_WEIGHT = 0.5      # a limited_snaps flag at least this recent/strong
+
+
+def active_without_snaps(week_stats: dict[int, dict], player_id) -> dict | None:
+    """``{week, snap_share}`` when his team's latest game in ``week_stats``
+    (Sleeper weekly lines) had him active (``gms_active``) with under
+    `SNAP_RISK_SHARE` % of the offensive snaps; None otherwise (or unknown).
+
+    A backup who never plays offense is no snap question: an earlier week
+    must show a real role (`SNAP_RISK_PRIOR_SHARE`)."""
+    pid = str(player_id or "")
+    if not pid or not week_stats:
+        return None
+    shares: list[tuple[int, float]] = []  # (week, share) of his active team-weeks, latest first
+    for wk in sorted(week_stats, reverse=True):
+        line = (week_stats.get(wk) or {}).get(pid)
+        if not isinstance(line, dict) or not float(line.get("tm_off_snp") or 0):
+            continue  # no line (bye, or not listed): look further back
+        if not float(line.get("gms_active") or 0):
+            if not shares:
+                return None  # inactive last time: an absence, not a snap question
+            continue
+        shares.append((wk, 100.0 * float(line.get("off_snp") or 0) / float(line["tm_off_snp"])))
+    if not shares or shares[0][1] >= SNAP_RISK_SHARE:
+        return None
+    if not any(share >= SNAP_RISK_PRIOR_SHARE for _, share in shares[1:]):
+        return None
+    return {"week": shares[0][0], "snap_share": round(shares[0][1], 1)}
+
+
+def snap_risk(proj: dict) -> dict | None:
+    """Why his snaps are in doubt this week (see `SNAP_RISK_SHARE`), or None."""
+    reasons = []
+    idle = (proj.get("breakdown") or {}).get("active_no_snaps")
+    if idle:
+        reasons.append(f"active in week {idle['week']} with {idle['snap_share']:.0f}% of the snaps")
+    for f in proj.get("news_flags") or []:
+        name = f.get("flag") if isinstance(f, dict) else f
+        weight = float((f.get("weight") if isinstance(f, dict) else 1.0) or 0.0)
+        if name == "limited_snaps" and weight >= SNAP_RISK_NEWS_WEIGHT:
+            reasons.append("news: limited snaps / pitch count")
+            break
+    if not reasons:
+        return None
+    return {"reasons": reasons, "mean_mult": SNAP_RISK_MEAN_MULT if idle else 1.0,
+            "floor_widen": SNAP_RISK_FLOOR_WIDEN}
+
+
+def _apply_snap_risk(projections: list[dict]) -> None:
+    """Lower the floor (and, after a zero-snap game, the mean) of players
+    whose snaps are in doubt, in place (``snap_risk`` on the row). Never
+    raises."""
+    for proj in projections:
+        try:
+            if proj.get("on_bye") or not proj.get("projected_points") \
+                    or proj.get("gameday_status") == "inactive":
+                continue
+            risk = snap_risk(proj)
+            if not risk:
+                continue
+            vol = _VOLATILITY.get((proj.get("position") or "").upper(), 0.35)
+            mean = round(float(proj["projected_points"]) * risk["mean_mult"], 1)
+            proj["projected_points"] = mean
+            proj["floor"] = round(mean * max(0.0, 1 - vol * risk["floor_widen"]), 1)
+            proj["ceiling"] = round(mean * (1 + vol), 1)
+            proj["snap_risk"] = risk
+            conf = max(0, min(100, int(proj.get("confidence") or 0) + SNAP_RISK_CONFIDENCE))
+            proj["confidence"] = conf
+            proj["confidence_level"] = "high" if conf >= 80 else "medium" if conf >= 60 else "low"
+        except Exception as e:  # additive: never sink the projection
+            logger.debug(f"snap risk failed for {proj.get('player')}: {e}")
 
 
 def _attach_context(projections: list[dict], depth: dict, status_of, opp_index: dict,

@@ -62,6 +62,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`NFL_MCP_PREFETCH_INACTIVES_POLL`, 0 = off), so a tool call finds them read;
   when a list was first seen is logged (the feed has no timestamp). Bounded
   like the other feeds (`partial` / `timed_out_sources` / `stale_sources`).
+- **Late-game risk: rearrange step** (`get_lineup_contingencies`, briefing
+  `late_game_risk`): when the at-risk starter's slot rules out the only fallback
+  still unlocked at his inactives (Mike Evans in WR, Monday night; the one
+  same-game option Rachaad White is a back), the planner tries a slot swap with
+  an unlocked starter (Evans to FLEX, DeVonta Smith to WR). If that keeps a
+  better fallback, "wait" is priced under the new seating
+  (`options.wait.requires_rearrange`) and, when it is the recommendation, the
+  swap is the first step (`rearrange`: moves, `act_by` = the earlier of the two
+  kickoffs) and the first deadline: "move Mike Evans to FLEX and DeVonta Smith
+  to WR before Sun 18.10. 19:00 -- keeps Rachaad White as the fallback at his
+  inactives; then wait ...".
+- **Snap risk** (`projections.snap_risk`, every weekly projection): a player
+  whose team's latest game had him active with under 10% of the offensive
+  snaps (after an earlier week with a real role; Sleeper weekly lines), or with
+  a recent `limited_snaps` news flag, gets a lower floor (the band below the
+  mean × `SNAP_RISK_FLOOR_WIDEN` 1.3; WR 0.68 → 0.88 of the mean), −5
+  confidence and, after the zero-snap game only, a 7% mean cut
+  (`SNAP_RISK_MEAN_MULT`; news alone is already priced on our share). Reported
+  as `snap_risk` and `breakdown.active_no_snaps`; `compare_players_for_slot`
+  puts it first in the reasoning and names it in the verdict when the winner
+  carries it and the runner-up does not. Heuristic and deliberately
+  conservative (no flagged backtest sample yet); the calibrated `_VOLATILITY`
+  widths are unchanged for everyone else. Ladd McConkey, week 6: 8.7 / floor
+  2.8 → 8.1 / floor 0.9.
 
 ### Fixed
 

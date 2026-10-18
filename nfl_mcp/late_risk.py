@@ -24,6 +24,12 @@ decision", gameday list not published yet) this works out:
   replacement locks; **wait** until his inactives with a fallback that is still
   unlocked then (same-day games, a later kickoff) -- worth his expected points
   plus the fallback's in the share of weeks he sits.
+- **rearrange**: when his slot rules the only late fallback out (he sits in
+  WR, the one player unlocked at his inactives is a back), a slot swap with
+  an earlier starter (him to FLEX, the FLEX receiver to WR) made before the
+  earlier of the two kickoffs keeps that fallback; "wait" is priced under
+  that seating and the swap becomes the first step (``rearrange``) and the
+  first deadline.
 
 The recommendation is the best of the three; ``decision_deadline`` is the
 earliest lock among the best replacements still unlocked (with "wait", the
@@ -266,6 +272,82 @@ def _replacement_row(c: dict, his_check: datetime | None, drop: dict | None,
     return row
 
 
+def _viable(starter: dict, starters: list[dict], pool: list[dict], bench: list[dict],
+            needs_drop: bool, check: datetime | None, now: datetime) -> list[tuple[float, dict]]:
+    """``[(points, replacement row)]`` for his slot as the lineup is seated,
+    best first, one row per player."""
+    rows = []
+    for c in _candidates(starter, starters, pool):
+        x, via = c["in"], c["via"]
+        if not _usable(x, now) or (via is not None and not _usable(via, now)):
+            continue
+        drop = None
+        if x["source"] == "free_agent" and needs_drop:
+            # Dropped when the add is made: now for a swap; a fallback's add
+            # may wait for his inactives, so prefer a drop still movable then.
+            later = check if check is not None and check > now else now
+            drop = (_pick_drop(bench, {starter.get("player_id")}, later)
+                    or _pick_drop(bench, {starter.get("player_id")}, now))
+            if drop is None:
+                continue
+        rows.append((float(x.get("projected_points") or 0.0), _replacement_row(c, check, drop, needs_drop)))
+    # An add that costs a drop has to be worth it: within ADD_COST points a
+    # bench player (or an open spot) comes first.
+    rows.sort(key=lambda r: -(r[0] - (ADD_COST if r[1].get("drop") else 0.0)))
+    seen: set = set()
+    viable = []
+    for value, row in rows:  # one row per player (the direct move wins)
+        if row["player"] in seen:
+            continue
+        seen.add(row["player"])
+        viable.append((value, row))
+    return viable
+
+
+def _rearrangement(starter: dict, starters: list[dict], pool: list[dict], bench: list[dict],
+                   needs_drop: bool, check: datetime | None, now: datetime,
+                   current_fallback: float | None) -> dict | None:
+    """The best slot swap with another (unlocked, earlier-or-same kickoff)
+    starter that leaves a better fallback at his inactives than the current
+    seating does, or None.
+
+    Both keep starting -- the swap costs no points -- but it has to be made
+    before the earlier of the two kickoffs locks either of them. Then his
+    slot accepts what it did not: Mike Evans moved from WR to FLEX lets a
+    same-game back be the Monday fallback; the WR who was in FLEX now sits
+    in WR. Returns ``{fallback: (points, row), with, moves, act_by}``.
+    """
+    slot = starter.get("slot")
+    best: dict[str, Any] | None = None
+    best_value = float("-inf")
+    for f in starters:
+        if f is starter or f.get("locked") or not _usable(f, now) \
+                or normalize_slot(f.get("slot")) == normalize_slot(slot):
+            continue
+        if not (slot_accepts(f.get("slot"), starter.get("position"))
+                and slot_accepts(slot, f.get("position"))):
+            continue
+        moved = {**starter, "slot": f.get("slot")}
+        other = {**f, "slot": slot}
+        seated = [moved if s is starter else other if s is f else s for s in starters]
+        fallbacks = [(v, r) for v, r in _viable(moved, seated, pool, bench, needs_drop, check, now)
+                     if r["unlocked_at_his_inactives"]]
+        if not fallbacks:
+            continue
+        value = fallbacks[0][0]
+        if (current_fallback is not None and value <= current_fallback) \
+                or value <= best_value:
+            continue
+        best_value, act_by = value, _locks_at(starter, f)
+        best = {
+            "fallback": fallbacks[0], "with": f,
+            "moves": [{"player": starter["name"], "from_slot": slot, "to_slot": f.get("slot")},
+                      {"player": f["name"], "from_slot": f.get("slot"), "to_slot": slot}],
+            "act_by": act_by,
+        }
+    return best
+
+
 def plan_starter(starter: dict, starters: list[dict], bench: list[dict],
                  free_agents: list[dict], open_spots: int | None,
                  now: datetime) -> dict | None:
@@ -294,41 +376,40 @@ def plan_starter(starter: dict, starters: list[dict], bench: list[dict],
             + [{**f, "source": "free_agent"} for f in free_agents
                if float(f.get("projected_points") or 0) > 0])
     needs_drop = open_spots is not None and open_spots <= 0
-    rows, viable = [], []
-    for c in _candidates(starter, starters, pool):
-        x, via = c["in"], c["via"]
-        if not _usable(x, now) or (via is not None and not _usable(via, now)):
-            continue
-        drop = None
-        if x["source"] == "free_agent" and needs_drop:
-            # Dropped when the add is made: now for a swap; a fallback's add
-            # may wait for his inactives, so prefer a drop still movable then.
-            later = check if check is not None and check > now else now
-            drop = (_pick_drop(bench, {starter.get("player_id")}, later)
-                    or _pick_drop(bench, {starter.get("player_id")}, now))
-            if drop is None:
-                continue
-        rows.append((float(x.get("projected_points") or 0.0), _replacement_row(c, check, drop, needs_drop)))
-    # An add that costs a drop has to be worth it: within ADD_COST points a
-    # bench player (or an open spot) comes first.
-    rows.sort(key=lambda r: -(r[0] - (ADD_COST if r[1].get("drop") else 0.0)))
-    seen: set = set()
-    for value, row in rows:  # one row per player (the direct move wins)
-        if row["player"] in seen:
-            continue
-        seen.add(row["player"])
-        viable.append((value, row))
+    viable = _viable(starter, starters, pool, bench, needs_drop, check, now)
 
     keep_ev = expected
     swap = viable[0] if viable else None
     fallbacks = [(v, r) for v, r in viable if r["unlocked_at_his_inactives"]]
     wait = fallbacks[0] if fallbacks else None
+    # A fallback the current seating rules out (he sits in WR, the only
+    # player still unlocked at his inactives is a back) may be one slot
+    # swap with an earlier starter away: move him into the flex before that
+    # starter locks, and the back can take his seat after the inactives.
+    rearrange = None
+    if (starter.get("gameday_status") or "").lower() != "inactive":
+        rearrange = _rearrangement(starter, starters, pool, bench, needs_drop, check, now,
+                                   wait[0] if wait else None)
+        if rearrange is not None:
+            wait = rearrange["fallback"]
     wait_ev = round(keep_ev + (1.0 - p) * wait[0], 1) if wait else None
     # The deadline: the earliest lock among the best still-unlocked options.
     top = max((v for v, _ in viable), default=0.0)
     best_band = [r for v, r in viable if v >= top - BEST_BAND]
     locks = [parse_kickoff(r["locks_at"]) for r in best_band if r["locks_at"]]
     band_deadline = min((t for t in locks if t is not None), default=None)
+
+    rearrange_step = None
+    if rearrange is not None and wait is not None:
+        mate = rearrange["with"]
+        rearrange_step = {
+            "moves": rearrange["moves"], "with": mate["name"],
+            "act_by": _iso(rearrange["act_by"]), "act_by_local": local_time(rearrange["act_by"]),
+            "unlocks_fallback": wait[1]["player"],
+            "summary": (f"move {starter['name']} to {mate.get('slot')} and {mate['name']} to "
+                        f"{starter.get('slot')} before {_fmt(rearrange['act_by'])} -- keeps "
+                        f"{wait[1]['player']} as the fallback at his inactives"),
+        }
 
     plan: dict[str, Any] = {
         "player": starter["name"], "player_id": starter.get("player_id"),
@@ -355,7 +436,11 @@ def plan_starter(starter: dict, starters: list[dict], bench: list[dict],
                      if swap else None),
             "wait": ({"fallback": wait[1]["player"], "expected_points": wait_ev,
                       "check_at": _iso(check), "check_at_local": local_time(check),
-                      "fallback_locks_at_local": wait[1]["locks_at_local"]} if wait else None),
+                      "fallback_locks_at_local": wait[1]["locks_at_local"],
+                      # Only after a slot swap: as seated, no such fallback.
+                      **({"requires_rearrange": True, "rearrange": rearrange_step["summary"]}
+                         if rearrange_step else {})}
+                     if wait else None),
         },
     }
     name = starter["name"]
@@ -375,6 +460,13 @@ def plan_starter(starter: dict, starters: list[dict], bench: list[dict],
         why = (f"wait for {poss} inactives (~{_fmt(inactives)}): if he is out, start "
                f"{wait[1]['player']} ({wait[0]:.1f}, locks {_fmt(deadline)}) -- "
                f"{wait_ev:.1f} expected vs keep {keep_ev:.1f} / swap {swap[0]:.1f}")
+        if rearrange_step is not None and rearrange is not None:
+            # The swap is the first step, and its lock the first deadline.
+            plan["rearrange"] = rearrange_step
+            why = f"{rearrange_step['summary']}; then {why}"
+            act_by = rearrange["act_by"]
+            if act_by is not None and (deadline is None or act_by < deadline):
+                deadline = act_by
     elif swap[0] > keep_ev + SWAP_MARGIN:
         rec, deadline = "swap_now", parse_kickoff(swap[1]["locks_at"])
         why = (f"start {swap[1]['player']} ({swap[0]:.1f}) over {name} ({keep_ev:.1f} expected, "
