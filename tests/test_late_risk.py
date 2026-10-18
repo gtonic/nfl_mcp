@@ -139,6 +139,66 @@ class TestMondayNightStarter:
         assert plan["options"]["wait"]["expected_points"] == pytest.approx(10.5, abs=0.1)
 
 
+class TestRearrange:
+    """Ropeway, week 6: Evans (WR slot, MNF, Q) and DeVonta Smith (FLEX,
+    Sunday). The only player unlocked at Evans' inactives is Rachaad White,
+    a free-agent back in the same Monday game -- he cannot take a WR slot."""
+
+    def lineup(self):
+        return [evans(), player("DeVonta Smith", "WR", EARLY, 9.0, slot="FLEX")]
+
+    def test_swap_with_the_flex_receiver_keeps_the_monday_back(self):
+        fa = [player("Rachaad White", "RB", MNF, 6.0)]
+        bench = [player("Sunday WR", "WR", EARLY, 5.0)]
+        plan = lr.plan_contingencies(self.lineup(), bench, fa, open_spots=1, now=NOW)["at_risk"][0]
+        assert plan["recommendation"] == "wait"
+        wait = plan["options"]["wait"]
+        assert wait["fallback"] == "Rachaad White" and wait["requires_rearrange"] is True
+        # 7.9 + (1 - 0.56) * 6.0
+        assert wait["expected_points"] == pytest.approx(10.5, abs=0.1)
+        step = plan["rearrange"]
+        assert step["with"] == "DeVonta Smith" and step["unlocks_fallback"] == "Rachaad White"
+        assert [(m["player"], m["to_slot"]) for m in step["moves"]] == [
+            ("Mike Evans", "FLEX"), ("DeVonta Smith", "WR")]
+        # Smith's Sunday kickoff locks the swap: the first deadline.
+        assert step["act_by"] == iso(EARLY)
+        assert plan["decision_deadline"] == iso(EARLY)
+        assert plan["summary"].startswith("move Mike Evans to FLEX and DeVonta Smith to WR before Sun")
+        assert "Rachaad White" in plan["summary"]
+
+    def test_already_in_flex_needs_no_rearrange(self):
+        """The briefing's seating (Evans in FLEX) finds White directly."""
+        fa = [player("Rachaad White", "RB", MNF, 6.0)]
+        starters = [player("Mike Evans", "WR", MNF, 7.9, slot="FLEX", status="Questionable",
+                           practice="DNP", pattern="DNP-DNP"),
+                    player("DeVonta Smith", "WR", EARLY, 9.0, slot="WR")]
+        plan = lr.plan_contingencies(starters, [], fa, open_spots=1, now=NOW)["at_risk"][0]
+        assert plan["recommendation"] == "wait"
+        assert "rearrange" not in plan and "requires_rearrange" not in plan["options"]["wait"]
+        assert plan["decision_deadline"] == iso(MNF)
+
+    def test_no_rearrange_once_the_flex_starter_is_locked(self):
+        fa = [player("Rachaad White", "RB", MNF, 6.0)]
+        later = EARLY + timedelta(minutes=10)
+        starters = [evans(), player("DeVonta Smith", "WR", EARLY, 9.0, slot="FLEX", locked=True)]
+        plan = lr.plan_contingencies(starters, [], fa, open_spots=1, now=later)["at_risk"][0]
+        assert plan["options"]["wait"] is None and "rearrange" not in plan
+
+    def test_a_same_slot_fallback_is_not_displaced_by_a_weaker_rearrange(self):
+        fa = [player("Rachaad White", "RB", MNF, 4.0)]
+        bench = [player("Monday WR", "WR", MNF, 6.0)]
+        plan = lr.plan_contingencies(self.lineup(), bench, fa, open_spots=1, now=NOW)["at_risk"][0]
+        assert plan["options"]["wait"]["fallback"] == "Monday WR"
+        assert "rearrange" not in plan
+
+    def test_rearrange_needs_eligible_slots(self):
+        # A TE in the TE slot cannot trade seats with a WR in WR.
+        starters = [evans(), player("Some TE", "TE", EARLY, 6.0, slot="TE")]
+        fa = [player("Rachaad White", "RB", MNF, 6.0)]
+        plan = lr.plan_contingencies(starters, [], fa, open_spots=1, now=NOW)["at_risk"][0]
+        assert plan["options"]["wait"] is None and "rearrange" not in plan
+
+
 class TestSundayStarters:
     def test_early_starter_with_a_late_bench_option_waits(self):
         s = player("Zay Flowers", "WR", EARLY, 9.0, slot="WR", status="Questionable",
