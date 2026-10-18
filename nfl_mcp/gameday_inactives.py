@@ -16,7 +16,10 @@ rosters on 2026-10-16 against week 5):
   checked against the gameday notes: PIT Dowdle/Howard/Allar/Heidenreich, MIN
   Addison/Beckham, CIN C. Young, ATL Rush, BAL Vorhees all flagged; BAL L.
   Jackson, CHI Monangai among the rest. Primary, polled every few minutes in
-  the inactives window by the prefetch (`warm_inactives`). When it first
+  the inactives window by the prefetch (`warm_inactives`). Caveat (week 6,
+  2026-10-18): the roster is seeded from the previous game, so last week's
+  flags can still be set before the list settles -- a flag the previous game
+  also had needs injury-report backing (see `PRIOR_LOOKBACK_WEEKS`). When it first
   showed a team's list is logged and kept (``first_seen``): the feed carries
   no timestamp of its own.
 - ESPN's game summary (``/summary?event=<id>``) has *no* inactives section —
@@ -110,6 +113,56 @@ def classify_note(comment: str | None) -> str | None:
     return None
 
 
+_ESPN_ID_RE = re.compile(r"(?:/id/|~a:)(\d+)")
+
+
+def espn_athlete_id(athlete: dict | None) -> str | None:
+    """ESPN's athlete id from an injury-list athlete: ``id`` when present,
+    else out of the player-card links (``.../_/id/4241372/...``) -- the live
+    league injury list carries no ``id``, only the links."""
+    athlete = athlete or {}
+    if athlete.get("id"):
+        return str(athlete["id"])
+    for link in athlete.get("links") or []:
+        m = _ESPN_ID_RE.search(str((link or {}).get("href") or ""))
+        if m:
+            return m.group(1)
+    m = _ESPN_ID_RE.search(str(athlete.get("uid") or ""))
+    return m.group(1) if m else None
+
+
+# Injury-report statuses (ESPN's league list, Sleeper's ``injury_status``)
+# that back a carried-over game-roster flag: the player is out this week.
+OUT_STATUSES = frozenset({
+    "out", "doubtful", "inactive", "injured reserve", "ir", "suspension", "suspended", "sus",
+    "physically unable to perform", "pup", "non-football injury", "nfi", "reserve",
+})
+
+
+def parse_espn_report_statuses(payload: dict | None, teams: set[str] | None = None
+                               ) -> dict[tuple[str, str], str]:
+    """``{("id", espn_id) | ("name", "<norm name>|<team>"): status}`` (lower
+    case) of the current ESPN league injury list -- each player's designation
+    right now, whatever the date of its note."""
+    out: dict[tuple[str, str], str] = {}
+    for group in (payload or {}).get("injuries") or []:
+        team = normalize_team(group.get("displayName"))
+        if not team or (teams and team not in teams):
+            continue
+        for item in group.get("injuries") or []:
+            status = str(item.get("status") or "").strip().lower()
+            athlete = item.get("athlete") or {}
+            if not status:
+                continue
+            eid = espn_athlete_id(athlete)
+            if eid:
+                out[("id", eid)] = status
+            name = norm_name((athlete.get("displayName") or "").strip())
+            if name:
+                out[("name", f"{name}|{team}")] = status
+    return out
+
+
 def parse_espn_gameday_notes(payload: dict, kickoffs: dict[str, str],
                              teams: set[str] | None = None) -> tuple[list[dict], list[dict]]:
     """``(inactive, active)`` rows from the ESPN league injury payload.
@@ -148,7 +201,7 @@ def parse_espn_gameday_notes(payload: dict, kickoffs: dict[str, str],
                 "kickoff": kickoffs.get(team),
                 "source": SOURCE_ESPN_NOTE,
                 "official": True,
-                "espn_id": str(athlete["id"]) if athlete.get("id") else None,
+                "espn_id": espn_athlete_id(athlete),
             }
     rows = list(latest.values())
     return ([r for r in rows if r["status"] == "Inactive"],
@@ -215,6 +268,8 @@ def clear_caches() -> None:
     _gameday_cache.clear()
     _game_rosters.clear()
     _first_seen.clear()
+    _prior_flags.clear()
+    _week_ids.clear()
 
 
 # ESPN game rosters, per (event id, ESPN team id): (fetched_at, entries), with
@@ -317,6 +372,101 @@ async def _game_roster(team: str, ids: dict, client, now: datetime, wait: float,
 def roster_first_seen(event_id: str, team_id: str) -> datetime | None:
     """When this process first saw the team's game roster published."""
     return _first_seen.get((str(event_id), str(team_id)))
+
+
+# ESPN seeds a game roster from the team's previous game: before the new list
+# is in, last week's ``didNotPlay`` flags are still set next to this week's
+# (PHI, 2026-10-18 at T-29: Smith, Greenard, Epps, Kendall -- week 5's
+# inactives, all active in week 6 -- were flagged with the six real ones).
+# The roster carries no field that tells the two apart (``active``,
+# ``starter``, ``valid`` read the same), so a flag the previous game also had
+# needs an injury-report status that has the player out this week (ESPN's
+# list or Sleeper's), or a gameday "is inactive" note, before it counts; a
+# flag new to this game is this game's. Without the previous game's roster
+# (not read in time) every flag needs that backing. Unbacked flags are
+# reported as ``unconfirmed_inactives``, never as official.
+PRIOR_LOOKBACK_WEEKS = 3
+# Finished games' flags per (event id, ESPN team id); they do not change.
+_prior_flags: dict[tuple[str, str], frozenset[str]] = {}
+# ``{team: {event_id, team_id}}`` per (season, week) read off the scoreboard
+# when the stored schedule lacks the week.
+_week_ids: dict[tuple[int, int], dict[str, dict]] = {}
+
+
+async def _week_espn_ids(db, season: int, week: int, client) -> dict[str, dict]:
+    ids = _espn_ids(db, season, week)
+    if ids:
+        return ids
+    if (season, week) in _week_ids:
+        return _week_ids[(season, week)]
+    got: dict[str, dict] = {}
+    await _week_kickoffs(None, season, week, client, got)
+    if got:
+        _week_ids[(season, week)] = got
+    return got
+
+
+async def _previous_game(db, season: int, week: int, team: str, current_event: str,
+                         client) -> tuple[str, dict | None]:
+    """``("found", {event_id, team_id})`` of the team's previous game this
+    season, ``("none", None)`` when it has none (week 1), or ``("unknown",
+    None)`` when the earlier weeks cannot be read."""
+    lowest = max(1, week - PRIOR_LOOKBACK_WEEKS)
+    for w in range(week - 1, lowest - 1, -1):
+        ids = await _week_espn_ids(db, season, w, client)
+        if not ids:
+            return "unknown", None
+        hit = ids.get(team)
+        if hit and str(hit.get("event_id")) != str(current_event):
+            return "found", hit
+    return ("none", None) if lowest == 1 else ("unknown", None)
+
+
+async def _download_prior_flags(client, key: tuple[str, str], team: str) -> frozenset[str]:
+    from .config import get_http_headers
+    url = ESPN_GAME_ROSTER_URL.format(event=key[0], team=key[1])
+    resp = await _get(client, url, get_http_headers("nfl_teams"), ROSTER_TIMEOUT)
+    if resp.status_code == 404:
+        flags: frozenset[str] = frozenset()
+    elif resp.status_code != 200:
+        raise RuntimeError(f"ESPN previous game roster {team}: HTTP {resp.status_code}")
+    else:
+        flags = frozenset(r["espn_id"] for r in parse_espn_game_roster(resp.json()) or []
+                          if r["inactive"])
+    _prior_flags[key] = flags
+    return flags
+
+
+async def _resolve_prior_flags(db, season: int, week: int, team: str, ids: dict,
+                               client) -> frozenset[str] | None:
+    status, prev = await _previous_game(db, season, week, team, str(ids["event_id"]), client)
+    if status == "none":
+        return frozenset()
+    if prev is None:
+        return None
+    key = (str(prev["event_id"]), str(prev["team_id"]))
+    if key in _prior_flags:
+        return _prior_flags[key]
+    return await _download_prior_flags(client, key, team)
+
+
+async def _prior_inactives(db, season: int, week: int, team: str, ids: dict, client,
+                           wait: float) -> frozenset[str] | None:
+    """ESPN ids flagged ``didNotPlay`` in the team's previous game
+    (``frozenset()`` when there is none), or None when that is not known in
+    time. Never raises."""
+    try:
+        task = single_flight(f"gameday_prior:{season}:{week}:{team}",
+                             lambda: _resolve_prior_flags(db, season, week, team, ids, client))
+        done, value = await wait_bounded(task, wait)
+    except Exception as e:
+        logger.debug(f"[Inactives] previous game roster {team} failed: {e}")
+        return None
+    return value if done else None
+
+
+def _is_out(status: str | None) -> bool:
+    return str(status or "").strip().lower() in OUT_STATUSES
 
 
 def _stored_sleeper_players(db, teams: set[str],
@@ -497,8 +647,11 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
     confirmed_active, roster_active {team: [{player_id, player_name}]},
     published_by_source {source: [team]}, complete_teams, pending_roster_teams,
     sources_checked, sleeper_freshness, partial, timed_out_sources,
-    stale_sources}``. ``complete_teams``: the team's whole list is out (ESPN
-    game roster), so anyone of theirs not listed inactive is active. Fetches nothing beyond the schedule
+    stale_sources, unconfirmed_inactives}``. ``complete_teams``: the team's
+    whole list is out (ESPN game roster), so anyone of theirs not listed
+    inactive is active -- except ``unconfirmed_inactives``: game-roster flags
+    carried over from the previous game that no injury report backs (see
+    `PRIOR_LOOKBACK_WEEKS`), whose status is not known. Fetches nothing beyond the schedule
     when no game is inside its window. Waits at most ``budget_seconds``
     (default ``OFFICIAL_BUDGET_SECONDS``) for the feeds; a feed that is not in
     by then is listed in ``timed_out_sources`` (it keeps downloading for the
@@ -509,7 +662,7 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
     wanted = {normalize_team(t) for t in teams or [] if normalize_team(t)}
     result: dict[str, Any] = {"games": {}, "window_teams": [], "inactives": [], "confirmed_active": [],
               "roster_active": {}, "published_by_source": {}, "complete_teams": [],
-              "pending_roster_teams": [],
+              "pending_roster_teams": [], "unconfirmed_inactives": [],
               "sources_checked": [], "sleeper_freshness": None,
               "partial": False, "timed_out_sources": [], "stale_sources": []}
     ids: dict[str, dict] = {}
@@ -530,18 +683,33 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
         wait = budget.remaining()
         ids = {**ids, **_espn_ids(db, season, week)}
         roster_teams = sorted(t for t in window if t in ids)
-        (payload, _, notes_status), (players, freshness, sleeper_status), rosters = await asyncio.gather(
-            _cached_read("gameday_espn_notes", _espn_notes, ESPN_NOTES_TTL, ESPN_NOTES_STALE_MAX,
-                         lambda: _download_espn_notes(client, now), now, wait),
-            _sleeper_players(db, window, client, now, wait),
-            asyncio.gather(*(_game_roster(t, ids[t], client, now, wait,
-                                          result["games"][t]["phase"] != "inactives_window")
-                             for t in roster_teams)),
-        )
-        _apply_rosters(result, db, dict(zip(roster_teams, rosters, strict=True)), kickoffs, ids)
+        (payload, _, notes_status), (players, freshness, sleeper_status), rosters, priors = \
+            await asyncio.gather(
+                _cached_read("gameday_espn_notes", _espn_notes, ESPN_NOTES_TTL, ESPN_NOTES_STALE_MAX,
+                             lambda: _download_espn_notes(client, now), now, wait),
+                _sleeper_players(db, window, client, now, wait),
+                asyncio.gather(*(_game_roster(t, ids[t], client, now, wait,
+                                              result["games"][t]["phase"] != "inactives_window")
+                                 for t in roster_teams)),
+                asyncio.gather(*(_prior_inactives(db, season, week, t, ids[t], client, wait)
+                                 for t in roster_teams)),
+            )
+        notes: tuple[list[dict], list[dict]] | None = None
+        report: dict[tuple[str, str], str] = {}
         if payload is not None:
             try:
-                inactive, active = parse_espn_gameday_notes(payload, kickoffs, window)
+                notes = parse_espn_gameday_notes(payload, kickoffs, window)
+                report = parse_espn_report_statuses(payload, window)
+            except Exception as e:
+                logger.warning(f"[Inactives] ESPN notes failed: {e}")
+        backing = _Backing(report, notes, players)
+        _apply_rosters(result, db, dict(zip(roster_teams, rosters, strict=True)), kickoffs, ids,
+                       dict(zip(roster_teams, priors, strict=True)), backing)
+        if payload is not None:
+            try:
+                if notes is None:
+                    raise ValueError("unreadable payload")
+                inactive, active = notes
                 _merge_notes(result, inactive)
                 result["confirmed_active"].extend(active)
                 _note_source(result, SOURCE_ESPN_NOTE, notes_status)
@@ -555,25 +723,90 @@ async def get_official_inactives(db, season: int, week: int, teams: list[str] | 
         result["sleeper_freshness"] = freshness
         if players is not None:
             seen = {(norm_name(r["player_name"]), r["team_id"]) for r in result["inactives"]}
+            seen_ids = {str(r["player_id"]) for r in result["inactives"] if r.get("player_id")}
             flagged = set()
             for row in parse_sleeper_inactives(players, window):
                 flagged.add(row["team_id"])
-                if (norm_name(row["player_name"]), row["team_id"]) not in seen:
+                if ((norm_name(row["player_name"]), row["team_id"]) not in seen
+                        and str(row["player_id"]) not in seen_ids):
                     result["inactives"].append(row)
             if flagged:
                 result["published_by_source"][SOURCE_SLEEPER] = sorted(flagged)
             _note_source(result, SOURCE_SLEEPER, sleeper_status)
         elif sleeper_status == "timeout":
             result["timed_out_sources"].append(SOURCE_SLEEPER)
+    result["inactives"] = _dedupe(result["inactives"])
     result["partial"] = bool(result["timed_out_sources"] or result["stale_sources"])
     return result
 
 
+def _dedupe(rows: list[dict]) -> list[dict]:
+    """One row per player: the same man can come in under two names (ESPN's
+    "Hollywood Brown", Sleeper's "Marquise Brown"); rows sharing a Sleeper or
+    ESPN id (per team) are one player, the first row kept."""
+    out: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in rows:
+        keys = {(kind, str(row.get(kind)), str(row.get("team_id")))
+                for kind in ("player_id", "espn_id") if row.get(kind)}
+        if keys & seen:
+            continue
+        seen |= keys
+        out.append(row)
+    return out
+
+
+class _Backing:
+    """What else says a game-roster flag is this week's: the ESPN injury
+    list's current status, its gameday notes, Sleeper's ``injury_status``."""
+
+    def __init__(self, report: dict[tuple[str, str], str] | None = None,
+                 notes: tuple[list[dict], list[dict]] | None = None,
+                 players: dict | None = None):
+        self.report = report or {}
+        self.players = players or {}
+        self.inactive_ids: set[str] = set()
+        self.inactive_names: set[tuple[str, str]] = set()
+        self.active_ids: set[str] = set()
+        self.active_names: set[tuple[str, str]] = set()
+        for rows, ids_, names in ((notes[0], self.inactive_ids, self.inactive_names),
+                                  (notes[1], self.active_ids, self.active_names)) if notes else ():
+            for r in rows:
+                if r.get("espn_id"):
+                    ids_.add(str(r["espn_id"]))
+                names.add((norm_name(r.get("player_name")), str(r.get("team_id") or "")))
+
+    def verdict(self, espn_id: str, names: list[str], team: str,
+                player_id: str | None) -> tuple[bool, str | None]:
+        """``(backed, injury status)``: backed when a gameday note has him
+        inactive or a current designation has him out -- and no gameday note
+        has him active."""
+        keys = {(norm_name(n), team) for n in names if n}
+        if espn_id in self.active_ids or keys & self.active_names:
+            return False, "active"
+        status = self.report.get(("id", espn_id)) or next(
+            (self.report[("name", f"{k[0]}|{team}")] for k in keys
+             if ("name", f"{k[0]}|{team}") in self.report), None)
+        sleeper = (self.players.get(str(player_id)) or {}) if player_id else {}
+        sleeper_status = sleeper.get("injury_status") if isinstance(sleeper, dict) else None
+        backed = (espn_id in self.inactive_ids or bool(keys & self.inactive_names)
+                  or _is_out(status) or _is_out(sleeper_status))
+        return backed, status or (str(sleeper_status).lower() if sleeper_status else None)
+
+
 def _apply_rosters(result: dict, db, rosters: dict[str, tuple[list | None, str]],
-                   kickoffs: dict[str, str], ids: dict[str, dict]) -> None:
+                   kickoffs: dict[str, str], ids: dict[str, dict],
+                   priors: dict[str, frozenset[str] | None] | None = None,
+                   backing: _Backing | None = None) -> None:
     """Fold the ESPN game rosters into ``result``: every inactive (named via
     Sleeper's ``espn_id`` where the athlete is known, else ESPN's short
-    name), the active players per team, and which teams are complete."""
+    name), the active players per team, and which teams are complete.
+
+    A flag the team's previous game also carried (or any flag, when that
+    game's roster is unknown: ``priors[team]`` None) counts only with
+    ``backing``; else it goes to ``unconfirmed_inactives``."""
+    priors = priors or {}
+    backing = backing or _Backing()
     if not rosters:
         return
     wanted = [r["espn_id"] for entries, _ in rosters.values() for r in entries or []]
@@ -608,6 +841,22 @@ def _apply_rosters(result: dict, db, rosters: dict[str, tuple[list | None, str]]
             if not r["inactive"]:
                 active.append({"player_id": athlete.get("id"), "player_name": name})
                 continue
+            prior = priors.get(team)
+            if prior is None or r["espn_id"] in prior:
+                backed, inj_status = backing.verdict(r["espn_id"], [name, r["name"]], team,
+                                                 athlete.get("id"))
+                if not backed:
+                    result["unconfirmed_inactives"].append({
+                        "player_id": athlete.get("id"), "player_name": name, "team_id": team,
+                        "position": athlete.get("position"), "espn_id": r["espn_id"],
+                        "source": SOURCE_ESPN_ROSTER, "official": False,
+                        "injury_status": inj_status, "kickoff": kickoffs.get(team),
+                        "reason": ("flagged didNotPlay in the previous game too, and no injury "
+                                   "report has him out this week" if prior is not None else
+                                   "previous game's roster not read; no injury report has him "
+                                   "out this week"),
+                    })
+                    continue
             result["inactives"].append({
                 "player_id": athlete.get("id"), "player_name": name, "team_id": team,
                 "position": athlete.get("position"), "status": "Inactive", "note": None,

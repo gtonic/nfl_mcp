@@ -348,7 +348,11 @@ async def get_gameday_inactives(
     a team whose list has not been published yet — the old behaviour is the
     fallback: injuries at or above `severity_threshold`, marked
     `official: false` with `basis: "injury_report_severity"`. That is a
-    forecast, not the inactive list.
+    forecast, not the inactive list. ESPN seeds a game roster from the
+    previous game, so a roster flag that game also had counts only when the
+    injury report has the player out this week (or a gameday note has him
+    inactive); otherwise it is listed `official: false` with
+    `basis: "espn_game_roster_unconfirmed"`.
 
     Severity scale (fallback only):
     - 1: Minor (day-to-day)
@@ -440,6 +444,20 @@ async def get_gameday_inactives(
                 "note": row.get("note"),
                 "posted": row.get("posted"),
                 **({"name_partial": True} if row.get("name_partial") else {}),
+            })
+        # Game-roster flags carried over from the previous game that no
+        # injury report backs: maybe last week's, so not official.
+        for row in official.get("unconfirmed_inactives") or []:
+            inactives.append({
+                "player_id": row.get("player_id"),
+                "player_name": row.get("player_name"),
+                "team_id": row.get("team_id"),
+                "position": row.get("position"),
+                "injury_status": row.get("injury_status"),
+                "official": False,
+                "basis": "espn_game_roster_unconfirmed",
+                "source": row.get("source"),
+                "note": row.get("reason"),
             })
 
         # Fallback: severity filter, for teams without a published list.

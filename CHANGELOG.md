@@ -98,6 +98,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`get_lineup_contingencies` / `analyze_lineup`**: the late-game block now reads the
   availability news flags itself; `analyze_lineup` rows carry none, so the standalone
   tool showed Evans at 56 % while the briefing (projection rows) showed 85 %.
+- **`get_gameday_inactives` / gameday projections**: ESPN seeds a game roster from
+  the team's previous game, so before the new list settles last week's
+  `didNotPlay` flags sit next to this week's. On 2026-10-18 at T-29 PHI's list
+  showed DeVonta Smith, Jonathan Greenard, Marcus Epps and Drew Kendall (week 5's
+  inactives, all active in week 6) as official inactives. A flag the previous game
+  also had now counts only when the injury report has the player out this week
+  (ESPN status or Sleeper `injury_status` Out/Doubtful/IR/…) or a gameday note has
+  him inactive, and never against an "is active" note; flags new to this game
+  count as before. When the previous game's roster cannot be read, every flag
+  needs that backing. Unbacked flags are returned as `unconfirmed_inactives`
+  (tool rows `official: false`, `basis: "espn_game_roster_unconfirmed"`) and stay
+  out of the gameday active/inactive index. The previous game is found from the
+  stored schedule (or the scoreboard), its flags cached per process.
+- **`get_gameday_inactives`**: the same player no longer appears twice under two
+  names ("Marquise Brown" from the roster, "Hollywood Brown" from the ESPN note):
+  the injury list's athletes carry no `id`, so it is now read from the
+  player-card links, and the inactive rows are deduplicated by Sleeper / ESPN id.
 
 ## [0.10.0] - 2026-10-11
 
