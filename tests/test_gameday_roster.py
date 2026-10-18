@@ -43,9 +43,10 @@ def window_db():
     db = MagicMock()
     db.get_week_kickoffs = MagicMock(return_value={"CIN": KICKOFF.isoformat(),
                                                     "MIA": KICKOFF.isoformat()})
-    db.get_week_espn_ids = MagicMock(return_value={
-        "CIN": {"event_id": "401872982", "team_id": "4"},
-        "MIA": {"event_id": "401872982", "team_id": "15"}})
+    # Week 4 is the previous game (its roster flagged nobody of these).
+    db.get_week_espn_ids = MagicMock(side_effect=lambda season, week: {
+        "CIN": {"event_id": "401872982" if week == 5 else f"40180040{week}", "team_id": "4"},
+        "MIA": {"event_id": "401872982" if week == 5 else f"40180050{week}", "team_id": "15"}})
     # Sleeper knows Flacco's and Burrow's ESPN ids; Young and Chase are
     # matched on jersey + last name.
     db.get_athletes_by_espn_ids = MagicMock(return_value={
@@ -64,6 +65,8 @@ def client_for(calls, delay=0.0, roster_status=None):
     async def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         calls.append(url)
+        if "events/401800" in url:  # the previous game's rosters
+            return httpx.Response(404, json={"error": {"code": 404}})
         if "competitors/4/roster" in url:
             await asyncio.sleep(delay)
             return httpx.Response(roster_status or 200, json=CIN_ROSTER)
@@ -99,8 +102,11 @@ async def test_published_list_is_cached_and_pending_is_reasked():
         await gi.get_official_inactives(window_db(), 2026, 5, now=IN_WINDOW, client=client)
         await gi.get_official_inactives(window_db(), 2026, 5, now=IN_WINDOW + timedelta(minutes=3),
                                         client=client)
-    assert sum("competitors/4/roster" in c for c in calls) == 1
-    assert sum("competitors/15/roster" in c for c in calls) == 2
+    this_game = [c for c in calls if "events/401872982" in c]
+    assert sum("competitors/4/roster" in c for c in this_game) == 1
+    assert sum("competitors/15/roster" in c for c in this_game) == 2
+    # The previous game's roster is read once (it does not change).
+    assert sum("events/401800" in c for c in calls) == 2
 
 
 async def test_a_slow_roster_is_reported_not_waited_for():
