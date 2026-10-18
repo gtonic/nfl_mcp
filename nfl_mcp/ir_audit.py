@@ -15,7 +15,14 @@ from __future__ import annotations
 from typing import cast
 
 from .errors import create_success_response
-from .injury_match import build_injury_index, find_report, misses_this_week, sleeper_injury_status
+from .injury_match import (
+    build_injury_index,
+    find_report,
+    misses_this_week,
+    reserve_lifted,
+    reserve_news,
+    sleeper_injury_status,
+)
 
 # Statuses every Sleeper IR slot takes, whatever the league's settings. PUP has
 # no `reserve_allow_*` switch: Sleeper treats it as IR. Leaving it out told
@@ -46,7 +53,7 @@ def is_ir_eligible(status: str | None, settings: dict) -> bool:
 
 
 def audit_roster(
-    roster: dict, settings: dict, athletes: dict[str, dict], injury_index: dict
+    roster: dict, settings: dict, athletes: dict[str, dict], injury_index: dict, db=None
 ) -> dict:
     """IR moves for one roster: what to activate, what to stash, what is stuck.
 
@@ -60,6 +67,11 @@ def audit_roster(
     - ``ir_full``: eligible, but every IR slot is taken.
     - ``not_eligible``: will not play this week, yet this league's rules keep
       him out of IR — he holds a bench spot.
+
+    A player his team has activated from its reserve list while Sleeper still
+    lists him IR / PUP (`injury_match.reserve_lifted`: the report's text, or
+    with a `db` the news) is never suggested for the IR slot; in it, he is to
+    be activated -- he can play.
     """
     settings = settings or {}
     slots = int(settings.get("reserve_slots") or 0)
@@ -68,6 +80,12 @@ def audit_roster(
     free = max(0, slots - len(reserve))
     allowed = eligible_statuses(settings)
 
+    def _lifted(pid: str) -> bool:
+        row = athletes.get(pid) or {}
+        return reserve_lifted(sleeper_injury_status(row),
+                              find_report(row, injury_index, row.get("team_id")),
+                              reserve_news(db, row, row.get("team_id")))
+
     def _entry(pid: str, action: str, reason: str) -> dict:
         row = athletes.get(pid) or {}
         report = find_report(row, injury_index, row.get("team_id"))
@@ -75,8 +93,9 @@ def audit_roster(
         # How long he is expected to be gone (ros.expected_absence): what
         # decides whether an ir_full player is worth a bench spot meanwhile.
         from .ros import SEASON_ENDING_WEEKS, expected_absence
+        lifted = action == "activate" and _lifted(pid)
         weeks_out, window = expected_absence(
-            sleeper_injury_status(row) or report_status,
+            (report_status if lifted else sleeper_injury_status(row) or report_status),
             (report or {}).get("injury_description"), (report or {}).get("return_date"),
         )
         return {
@@ -95,7 +114,14 @@ def audit_roster(
     moves: list[dict] = []
     for pid in reserve:
         status = sleeper_injury_status(athletes.get(pid))
-        if not is_ir_eligible(status, settings):
+        if is_ir_eligible(status, settings) and _lifted(pid):
+            moves.append(_entry(
+                pid, "activate",
+                f"His team activated him from its reserve list (Sleeper still lists "
+                f"him {status}) — move him to the active roster to start him.",
+            ))
+            free += 1
+        elif not is_ir_eligible(status, settings):
             moves.append(_entry(
                 pid, "activate",
                 f"Sleeper lists him {status or 'healthy'}, which this league does not "
@@ -111,6 +137,8 @@ def audit_roster(
     for pid in active:
         row = athletes.get(pid) or {}
         status = sleeper_injury_status(row)
+        if is_ir_eligible(status, settings) and _lifted(pid):
+            continue  # activated by his team: he plays, Sleeper lags
         if is_ir_eligible(status, settings):
             if free > 0:
                 free -= 1
@@ -171,7 +199,7 @@ async def audit_ir_slots(
     athletes = db.get_athletes_by_ids([str(p) for p in (mine.get("players") or [])])
     audit = audit_roster(
         mine, league.get("settings") or {}, athletes,
-        build_injury_index(db.get_all_current_injuries()),
+        build_injury_index(db.get_all_current_injuries()), db,
     )
     actions = [m for m in audit["moves"] if m["action"] in ("activate", "move_to_ir")]
     stuck = [m["player"] for m in audit["moves"] if m["action"] == "ir_full"]

@@ -23,6 +23,7 @@ from .injury_match import (
     build_injury_index,
     misses_this_week,
     report_ids_for,
+    reserve_news,
     resolve_injury,
 )
 from .ir_audit import audit_roster
@@ -163,7 +164,7 @@ def _build_player(
     # IR who is parked on the active roster (rather than in Sleeper's reserve
     # slot) gets a full projection and wins a starting slot. Both feeds are
     # consulted, worst case wins — see `resolve_injury`.
-    injury = resolve_injury(row, injury_index or {}, team)
+    injury = resolve_injury(row, injury_index or {}, team, reserve_news(db, row, team))
     if injury:
         player["injury"] = {"status": injury["status"]}
         player["injury_detail"] = injury
@@ -622,7 +623,7 @@ async def get_weekly_briefing(
         for p in my_inputs
         if p.get("injury_detail") or p.get("practice")
     ]
-    ir = audit_roster(mine, league.get("settings") or {}, athletes, injury_index)
+    ir = audit_roster(mine, league.get("settings") or {}, athletes, injury_index, db)
 
     # Stashed players are listed separately: they are on the roster on purpose,
     # not a gap to fill.

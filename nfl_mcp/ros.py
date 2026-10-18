@@ -297,6 +297,7 @@ def expected_absence(
     served once ``season_week - 1`` games are played, whether or not the
     placement was recorded -- then the return date or "this week" decides.
     """
+    from .news_signals import activation_in
     from .projections import availability  # deferred: projections is heavy
 
     if availability(status) != "out":
@@ -304,6 +305,10 @@ def expected_absence(
     s = (status or "").strip().lower()
     text = description or ""
     reserve = is_reserve(status)
+    if reserve and activation_in(text):
+        # "The Patriots activated Brown (ankle) from injured reserve
+        # Saturday": the stale reserve status has no minimum stint left.
+        return 0, f"{status}: activated from the reserve list per the report"
     base = IR_MIN_WEEKS if reserve else 1
     reason = (f"{status}: at least {IR_MIN_WEEKS} weeks (NFL minimum reserve stint)"
               if reserve else f"{status}: this week")
@@ -976,7 +981,7 @@ async def ros_projections(
 # Inputs from the athlete cache
 # --------------------------------------------------------------------------
 
-def ros_input(row: dict, injury_index: dict) -> dict | None:
+def ros_input(row: dict, injury_index: dict, db=None) -> dict | None:
     """A ROS input from an ``athletes`` row, with Sleeper + report injury."""
     from .injury_match import find_report, injury_for_row
 
@@ -990,7 +995,7 @@ def ros_input(row: dict, injury_index: dict) -> dict | None:
         name = team
     if not team or not position or not name:
         return None
-    injury = injury_for_row(row, injury_index) or {}
+    injury = injury_for_row(row, injury_index, db) or {}
     report = find_report(row, injury_index, team) or {}
     return {
         "name": name, "position": "DEF" if position == "DST" else position,
@@ -1038,7 +1043,8 @@ async def ros_for_ids(
         injury_index = build_injury_index(db.get_all_current_injuries()) if db else {}
     except Exception:
         injury_index = {}
-    inputs = [x for pid in ids if (row := rows.get(str(pid))) and (x := ros_input(row, injury_index))]
+    inputs = [x for pid in ids
+              if (row := rows.get(str(pid))) and (x := ros_input(row, injury_index, db))]
     inputs = _with_reserve_dates(inputs, db)
     fmt = league_format_from_settings(league)
     result = await ros_projections(
