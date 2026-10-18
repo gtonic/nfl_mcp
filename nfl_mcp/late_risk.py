@@ -89,6 +89,8 @@ def _now() -> datetime:
 def _flags(player: dict) -> set[str]:
     out = set()
     for f in player.get("news_flags") or []:
+        if isinstance(f, dict) and f.get("conditional"):
+            continue  # "a backup plan in case he is ruled out": not news
         name = f.get("flag") if isinstance(f, dict) else f
         if isinstance(name, str):
             out.add(name)

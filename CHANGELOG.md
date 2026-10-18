@@ -115,6 +115,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names ("Marquise Brown" from the roster, "Hollywood Brown" from the ESPN note):
   the injury list's athletes carry no `id`, so it is now read from the
   player-card links, and the inactive rows are deduplicated by Sleeper / ESPN id.
+- **IR return ignored** (`project_players`, `get_weekly_briefing`, `audit_ir_slots`, ROS):
+  a player whose team activated him from IR / PUP / NFI while Sleeper still lists the
+  reserve status is now priced by the injury report's game designation and practice
+  week (e.g. Q + LP), not as IR. The activation is read from the report text or the
+  fresh news (`designated_to_return` hits now carry `activated` for a past-tense
+  activation — not "will likely be activated" / "assuming he's activated";
+  `news_signals.reserve_lifted`, 7 days, undone by a later placement); resolved
+  injuries carry `reserve_lifted: true`. The IR audit no longer suggests `move_to_ir`
+  for him (in the IR slot it says `activate`), and the reserve minimum stint no
+  longer overrides an explicit activation (`ros.expected_absence`). A.J. Brown
+  (activated Saturday, questionable, Sleeper "IR") projected 0, sat in `unavailable`
+  and was suggested for IR with "at least 4 weeks". The sentence splitter no longer
+  breaks after an initial ("A.J. Brown"), and "activated A.J. Brown (ankle) from
+  injured reserve" now matches.
+- **News: hypothetical availability** (`news_signals`): "in case X is ruled out",
+  "should he (ultimately) be ruled out", "were he to be ruled out" are conditional
+  and never yield a `ruled_out` / `unlikely_to_play` flag; `late_risk` also ignores
+  any flag marked `conditional`. The NBC note "fantasy managers need a backup plan in
+  case Freiermuth is ultimately ruled out" capped his P(plays) at 0.
 
 ## [0.10.0] - 2026-10-11
 

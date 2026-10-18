@@ -325,9 +325,9 @@ PATTERNS: dict[str, tuple[str, ...]] = {
     "designated_to_return": (
         r"\bdesignated (?:[\w'.\-()/,]+ ){0,4}(?:for|to) return\b",
         r"\bpractice window\b",
-        r"\bactivated (?:[\w'.\-]+ ){0,3}(?:from|off) (?:the )?(?:injured reserve|ir\b|pup\b|nfi\b|"
+        r"\bactivated (?:[\w'.\-()/]+ ){0,3}(?:from|off) (?:the )?(?:injured reserve|ir\b|pup\b|nfi\b|"
         r"physically unable|reserve)",
-        r"\breinstated (?:[\w'.\-]+ ){0,3}(?:from|off) (?:the )?(?:injured reserve|ir\b|pup\b|nfi\b|"
+        r"\breinstated (?:[\w'.\-()/]+ ){0,3}(?:from|off) (?:the )?(?:injured reserve|ir\b|pup\b|nfi\b|"
         r"reserve)",
     ),
     # Back at practice after missing it ("resumed practicing", "returned to
@@ -387,12 +387,15 @@ CONDITIONAL_FLAGS = {"lead_role", "committee", "benched", "ruled_out", "unlikely
                      "snap_share_drop", "designated_to_return"}
 CONDITIONAL_KEEP = {"lead_role"}
 CONDITIONAL_WEIGHT = 0.5
-# "if" / "unless" / "in the event" / "assuming" before the phrase -- not an
-# indirect question ("it's unclear if", "to see if").
+# "if" / "unless" / "in the event" / "in case" ("a backup plan in case
+# Freiermuth is ultimately ruled out") / "assuming" / "should he be" /
+# "were he to" before the phrase -- not an indirect question ("it's unclear if", "to see if").
 _IF_BEFORE_RE = re.compile(
     r"(?<!unclear )(?<!unknown )(?<!see )(?<!wonder )(?<!determine )(?<!sure )(?<!clear )"
     r"(?<!know )(?<!tell )(?<!ask )(?<!even )"
-    r"\b(?:if|unless|in the event|assuming|should (?:he|[A-Z][a-z]+) (?:miss|sit|be))\b", re.I)
+    r"\b(?:if|unless|in the event|in case(?! you)|assuming|"
+    r"should (?:he|[A-Z][a-z]+) (?:\w+ly )?(?:end up )?(?:miss|sit|be)|"
+    r"were (?:he|[A-Z][a-z]+) to)\b", re.I)
 # "would"/"could"/"potentially" before the phrase in its clause: with an
 # "if" after it ("... a workhorse role if Spears is ruled out"), or right
 # before it ("would put Thompson on track to play").
@@ -476,7 +479,9 @@ ROLE_TREND_POINTS = {"role_up": 1.0, "role_down": -1.0}
 BORROWED_POINTS = -1.0
 SECURITY_RANGE = 2.0
 
-_SENTENCE_RE = re.compile(r"(?<=[.!?;])(?<![Nn]o\.)\s+")
+# Not after an initial ("Patriots activated A.J. Brown (ankle) from injured
+# reserve", "J. Smith").
+_SENTENCE_RE = re.compile(r"(?<=[.!?;])(?<![Nn]o\.)(?<!\.[A-Z]\.)(?<!\s[A-Z]\.)(?<!^[A-Z]\.)\s+")
 # Quotation marks around a quoted word ("only an \"outside chance\" of
 # playing", 'appears "unlikely" to play') would break the phrase patterns.
 _QUOTES_RE = re.compile("[\"\u201c\u201d]")
@@ -673,13 +678,19 @@ def classify(text: str | None, owner: str = "", names: dict[str, str | None] | N
                               if flag_out == "multi_week_absence" else {})
                     conditional = (flag_out in CONDITIONAL_FLAGS
                                    and _conditional(sentence, m.start(), m.end()))
+                    activated = (flag_out == "designated_to_return" and not conditional
+                                 and bool(_ACTIVATION_RE.match(m.group(0)))
+                                 and not _NOT_YET_RE.search(before))
                     prior = seen.get((flag_out, about))
                     if prior is not None and (conditional or not prior.get("conditional")):
                         if length and not conditional:
                             _merge_length(prior, length)
+                        if activated:
+                            prior["activated"] = True
                         continue
                     hit = {"flag": flag_out, "about": about, "snippet": sentence.strip()[:240],
-                           **({"conditional": True} if conditional else {}), **length}
+                           **({"conditional": True} if conditional else {}),
+                           **({"activated": True} if activated else {}), **length}
                     if prior is not None:
                         out.remove(prior)
                     seen[(flag_out, about)] = hit
@@ -688,6 +699,53 @@ def classify(text: str | None, owner: str = "", names: dict[str, str | None] | N
 
 
 _ACTIVE_OUTSNAP_RE = re.compile(r"out-?snapped$", re.I)
+# A designated_to_return hit that says the activation happened ("the
+# Patriots activated Brown (ankle) from injured reserve Saturday", "Brown was
+# activated from IR this week"): he is back on the active roster, whatever
+# Sleeper's injury_status still says. Not a window opening, not a forecast
+# ("will likely be activated", "expected to be activated", "once
+# activated"), not a condition ("assuming he's activated": `_conditional`).
+_ACTIVATION_RE = re.compile(r"(?:activated|reinstated)\b", re.I)
+_NOT_YET_RE = re.compile(r"\b(?:be|will|would|could|might|may|can|once|until|unless|whether|"
+                         r"if|assuming|expects?|expected|plans?|planning|hopes?|hoping)\b"
+                         r"[^.;,]{0,30}$", re.I)
+# A placement back on a reserve list after an activation undoes it ("a
+# four-game absence" does not).
+_PLACED_RE = re.compile(r"\b(?:placed|plac(?:es|ing)|moved|transferred|reverted)\b[^.;]{0,40}"
+                        r"\b(?:injured reserve|IR|reserve|PUP|NFI)\b", re.I)
+# How long an activation in the news overrides a stale reserve status.
+ACTIVATION_MAX_AGE_DAYS = 7.0
+
+
+def activation_in(text: str | None) -> bool:
+    """Whether a report text says the player was activated from a reserve
+    list (IR / PUP / NFI) -- the text is about the player it is filed under."""
+    return any(h.get("activated") for h in classify(text, "player")
+               if h["about"] == "player")
+
+
+def reserve_lifted(flags: list[dict] | None, now: datetime | None = None) -> bool:
+    """Whether the news (``news_flags``) says the player was activated from a
+    reserve list in the last ``ACTIVATION_MAX_AGE_DAYS``, with no reserve
+    placement reported since. A stale IR / PUP status from Sleeper then
+    must not price him as out: the injury report's game designation does."""
+    now = now or datetime.now(UTC)
+
+    def _dates(match) -> list[datetime]:
+        return [d for f in flags or [] if not f.get("conditional") and match(f)
+                and (d := _parse_date(f.get("date_reported"))) is not None]
+
+    activated = [d for d in _dates(lambda f: f.get("flag") == "designated_to_return"
+                                   and f.get("activated"))
+                 if (now - d).total_seconds() <= ACTIVATION_MAX_AGE_DAYS * 86400]
+    if not activated:
+        return False
+    newest = max(activated)
+    placed = _dates(lambda f: f.get("flag") == "multi_week_absence"
+                    and _PLACED_RE.search(f.get("snippet") or ""))
+    return not any(d > newest for d in placed)
+
+
 _RETURN_WEEK_RE = re.compile(r"\bweek (\d{1,2})\b", re.I)
 _COUNT_RE = re.compile(rf"\b({_NUM})(?:\s*(?:-|to|or)\s*({_NUM}))?[\s-]+(?:more\s+|additional\s+)?"
                        r"(?:weeks?|games?|contests?)\b", re.I)
@@ -906,6 +964,7 @@ def build_index(rows: list[dict] | None, now: datetime | None = None,
                 "weight": round(weight * CONDITIONAL_WEIGHT, 3) if conditional else weight,
                 "snippet": hit["snippet"],
                 **({"conditional": True} if conditional else {}),
+                **({"activated": True} if hit.get("activated") else {}),
                 "date_reported": r.get("date_reported"),
                 "source": source if isinstance(source, str) else str(source),
                 **({"url": r["url"]} if r.get("url") else {}),
@@ -928,6 +987,13 @@ def signals_for(index: dict | None, name: str | None, team: str | None) -> list[
     best: dict[str, dict] = {}
     for s in sorted(found, key=lambda s: -s["weight"]):
         best.setdefault(s["flag"], s)
+    # An activation is kept over a later mention of the window ("after
+    # opening his 21-day window ...") -- `reserve_lifted` reads it.
+    kept = best.get("designated_to_return")
+    if kept is not None and not kept.get("activated"):
+        activated = [s for s in found if s["flag"] == "designated_to_return" and s.get("activated")]
+        if activated:
+            best["designated_to_return"] = max(activated, key=lambda s: s["weight"])
     availability = [f for f in best.values() if f["flag"] in AVAILABILITY_FLAGS]
     if len(availability) > 1:
         newest = max(availability, key=lambda f: (
