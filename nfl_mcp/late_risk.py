@@ -318,7 +318,8 @@ def _rearrangement(starter: dict, starters: list[dict], pool: list[dict], bench:
     in WR. Returns ``{fallback: (points, row), with, moves, act_by}``.
     """
     slot = starter.get("slot")
-    best = None
+    best: dict[str, Any] | None = None
+    best_value = float("-inf")
     for f in starters:
         if f is starter or f.get("locked") or not _usable(f, now) \
                 or normalize_slot(f.get("slot")) == normalize_slot(slot):
@@ -335,9 +336,9 @@ def _rearrangement(starter: dict, starters: list[dict], pool: list[dict], bench:
             continue
         value = fallbacks[0][0]
         if (current_fallback is not None and value <= current_fallback) \
-                or (best is not None and value <= best["fallback"][0]):
+                or value <= best_value:
             continue
-        act_by = _locks_at(starter, f)
+        best_value, act_by = value, _locks_at(starter, f)
         best = {
             "fallback": fallbacks[0], "with": f,
             "moves": [{"player": starter["name"], "from_slot": slot, "to_slot": f.get("slot")},

@@ -184,6 +184,8 @@ class PlayerAnalysis:
     consensus: float | None = None
     disagreement: bool = False
     projection_gap: float | None = None
+    # Snaps in doubt (`projections.snap_risk`): {reasons, mean_mult, floor_widen}.
+    snap_risk: dict | None = None
 
     # This week's kickoff (UTC and Europe/Vienna) and whether it has passed:
     # a locked player can no longer be moved into or out of a lineup.
@@ -233,6 +235,7 @@ class PlayerAnalysis:
             "projection_source": self.projection_source,
             "blend_weights": self.blend_weights,
             "consensus": self.consensus,
+            "snap_risk": self.snap_risk,
             "disagreement": self.disagreement,
             "projection_gap": self.projection_gap,
             "kickoff": self.kickoff,
@@ -906,6 +909,7 @@ class LineupOptimizer:
                     analysis.implied_total = pp.get("implied_total") if pp.get("vegas_active") else None
                     analysis.opponent_implied_total = (
                         pp.get("opponent_implied_total") if pp.get("vegas_active") else None)
+                    analysis.snap_risk = pp.get("snap_risk")
                     self._unit_fallback(analysis, pp, injury_data)
                     gameday = _gameday_reason(analysis, pp)
             except Exception as e:
@@ -930,6 +934,11 @@ class LineupOptimizer:
         analysis.confidence = round(confidence, 1)
         analysis.confidence_level = confidence_level
         analysis.reasoning = reasoning + extra_reasons
+        if analysis.snap_risk:
+            # Up front: the comparison shows the top three reasons only.
+            analysis.reasoning.insert(0, "⚠️ Snap risk ("
+                                      + "; ".join(analysis.snap_risk.get("reasons") or [])
+                                      + f") — floor {analysis.floor}")
         if analysis.locked:
             analysis.reasoning.insert(0, (
                 f"🔒 Game {'over' if analysis.game_status == 'final' else 'under way'} "
@@ -1543,6 +1552,14 @@ async def compare_players_for_slot(
         verdict = (f"{risk_pick['summary']} — risk mode {risk_pick['risk_mode']} "
                    f"({risk_pick['reason']}). On points alone: {verdict}")
 
+    # A winner whose snaps are in doubt against a runner-up whose are not:
+    # say so next to the points call (protect_floor weighs it on P(win)).
+    if (winner.snap_risk and runner_up is not None and not runner_up.snap_risk
+            and not runner_up.on_bye and not winner.on_bye):
+        verdict += (f" — snap risk on {winner.player_name} ("
+                    + "; ".join(winner.snap_risk.get("reasons") or [])
+                    + f"): floor {winner.floor} vs {runner_up.player_name}'s {runner_up.floor}")
+
     if locked_starter:
         winner = locked_starter
         verdict = (f"Slot locked: {locked_starter.player_name}'s game kicked off "
@@ -1580,6 +1597,7 @@ async def compare_players_for_slot(
             "sleeper_projection": analysis.sleeper_projection,
             "consensus": analysis.consensus,
             "disagreement": analysis.disagreement,
+            **({"snap_risk": analysis.snap_risk} if analysis.snap_risk else {}),
             "on_bye": analysis.on_bye,
             "kickoff": analysis.kickoff,
             "kickoff_local": analysis.kickoff_local,
