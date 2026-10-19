@@ -89,6 +89,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Team defenses by name** (`get_player_ownership`, `plan_roster_moves`,
+  `project_players`, start/sit and every lookup through
+  `lineup_tools.name_candidates`): "NYJ", "KC" and "MIN" resolved to Nyjalik
+  Kelly, KC Concepcion and Dominic Zvada (the athlete search is a substring
+  match and a DEF row has no `full_name`), while "MIN DEF" and "Minnesota
+  Vikings" came back unresolved. New `teams.team_defense_code` recognises an
+  exact code or alias (JAC/JAX, LA/LAR, WAS/WSH), the same with
+  `DEF`/`D/ST`/`DST`/`Defense`, and a full team name, nickname or single-team
+  city; those resolve to the team's defense under Sleeper's id
+  (`teams.sleeper_defense_id`, Washington = `WAS` — the planner used to return
+  `WSH`, which is on no roster). Exact matches only, so player names that start
+  with a code still resolve to the player, with the usual ambiguity warnings.
+- **`plan_roster_moves` claim timing**: a claim on a player locked by this
+  week's game processes at the rollover, but `in_time_for_kickoff` was compared
+  with that (already started) game, so a Wednesday claim for a Sunday game got
+  "The claim lands after NYJ's kickoff this week — he only helps from next
+  week." It is now compared with the kickoff of the week the claim processes in.
+- **`plan_roster_moves` drop "at waivers"**: `when: "waivers"` resolved to the
+  next daily run, before the weekly rollover, so dropping a player whose game had
+  started was reported locked ("cannot be dropped") though at the waiver run he
+  is droppable. A drop at waivers of a locked player now happens at the rollover
+  (like a claim on a locked player), and the checklist says so: "Drop KC after
+  the week rolls over (~Wed 21 Oct 09:00)".
 - **`get_lineup_contingencies` / `late_game_risk`**: when an availability news flag
   (`expected_to_play`, `unlikely_to_play`, `game_time_decision`, `ruled_out`) moves
   P(plays), the starter's keep value is now P(plays) × his if-active points instead

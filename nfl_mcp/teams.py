@@ -12,6 +12,8 @@ alias dicts drift.
 """
 from __future__ import annotations
 
+import re
+
 # The 32 codes this codebase uses internally.
 CANONICAL_TEAMS: frozenset[str] = frozenset({
     "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
@@ -99,3 +101,60 @@ def normalize_team(value: str | None) -> str | None:
     if len(matches) == 1:
         return matches.pop()
     return None
+
+
+# Sleeper keys a team defense by its team code, except Washington ("WAS").
+_SLEEPER_DEF_IDS: dict[str, str] = {"WSH": "WAS"}
+# "Vikings", "49ers" -> code; "Niners" as the one common extra.
+_NICKNAMES: dict[str, str] = {
+    **{name.split()[-1].upper(): code for name, code in FULL_NAME_TO_CODE.items()},
+    "NINERS": "SF",
+}
+
+
+def _single_team_cities() -> dict[str, str]:
+    """"MINNESOTA" -> "MIN"; a city with two teams (New York, Los Angeles) names neither."""
+    by_city: dict[str, list[str]] = {}
+    for name, code in FULL_NAME_TO_CODE.items():
+        by_city.setdefault(" ".join(name.split()[:-1]).upper(), []).append(code)
+    return {city: codes[0] for city, codes in by_city.items() if len(codes) == 1}
+
+
+_CITIES: dict[str, str] = _single_team_cities()
+_DEF_SUFFIX = re.compile(r"[\s-]+(?:d/st|dst|def|defen[cs]e|d)\.?$", re.I)
+
+
+def team_defense_code(text: str | None) -> str | None:
+    """The canonical team code when `text` names a team defense, else None.
+
+    Understood: an exact code or alias written in capitals (``"KC"``,
+    ``"JAC"``, ``"WAS"``), any of those followed by ``DEF``/``D/ST``/``DST``/
+    ``Defense`` (``"min def"``), and a full team name, nickname or
+    single-team city with or without that suffix (``"Minnesota Vikings"``,
+    ``"Vikings"``, ``"Kansas City D/ST"``). Exact matches only -- unlike
+    `normalize_team` there is no substring guessing, so a player's name
+    ("Brown", "KC Concepcion", "Nyjalik Kelly") never reads as a team.
+    """
+    if not text:
+        return None
+    raw = " ".join(text.split())
+    stripped = _DEF_SUFFIX.sub("", raw).strip()
+    has_suffix = stripped != raw
+    key = stripped.upper()
+    if key.startswith("THE "):
+        key = key[4:]
+    if not key:
+        return None
+    if key in CANONICAL_TEAMS or (len(key) <= 3 and key in TEAM_ALIASES):
+        # A bare code must be typed as one ("KC"; "kc" may be part of a name).
+        return normalize_team(key) if (has_suffix or stripped == key) else None
+    for table in (_UPPER_FULL_NAMES, TEAM_ALIASES, _NICKNAMES, _CITIES):
+        if key in table:
+            return table[key]
+    return None
+
+
+def sleeper_defense_id(code: str | None) -> str | None:
+    """Sleeper's player id for a team's defense (``"WSH"`` -> ``"WAS"``)."""
+    team = normalize_team(code)
+    return _SLEEPER_DEF_IDS.get(team, team) if team else None

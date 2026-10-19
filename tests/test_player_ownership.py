@@ -21,6 +21,11 @@ def _athlete(pid, name, position, team, rank=100, status="Active", news_ms=NEWS_
                  "active": status == "Active"}
 
 
+def _defense(code, city, nickname):
+    return code, {"player_id": code, "first_name": city, "last_name": nickname,
+                  "position": "DEF", "team": code, "status": None, "active": True}
+
+
 @pytest.fixture
 def db(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
@@ -35,6 +40,15 @@ def db(monkeypatch):
             # Retired years ago: teamless, high rank, no recent news.
             _athlete("74", "Tom Brady", "QB", None, rank=74, news_ms=1_600_000_000_000),
             _athlete("900", "Some Linebacker", "LB", None, rank=50),
+            # Names that start with a team code (live: "KC" -> KC Concepcion).
+            _athlete("12500", "KC Concepcion", "WR", "CLE", rank=120),
+            _athlete("12501", "Nyjalik Kelly", "DE", "SEA", rank=900),
+            _athlete("12502", "Dominic Zvada", "K", "MIN", rank=300),
+            # Sleeper team defenses: id == team code (Washington: WAS), no full_name.
+            *(_defense(code, city, nick) for code, city, nick in (
+                ("KC", "Kansas City", "Chiefs"), ("NYJ", "New York", "Jets"),
+                ("MIN", "Minnesota", "Vikings"), ("JAX", "Jacksonville", "Jaguars"),
+                ("WAS", "Washington", "Commanders"))),
         ]))
         monkeypatch.setattr(ownership_tools, "get_shared_db", lambda *a, **k: database)
         yield database
@@ -92,6 +106,46 @@ class TestNameResolution:
         assert ambiguous and [r["id"] for r in ranked] == ["13301", "7203"]
         # The default lookup keeps its old behaviour (teamed players only count).
         assert lineup_tools.name_candidates(db, "Antonio Williams")[1] is False
+
+
+class TestTeamDefenses:
+    """Live 2026-10-19: "NYJ" -> Nyjalik Kelly, "KC" -> KC Concepcion, "MIN" ->
+    Dominic Zvada; "MIN DEF" and "Minnesota Vikings" unresolved."""
+
+    @pytest.mark.parametrize("query, pid", [
+        ("NYJ", "NYJ"), ("KC", "KC"), ("MIN", "MIN"), ("MIN DEF", "MIN"),
+        ("Minnesota Vikings", "MIN"), ("Vikings", "MIN"), ("KC D/ST", "KC"),
+        ("Kansas City Chiefs Defense", "KC"), ("jets dst", "NYJ"), ("JAC", "JAX"),
+        ("WSH", "WAS"), ("WAS DEF", "WAS"), ("Washington Commanders", "WAS"),
+    ])
+    def test_team_reference_resolves_to_the_defense(self, db, query, pid):
+        resolved, unresolved = ownership_tools.resolve_names(db, [query])
+        assert unresolved == []
+        assert resolved[0]["player_id"] == pid and resolved[0]["position"] == "DEF"
+        assert not resolved[0].get("ambiguous")
+
+    def test_player_names_starting_with_a_code_still_resolve(self, db):
+        resolved, _ = ownership_tools.resolve_names(
+            db, ["KC Concepcion", "Nyjalik Kelly", "Dominic Zvada"])
+        assert [r["player_id"] for r in resolved] == ["12500", "12501", "12502"]
+
+    def test_shared_lookups_agree(self, db):
+        assert lineup_tools.name_candidates(db, "Minnesota Vikings")[0][0]["id"] == "MIN"
+        who = lineup_tools.resolve_player(db, "Vikings")
+        assert (who["player_id"], who["position"], who["team"]) == ("MIN", "DEF", "MIN")
+        assert lineup_tools.resolve_player(db, "WSH")["player_id"] == "WAS"
+        # A position hint that is not DEF keeps the player lookup.
+        assert lineup_tools.name_candidates(db, "KC", position="WR")[0][0]["id"] == "12500"
+
+    @pytest.mark.asyncio
+    async def test_ownership_of_a_defense(self, db, monkeypatch):
+        rosters = [{"roster_id": 11, "owner_id": "u11", "players": ["KC"], "starters": ["KC"]}]
+        _stub(monkeypatch, rosters)
+        resp = await ownership_tools.get_player_ownership("L1", ["KC", "Minnesota Vikings"])
+        kc, vikings = _by_query(resp)["KC"], _by_query(resp)["Minnesota Vikings"]
+        assert kc["player_id"] == "KC" and kc["status"] == "rostered" and kc["roster_id"] == 11
+        assert vikings["player_id"] == "MIN" and vikings["status"] != "rostered"
+        assert resp["unresolved"] == []
 
 
 class TestOwnership:

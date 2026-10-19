@@ -171,9 +171,18 @@ class PlanContext:
                              claim_processes_at_local="instant",
                              reason="no NFL team, so no game lock; not dropped recently")
             return state
-        return waiver_status(self.league, kickoff=self.kickoff(team, w),
-                             previous_kickoff=self.kickoff(team, w - 1),
-                             dropped_at=dropped, now=t)
+        state = waiver_status(self.league, kickoff=self.kickoff(team, w),
+                              previous_kickoff=self.kickoff(team, w - 1),
+                              dropped_at=dropped, now=t)
+        # The lock is this week's, but a claim that processes after the week
+        # rolls over lands in a later week: whether it is in time is about
+        # that week's kickoff (a claim processed Wednesday is in time for
+        # Sunday), not the game that locked him.
+        processes = state.get("claim_processes_at")
+        if processes and (pw := self.week_of(datetime.fromisoformat(processes))) > w:
+            kick = self.kickoff(team, pw)
+            state["in_time_for_kickoff"] = (datetime.fromisoformat(processes) < kick) if kick else None
+        return state
 
     # -- players ------------------------------------------------------------
     def name(self, pid: str | None) -> str:
@@ -264,15 +273,13 @@ def resolve_player(ctx: PlanContext, text: str, db=None, prefer_mine: bool = Fal
     The user's own roster is searched first (a last name alone is enough when it
     is unique there), then the athlete cache.
     """
-    from .teams import normalize_team
+    from .teams import sleeper_defense_id, team_defense_code
 
     raw = text.strip()
     if raw.isdigit():
         return raw, None
-    team_def = re.match(r"^([A-Za-z]{2,3})(?:\s*(?:D/?ST|DEF|DST|D|defense))?$", raw, re.I)
-    if team_def and (code := normalize_team(team_def.group(1).upper())) and (
-            raw.upper() == raw or re.search(r"def|dst|d/st|defense", raw, re.I)):
-        return code, None
+    if code := team_defense_code(raw):
+        return sleeper_defense_id(code), None
     key = _norm(raw)
     mine = [str(p) for p in [*(ctx.roster.get("players") or []), *(ctx.roster.get("reserve") or [])]
             if p and str(p) != "0"]
@@ -433,6 +440,12 @@ def simulate(ctx: PlanContext, moves: list[dict], db=None) -> dict:
             when = max(ctx.now, ctx.rollover(move["week"] - 1))
         if werr:
             step["notes"].append(werr)
+        if (move["action"] == "drop" and pid and "waiver" in str(move.get("when") or "").lower()
+                and ctx.locked(pid, when)):
+            # "At waivers" for a player his game locks: the weekly run that
+            # rolls the week over and lifts the lock -- when a claim on a
+            # locked player processes too -- not the daily run before it.
+            when = max(when, ctx.rollover(ctx.week_of(when)))
         resolved.append({"step": step, "move": move, "pid": pid, "drop_pid": drop_pid, "t": when})
 
     # A claim takes effect when it processes; everything else when asked.
@@ -690,9 +703,12 @@ def _run_step(ctx: PlanContext, state: _State, r: dict, t: datetime, week: int, 
         step["notes"].append(f"{name} goes on waivers for {clear if clear is not None else 2} day(s) "
                              "— any team can claim him.")
         kick = ctx.kickoff((ctx.info.get(pid) or {}).get("team"), ctx.week_of(t))
-        item(kick if kick and kick > t else None,
-             f"Drop {name}" + (f" — before his game locks him ({_fmt(kick)})" if kick and kick > t else ""),
-             r["t"])
+        after = (f" after the week rolls over (~{_fmt(t)})"
+                 if t > ctx.now and ctx.locked(pid, ctx.now) else "")
+        before = f"before his game locks him ({_fmt(kick)})" if kick and kick > t else ""
+        when_txt = (f"{after}, {before}" if after and before
+                    else after or (f" — {before}" if before else ""))
+        item(kick if kick and kick > t else None, f"Drop {name}{when_txt}", r["t"])
         return None
 
     if action == "ir_move":
