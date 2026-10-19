@@ -89,6 +89,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`get_player_ownership`**: once a team's game this week has started, an unrostered
+  player also gets `in_time_for_next_kickoff` / `next_kickoff_local` — a claim
+  processing on waiver day still helps next week (`in_time_for_kickoff` was False
+  for NYJ DEF on the Monday after week 6).
 - **Team defenses by name** (`get_player_ownership`, `plan_roster_moves`,
   `project_players`, start/sit and every lookup through
   `lineup_tools.name_candidates`): "NYJ", "KC" and "MIN" resolved to Nyjalik

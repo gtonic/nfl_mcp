@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 
 from .database import get_shared_db
 from .errors import create_success_response
-from .game_clock import parse_kickoff, week_games
+from .game_clock import local_time, parse_kickoff, week_games
 from .teams import normalize_team
 from .waiver_rules import latest_drops, waiver_rules, waiver_status
 
@@ -188,6 +188,9 @@ async def _timing_context(db, league_id: str, season: int | None, week: int | No
 
     games = week_games(db, season, week)
     previous = week_games(db, season, week - 1) if week and week > 1 else {}
+    # Next week's kickoffs: once this week's game has started, whether a
+    # claim lands in time is a question about the next game.
+    upcoming = week_games(db, season, week + 1) if week else {}
     weeks = sorted({w for w in (week, (week or 1) - 1) if w and w > 0})
     drops: dict = {}
     warning = None
@@ -205,7 +208,23 @@ async def _timing_context(db, league_id: str, season: int | None, week: int | No
         logger.debug(f"transactions unavailable for ownership timing: {e}")
         warning = ("League transactions unavailable — a recent drop's waiver period is not "
                    "reflected in the timing.")
-    return {"games": games, "previous": previous, "drops": drops, "warning": warning}
+    return {"games": games, "previous": previous, "next": upcoming, "drops": drops,
+            "warning": warning}
+
+
+def _next_game_timing(timing: dict, team: str, ctx: dict, now: datetime) -> dict:
+    """``in_time_for_next_kickoff`` (+ local kickoff) when this week's game
+    has started: a claim processing on waiver day still helps next week
+    (`in_time_for_kickoff` is about this week's game only)."""
+    this_kick = parse_kickoff(((ctx.get("games") or {}).get(team) or {}).get("kickoff"))
+    if this_kick is None or this_kick > now:
+        return {}
+    next_kick = parse_kickoff(((ctx.get("next") or {}).get(team) or {}).get("kickoff"))
+    if next_kick is None:
+        return {}
+    lands = parse_kickoff(timing.get("claim_processes_at")) or now
+    return {"in_time_for_next_kickoff": lands < next_kick,
+            "next_kickoff_local": local_time(next_kick)}
 
 
 def _unrostered_status(p: dict, league: dict, ctx: dict, now: datetime) -> dict:
@@ -219,6 +238,7 @@ def _unrostered_status(p: dict, league: dict, ctx: dict, now: datetime) -> dict:
             previous_kickoff=parse_kickoff(
                 ((ctx.get("previous") or {}).get(team) or {}).get("kickoff")),
             dropped_at=dropped, now=now)
+        timing.update(_next_game_timing(timing, team, ctx, now))
         note = None
     else:
         # No NFL team, no game to lock him: only a drop's clear days can hold

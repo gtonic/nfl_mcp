@@ -217,3 +217,29 @@ class TestUnsignedFreeAgents:
         assert [u["name"] for u in found] == ["Joe Mixon"]
         assert player_pool.unsigned_free_agents(rows, taken=set(), positions=["WR"])[0][
             "name"] == "Tyreek Hill"
+
+
+class TestNextGameTiming:
+    """Monday after week 6: NYJ's week-6 game is over, the claim processes
+    Wednesday, NYJ plays Sunday of week 7 -- the claim helps next week."""
+
+    def test_claim_lands_before_next_weeks_game(self):
+        from datetime import UTC, datetime
+
+        from nfl_mcp.ownership_tools import _next_game_timing
+        now = datetime(2026, 10, 19, 6, 0, tzinfo=UTC)
+        ctx = {"games": {"NYJ": {"kickoff": "2026-10-18T17:00:00Z"}},
+               "next": {"NYJ": {"kickoff": "2026-10-25T17:00:00Z"}}}
+        timing = {"claim_processes_at": "2026-10-21T07:00:00+00:00", "in_time_for_kickoff": False}
+        out = _next_game_timing(timing, "NYJ", ctx, now)
+        assert out["in_time_for_next_kickoff"] is True
+        assert out["next_kickoff_local"].startswith("2026-10-25T18:00")  # CET from 25 Oct
+
+    def test_nothing_before_this_weeks_game(self):
+        from datetime import UTC, datetime
+
+        from nfl_mcp.ownership_tools import _next_game_timing
+        now = datetime(2026, 10, 16, 6, 0, tzinfo=UTC)
+        ctx = {"games": {"NYJ": {"kickoff": "2026-10-18T17:00:00Z"}},
+               "next": {"NYJ": {"kickoff": "2026-10-25T17:00:00Z"}}}
+        assert _next_game_timing({"claim_processes_at": None}, "NYJ", ctx, now) == {}
