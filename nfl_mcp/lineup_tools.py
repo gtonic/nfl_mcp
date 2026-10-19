@@ -14,7 +14,7 @@ import asyncio
 import logging
 from typing import Any
 
-from .teams import normalize_team
+from .teams import CODE_TO_FULL_NAME, normalize_team, sleeper_defense_id, team_defense_code
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,20 @@ def _search_rank(row: dict) -> int:
     return min(rank, UNRANKED_SEARCH_RANK)
 
 
+def defense_row(db, code: str) -> dict:
+    """The athlete row of a team's defense (Sleeper id = team code), named
+    after the team; a stand-in row when the cache does not have it."""
+    pid = sleeper_defense_id(code) or code
+    try:
+        row = dict((db.get_athletes_by_ids([pid]) or {}).get(pid) or {})
+    except Exception as e:
+        logger.debug(f"defense row lookup failed for {pid}: {e}")
+        row = {}
+    row.update({"id": pid, "position": "DEF", "team_id": row.get("team_id") or code,
+                "full_name": row.get("full_name") or CODE_TO_FULL_NAME.get(code) or code})
+    return row
+
+
 def name_candidates(db, name: str | None, team: str | None = None,
                     position: str | None = None,
                     include_free_agents: bool = False) -> tuple[list[dict], bool]:
@@ -68,6 +82,8 @@ def name_candidates(db, name: str | None, team: str | None = None,
         return [], False
     team = normalize_team(team) if team else None
     position = (position or "").upper() or None
+    if position in (None, "DEF", "DST") and (code := team_defense_code(name)):
+        return [defense_row(db, code)], False
     try:
         hits = db.search_athletes_by_name(name, limit=25) or []
     except Exception as e:
@@ -118,9 +134,10 @@ def resolve_player(db, name: str | None, team: str | None = None,
     """``{name, position, team, player_id}`` for a named player, best effort.
 
     Given fields win; missing ones come from the athlete cache
-    (`name_candidates`). A bare team code is that team's defense. With
-    several exact-name fantasy players the result also carries
-    ``ambiguous: True`` and ``candidates``.
+    (`name_candidates`). A team code, name or nickname
+    (`teams.team_defense_code`) is that team's defense. With several
+    exact-name fantasy players the result also carries ``ambiguous: True``
+    and ``candidates``.
     """
     out: dict[str, Any] = {"name": name, "position": (position or "").upper() or None,
            "team": normalize_team(team) if team else None, "player_id": player_id}
@@ -135,9 +152,10 @@ def resolve_player(db, name: str | None, team: str | None = None,
         return out
     if not name:
         return out
-    code = normalize_team(name)
-    if code and len(name.strip()) <= 4 and (out["position"] in (None, "DEF", "DST")):
-        return {"name": code, "position": "DEF", "team": code, "player_id": player_id or code}
+    code = team_defense_code(name) or (normalize_team(name) if len(name.strip()) <= 4 else None)
+    if code and (out["position"] in (None, "DEF", "DST")):
+        return {"name": code, "position": "DEF", "team": code,
+                "player_id": player_id or sleeper_defense_id(code)}
     ranked, ambiguous = name_candidates(db, name, out["team"], out["position"])
     if ranked:
         best = ranked[0]

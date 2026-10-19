@@ -1,7 +1,7 @@
 """One canonical team mapping, applied at every source boundary."""
 import pytest
 
-from nfl_mcp.teams import CANONICAL_TEAMS, normalize_team
+from nfl_mcp.teams import CANONICAL_TEAMS, normalize_team, sleeper_defense_id, team_defense_code
 
 
 class TestNormalizeTeam:
@@ -77,3 +77,21 @@ class TestPartialNames:
         # whichever came first in dict order, which is a coin flip dressed up
         # as an answer.
         assert normalize_team("New York") is None
+
+
+class TestTeamDefenseCode:
+    @pytest.mark.parametrize("value,expected", [
+        ("KC", "KC"), ("NYJ", "NYJ"), ("JAC", "JAX"), ("LA", "LAR"), ("WAS", "WSH"),
+        ("MIN DEF", "MIN"), ("min def", "MIN"), ("KC D/ST", "KC"), ("sf dst", "SF"),
+        ("Minnesota Vikings", "MIN"), ("Vikings", "MIN"), ("The Jets", "NYJ"),
+        ("Kansas City Defense", "KC"), ("49ers", "SF"),
+        # Player names, lowercase bare codes and two-team cities are not teams.
+        ("KC Concepcion", None), ("Nyjalik Kelly", None), ("Dominic Zvada", None),
+        ("kc", None), ("Brown", None), ("New York", None), ("DEF", None), ("", None),
+    ])
+    def test_values(self, value, expected):
+        assert team_defense_code(value) == expected
+
+    def test_sleeper_defense_id(self):
+        assert sleeper_defense_id("WSH") == "WAS" and sleeper_defense_id("KC") == "KC"
+        assert sleeper_defense_id("JAC") == "JAX" and sleeper_defense_id(None) is None

@@ -180,6 +180,43 @@ class TestLocksAndWaivers:
         step = _step(plan, 1)
         assert step["valid"] is True and step["week"] == 7
 
+    def test_drop_at_waivers_is_evaluated_after_the_rollover(self):
+        # Live 2026-10-19 (Monday): "drop KC at waivers" resolved to the daily
+        # run before the Wednesday rollover and was reported locked.
+        monday = datetime(2026, 10, 19, 20, 0, tzinfo=UTC)
+        plan = simulate(_ctx(now=monday, week=7), _moves({"action": "drop", "player": "KC",
+                                                          "when": "waivers"}))
+        step = _step(plan, 1)
+        assert step["valid"] is True, step.get("reason")
+        assert step["week"] == 7 and step["effective_at_local"].startswith("2026-10-21T09:00")
+        assert plan["checklist"][0]["do"].startswith(
+            "Drop KC after the week rolls over (~Wed 21 Oct 09:00)")
+
+    def test_drop_at_waivers_of_an_unlocked_player_keeps_the_next_run(self):
+        plan = simulate(_ctx(), _moves({"action": "drop", "player": "Romeo Doubs",
+                                        "when": "waivers"}))
+        step = _step(plan, 1)
+        assert step["valid"] is True and step["week"] == 6
+        assert "rolls over" not in plan["checklist"][0]["do"]
+
+    def test_claim_after_a_lock_is_in_time_for_next_weeks_kickoff(self):
+        # Price's week-6 game locked him until Wednesday's run; the claim lands
+        # then, days before his week-7 kickoff -- no "only helps from next week".
+        monday = datetime(2026, 10, 19, 20, 0, tzinfo=UTC)
+        for when in (None, "waivers", "now"):
+            move = {"action": "claim", "player": "Jadarian Price", "drop": "Romeo Doubs"}
+            plan = simulate(_ctx(now=monday, week=7), _moves({**move, "when": when} if when else move))
+            step = _step(plan, 1)
+            assert step["valid"] is True and step["kind"] == "waiver_claim"
+            assert step["waiver_timing"]["in_time_for_kickoff"] is True
+            assert not any("only helps from next week" in n for n in step["notes"])
+
+    def test_claim_landing_after_this_weeks_kickoff_still_says_so(self):
+        # Dropped Saturday: clears Monday, after his Sunday game, same week.
+        saturday = datetime(2026, 10, 17, 12, 0, tzinfo=UTC)
+        ws = _ctx(now=saturday).waiver_state("fa1", saturday, saturday)
+        assert ws["on_waivers"] is True and ws["in_time_for_kickoff"] is False
+
     def test_add_of_a_player_on_waivers_is_invalid_and_points_to_a_claim(self):
         plan = simulate(_ctx(), _moves("add Jadarian Price drop Romeo Doubs"))
         step = _step(plan, 1)
