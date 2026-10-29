@@ -584,9 +584,26 @@ def _sleeper_reads(indexes: dict[int, dict], model, p: dict) -> dict[int, tuple[
     return out
 
 
+def _calibration_mults(indexes: dict[int, dict], model, p: dict) -> dict[int, float]:
+    """``{week: multiplier}``: the weekly blend's position x tier correction
+    (`calibration`) by his rank in each later week's Sleeper projections."""
+    from . import calibration
+    out = {}
+    for w, index in indexes.items():
+        if not (index or {}).get("by_id"):
+            continue
+        rank = calibration.rank_of(index, model, player_id=p.get("player_id"), name=p["name"],
+                                   team=p["team"], position=p["position"])
+        mult, _ = calibration.multiplier(p["position"], rank)
+        if mult != 1.0:
+            out[w] = mult
+    return out
+
+
 def _later_week(model_points: float, read: tuple[float | None, str] | None, *,
                 sleeper_mult: float, injured: bool,
-                sleeper_return: int | None) -> tuple[float, str, str | None, float | None]:
+                sleeper_return: int | None,
+                calibration_mult: float = 1.0) -> tuple[float, str, str | None, float | None]:
     """``(points, source, reason, sleeper_points)`` for one week after this one.
 
     The blend of our number and Sleeper's for that week (see module doc):
@@ -606,11 +623,14 @@ def _later_week(model_points: float, read: tuple[float | None, str] | None, *,
       takes its share, ours keeps ``ROS_MODEL_WEIGHT`` -- unlike this week,
       where it is zero outright, a role weeks away can still change.
     - No row at all: the model alone.
+
+    A blended week is then times `calibration_mult`, the weekly blend's
+    position x tier correction for his rank that week (`calibration`).
     """
     points, status = read if read else (None, "missing")
     if status == "projected" and points is not None:
         theirs = points * sleeper_mult
-        mixed = ROS_MODEL_WEIGHT * model_points + (1 - ROS_MODEL_WEIGHT) * theirs
+        mixed = (ROS_MODEL_WEIGHT * model_points + (1 - ROS_MODEL_WEIGHT) * theirs) * calibration_mult
         return round(max(0.0, mixed), 2), "sleeper_blend", None, round(theirs, 2)
     if status == "not_projected":
         if injured and sleeper_return is None:
@@ -793,6 +813,7 @@ async def ros_projections(
         # carry: the role change our model found (as on this week's blend)
         # and, through the starter's absence, the backup quarterback.
         reads = _sleeper_reads(sleeper_idx, model, p) if sleeper_live else {}
+        cal_mults = _calibration_mults(sleeper_idx, model, p) if sleeper_live else {}
         hurt = absent > 0 or availability(injury.get("status")) != "healthy"
         projected_weeks = sorted(w for w, (_, st) in reads.items() if st == "projected")
         role_mult = float(rate_src.get("role_multiplier", 1.0) or 1.0) \
@@ -850,7 +871,8 @@ async def ros_projections(
                     points, source, why, sleeper_points = _later_week(
                         model_points, reads.get(w), sleeper_mult=role_mult * mult_qb,
                         injured=hurt,
-                        sleeper_return=next((x for x in projected_weeks if x > w), None))
+                        sleeper_return=next((x for x in projected_weeks if x > w), None),
+                        calibration_mult=cal_mults.get(w, 1.0))
                     if source == "sleeper_absence":
                         injured.append(w)
                         reason = why

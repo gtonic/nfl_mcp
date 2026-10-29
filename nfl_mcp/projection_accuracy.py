@@ -37,6 +37,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .calibration import summary as calibration_summary
 from .errors import create_success_response
 from .lineup_slots import normalize_position
 from .scoring import ScoringModel, league_scoring
@@ -475,6 +476,9 @@ async def get_projection_accuracy(
         "league_id": league_id,
         "graded_now": graded_now,
         **report,
+        # The position x tier / DEF-event correction now on the blend
+        # (`calibration`), refit weekly from these grades' season.
+        "calibration": calibration_summary(),
         "definitions": {
             "projection": "the last pre-kickoff projection logged for the player that week",
             "actual": "points in the scoring the projection was made in (Sleeper's "

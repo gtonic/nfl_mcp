@@ -396,6 +396,65 @@ class TestCounters:
         assert len(res["counters"]) <= tm.MAX_COUNTERS
 
 
+class TestManagerActivity:
+    def test_score_bounds_and_order(self):
+        assert tm.activity_score(0, 2) == -1.0
+        assert tm.activity_score(0, 0) == -0.5
+        assert tm.activity_score(2, 0) == 0.0
+        assert tm.activity_score(5, 0) == 0.5
+        assert tm.activity_score(5, 1) == 0.0
+
+    def _ev(self, activity):
+        ctx = _league()
+        ctx["activity"] = activity
+        profiles = {rid: tm.roster_profile(ctx, rid) for rid in ctx["scored"]}
+        return tm.evaluate_trade(ctx, profiles, 1, 2, ["r3"], ["w5"])
+
+    def test_absent_manager_is_less_likely_and_says_why(self):
+        none = self._ev({})
+        idle = self._ev({2: {"transactions": 0, "lineup_holes": 2, "score": -1.0,
+                             "note": "0 transaction(s) in weeks 4-6, 2 empty/IR/bye starter(s)"}})
+        busy = self._ev({2: {"transactions": 4, "lineup_holes": 0, "score": 0.5, "note": "4"}})
+        assert idle["acceptance_likelihood"] < none["acceptance_likelihood"] \
+            < busy["acceptance_likelihood"]
+        factor = next(f for f in idle["acceptance_factors"] if f["factor"] == "manager_activity")
+        assert factor["contribution"] == -tm.W_ACTIVITY
+        assert "manager_activity" not in {f["factor"] for f in none["acceptance_factors"]}
+
+    @pytest.mark.asyncio
+    async def test_reads_transactions_and_last_weeks_lineup(self, monkeypatch):
+        from nfl_mcp import sleeper_tools
+
+        async def _tx(_league, week=None, **_):
+            return {"success": True, "transactions": [
+                {"transaction_id": f"t{week}", "status": "complete", "roster_ids": [1]},
+                {"transaction_id": "dup", "status": "complete", "roster_ids": [1]},
+                {"transaction_id": f"f{week}", "status": "failed", "roster_ids": [2]},
+            ]}
+
+        async def _matchups(_league, week):
+            assert week == 5
+            return {"matchups": [{"roster_id": 1, "starters": ["a", "b"]},
+                                 {"roster_id": 2, "starters": ["0", "ir1"]}]}
+
+        monkeypatch.setattr(sleeper_tools, "get_transactions", _tx)
+        monkeypatch.setattr(sleeper_tools, "get_matchups", _matchups)
+        rosters = [{"roster_id": 1}, {"roster_id": 2, "reserve": ["ir1"]}]
+        out = await tm.manager_activity("L", rosters, 6)
+        assert out[1]["transactions"] == 4 and out[1]["lineup_holes"] == 0
+        assert out[1]["score"] == 0.5
+        assert out[2]["transactions"] == 0 and out[2]["lineup_holes"] == 2
+        assert out[2]["score"] == -1.0
+
+    @pytest.mark.asyncio
+    async def test_unreadable_transactions_leave_the_factor_out(self, monkeypatch):
+        from nfl_mcp import sleeper_tools
+        monkeypatch.setattr(sleeper_tools, "get_transactions",
+                            AsyncMock(side_effect=RuntimeError("down")))
+        monkeypatch.setattr(sleeper_tools, "get_matchups", AsyncMock(return_value={}))
+        assert await tm.manager_activity("L", [{"roster_id": 1}], 6) == {}
+
+
 class TestGetTradeMarket:
     @pytest.mark.asyncio
     async def test_end_to_end(self, monkeypatch):

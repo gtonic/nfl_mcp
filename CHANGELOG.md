@@ -86,8 +86,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conservative (no flagged backtest sample yet); the calibrated `_VOLATILITY`
   widths are unchanged for everyone else. Ladd McConkey, week 6: 8.7 / floor
   2.8 → 8.1 / floor 0.9.
+- **Weekly calibration** (`nfl_mcp/calibration.py`, fit by
+  `python -m evals.backtest.weekly_calibration --db nfl_data.db [--write]`):
+  the first calibration from the 2026 graded weeks. One shrunk multiplier per
+  position × tier (rank in Sleeper's week in the league's scoring: top 12 / 24,
+  next 12 / 24, rest) on the blended weekly projection and on every later ROS
+  week's blend and streaming K/DEF week. Fit on Sleeper's projections priced in
+  both leagues' scoring against the real stat lines (4,107 player-weeks, weeks
+  1-7), shrunk `1 + (ratio − 1)·n/(n + 200)`, capped 0.85-1.10, a cell kept only
+  with n ≥ 60 and a lower held-out MAE (fit weeks 1-5, graded 6-7), then refit
+  on all weeks. Kept: RB T2 0.94 / T3 0.975, WR T2 0.958, TE T2 0.972, QB T2
+  0.997, K T1 1.027, DEF T1 0.956 / T2 0.993; no top-tier skill cell passed
+  (the "stars under-projected" pattern was not in the data). Held out: all
+  players MAE 4.47 → 4.45, bias +0.22 → +0.08; the two leagues' served
+  projections MAE 5.51 → 5.47, bias +0.90 → +0.76. The multiplier is in
+  `breakdown.calibration_mult` / `calibration_tier` and the projection log's
+  signals (the next fit divides it back out); `get_projection_accuracy`
+  reports the active table under `calibration`.
+- **DEF event calibration**: Sleeper's DEF line has its scoring-event counts
+  scaled before pricing (`def_components`: defensive TDs ×0.72 — 2026 came in
+  at 0.47 of the projected rate —, fumble recoveries ×0.93, sacks ×0.96, …).
+  Points allowed were already right (projected vs real by band, and the tier
+  pricing incl. the negative 28-34 / 35+ tiers matched the real tier points),
+  so the top-12 defenses' ~14% over-projection came from big plays. Held-out
+  DEF MAE 4.27 → 4.19 (served DEF rows 4.63 → 4.49).
+- `get_trade_market` / `analyze_trade` counters: **manager activity** factor in
+  `acceptance_likelihood` (`W_ACTIVITY` 0.4, hand-set): completed transactions
+  over the last three legs (none −0.5, 1-2 0, 3+ +0.5) minus 0.5 per empty /
+  IR / bye starter left in last week's lineup (at most two), clamped −1..+0.5;
+  `manager_activity` on each team profile.
 
 ### Fixed
+
+- News classifier: a reporter's impression ("said he got the sense that
+  DeVonta Smith (hamstring) will not play", "doesn't sound like he'll play",
+  "I'd be surprised if he plays", "believes he won't play") is
+  `unlikely_to_play` (P(plays) capped at 0.25) instead of `ruled_out` (0);
+  "surprised if he didn't play" flags nothing. 12 labelled sentences added;
+  held-out precision / recall unchanged (1.00/0.56, 1.00/0.71, 0.94/0.55),
+  dev 0.97/0.93 → 0.97/0.94.
+- `get_weekly_briefing` `bench` is the whole bench of the recommended lineup
+  (every active-roster player outside it, highest projection first); it used to
+  hold only the set starters the recommendation sits (VLBG showed
+  `["Jordan Love"]` with Mahomes and Andrews also benched). Those are now
+  `move_to_bench`.
 
 - **`get_player_ownership`**: once a team's game this week has started, an unrostered
   player also gets `in_time_for_next_kickoff` / `next_kickoff_local` — a claim

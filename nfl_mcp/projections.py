@@ -45,6 +45,11 @@ backup quarterback); the news only on ours (Sleeper's projections are
 written by the same people as the blurbs). A QB whose top pass catchers are
 out gets ``teammate_context`` and a confidence cut, not a multiplier.
 
+Last, the blend is calibrated (``calibration``): one shrunk multiplier per
+position x tier (his rank in Sleeper's week), fitted on the season's graded
+weeks and left at 1.0 wherever the held-out weeks did not improve
+(``breakdown.calibration_mult``, ``calibration_tier``).
+
 Without a Sleeper projection for the player (an outage, the off-season, a
 player it does not list) the model alone is used, labelled
 ``projection_source: "model_only"`` with a warning. Byes and Out are zero
@@ -69,7 +74,7 @@ import asyncio
 import logging
 from typing import Any
 
-from . import news_signals, opportunity_tools, qb_coupling, role_shift, usage_trends
+from . import calibration, news_signals, opportunity_tools, qb_coupling, role_shift, usage_trends
 from .errors import ErrorType, create_error_response, create_success_response, handle_http_errors
 from .matchup_tools import get_defense_analyzer, matchup_ratio
 from .opportunity import DEFAULT_LOOKBACK, QB_LOOKBACK
@@ -1910,6 +1915,23 @@ async def _apply_sleeper_blend(projections: list[dict], inputs: list[dict],
         else:
             blended = sp.blend(ours, theirs * role_mult * practice_mult * qb_mult,
                                kind, inj, status)
+            # The position x tier correction fitted on graded weeks
+            # (`calibration`), by his rank in Sleeper's week.
+            if blended > 0 and status == "projected":
+                rank = calibration.rank_of(
+                    index or {}, model, player_id=(given or {}).get("player_id"),
+                    name=proj.get("player"), team=proj.get("team"),
+                    position=proj.get("position"))
+                blended, cal_mult, cal_tier = calibration.calibrate(
+                    blended, proj.get("position"), rank)
+                if cal_tier:
+                    bd["sleeper_rank"] = rank
+                    bd["calibration_tier"] = cal_tier
+                    bd["calibration_mult"] = round(cal_mult, 3)
+            if (proj.get("position") or "").upper() in DEFENSE_POSITIONS and \
+                    calibration.CALIBRATION.get("def_components"):
+                # Sleeper's line was priced with its scoring events calibrated.
+                bd["def_components"] = True
         vol = _VOLATILITY.get((proj.get("position") or "").upper(), 0.35)
         proj.update({
             "projected_points": blended,

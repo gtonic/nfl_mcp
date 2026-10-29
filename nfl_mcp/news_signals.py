@@ -41,7 +41,10 @@ the lead back". This reads them with a small rule-based classifier
                             toward playing", avoided a designation, not on
                             the final injury report
     unlikely_to_play        "not expected to play", "trending toward
-                            missing / an absence"
+                            missing / an absence", a reporter's read
+                            ("got the sense he will not play", "doesn't
+                            sound like he'll play", "I'd be surprised if
+                            he plays")
     game_time_decision      a game-time decision, a status settled 90
                             minutes before kickoff
     ruled_out               ruled out / won't play / inactive with an injury
@@ -170,6 +173,18 @@ PATTERNS: dict[str, tuple[str, ...]] = {
         # "expected to miss three weeks" (multi_week_absence).
         rf"(?<!not )(?<!un)\bexpected to (?:miss|sit out) (?:(?:a|another|his) (?:second|third|fourth|"
         rf"fifth|sixth)(?: straight| consecutive)? (?:game|contest)|another (?:game|contest)|{_DAY})",
+        # A reporter's read, not a ruling: "it doesn't sound like he'll play",
+        # "doesn't look like Smith will suit up" -- not "doesn't look like it
+        # will prevent him from playing" (the verb has to follow closely).
+        r"\b(?:does(?:n't| not)|did(?:n't| not)) (?:sound|look|seem|appear) (?:like|as if|as though)"
+        r"(?: (?!not\b|won't\b|miss)[\w'.-]+){1,3} (?:play|suit up|go|be (?:available|active|ready|"
+        r"able to (?:play|go)))\b",
+        # "I'd be surprised if he plays" -- not "surprised if he didn't play"
+        # (the positive read: no flag).
+        r"\b(?:I'd|I would|we'd|we would|he'd|he would|she'd|she would|they'd|they would|would) be "
+        r"(?:surprised|shocked|stunned) (?:if|to see)(?: (?!not\b|didn't\b|doesn't\b|wasn't\b|isn't\b|"
+        r"won't\b|can't\b|couldn't\b|wouldn't\b)[\w'.-]+){1,3} (?:plays?|played|suits? up|suited up|"
+        r"(?:is|was) (?:active|available)|dresses|dressed|gets? the start|got the start)\b",
     ),
     "expected_to_play": (
         r"(?<!before being )(?<!after being )\b(?:expected|set|on track|slated|poised|cleared|"
@@ -410,6 +425,17 @@ _PASSIVE_END_RE = re.compile(r"\b(?:been|is|was|were|are|be|being|get|got|gets)\
                              r"(?:\w+ly\s+)?$", re.I)
 # "before ultimately being ruled out": what came before an outcome.
 _BEFORE_BEING_RE = re.compile(r"\b(?:before|prior to|after)\s+(?:\w+\s+)?being\s+$", re.I)
+# "X said he got the sense that Smith (hamstring) will not play": a ruling
+# phrase under a reporter's impression is a forecast, not the team's
+# decision -- `unlikely_to_play` (P(plays) capped), not `ruled_out` (zero).
+_IMPRESSION_RE = re.compile(
+    r"\b(?:(?:got|get|gets|getting|had|has|have|came away with) (?:the |a |some )?"
+    r"(?:sense|impression|feeling|vibe)"
+    r"|(?:sounds?|sounded|seems?|seemed|looks?|looked) (?:like|as if|as though)"
+    r"|(?:I|we|he|she|they)(?:'d| would) (?:be surprised|guess)|(?:my|our) (?:guess|sense|read|hunch)"
+    r"|(?:believes?|believed|thinks?|thought|suspects?|suspected|figures?|speculated?|guess(?:es|ed)?)"
+    r"|(?:is|are|was|were) (?:leaning|trending) (?:toward|towards)"
+    r")\b[^.;]{0,80}$", re.I)
 # "Bowles acknowledged that Mayfield would miss at least three weeks":
 # reported speech, a forecast -- not a condition (unless an "if" follows).
 _REPORTED_RE = re.compile(r"\b(?:said|says|acknowledged|announced|confirmed|noted|indicated|"
@@ -648,6 +674,7 @@ def classify(text: str | None, owner: str = "", names: dict[str, str | None] | N
                     if flag in ("ruled_out", "expected_to_play") and _BEFORE_BEING_RE.search(before):
                         taken.append((m.start(), m.end()))
                         continue
+                    impression = flag == "ruled_out" and bool(_IMPRESSION_RE.search(before))
                     if flag in NEGATABLE and _NEGATION_RE.search(before):
                         if flag == "expected_to_play":
                             flag_out = "unlikely_to_play"
@@ -655,7 +682,7 @@ def classify(text: str | None, owner: str = "", names: dict[str, str | None] | N
                             taken.append((m.start(), m.end()))
                             continue
                     else:
-                        flag_out = flag
+                        flag_out = "unlikely_to_play" if impression else flag
                     taken.append((m.start(), m.end()))
                     about = None
                     if flag_out == "lead_role":

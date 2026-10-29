@@ -65,8 +65,10 @@ async def get_weekly_briefing(
             jump in opponent_projected_points is usually him fixing one of
             those issues,
         changes [{slot, start, projected_points}],
-        bench: names of CURRENT starters the recommendation moves to the bench
-               (not your bench players),
+        bench: every active-roster player outside recommended_lineup (IR and
+               taxi apart), highest projection first,
+        move_to_bench: the CURRENT starters among them (the recommendation
+               sits them),
         injury_changes: real status moves on your roster in the last 7 days,
         unavailable [{player, position, status, source, sleeper_status,
                       report_status, injury_type, in_recommended_lineup}]:

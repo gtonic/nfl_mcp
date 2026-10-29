@@ -270,8 +270,17 @@ def _blend_unit_week(position: str, team: str, week_row: dict, sleeper_weeks: di
     if not row:
         return
     theirs = sp.price_stats(row["stats"], model)
+    blended = sp.blend(float(ours), theirs)
+    # The weekly engine's position x tier correction (`calibration`), so a
+    # streaming week reads the same number start/sit does.
+    from . import calibration
+    pos = "DEF" if position in DEFENSE_UNIT_POSITIONS else "K"
+    rank = calibration.position_ranks(index, model).get((pos, calibration._key(pos, row)))
+    blended, cal_mult, _tier = calibration.calibrate(blended, pos, rank)
     week_row.update({"sleeper_projection": theirs, "projection_source": "sleeper_blend",
-                     "projected_points": sp.blend(float(ours), theirs)})
+                     "projected_points": blended})
+    if cal_mult != 1.0:
+        week_row["calibration_mult"] = round(cal_mult, 3)
 
 
 def _needs_offense(positions: list[str]) -> bool:
