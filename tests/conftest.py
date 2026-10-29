@@ -104,6 +104,17 @@ def _no_unit_offense_read(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutral_calibration(monkeypatch):
+    """Price the blend uncalibrated in unit tests, so their hand-computed
+    numbers do not move with each weekly refit of `calibration.CALIBRATION`.
+    Tests of the calibration set a table themselves."""
+    from nfl_mcp import calibration
+
+    monkeypatch.setattr(calibration, "CALIBRATION",
+                        {**calibration.CALIBRATION, "cells": {}, "def_components": {}})
+
+
+@pytest.fixture(autouse=True)
 def _no_sleeper_second_opinion(monkeypatch):
     """Keep the Sleeper-projection second opinion offline in unit tests.
 

@@ -168,6 +168,20 @@ Layer A is for.
 
 ---
 
+## Layer A — weekly bias calibration (`evals/backtest/weekly_calibration.py`)
+
+Fits `nfl_mcp/calibration.py` from the season being played: per position ×
+tier (rank in Sleeper's week), the shrunk ratio of real to projected points
+over Sleeper's projections priced in the graded leagues' scoring (stat lines
+from the server's `player_week_stats`, read-only), plus DEF scoring-event
+ratios on Sleeper's DEF line. Fit on all but the last two weeks, keep only
+what lowers the held-out MAE, refit on every week. Refit weekly:
+
+```bash
+python -m evals.backtest.weekly_calibration --db nfl_data.db            # report
+python -m evals.backtest.weekly_calibration --db nfl_data.db --write    # rewrite the table
+```
+
 ## Layer A — uncertainty calibration (`evals/backtest/calibration.py`)
 
 ### What it answers

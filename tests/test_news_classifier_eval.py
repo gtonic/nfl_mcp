@@ -390,3 +390,40 @@ class TestExpectedAbsencePrecedence:
     def test_not_out_ignores_news(self):
         from nfl_mcp import ros
         assert ros.expected_absence("Questionable", news_weeks=4)[0] == 0
+
+
+class TestReporterImpressions:
+    """A reporter's read ("got the sense he will not play") is a forecast:
+    `unlikely_to_play` (late_risk caps P(plays) at 0.25), not `ruled_out` (0)."""
+
+    @pytest.mark.parametrize("text", [
+        "Zach Berman said he got the sense that DeVonta Smith (hamstring) will not play Sunday.",
+        "It doesn't sound like Smith will play Sunday against Washington.",
+        "It doesn't sound like he'll play this week.",
+        "Smith is trending toward not playing Sunday.",
+        "I'd be surprised if he plays Sunday.",
+        "Paul Dehner believes Smith won't play Sunday.",
+    ])
+    def test_impression_is_unlikely_not_ruled_out(self, text):
+        flags = _flags(text, "DeVonta Smith", {"smith": "DeVonta Smith"}, "smith")
+        assert "unlikely_to_play" in flags and "ruled_out" not in flags, flags
+
+    @pytest.mark.parametrize("text", [
+        "We'd be surprised if he didn't play on Sunday.",
+        "We would be surprised if Barkley doesn't suit up, given his practice status.",
+        "Any physical issue doesn't look like it will prevent him from playing Week 4.",
+        "It doesn't sound like he will practice at all this week.",
+    ])
+    def test_positive_reads_flag_nothing(self, text):
+        assert not _flags(text, "owner"), text
+
+    def test_the_teams_word_is_still_ruled_out(self):
+        for text in ("Smith (hamstring) has been ruled out for Monday's game.",
+                     "Smith (hamstring) will not play Sunday, coach Nick Sirianni said."):
+            flags = _flags(text, "DeVonta Smith", {"smith": "DeVonta Smith"}, "smith")
+            assert "ruled_out" in flags and "unlikely_to_play" not in flags, text
+
+    def test_late_risk_caps_unlikely_at_a_quarter(self):
+        from nfl_mcp import late_risk
+        assert late_risk.NEWS_CAP["unlikely_to_play"] == 0.25
+        assert late_risk.NEWS_CAP["ruled_out"] == 0.0

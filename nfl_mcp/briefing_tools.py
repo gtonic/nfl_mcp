@@ -547,7 +547,23 @@ async def get_weekly_briefing(
         {"slot": s["slot"], "start": s["player"], "projected_points": s["mean"]}
         for s in recommended if s["player"] not in current_names
     ]
-    bench = sorted(current_names - recommended_names)
+    # Starters the recommended lineup sits.
+    move_to_bench = sorted(current_names - recommended_names)
+    # The whole bench of the recommended lineup: every rostered player outside
+    # it (IR and taxi apart), projected or not -- not only the starters it
+    # sits, which is all this list used to hold (VLBG showed ["Jordan Love"]
+    # with Mahomes and Andrews also on the bench).
+    projected_of = {c.get("player_id"): c.get("projected_points") for c in my_all}
+    bench_rows = []
+    for pid in mine.get("players") or []:
+        if pid in unavailable:
+            continue
+        row = athletes.get(pid) or {}
+        name = row.get("full_name") or normalize_team(row.get("team_id")) or pid
+        if name in recommended_names:
+            continue
+        bench_rows.append((-(projected_of.get(pid) or 0.0), name))
+    bench = [name for _, name in sorted(set(bench_rows))]
 
     # 6b) Questionable starters whose inactives come after the replacements
     #     lock (a Monday-night starter, Sunday alternatives): when the call
@@ -711,7 +727,10 @@ async def get_weekly_briefing(
         # Per at-risk starter of the recommended lineup: kickoff, expected
         # inactives, keep / swap / wait and the decision deadline (Vienna time).
         "late_game_risk": late_game_risk,
+        # Every active-roster player outside recommended_lineup, highest
+        # projection first; move_to_bench = the set starters among them.
         "bench": bench,
+        "move_to_bench": move_to_bench,
         "injury_changes": injury_changes,
         # Where the two injury feeds disagreed on one of your players. The more
         # severe reading was used; this says which and from where, because a

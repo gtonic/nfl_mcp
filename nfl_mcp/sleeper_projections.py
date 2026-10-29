@@ -220,8 +220,16 @@ async def _fetch(season: int, week: int) -> dict:
     return {"by_id": {}, "by_name": {}, "by_def": {}}
 
 
-def price_stats(stats: dict, model: ScoringModel) -> float:
-    """A Sleeper projected stat line in the league's scoring (see module doc)."""
+def price_stats(stats: dict, model: ScoringModel, calibrated: bool = True,
+                table: dict | None = None) -> float:
+    """A Sleeper projected stat line in the league's scoring (see module doc).
+
+    A team defense's line first has its scoring-event counts calibrated
+    (``calibration.defense_line``; `calibrated` False prices the raw line,
+    as the fit does; `table` overrides the shipped one)."""
+    if calibrated and "pts_allow" in stats:
+        from .calibration import defense_line
+        stats = defense_line(stats, table)
     tier_keys = {k for k, _, _ in _PTS_ALLOW_TIERS} | {k for k, _, _ in _YDS_ALLOW_TIERS}
     pts = 0.0
     for key, value in stats.items():

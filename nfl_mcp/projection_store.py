@@ -121,6 +121,11 @@ def signals_of(proj: dict) -> dict:
         "practice_blend_mult": _moved(bd.get("practice_blend_mult")),
         "injury_mult": _moved(bd.get("injury_mult")),
         "news_model_mult": _moved(bd.get("news_model_mult")),
+        # The tier correction (`calibration`): the next fit divides it back
+        # out rather than fitting on its own output.
+        "calibration_mult": _moved(bd.get("calibration_mult")),
+        "calibration_tier": bd.get("calibration_tier"),
+        "def_components": True if bd.get("def_components") else None,
         "qb_sit_weight": qb.get("starter_sit_weight") if qb.get("applied") else None,
         "qb_sit_basis": qb.get("starter_sit_basis") if qb.get("applied") else None,
     }

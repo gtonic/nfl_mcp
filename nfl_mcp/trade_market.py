@@ -30,6 +30,11 @@ acceptance_likelihood is a logistic score, not a fitted model:
           + W_SITUATION × situation fit (contender: near-term points; long shot:
                           openness to shake-ups)
           + W_TIMING  × their sell-high / buy-low timing (value_trajectory)
+          + W_ACTIVITY × their manager's recent activity (`activity_score`:
+                          completed adds / drops / trades over the last
+                          ACTIVITY_WEEKS legs, minus empty / IR / bye starters
+                          left in last week's lineup) -- an absent manager
+                          does not answer offers, a busy one does
 
 Each factor is reported with its contribution, so the number can be argued
 with rather than trusted.
@@ -69,6 +74,11 @@ W_NEED = 0.5
 W_SURPLUS = 0.3
 W_SITUATION = 0.4
 W_TIMING = 0.25
+# Manager activity: a modest, hand-set weight (there is no league history of
+# accepted and ignored offers to fit it on). The score runs -1..+0.5, so the
+# logit moves by -0.4..+0.2 (p 0.40 -> ~0.31 / ~0.45).
+W_ACTIVITY = 0.4
+ACTIVITY_WEEKS = 3
 HIGH_ACCEPTANCE = 0.6
 MEDIUM_ACCEPTANCE = 0.35
 # Counter offers keep at least this share of the original gain (and the bar).
@@ -83,6 +93,89 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
+
+
+def activity_score(transactions: int, lineup_holes: int) -> float:
+    """-1..+0.5 from a manager's recent activity (see the module docstring).
+
+    No completed transaction in the window -0.5, one or two 0, three or more
+    +0.5; each starter slot left empty, on IR or on a bye in a played week
+    -0.5 (at most two count)."""
+    base = -0.5 if transactions <= 0 else 0.0 if transactions <= 2 else 0.5
+    return _clamp(base - 0.5 * min(max(lineup_holes, 0), 2), -1.0, 0.5)
+
+
+async def manager_activity(league_id: str, rosters: list[dict], week: int,
+                           season: int | None = None, db=None) -> dict[int, dict]:
+    """``{roster_id: {transactions, lineup_holes, score, weeks, note}}``; {}
+    when the league's transactions cannot be read. Never raises.
+
+    Transactions: completed adds / drops / trades listing the roster over the
+    legs ``week - ACTIVITY_WEEKS + 1 .. week``. Lineup holes: in last week's
+    matchup (a played week, so a hole is a lapse, not a lineup not yet set),
+    a starter slot left empty ("0"), held by a player now on the roster's
+    reserve, or by a player whose team had a bye (the cached schedule)."""
+    from . import sleeper_tools
+    from .game_clock import week_games
+    from .teams import normalize_team
+    weeks = [w for w in range(int(week) - ACTIVITY_WEEKS + 1, int(week) + 1) if w >= 1]
+    last = int(week) - 1
+    try:
+        legs = await asyncio.gather(*(sleeper_tools.get_transactions(league_id, week=w)
+                                      for w in weeks), return_exceptions=True)
+        matchups = (await sleeper_tools.get_matchups(league_id, last) if last >= 1 else {}) or {}
+    except Exception as e:  # an additive factor: never sink the market
+        logger.debug(f"manager activity unavailable for {league_id}: {e}")
+        return {}
+    read = [leg for leg in legs if isinstance(leg, dict) and leg.get("success", True)]
+    if not read:
+        return {}
+    counts: dict[int, int] = {}
+    seen: set[str] = set()
+    for leg in read:
+        for tx in leg.get("transactions") or []:
+            tid = str(tx.get("transaction_id") or id(tx))
+            if tid in seen or (tx.get("status") or "complete") != "complete":
+                continue
+            seen.add(tid)
+            for rid in tx.get("roster_ids") or []:
+                try:
+                    counts[int(rid)] = counts.get(int(rid), 0) + 1
+                except (TypeError, ValueError):
+                    continue
+    rows = matchups.get("matchups") or [] if isinstance(matchups, dict) else []
+    playing = set(week_games(db, season, last)) if (db is not None and last >= 1) else set()
+    team_of: dict[str, str] = {}
+    if playing and hasattr(db, "get_athletes_by_ids"):
+        try:
+            ids = list({str(p) for m in rows for p in m.get("starters") or []})
+            team_of = {str(pid): str(row.get("team_id") or "")
+                       for pid, row in (db.get_athletes_by_ids(ids) or {}).items()}
+        except Exception:
+            team_of = {}
+    reserve = {int(r["roster_id"]): {str(p) for p in r.get("reserve") or []} for r in rosters}
+    holes: dict[int, int] = {}
+    for m in rows:
+        try:
+            rid = int(m.get("roster_id"))
+        except (TypeError, ValueError):
+            continue
+        n = 0
+        for raw in m.get("starters") or []:
+            pid = str(raw or "0")
+            team = normalize_team(team_of.get(pid) or (pid if pid.isalpha() else "")) or ""
+            if pid == "0" or pid in reserve.get(rid, set()) or (playing and team and team not in playing):
+                n += 1
+        holes[rid] = n
+    out = {}
+    for r in rosters:
+        rid = int(r["roster_id"])
+        tx, hole = counts.get(rid, 0), holes.get(rid, 0)
+        out[rid] = {"transactions": tx, "lineup_holes": hole,
+                    "score": activity_score(tx, hole), "weeks": weeks,
+                    "note": (f"{tx} transaction(s) in weeks {weeks[0]}-{weeks[-1]}"
+                             + (f", {hole} empty/IR/bye starter(s) in week {last}" if hole else ""))}
+    return out
 
 
 def acceptance_label(p: float) -> str:
@@ -194,6 +287,8 @@ async def build_context(league_id: str, *, week: int | None = None, season: int 
         "_base": {},
         "timing": {"projection_seconds": round(projected_at - started, 2)},
     }
+    ctx["activity"] = await manager_activity(league_id, rosters, int(week),
+                                             season=int(season), db=db)
     if await_odds:
         await await_odds_into(ctx)
     return ctx
@@ -414,6 +509,7 @@ def roster_profile(ctx: dict, rid: int) -> dict:
         "bye_crunch": crunch,
         "injured_starters": injured,
         "core_starters": [p["name"] for p in lineup],
+        "manager_activity": (ctx.get("activity") or {}).get(rid),
     })
 
 
@@ -571,6 +667,10 @@ def acceptance_likelihood(ctx: dict, partner_profile: dict, *, their_gain: float
     timing = timing_score(they_send, they_receive)
     logit += _add("value_timing", _clamp(timing / 2.0, -1.0, 1.0), W_TIMING,
                   "their sell-high / buy-low timing " + (f"{timing:+d}" if timing else "neutral"))
+    activity = partner_profile.get("manager_activity")
+    if activity:
+        logit += _add("manager_activity", float(activity["score"]), W_ACTIVITY,
+                      activity.get("note") or "recent manager activity")
     p = _sigmoid(logit)
     return {"acceptance_likelihood": round(p, 2), "acceptance_label": acceptance_label(p),
             "acceptance_factors": factors}
