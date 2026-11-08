@@ -149,6 +149,19 @@ def _no_sleeper_week_stats(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_briefing_waiver_read(monkeypatch):
+    """The briefing's `add_now` block runs a whole `get_waiver_targets`; in
+    unit tests it finds nothing. Tests of the block patch
+    `add_now.read_targets` themselves."""
+    from nfl_mcp import add_now
+
+    async def _nothing(*_a, **_k):
+        return {"success": True, "targets": [], "pool_size": 0}
+
+    monkeypatch.setattr(add_now, "read_targets", _nothing)
+
+
+@pytest.fixture(autouse=True)
 def _no_risk_mode_odds(monkeypatch):
     """Season playoff odds for risk_mode=auto stay offline (unknown) in unit
     tests; tests of the risk mode patch `risk_mode._fetch_odds` themselves."""

@@ -16,6 +16,7 @@ import asyncio
 import logging
 from typing import Any
 
+from . import add_now
 from .database import get_shared_db
 from .errors import create_success_response
 from .game_clock import progress_of, settle, week_games
@@ -267,6 +268,13 @@ async def get_weekly_briefing(
     ``risk_mode`` (auto | neutral | seek_variance | protect_floor) decides
     what the recommended lineup optimises; auto reads this week's P(win) and
     the season's playoff odds (see `risk_mode`).
+
+    Besides the lineup, ``add_now`` lists free agents worth adding right now
+    (``{moves: [{player, position, team, projected_points, gain, replaces,
+    drop, deadline, deadline_local, deadline_reason}], error?}``): lineup
+    upgrades from `get_waiver_targets` that are instant adds in time for
+    kickoff. ``deadline`` is the earliest kickoff among the add, the starter
+    he replaces and the suggested drop -- past it the swap is impossible.
     """
     from . import risk_mode as rm
     from . import sleeper_tools
@@ -332,6 +340,9 @@ async def get_weekly_briefing(
         return create_success_response({"success": False, "error": error})
     assert mine is not None  # find_roster returns a roster whenever error is None
     roster_id = mine["roster_id"]
+    # Free-agent upgrades to make now (`add_now`): the waiver read runs
+    # alongside the rest of the briefing, under its own time budget.
+    add_now_task = asyncio.create_task(add_now.build_block(league_id, roster_id, season, week))
 
     matchups = (matchups_resp or {}).get("matchups") or []
     my_matchup = next((m for m in matchups if m.get("roster_id") == roster_id), None)
@@ -667,6 +678,7 @@ async def get_weekly_briefing(
     # Points already on the board, reported alongside the probability that now
     # accounts for them.
     points_so_far = (my_matchup or {}).get("points")
+    add_now_block = await add_now_task
     opponent_points_so_far = (opponent_matchup or {}).get("points")
 
     return create_success_response({
@@ -738,6 +750,11 @@ async def get_weekly_briefing(
         # Per at-risk starter of the recommended lineup: kickoff, expected
         # inactives, keep / swap / wait and the decision deadline (Vienna time).
         "late_game_risk": late_game_risk,
+        # Free agents to add right now: real upgrades, instant adds (no
+        # waiver period), each with the drop and the deadline -- the earliest
+        # kickoff of the add, the starter he replaces and the drop (a locked
+        # player can be neither benched nor dropped). Empty when none.
+        "add_now": add_now_block,
         # Every active-roster player outside recommended_lineup, highest
         # projection first; move_to_bench = the set starters among them.
         "bench": bench,

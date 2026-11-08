@@ -257,7 +257,7 @@ def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
                    if role.get("score", 0) < 0 and role.get("reasons") else "")
             return ({k: candidate.get(k) for k in (
                 "player_id", "name", "position", "projected_points", "value",
-                "ros_total", "role_security")},
+                "ros_total", "role_security", "kickoff", "kickoff_local")},
                 f"Drop {candidate['name']} ({_worth_text(candidate, points=True)}) — "
                 f"worth less than {target['name']} ({_worth_text(target) or 'more'})." + why)
         break  # the least-valuable bench player is worth more; the rest are too
@@ -330,6 +330,73 @@ def _to_projection_input(
     if injury:
         player["injury"] = {"status": injury["status"]}
     return player
+
+
+_REPLACES_FIELDS = ("player_id", "name", "position", "projected_points", "kickoff",
+                    "kickoff_local")
+_MAX_HANDCUFFS = 5
+
+
+def _replaces(players: list[dict], slots: dict[str, int], target: dict) -> dict | None:
+    """The player ``target`` pushes out of the best lineup, or None when he
+    takes an empty seat (adding one player moves at most one out)."""
+    def ids(lineup):
+        return {str(p.get("player_id")) for p in lineup}
+    after = ids(starting_lineup([*players, target], slots))
+    gone = [p for p in starting_lineup(players, slots) if str(p.get("player_id")) not in after]
+    return {k: gone[0].get(k) for k in _REPLACES_FIELDS} if gone else None
+
+
+def _handcuffs(trending: list[dict], db, mine: dict, mine_scored: list[dict],
+               slots: dict[str, int], taken: set[str], pool_scored: list[dict],
+               games: dict, previous_games: dict, last_dropped: dict, league: dict,
+               now: datetime) -> list[dict]:
+    """Free agents trending up behind one of your starters (`trending_backups`,
+    the rule `get_league_changes` flags as ``trending_backup``)."""
+    from .handcuff_tools import trending_backups
+    if not trending:
+        return []
+    starters = [str(p) for p in (mine.get("starters") or []) if p and str(p) != "0"]
+    if not starters:  # no lineup set yet: the best one stands in
+        starters = [str(p.get("player_id")) for p in starting_lineup(mine_scored, slots)]
+    ids = [str(t.get("player_id")) for t in trending
+           if t.get("player_id") and str(t.get("player_id")) not in taken]
+    if not ids or not starters:
+        return []
+    rows = db.get_athletes_by_ids(ids)
+    athletes = db.get_athletes_by_ids(starters)
+    free = [t for t in trending if str(t.get("player_id")) in rows
+            and _is_claimable(rows[str(t.get("player_id"))])]
+    projected = {str(p.get("player_id")): p for p in pool_scored}
+    out: dict[str, dict] = {}
+    for b in trending_backups(free, rows, starters, athletes):
+        tid = b["player_id"]
+        if tid in out:
+            continue
+        row = rows.get(tid) or {}
+        starter = athletes.get(b["starter_id"]) or {}
+        name = row.get("full_name") or tid
+        behind = starter.get("full_name") or b["starter_id"]
+        game = games.get(b["team"]) or {}
+        timing = waiver_status(
+            league, kickoff=parse_kickoff(game.get("kickoff")),
+            previous_kickoff=parse_kickoff((previous_games.get(b["team"]) or {}).get("kickoff")),
+            dropped_at=last_dropped.get(tid), now=now)
+        proj = projected.get(tid) or {}
+        out[tid] = {
+            "player_id": tid, "player": name, "position": b["position"], "team": b["team"],
+            "behind": behind, "behind_player_id": b["starter_id"],
+            "trending_adds": b["adds"], "depth_chart_order": b["depth_chart_order"],
+            "availability": "free_agent",
+            "waiver_timing": timing,
+            "projected_points": proj.get("projected_points"),
+            "reason": (f"Backs up your starter {behind} ({b['position']}, {b['team']}); "
+                       f"trending +{b['adds']} adds — the contingency if {behind} misses "
+                       "time, not a lineup upgrade this week."),
+        }
+    rows_ = sorted(out.values(), key=lambda h: (-h["trending_adds"],
+                                                h["depth_chart_order"] or 99))
+    return rows_[:_MAX_HANDCUFFS]
 
 
 async def get_waiver_targets(
@@ -633,6 +700,11 @@ async def get_waiver_targets(
         if t["verdict"] == "too_late" and t["upgrade_points"] >= _MEANINGFUL_UPGRADE
     ][:5]
 
+    # Whom each target pushes out of the best lineup (None: he fills an empty
+    # seat). With a FLEX the man who leaves need not share his position.
+    for target in top:
+        target["replaces"] = _replaces(open_mine, open_slots, target)
+
     # Who you would drop: bench players only, least worth keeping first. Stashed
     # players are left out — dropping an IR spot is a different decision.
     ros_data: dict = {}
@@ -707,6 +779,18 @@ async def get_waiver_targets(
     ]
     claimed = {id(t) for t in worth_claim}
     speculative = [t for t in top if id(t) not in claimed and t["verdict"] == "speculative"]
+
+    # Free-agent backups of your starters the league is adding: insurance,
+    # not points this week, so listed apart and never ranked into `targets`.
+    try:
+        trend_rows = ([] if isinstance(trend, BaseException)
+                      else (trend or {}).get("trending_players") or [])
+        handcuffs = _handcuffs(
+            trend_rows, db, mine, mine_scored, whole_slots, taken, pool_scored, games,
+            previous_games, last_dropped, league, now)
+    except Exception as e:  # additive
+        logger.debug(f"handcuffs unavailable for waiver targets: {e}")
+        handcuffs = []
 
     my_position = (mine.get("settings") or {}).get("waiver_position")
     my_position = my_position if isinstance(my_position, int) and my_position > 0 else None
@@ -789,6 +873,11 @@ async def get_waiver_targets(
         ],
         # Would-be upgrades whose add cannot land before their kickoff.
         "too_late_for_this_week": too_late,
+        # Not upgrades: free agents trending up who back up one of your
+        # starters (same team and position; a WR on the same depth-chart
+        # spot), most-added first -- the contingency if he goes down. Not
+        # part of `targets` or its ranking.
+        "handcuffs": handcuffs,
         # Drops are ranked mainly on rest-of-season points when available.
         "drop_ranking": "ros" if ros_ok else "market_value",
         # Ranked on this week's lineup gain; every target also carries the

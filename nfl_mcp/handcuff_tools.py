@@ -18,6 +18,7 @@ import time
 
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .opportunity_tools import norm_name
+from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,65 @@ def _availability(player_id: str | None, rostered: dict[str, int], my_roster_id:
     if player_id not in rostered:
         return "free_agent"
     return "yours" if rostered[player_id] == my_roster_id else "rostered_by_opponent"
+
+
+# Positions whose backup inherits the job outright. Receivers share targets
+# across three spots, so a WR teammate counts only on the same depth-chart spot.
+BACKUP_POSITIONS = {"QB", "RB", "TE", "WR"}
+
+
+def sleeper_raw(row: dict | None) -> dict:
+    """The Sleeper player payload stored with an athletes-cache row ({} if none)."""
+    import json
+    raw = (row or {}).get("raw")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def trending_backups(trending: list[dict], trending_rows: dict, starters: list[str],
+                     athletes: dict) -> list[dict]:
+    """Trending adds who back up one of ``starters`` (same team and position).
+
+    ``trending`` is Sleeper's trending-adds list (``player_id``, ``count``),
+    ``trending_rows`` / ``athletes`` the athletes-cache rows of the trending
+    players and of the starters. A WR counts only on the starter's own
+    depth-chart spot (receivers share targets across three spots). Shared by
+    `get_league_changes` (``trending_backup`` items) and `get_waiver_targets`
+    (``handcuffs``).
+
+    Returns ``[{player_id, position, team, starter_id, adds,
+    depth_chart_order}]`` in the order of ``trending``; availability is the
+    caller's call.
+    """
+    mine = []
+    for pid in starters:
+        row = athletes.get(pid) or {}
+        pos = (row.get("position") or "").upper()
+        team = normalize_team(row.get("team_id"))
+        if pos in BACKUP_POSITIONS and team:
+            mine.append((pid, pos, team, sleeper_raw(row).get("depth_chart_position")))
+    out = []
+    for t in trending:
+        tid = str(t.get("player_id") or "")
+        row = trending_rows.get(tid) or {}
+        pos = (row.get("position") or t.get("position") or "").upper()
+        team = normalize_team(row.get("team_id") or t.get("team"))
+        raw = sleeper_raw(row)
+        spot = raw.get("depth_chart_position")
+        for pid, s_pos, s_team, s_spot in mine:
+            if tid == pid or pos != s_pos or team != s_team:
+                continue
+            if s_pos == "WR" and (not spot or spot != s_spot):
+                continue
+            order = raw.get("depth_chart_order")
+            out.append({"player_id": tid, "position": s_pos, "team": team, "starter_id": pid,
+                        "adds": int(t.get("count") or 0),
+                        "depth_chart_order": order if isinstance(order, int) else None})
+    return out
 
 
 # Depth charts move a few times a week at most.
