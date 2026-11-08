@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`get_weekly_briefing` → `add_now`**: free agents worth adding right now —
+  `{moves: [{player, position, team, projected_points, gain, replaces, drop,
+  deadline, deadline_local, deadline_reason, summary}], error?}`. Read from
+  `get_waiver_targets` (no second ranking): only real upgrades (`verdict ==
+  "upgrade"`, waiver strategy `add_now` outside FAAB) that are instant adds
+  in time for kickoff, with a drop the waiver tool will make (or an open
+  spot). `deadline` is the earliest kickoff among the add, the starter he
+  replaces and the drop — a locked player can be neither benched nor dropped.
+  Week 9: KC DEF (+2.0, free agent) for CIN, whose Madrid game locked at 15:30
+  Vienna, was in the waiver list and nowhere in the briefing. Runs alongside
+  the briefing under a 20 s budget and never raises (empty block + `error`).
+- **`get_waiver_targets` → `handcuffs`**: free agents trending up who back up
+  one of your starters (same team and position; a WR on the same depth-chart
+  spot) — `{player, position, team, behind, trending_adds, availability,
+  waiver_timing, projected_points, reason}`, most-added first. Listed apart:
+  the `targets` ranking is unchanged. The matching rule is now shared with
+  `get_league_changes`' `trending_backup` items (`handcuff_tools.trending_backups`),
+  which flagged Emmett Johnson behind Kenneth Walker III while the waiver list
+  never named him. Each target also carries `replaces` (the starter he pushes
+  out of your best lineup, null for an empty seat), and its `drop` its kickoff.
+
 - **`plan_roster_moves`** (new tool, season/full profiles; 62 / 79 tools): checks
   a multi-step roster plan — `add`, `drop`, `claim`, `ir_move`, `activate`,
   `start`, `bench`, each with an optional `drop`, `when` ("now", "waivers",

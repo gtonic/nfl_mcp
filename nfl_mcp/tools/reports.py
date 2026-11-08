@@ -65,6 +65,13 @@ async def get_weekly_briefing(
             jump in opponent_projected_points is usually him fixing one of
             those issues,
         changes [{slot, start, projected_points}],
+        add_now {moves [{player, position, team, projected_points, gain,
+                 replaces, drop, deadline, deadline_local, deadline_reason,
+                 summary}], error?}: free agents worth adding RIGHT NOW --
+               lineup upgrades (from get_waiver_targets) that are instant
+               adds in time for kickoff. deadline = earliest kickoff of the
+               add, the starter he replaces and the drop (a locked player
+               can be neither benched nor dropped); empty when none,
         bench: every active-roster player outside recommended_lineup (IR and
                taxi apart), highest projection first,
         move_to_bench: the CURRENT starters among them (the recommendation

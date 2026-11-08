@@ -523,3 +523,126 @@ class TestOnlyPlayingOptions:
         assert "Trey Smack" in names
         assert "Lenny Krieg" not in names
         assert "Ben Roethlisberger" not in names
+
+
+class TestReplacesAndHandcuffs:
+    """`replaces` (whom a target pushes out of the lineup) and the separate
+    `handcuffs` list; the briefing's `add_now` block reads the former."""
+
+    def _def_week(self, db, monkeypatch):
+        from datetime import UTC, datetime
+
+        from nfl_mcp import projections
+
+        # CIN plays the early (Madrid) game, KC on Sunday night.
+        db.upsert_athletes(dict([_athlete("CIN", "", "DEF", "CIN"),
+                                 _athlete("KC", "", "DEF", "KC")]))
+        db.upsert_schedule_games([
+            {"season": 2026, "week": 3, "team": t, "opponent": o, "is_home": h, "kickoff": k}
+            for t, o, h, k in (
+                ("CIN", "ATL", 1, "2026-09-27T14:30Z"), ("ATL", "CIN", 0, "2026-09-27T14:30Z"),
+                ("BUF", "KC", 1, "2026-09-28T00:20Z"), ("KC", "BUF", 0, "2026-09-28T00:20Z"),
+                ("NYJ", "SF", 1, "2026-09-27T17:00Z"), ("SF", "NYJ", 0, "2026-09-27T17:00Z"),
+            )
+        ])
+        _stub_sleeper(monkeypatch, {
+            "My Starter WR": 14.0, "My Second WR": 9.0, "My Weak RB": 8.0,
+            "CIN": 5.0, "KC": 7.0,
+        }, roster_positions=["RB", "WR", "WR", "DEF"], mine=["m1", "m2", "m3", "CIN"])
+        stub = projections.project_players
+
+        async def _with_lines(players, **kwargs):  # live lines: DEF is ranked
+            return {**(await stub(players, **kwargs)), "vegas_active": True}
+
+        monkeypatch.setattr(projections, "project_players", _with_lines)
+        now = datetime(2026, 9, 27, 10, tzinfo=UTC)
+        monkeypatch.setattr(waiver_target_tools, "_now", lambda: now)
+        return now
+
+    @pytest.mark.asyncio
+    async def test_target_names_the_starter_he_replaces(self, db, monkeypatch):
+        self._def_week(db, monkeypatch)
+        out = await get_waiver_targets(LEAGUE, roster_id=7)
+        kc = next(t for t in out["targets"] if t["name"] == "KC")
+        assert kc["verdict"] == "upgrade" and kc["upgrade_points"] == pytest.approx(2.0)
+        assert kc["replaces"]["name"] == "CIN"
+        assert kc["replaces"]["kickoff"] == "2026-09-27T14:30:00Z"
+        assert kc["drop"]["name"] == "CIN" and kc["drop"]["kickoff"] == "2026-09-27T14:30:00Z"
+
+    @pytest.mark.asyncio
+    async def test_empty_seat_replaces_nobody(self, db, monkeypatch):
+        _stub_sleeper(monkeypatch, {"Free Good RB": 12.0})
+        out = await get_waiver_targets(LEAGUE, roster_id=7)
+        rb = next(t for t in out["targets"] if t["name"] == "Free Good RB")
+        assert rb["replaces"] is None  # the second RB seat is empty
+
+    @pytest.mark.asyncio
+    async def test_add_now_deadline_is_the_drop_s_early_kickoff(self, db, monkeypatch):
+        from nfl_mcp import add_now
+
+        now = self._def_week(db, monkeypatch)
+        out = await get_waiver_targets(LEAGUE, roster_id=7)
+        kc = next(t for t in out["targets"] if t["name"] == "KC")
+        assert kc["waiver_timing"]["instant_add"] is True
+        assert kc["waiver_strategy"]["recommendation"] == "add_now"
+        moves = add_now.from_targets(out, now)
+        assert [m["player"] for m in moves] == ["KC"]
+        move = moves[0]
+        assert (move["replaces"], move["drop"], move["gain"]) == ("CIN", "CIN", 2.0)
+        # KC kicks off later; CIN locks first, and then can be neither benched
+        # nor dropped.
+        assert move["deadline"] == "2026-09-27T14:30:00Z"
+        assert move["deadline_local"] == "2026-09-27T16:30:00+02:00"
+        assert "neither benched nor dropped" in move["deadline_reason"]
+        # Once CIN has kicked off the swap is gone.
+        from datetime import timedelta
+        assert add_now.from_targets(out, now + timedelta(hours=5)) == []
+
+    @pytest.mark.asyncio
+    async def test_trending_backup_of_a_starter_is_a_handcuff(self, db, monkeypatch):
+        from nfl_mcp import sleeper_tools
+
+        db.upsert_athletes({
+            "h1": {"player_id": "h1", "full_name": "Jets Backup RB", "position": "RB",
+                   "team": "NYJ", "status": "Active", "depth_chart_position": "RB",
+                   "depth_chart_order": 2},
+            "h2": {"player_id": "h2", "full_name": "Jets Third RB", "position": "RB",
+                   "team": "NYJ", "status": "Active", "depth_chart_order": 3},
+            "h3": {"player_id": "h3", "full_name": "Other Team RB", "position": "RB",
+                   "team": "DET", "status": "Active"},
+        })
+        points = {"My Starter WR": 14.0, "My Second WR": 9.0, "My Weak RB": 8.0,
+                  "Jets Backup RB": 3.0, "Jets Third RB": 1.0}
+        _stub_sleeper(monkeypatch, points, roster_positions=["RB", "WR", "WR", "BN"],
+                      starters=["m1", "m2", "m3"])
+        before = await get_waiver_targets(LEAGUE, roster_id=7)
+
+        async def _trending(**kwargs):
+            return {"trending_players": [
+                {"player_id": "h2", "count": 800}, {"player_id": "h3", "count": 90000},
+                {"player_id": "o1", "count": 70000}, {"player_id": "h1", "count": 132867}]}
+
+        monkeypatch.setattr(sleeper_tools, "get_trending_players", _trending)
+        out = await get_waiver_targets(LEAGUE, roster_id=7)
+        cuffs = out["handcuffs"]
+        # Same team and position as a starter, free agents only, most-added first.
+        assert [h["player"] for h in cuffs] == ["Jets Backup RB", "Jets Third RB"]
+        top = cuffs[0]
+        assert top["behind"] == "My Weak RB" and top["trending_adds"] == 132867
+        assert top["availability"] == "free_agent" and top["projected_points"] == 3.0
+        assert "waiver_timing" in top and "My Weak RB" in top["reason"]
+        # The targets ranking itself is untouched by the handcuff list.
+        assert [t["name"] for t in out["targets"]] == [t["name"] for t in before["targets"]]
+
+    @pytest.mark.asyncio
+    async def test_no_trending_feed_means_no_handcuffs(self, db, monkeypatch):
+        from nfl_mcp import sleeper_tools
+
+        _stub_sleeper(monkeypatch, {})
+
+        async def _down(**kwargs):
+            raise OSError("down")
+
+        monkeypatch.setattr(sleeper_tools, "get_trending_players", _down)
+        out = await get_waiver_targets(LEAGUE, roster_id=7)
+        assert out["success"] is True and out["handcuffs"] == []

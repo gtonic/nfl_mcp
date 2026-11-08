@@ -33,6 +33,7 @@ from .briefing_tools import (
 from .database import get_shared_db
 from .errors import create_success_response
 from .game_clock import progress_of, week_games
+from .handcuff_tools import trending_backups
 from .injury_match import build_injury_index, find_report, misses_this_week
 from .injury_service import status_severity
 from .projection_store import log_projections, scoring_key
@@ -51,10 +52,6 @@ DEFAULT_LIMIT = 25
 # How much each kind of change matters, before its own severity is added.
 # Your starters first, then the opponent's, then your bench and the league.
 _ROLE_WEIGHT = {"my_starter": 60, "opp_starter": 35, "my_bench": 25}
-
-# Positions whose backup inherits the job outright. Receivers share targets
-# across three spots, so a WR teammate counts only on the same depth-chart spot.
-_BACKUP_POSITIONS = {"QB", "RB", "TE", "WR"}
 
 
 def _parse_time(value) -> datetime | None:
@@ -81,17 +78,6 @@ def _parse_time(value) -> datetime | None:
 def _label(pid: str, athletes: dict) -> str:
     row = athletes.get(pid) or {}
     return row.get("full_name") or normalize_team(row.get("team_id")) or pid
-
-
-def _raw(row: dict | None) -> dict:
-    import json
-    raw = (row or {}).get("raw")
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except (ValueError, TypeError):
-            return {}
-    return raw if isinstance(raw, dict) else {}
 
 
 def _item(kind: str, importance: float, summary: str, **extra) -> dict:
@@ -282,37 +268,20 @@ async def trending_backup_items(db, since_dt: datetime, starters: list[str],
     trending = (resp or {}).get("trending_players") or []
     rows = db.get_athletes_by_ids([str(t.get("player_id")) for t in trending if t.get("player_id")])
 
-    mine = []
-    for pid in starters:
-        row = athletes.get(pid) or {}
-        pos = (row.get("position") or "").upper()
-        if pos in _BACKUP_POSITIONS and normalize_team(row.get("team_id")):
-            mine.append((pid, pos, normalize_team(row.get("team_id")),
-                         _raw(row).get("depth_chart_position")))
     items = []
-    for t in trending:
-        tid = str(t.get("player_id") or "")
-        row = rows.get(tid) or {}
-        pos = (row.get("position") or t.get("position") or "").upper()
-        team = normalize_team(row.get("team_id") or t.get("team"))
-        spot = _raw(row).get("depth_chart_position")
-        for pid, s_pos, s_team, s_spot in mine:
-            if tid == pid or pos != s_pos or team != s_team:
-                continue
-            if s_pos == "WR" and (not spot or spot != s_spot):
-                continue
-            owner = rostered.get(tid)
-            status = ("free_agent" if owner is None else "yours" if owner == my_rid
-                      else "rostered")
-            count = int(t.get("count") or 0)
-            items.append(_item(
-                "trending_backup",
-                30 + (15 if status == "free_agent" else 0) + min(15, count / 2000),
-                f"{_label(tid, rows)} ({s_pos}, {team}) trending +{count} adds — "
-                f"behind your starter {_label(pid, athletes)}; {status.replace('_', ' ')}",
-                player=_label(tid, rows), starter=_label(pid, athletes),
-                adds=count, availability=status,
-            ))
+    for b in trending_backups(trending, rows, starters, athletes):
+        tid, pid, count = b["player_id"], b["starter_id"], b["adds"]
+        owner = rostered.get(tid)
+        status = ("free_agent" if owner is None else "yours" if owner == my_rid
+                  else "rostered")
+        items.append(_item(
+            "trending_backup",
+            30 + (15 if status == "free_agent" else 0) + min(15, count / 2000),
+            f"{_label(tid, rows)} ({b['position']}, {b['team']}) trending +{count} adds — "
+            f"behind your starter {_label(pid, athletes)}; {status.replace('_', ' ')}",
+            player=_label(tid, rows), starter=_label(pid, athletes),
+            adds=count, availability=status,
+        ))
     return items
 
 

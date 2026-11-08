@@ -191,3 +191,27 @@ class TestUnmatchedHandcuff:
         assert hc["handcuff"] is None          # not "Third Back"
         assert hc["match"] == "you_roster_a_backup"
         assert hc["backs_up"] == "Star Back"
+
+
+class TestTrendingBackups:
+    """The rule `get_league_changes` (trending_backup) and `get_waiver_targets`
+    (handcuffs) share."""
+
+    def _row(self, pos, team, spot=None, order=None):
+        import json
+        return {"position": pos, "team_id": team,
+                "raw": json.dumps({"depth_chart_position": spot, "depth_chart_order": order})}
+
+    def test_same_team_and_position_and_wr_spot(self):
+        from nfl_mcp.handcuff_tools import trending_backups
+        athletes = {"rb1": self._row("RB", "KC"), "wr1": self._row("WR", "KC", "LWR"),
+                    "k1": self._row("K", "KC")}
+        rows = {"rb2": self._row("RB", "KC", "RB", 2), "rb3": self._row("RB", "BUF"),
+                "wr2": self._row("WR", "KC", "LWR"), "wr3": self._row("WR", "KC", "SWR"),
+                "k2": self._row("K", "KC")}
+        trending = [{"player_id": p, "count": c} for p, c in
+                    (("rb2", 900), ("rb3", 800), ("wr2", 700), ("wr3", 600), ("k2", 500))]
+        out = trending_backups(trending, rows, ["rb1", "wr1", "k1"], athletes)
+        assert [(b["player_id"], b["starter_id"]) for b in out] == [("rb2", "rb1"),
+                                                                    ("wr2", "wr1")]
+        assert out[0]["adds"] == 900 and out[0]["depth_chart_order"] == 2

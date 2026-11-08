@@ -415,7 +415,14 @@ async def get_waiver_targets(
                   waiver_strategy {recommendation: claim_now|add_now|wait|
                   dont_bother, reason, waiver_position, teams_ahead, wait_days},
                   role_security {score -2..2, label rising|secure|neutral|
-                  shaky|shrinking, reasons}, rank_score}],
+                  shaky|shrinking, reasons}, rank_score, replaces (the
+                  starter he pushes out of your best lineup, null for an
+                  empty seat), drop}],
+        handcuffs [{player, position, team, behind (your starter),
+                  trending_adds, availability, waiver_timing,
+                  projected_points, reason}]: free agents trending up who
+                  back up one of your starters, most-added first -- listed
+                  apart, not ranked into targets,
         waiver_priority, locked_players, too_late_for_this_week,
         drop_candidates (with keep_score and role_security: a shrinking role
         ranks first), replacement_levels, thin_positions, waiver_type,
