@@ -21,10 +21,14 @@ from .errors import create_success_response
 from .game_clock import progress_of, settle, week_games
 from .injury_match import (
     build_injury_index,
+    designation_cleared_by,
+    final_report_for,
+    find_report,
     misses_this_week,
     report_ids_for,
-    reserve_news,
     resolve_injury,
+    sleeper_injury_status,
+    status_news,
 )
 from .ir_audit import audit_roster
 from .lineup_slots import starting_slot_list, starting_slots
@@ -164,7 +168,14 @@ def _build_player(
     # IR who is parked on the active roster (rather than in Sleeper's reserve
     # slot) gets a full projection and wins a starting slot. Both feeds are
     # consulted, worst case wins — see `resolve_injury`.
-    injury = resolve_injury(row, injury_index or {}, team, reserve_news(db, row, team))
+    news = status_news(db, row, team)
+    final = final_report_for(db, row, team, season=season, week=week)
+    injury = resolve_injury(row, injury_index or {}, team, news, final)
+    report_status = (find_report(row, injury_index or {}, team) or {}).get("injury_status")
+    stale = designation_cleared_by(sleeper_injury_status(row),
+                                   None if report_status == "Active" else report_status, final, news)
+    if stale:
+        player["designation_cleared"] = {"sleeper_status": sleeper_injury_status(row), "basis": stale}
     if injury:
         player["injury"] = {"status": injury["status"]}
         player["injury_detail"] = injury
@@ -742,6 +753,12 @@ async def get_weekly_briefing(
             for p in my_inputs
             if p.get("injury_detail")
             and p["injury_detail"]["sleeper_status"] != p["injury_detail"]["report_status"]
+        ],
+        # Sleeper designations the team has since dropped (off the final
+        # practice report, or news saying so): priced as healthy.
+        "designations_cleared": [
+            {"player": p["name"], **p["designation_cleared"]}
+            for p in my_inputs if p.get("designation_cleared")
         ],
         # Teams with no game this week, per the cached schedule.
         "on_bye": on_bye,

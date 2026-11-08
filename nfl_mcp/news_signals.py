@@ -197,6 +197,10 @@ PATTERNS: dict[str, tuple[str, ...]] = {
         r"\bexpect (?:him|[a-z'\-]+) to (?:play|suit up)\b",
         r"\bbetter than (?:50/50|a coin flip) to (?:play|suit up)\b",
         r"\bon track to avoid an? (?:injury )?designation\b",
+        # "doesn't have a designation for Sunday's contest": the final report
+        # left him off (`designation_cleared` reads these).
+        r"\b(?:doesn't|does not|didn't|did not|won't|will not) (?:have|carry|receive|get) an? "
+        r"(?:injury |game )?designation\b",
         rf"\b(?:poised|set|expected|on track|slated) to return (?:to action|to the lineup|{_DAY})",
         r"\btrending (?:toward|towards) (?:playing|suiting up|being (?:ready|available|active|able to "
         r"(?:play|go|suit up)|cleared)|a return (?:to the lineup|to action|this|for))",
@@ -771,6 +775,41 @@ def reserve_lifted(flags: list[dict] | None, now: datetime | None = None) -> boo
     placed = _dates(lambda f: f.get("flag") == "multi_week_absence"
                     and _PLACED_RE.search(f.get("snippet") or ""))
     return not any(d > newest for d in placed)
+
+
+# "is not on the final injury report", "doesn't have a designation for
+# Sunday", "carries no injury designation", "was removed from the injury
+# report": the team gave him no game designation. Narrower than
+# ``expected_to_play`` (which also fires for "expected to play despite the
+# questionable tag", a designation that stands).
+_NO_DESIGNATION_RE = re.compile(
+    r"\b(?:not|isn't|wasn't) (?:listed )?on (?:the|\w+'s?) (?:final )?injury report\b"
+    r"|\b(?:doesn't|does not|did not|didn't|won't|will not) (?:have|carry|receive|get) (?:an? )?"
+    r"(?:injury |game )?designation\b"
+    r"|\b(?:has|carries|with|received?) no (?:injury |game )?designation\b"
+    r"|\b(?:removed|taken off|off) (?:of )?(?:the|\w+'s?) injury report\b"
+    r"|\bavoid(?:ed|s)? an? (?:injury |game )?designation\b", re.I)
+# How fresh that news must be: the current game week only.
+NO_DESIGNATION_MAX_AGE_DAYS = 4
+_LATER_DOUBT = ("unlikely_to_play", "ruled_out", "game_time_decision")
+
+
+def designation_cleared(flags: list[dict] | None, now: datetime | None = None) -> bool:
+    """Whether fresh news (``news_flags``) says the team gave him no game
+    designation -- "not on the final injury report" -- with no doubt reported
+    since. A Sleeper "Questionable" left over from earlier in the week is
+    then stale (see `injury_match.resolve_injury`)."""
+    now = now or datetime.now(UTC)
+    cleared = [d for f in flags or [] if f.get("flag") == "expected_to_play" and not f.get("conditional")
+               and _NO_DESIGNATION_RE.search(f.get("snippet") or "")
+               and (d := _parse_date(f.get("date_reported"))) is not None
+               and 0 <= (now - d).total_seconds() <= NO_DESIGNATION_MAX_AGE_DAYS * 86400]
+    if not cleared:
+        return False
+    newest = max(cleared)
+    doubt = [d for f in flags or [] if f.get("flag") in _LATER_DOUBT and not f.get("conditional")
+             and (d := _parse_date(f.get("date_reported"))) is not None]
+    return not any(d > newest for d in doubt)
 
 
 _RETURN_WEEK_RE = re.compile(r"\bweek (\d{1,2})\b", re.I)

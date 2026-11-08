@@ -44,6 +44,7 @@ from typing import Any
 
 from .game_clock import LOCAL_TZ, game_lock, local_time, parse_kickoff, week_games
 from .lineup_slots import normalize_slot, slot_accepts
+from .practice_reports import no_designation_on_final
 from .teams import normalize_team
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,11 @@ PLAY_PROBABILITY = {
     # No designation, but a DNP latest practice day (designations come with
     # the final report; a DNP on Wednesday is often rest).
     "healthy_dnp": 0.9,
+    # ... once the final report is out and still gives him no designation:
+    # every doubt about a game must be on it, so the DNP week was rest or
+    # personal (Diggs, week 9 2026: DNP-DNP-DNP, nothing listed, played).
+    # Heuristic, not backtested.
+    "healthy_dnp_final": 0.97,
 }
 # News caps / floors on the proxy (`news_signals.AVAILABILITY_FLAGS`).
 NEWS_CAP = {"ruled_out": 0.0, "unlikely_to_play": 0.25, "game_time_decision": 0.6}
@@ -129,6 +135,9 @@ def _play_probability(player: dict) -> tuple[float, str, bool]:
         p, basis = PLAY_PROBABILITY[key], f"questionable, practice {player.get('practice_pattern') or latest or 'none'}"
     elif kind in ("doubtful", "out", "uncertain"):
         p, basis = PLAY_PROBABILITY[kind], kind
+    elif kind == "healthy" and latest == "DNP" and player.get("no_designation_on_final"):
+        p, basis = (PLAY_PROBABILITY["healthy_dnp_final"],
+                    "no designation on the final report, DNP latest practice")
     elif kind == "healthy" and latest == "DNP":
         p, basis = PLAY_PROBABILITY["healthy_dnp"], "no designation, DNP latest practice"
     elif kind == "healthy":
@@ -163,9 +172,10 @@ def risk_reasons(player: dict) -> list[str]:
         reasons.append(f"practice {player.get('practice_pattern') or latest}")
     for flag in sorted(_flags(player) & _RISK_NEWS):
         reasons.append(f"news: {flag.replace('_', ' ')}")
-    # A limited week with no designation is not a risk on its own.
-    if reasons and kind == "healthy" and latest != "DNP" and not (_flags(player) & _RISK_NEWS) \
-            and gameday != "inactive":
+    # A limited week with no designation is not a risk on its own, nor is a
+    # DNP week once the final report is out without one (`healthy_dnp_final`).
+    if reasons and kind == "healthy" and (latest != "DNP" or player.get("no_designation_on_final")) \
+            and not (_flags(player) & _RISK_NEWS) and gameday != "inactive":
         return []
     return reasons
 
@@ -543,14 +553,24 @@ def from_projection(p: dict, inp: dict | None, games: dict, now: datetime,
                     slot: str | None = None) -> dict:
     """A `project_players` row (and its input) in the planner's shape."""
     inj = (inp or {}).get("injury") or {}
+    # The week's report is on the input for every player, but on its injury
+    # (and so on the projection row) only for a designated one: a DNP week
+    # with no designation (Diggs, week 9 2026) reached the planner as no
+    # practice at all, and the briefing called him safe while
+    # `get_lineup_contingencies` flagged him.
+    practice = (inp or {}).get("practice") or {}
     row = {
         "name": p.get("player") or p.get("name"), "player_id": (inp or {}).get("player_id")
         or p.get("player_id"),
         "position": p.get("position"), "team": p.get("team"),
         "projected_points": p.get("projected_points") or p.get("mean") or 0.0,
         "injury_status": p.get("injury_status") or inj.get("status"),
-        "practice_status": p.get("practice_status") or inj.get("practice_status"),
-        "practice_pattern": p.get("practice_pattern") or inj.get("practice_pattern"),
+        "practice_status": p.get("practice_status") or inj.get("practice_status")
+        or practice.get("latest"),
+        "practice_pattern": p.get("practice_pattern") or inj.get("practice_pattern")
+        or practice.get("pattern"),
+        "practice_note": practice.get("note"),
+        "no_designation_on_final": no_designation_on_final(practice),
         "news_flags": p.get("news_flags") or [],
         "gameday_status": p.get("gameday_status"),
         **_lock_fields(p.get("team"), games, now),
@@ -569,6 +589,8 @@ def from_analysis(a: dict, slot: str | None = None) -> dict:
         "injury_status": a.get("injury_status"),
         "practice_status": a.get("practice_status"),
         "practice_pattern": a.get("practice_pattern"),
+        "practice_note": a.get("practice_note"),
+        "no_designation_on_final": bool(a.get("no_designation_on_final")),
         "news_flags": a.get("news_flags") or [],
         "gameday_status": a.get("gameday_status"),
         "kickoff": a.get("kickoff"), "locked": bool(a.get("locked")),

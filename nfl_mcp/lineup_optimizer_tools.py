@@ -148,9 +148,19 @@ class PlayerAnalysis:
     practice_pattern: str | None = None
     practice_trend: str | None = None
     practice_source: str | None = None
+    # `practice_reports.practice_note` (a DNP week with no injury listed and
+    # no designation on the final report), and whether the team's final
+    # report is out with no game designation for him.
+    practice_note: str | None = None
+    no_designation_on_final: bool = False
     # Where the status came from: "caller" when passed in, otherwise the
     # injury tables ("report", "sleeper" or "both"), None when nothing is known.
     injury_source: str | None = None
+    # The published gameday decision once his team's list is out: "active" /
+    # "inactive" (`projections._mark_gameday`); None before the window. The
+    # late-game planner reads it -- without it a confirmed-active starter
+    # with a DNP week stayed "at risk" after his inactives were published.
+    gameday_status: str | None = None
 
     # Schedule: "bye", "playing" or "unknown" (no opponent and no cached
     # schedule to check against — treated as playing, but unverified).
@@ -220,7 +230,10 @@ class PlayerAnalysis:
             "practice_pattern": self.practice_pattern,
             "practice_trend": self.practice_trend,
             "practice_source": self.practice_source,
+            "practice_note": self.practice_note,
+            "no_designation_on_final": self.no_designation_on_final,
             "injury_source": self.injury_source,
+            "gameday_status": self.gameday_status,
             "on_bye": self.on_bye,
             "bye_status": self.bye_status,
             "projected_points": self.projected_points,
@@ -325,6 +338,7 @@ def _gameday_reason(analysis, projection: dict) -> str | None:
     reported = projection.get("reported_injury_status") or analysis.injury_status
     note = projection.get("gameday_note")
     analysis.injury_status = "Inactive" if decision == "inactive" else "Active"
+    analysis.gameday_status = decision
     tail = f" — {note}" if note else ""
     if decision == "inactive":
         return f"🚫 Officially inactive (was {reported}){tail}"
@@ -858,13 +872,15 @@ class LineupOptimizer:
         # Practice the same way: a caller that passes none gets this week's real
         # report (official NFL.com, else a dated news note), or nothing at all.
         if not analysis.practice_status:
-            from .practice_reports import lookup_practice
+            from .practice_reports import lookup_practice, no_designation_on_final
             practice = lookup_practice(self.db, player_name, team, season=season, week=week)
             if practice:
                 analysis.practice_status = practice["latest"]
                 analysis.practice_pattern = practice["pattern"]
                 analysis.practice_trend = practice["trend"]
                 analysis.practice_source = practice["source"]
+                analysis.practice_note = practice.get("note")
+                analysis.no_designation_on_final = no_designation_on_final(practice)
                 # The projection prices the latest report too, and the week's
                 # pattern on Sleeper's share (`projections.practice_blend_mult`).
                 injury_data = {**(injury_data or {}), "practice_status": practice["latest"],

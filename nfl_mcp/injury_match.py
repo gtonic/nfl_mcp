@@ -224,9 +224,31 @@ def reserve_lifted(sleeper_status: str | None, report: dict | None,
             or news_signals.reserve_lifted(news_flags))
 
 
+def designation_cleared_by(sleeper_status: str | None, report_status: str | None,
+                           final_report: dict | None = None,
+                           news_flags: list[dict] | None = None) -> str | None:
+    """Why a Sleeper game designation (Questionable / Doubtful) is stale, or
+    None: ``"final_report"`` when the team's final practice report is out and
+    gives him none (`practice_reports.final_designation`; every designation
+    is on it), ``"news"`` when fresh news says so ("not on the final injury
+    report", `news_signals.designation_cleared`). Never while the ESPN report
+    still carries a designation of its own. Michael Wilson, week 9 2026: Q on
+    Sleeper from Monday, off the Cardinals' final report Friday, still priced
+    as questionable on Saturday."""
+    from . import news_signals
+    from .projections import availability
+    if report_status or availability(sleeper_status) not in ("questionable", "doubtful"):
+        return None
+    if final_report and final_report.get("date") and not final_report.get("game_status"):
+        return "final_report"
+    if news_signals.designation_cleared(news_flags):
+        return "news"
+    return None
+
+
 def resolve_injury(
     athlete_row: dict | None, injury_index: dict[tuple[str, str], dict], team: str,
-    news_flags: list[dict] | None = None,
+    news_flags: list[dict] | None = None, final_report: dict | None = None,
 ) -> dict | None:
     """Combine Sleeper's status with the ESPN injury report, worst case wins.
 
@@ -240,7 +262,10 @@ def resolve_injury(
     lifted (`reserve_lifted`: "the Patriots activated Brown from injured
     reserve Saturday"; `news_flags` are the player's news signals) -- then
     the report's game designation (Questionable, ...) is his status, and
-    ``reserve_lifted: True`` says so.
+    ``reserve_lifted: True`` says so. Likewise a Questionable / Doubtful
+    from Sleeper that the team's final report (``final_report``) or fresh
+    news no longer carries (`designation_cleared_by`): he is healthy, and
+    the result is None.
     """
     from .ros import is_reserve  # deferred: ros is heavy
     sleeper_status = sleeper_injury_status(athlete_row)
@@ -254,6 +279,8 @@ def resolve_injury(
     if lifted:
         status = None if is_reserve(report_status) else report_status
         report_status = status
+    elif designation_cleared_by(sleeper_status, report_status, final_report, news_flags):
+        status = None
     else:
         status = worst_status(sleeper_status, report_status)
     if not status:
@@ -300,7 +327,39 @@ def lookup_injury(db, player_name: str | None, team: str | None) -> dict | None:
                     and normalize_team(row.get("team_id")) == team):
                 athlete = row
                 break
-    return resolve_injury(athlete, report_index, team, reserve_news(db, athlete, team))
+    return resolve_injury(athlete, report_index, team, status_news(db, athlete, team),
+                          final_report_for(db, athlete, team))
+
+
+def final_report_for(db, athlete_row: dict | None, team: str | None,
+                     season: int | None = None, week: int | None = None) -> dict | None:
+    """His line on the team's final practice report when Sleeper gives him a
+    game designation (`practice_reports.final_designation`); None otherwise
+    (nothing to look up)."""
+    from .projections import availability
+    if db is None or not athlete_row or availability(sleeper_injury_status(athlete_row)) not in (
+            "questionable", "doubtful"):
+        return None
+    from .practice_reports import final_designation
+    name = athlete_row.get("full_name") or athlete_row.get("name")
+    return final_designation(db, name, normalize_team(team or athlete_row.get("team_id")),
+                             season=season, week=week)
+
+
+def status_news(db, athlete_row: dict | None, team: str | None) -> list[dict] | None:
+    """The player's news flags when Sleeper's status may be stale: a reserve
+    list (`reserve_news`) or a game designation the news may since have
+    lifted (`designation_cleared_by`); None otherwise."""
+    from .projections import availability
+    flags = reserve_news(db, athlete_row, team)
+    if flags is not None or db is None or not athlete_row:
+        return flags
+    if availability(sleeper_injury_status(athlete_row)) not in ("questionable", "doubtful"):
+        return None
+    from . import news_signals
+    name = athlete_row.get("full_name") or athlete_row.get("name")
+    team = normalize_team(team or athlete_row.get("team_id"))
+    return news_signals.player_news(db, name, team) if name else None
 
 
 def reserve_news(db, athlete_row: dict | None, team: str | None) -> list[dict] | None:
@@ -319,9 +378,11 @@ def reserve_news(db, athlete_row: dict | None, team: str | None) -> list[dict] |
 def injury_for_row(row: dict, injury_index: dict[tuple[str, str], dict],
                    db=None) -> dict | None:
     """`resolve_injury` for an athlete row, using the row's own team; with a
-    `db`, a reserve-list player's news is read too (`reserve_news`)."""
+    `db`, a reserve-list or designated player's news and final practice
+    report are read too (`status_news`, `final_report_for`)."""
     team = normalize_team(row.get("team_id")) or ""
-    return resolve_injury(row, injury_index, team, reserve_news(db, row, team))
+    return resolve_injury(row, injury_index, team, status_news(db, row, team),
+                          final_report_for(db, row, team))
 
 
 # A status whose one-week multiplier is at or below this all but rules the

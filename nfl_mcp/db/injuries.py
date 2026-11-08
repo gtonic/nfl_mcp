@@ -160,6 +160,64 @@ class InjuriesMixin(_DBMixinBase):
             logger.debug(f"get_practice_reports failed: {e}")
             return []
 
+    def get_team_final_report(
+        self, team: str | None, season: int | None = None, week: int | None = None
+    ) -> dict | None:
+        """The team's final practice report of the week, once it is out:
+        ``{date, players: {name_key: {status, injury, game_status}}}``.
+
+        Only the final report carries game designations (NFL.com fills
+        ``game_status`` on that day alone), so the latest day of the team's
+        practice week on which any player has one *is* the final report.
+        None before it is published. With ``season``/``week`` that week (and
+        ``week + 1`` for the current one, as `get_practice_reports`), else the
+        current practice week.
+        """
+        from ..practice_reports import (
+            latest_practice_week,
+            practice_week_start,
+            reads_next_week,
+            to_eastern,
+        )
+
+        team = normalize_team(team)
+        if not team:
+            return None
+        try:
+            with self._pool.get_connection() as conn:
+                if season and week:
+                    cur = conn.execute(
+                        "SELECT name_key, date, status, injury, game_status FROM player_practice_status"
+                        " WHERE team=? AND season=? AND week IN (?, ?)",
+                        (team, int(season), int(week),
+                         int(week) + 1 if reads_next_week(self, season, week) else int(week)),
+                    )
+                else:
+                    today = to_eastern(datetime.now(UTC)).date()
+                    cutoff = min(practice_week_start(today),
+                                 practice_week_start(today, include_monday=True)).isoformat()
+                    cur = conn.execute(
+                        "SELECT name_key, date, status, injury, game_status FROM player_practice_status"
+                        " WHERE team=? AND date >= ?",
+                        (team, cutoff),
+                    )
+                rows = latest_practice_week([dict(r) for r in cur.fetchall()])
+        except Exception as e:
+            logger.debug(f"get_team_final_report failed: {e}")
+            return None
+        dates = [r["date"] for r in rows if (r.get("game_status") or "").strip()]
+        if not dates:
+            return None
+        final = max(dates)
+        return {
+            "date": final,
+            "players": {
+                r["name_key"]: {"status": r.get("status"), "injury": (r.get("injury") or "").strip() or None,
+                                "game_status": (r.get("game_status") or "").strip() or None}
+                for r in rows if r["date"] == final and r.get("name_key")
+            },
+        }
+
     def get_team_practice_days(
         self, season: int, week: int, before: Any = None, source: str | None = None
     ) -> dict[str, dict[str, str]]:

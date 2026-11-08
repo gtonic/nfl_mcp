@@ -118,6 +118,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Game-day availability (week 9 2026 findings).**
+  - The briefing's `late_game_risk` saw no practice week for a starter
+    without a designation (the report sat on the input, not on its injury),
+    so it called Stefon Diggs (DNP-DNP-DNP) safe while
+    `get_lineup_contingencies` flagged him. `late_risk.from_projection` now
+    reads the input's own report.
+  - `get_lineup_contingencies` / `analyze_lineup` kept a confirmed-active
+    starter "at risk" after his team's game roster was published:
+    `PlayerAnalysis` dropped the gameday decision. It now carries
+    `gameday_status`.
+  - The team's final practice report (the only day NFL.com fills game
+    statuses; `db.get_team_final_report`, `practice_reports.final_designation`)
+    settles designations: a Sleeper Questionable / Doubtful the final report
+    no longer carries (or that fresh news calls "not on the final injury
+    report" / "doesn't have a designation", `news_signals.designation_cleared`)
+    is stale and priced as healthy (`injury_match.designation_cleared_by`;
+    Michael Wilson was still Q on Saturday). The ESPN report's own
+    designation is never overridden. The briefing lists them under
+    `designations_cleared`.
+  - A DNP week with no injury listed and no designation on the final report
+    gets `practice_note` ("rest/personal: expected to play") in
+    `practice_reports` / analyses, is no late-game risk, and plays with
+    P 0.97 (heuristic) instead of 0.9.
+
 - News classifier: a reporter's impression ("said he got the sense that
   DeVonta Smith (hamstring) will not play", "doesn't sound like he'll play",
   "I'd be surprised if he plays", "believes he won't play") is
