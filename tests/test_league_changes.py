@@ -193,3 +193,157 @@ class TestParseTime:
         assert p(1758535200000) == datetime.fromtimestamp(1758535200, UTC)
         assert abs((p("3 hours ago") - (datetime.now(UTC) - timedelta(hours=3))).total_seconds()) < 5
         assert p("last week") is None
+
+
+def _athletes():
+    rows = {
+        "zf": ("Zay Flowers", "WR", "BAL"), "ml": ("Makai Lemon", "WR", "PHI"),
+        "ds": ("DeVonta Smith", "WR", "PHI"), "ta": ("Tyler Allgeier", "RB", "ARI"),
+        "jl": ("Jordan Love", "QB", "GB"), "mw": ("Malik Willis", "QB", "GB"),
+        "jb": ("Joe Burrow", "QB", "CIN"), "kb": ("Kyler Busy", "QB", "ARI"),
+    }
+    return {pid: {"full_name": n, "position": p, "team_id": t} for pid, (n, p, t) in rows.items()}
+
+
+_ROLES = {"zf": "my_starter", "ta": "my_starter", "jb": "my_starter", "kb": "my_starter",
+          "jl": "my_bench", "mw": "my_bench", "ml": "opp_starter", "ds": "opp_starter"}
+
+# This week's real items (CBS: player / team / position fields, "<Team>'
+# <Player>: <blurb>" titles; ESPN: general articles).
+_CBS = [
+    {"player": "Rashod Bateman", "team": "BAL", "position": "WR",
+     "headline": "Ravens' Rashod Bateman: Another one-catch game in loss",
+     "description": "Bateman caught one of two targets for six yards in Thursday night's "
+                    "33-10 loss to the Jaguars. That's back-to-back one-catch games for Bateman "
+                    "with Joe Fagnano at quarterback for the Ravens. With Zay Flowers also "
+                    "healthy, Bateman has no fantasy appeal in season-long formats."},
+    {"player": "DeVonta Smith", "team": "PHI", "position": "WR",
+     "headline": "Eagles' DeVonta Smith: Not present at Friday's practice",
+     "description": "Smith (hamstring) was not seen at Friday's practice, Jeff McLane of the "
+                    "Philadelphia Inquirer reports. With Smith now absent from practice again "
+                    "Friday, he's unlikely to play Sunday against the Giants, leaving Makai "
+                    "Lemon, Darius Cooper and Hollywood Brown as the top wide receivers."},
+    {"player": "Dontayvion Wicks", "team": "PHI", "position": "WR",
+     "headline": "Eagles' Dontayvion Wicks: Still sidelined Friday",
+     "description": "Wicks (ankle) is not practicing Friday. With DeVonta Smith (hamstring) "
+                    "also injured, the Eagles will likely keep rolling with Makai Lemon and "
+                    "Darius Cooper as their every-down wideouts."},
+    {"player": "Bam Knight", "team": "ARI", "position": "RB",
+     "headline": "Cardinals' Bam Knight: Ruled out for Sunday's game",
+     "description": "Knight (concussion) has been ruled out for Sunday's game against Seattle, "
+                    "leaving Tyler Allgeier and Evan Hull to handle the backfield work. "
+                    "Kyler Busy will hand off to them."},
+]
+_ESPN = [
+    {"headline": "NFL Week 9 preview: Picks, predictions, schedule, betting odds, fantasy tips",
+     "description": "Jordan Love and the Packers visit Carolina."},
+    {"headline": "Fantasy football last-minute pickups: Kaelon Black and Malik Willis "
+                 "lead the way", "description": "Two adds before kickoff."},
+    {"headline": "Joe Burrow makes time for art in Madrid ahead of Bengals-Falcons",
+     "description": "The Bengals quarterback toured the Prado on Friday."},
+]
+
+
+@pytest.fixture
+def feeds(monkeypatch):
+    def set_feeds(cbs, espn):
+        stamp = _iso(1)
+        monkeypatch.setattr(cbs_fantasy_tools, "get_cbs_player_news", AsyncMock(
+            return_value={"news": [{**a, "published": stamp} for a in cbs]}))
+        monkeypatch.setattr(nfl_tools, "get_nfl_news", AsyncMock(
+            return_value={"articles": [{**a, "published": stamp} for a in espn]}))
+    return set_feeds
+
+
+async def _news(feeds, cbs=(), espn=()):
+    feeds(list(cbs), list(espn))
+    return await league_changes_tools.news_items(NOW - timedelta(hours=24), _ROLES,
+                                                 _athletes(), {})
+
+
+class TestNewsAttribution:
+    @pytest.mark.asyncio
+    async def test_another_players_note_is_not_his_news(self, feeds):
+        # "Zay Flowers: Ravens' Rashod Bateman: Another one-catch game in loss"
+        items = await _news(feeds, cbs=_CBS[:1])
+        assert not any(i["player"] == "Zay Flowers" for i in items)
+
+    @pytest.mark.asyncio
+    async def test_teammate_absence_is_teammate_news(self, feeds):
+        items = await _news(feeds, cbs=_CBS[3:])
+        # Same team, unrelated position (a QB): not his news.
+        assert not any(i["player"] == "Kyler Busy" for i in items)
+        assert len(items) == 1
+        item = items[0]
+        assert item["kind"] == "teammate_news" and item["relation"] == "teammate"
+        assert item["player"] == "Tyler Allgeier" and item["subject_player"] == "Bam Knight"
+        assert item["summary"].startswith("Tyler Allgeier: teammate Bam Knight ruled out")
+        assert "ruled_out" in item["flags"]
+        # Below the player's own news weight (40 for a starter), above noise.
+        assert 20 <= item["importance"] < 40
+
+    @pytest.mark.asyncio
+    async def test_eagles_receivers_get_labelled_teammate_news(self, feeds):
+        items = await _news(feeds, cbs=_CBS[1:3])
+        mates = [i for i in items if i["kind"] == "teammate_news"]
+        assert sorted((i["player"], i["subject_player"]) for i in mates) == [
+            ("DeVonta Smith", "Dontayvion Wicks"), ("Makai Lemon", "DeVonta Smith"),
+            ("Makai Lemon", "Dontayvion Wicks")]
+        summaries = {i["summary"].split(" (")[0] for i in mates}
+        assert "Makai Lemon: teammate DeVonta Smith unlikely to play" in summaries
+        assert "DeVonta Smith: teammate Dontayvion Wicks sidelined" in summaries
+        assert all(i["importance"] < 15 for i in mates)
+        # Smith's own note stays his news, as news about himself.
+        own = [i for i in items if i["kind"] == "news"]
+        assert [(i["player"], i["relation"], i["signal"]) for i in own] == [
+            ("DeVonta Smith", "self", "absence")]
+
+    @pytest.mark.asyncio
+    async def test_subject_parsed_from_title_without_player_field(self, feeds, db):
+        db.upsert_athletes({"bk": {"full_name": "Bam Knight", "position": "RB", "team": "ARI"}})
+        bare = {k: v for k, v in _CBS[3].items() if k not in ("player", "team", "position")}
+        feeds([], [bare])
+        items = await league_changes_tools.news_items(
+            NOW - timedelta(hours=24), _ROLES, _athletes(), {}, db)
+        assert [(i["kind"], i["player"], i["subject_player"]) for i in items] == [
+            ("teammate_news", "Tyler Allgeier", "Bam Knight")]
+        # Position unknown and not found: nobody inherits anything.
+        assert await _news(feeds, espn=[bare]) == []
+
+    @pytest.mark.asyncio
+    async def test_roundups_are_not_per_player_news(self, feeds):
+        items = await _news(feeds, espn=_ESPN[:2])
+        assert items == []
+
+    @pytest.mark.asyncio
+    async def test_no_fantasy_signal_is_low_importance(self, feeds):
+        items = await _news(feeds, espn=_ESPN[2:])
+        assert len(items) == 1
+        assert items[0]["kind"] == "news" and items[0]["signal"] == "none"
+        assert items[0]["importance"] <= 10
+
+    @pytest.mark.asyncio
+    async def test_own_news_ranked_by_signal(self, feeds):
+        own = [
+            {"player": "Tyler Allgeier", "team": "ARI", "position": "RB",
+             "headline": "Cardinals' Tyler Allgeier: Ruled out for Sunday's game",
+             "description": "Allgeier (ankle) has been ruled out."},
+            {"player": "Joe Burrow", "team": "CIN", "position": "QB",
+             "headline": "Bengals' Joe Burrow: Four touchdowns in win",
+             "description": "Burrow completed 24 of 29 passes for 271 yards and three "
+                            "touchdowns."},
+        ]
+        items = {i["player"]: i for i in await _news(feeds, cbs=own)}
+        assert items["Tyler Allgeier"]["kind"] == "news"
+        assert items["Tyler Allgeier"]["signal"] == "absence"
+        assert items["Tyler Allgeier"]["relation"] == "self"
+        assert items["Joe Burrow"]["signal"] == "performance"
+        assert items["Tyler Allgeier"]["importance"] > items["Joe Burrow"]["importance"] > 10
+
+    def test_signal_reads(self):
+        sig = league_changes_tools.news_signal
+        assert sig("Smith was suspended three games")[0] == "absence"
+        assert sig("Wicks (ankle) is listed as out for Sunday's game")[0] == "absence"
+        assert sig("Love was placed on injured reserve")[0] == "absence"
+        assert sig("Lemon was a full participant in practice")[0] == "availability"
+        assert sig("Joe Burrow makes time for art in Madrid")[0] == "none"

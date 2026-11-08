@@ -10,7 +10,10 @@ and touches this roster or this week's opponent:
 - injury status moves on your roster and the opponent's starters, from the
   recorded ``injury_history`` timeline (joined through the name/team index,
   as the briefing does — the timeline is keyed by ESPN ids);
-- news items (ESPN, CBS) that name one of those players;
+- news items (ESPN, CBS) about one of those players -- attributed to the
+  item's subject, so a teammate's note that names him is not his news unless
+  it reports the teammate's absence at a related spot (``teammate_news``);
+  roundups are left out, and an item's importance follows its signal;
 - league transactions processed since then;
 - trending adds of a same-position teammate of one of your starters — the
   backup who gets the job if the starter misses time;
@@ -136,10 +139,157 @@ def _name_patterns(roles: dict[str, str], athletes: dict) -> list[tuple[str, re.
     return out
 
 
+# CBS titles an item "<Team>' <Player>: <blurb>" ("Cardinals' Bam Knight:
+# Ruled out for Sunday's game"); RotoWire-style feeds "<Player>: <blurb>".
+# Two to four capitalised words for the name ("Michael Pittman Jr.").
+_NAME = r"[A-Z][\w.'\-]+(?:\s+[A-Z][\w.'\-]+){1,3}"
+_TEAM_TITLE_RE = re.compile(rf"^(?P<team>[A-Z0-9][\w.]*(?:\s+[A-Z0-9][\w.]*)?)['’]s?\s+"
+                            rf"(?P<name>{_NAME}):\s")
+_NAME_TITLE_RE = re.compile(rf"^(?P<name>{_NAME}):\s")
+# A roundup is about many players, not the one it happens to name: a preview,
+# picks, rankings, a waiver / pickups list, start-sit advice. Only read for an
+# item without a parsed subject (a CBS / RotoWire note is about its player).
+_ROUNDUP_RE = re.compile(
+    r"\b(?:previews?|picks|predictions|pickups|rankings|ranks|start\s*'?em|sit\s*'?em|"
+    r"start[/-]sit|sleepers|busts|waiver wire|waiver adds|lead the way|takeaways|"
+    r"winners and losers|overreactions|what we learned|things to know|mock draft|"
+    r"betting odds|best bets|props|dfs|cheat sheet|lineup advice|must-starts|streamers|"
+    r"fantasy tips)\b", re.I)
+# What the news_signals classifier does not phrase-match but a note says in a
+# few words: an absence ("listed as out", "not practicing", "suspended",
+# "doubtful"), and the cues of an injury, a transaction or a stat line.
+_ABSENCE_RE = re.compile(
+    r"\b(?:(?:listed as|is|was|will be|remains?)\s+out\b|out for (?:sunday|monday|thursday|"
+    r"saturday|the game|week \d+)|doubtful|suspen(?:ded|sion)|injured reserve|IR\b|sidelined|"
+    r"(?:did not|didn't|not|won't|will not|hasn't|has not|no)\s+(?:practic|participat)\w*|"
+    r"(?:absent|missing|missed|sat out|sit out|sitting out)\s+(?:from\s+)?(?:\w+'s\s+)?practice|"
+    r"(?:not|wasn't|was not|isn't|is not)\s+(?:present|seen|spotted)\s+(?:at|for)\b|DNP\b)",
+    re.I)
+_INJURY_RE = re.compile(
+    r"\b(?:questionable|limited (?:participant|practice|in)|full participant|practic\w+|"
+    r"injur\w+|concussion|hamstring|ankle|knee|groin|calf|shoulder|illness)\b", re.I)
+_TRANSACTION_RE = re.compile(
+    r"\b(?:signs?|signed|re-signed|released|waived|traded|claimed|acquired|activated|"
+    r"promoted|elevated|placed on|designated)\b", re.I)
+_PERFORMANCE_RE = re.compile(
+    r"\b(?:\d+\s+(?:yards|targets|receptions|catches|carries|touchdowns|tds|snaps|"
+    r"attempts|tackles|sacks)|(?:one|two|three|\d+)-catch|caught|rushed|completed|"
+    r"touchdowns?|fumbled?|intercept\w*)\b", re.I)
+_ABSENCE_FLAGS = {"ruled_out", "unlikely_to_play", "multi_week_absence", "week_to_week"}
+_ROLE_FLAGS = {"benched", "committee", "lead_role", "limited_snaps", "snap_share_drop"}
+# How much of the role's news weight an item gets, by what it says. A note
+# without an injury, role, transaction or stat cue ("makes time for art")
+# barely registers; an absence ranks above the rest.
+SIGNAL_MULT = {"absence": 1.25, "availability": 1.0, "role": 1.0, "transaction": 1.0,
+               "performance": 0.6, "none": 0.15}
+# A teammate's absence counts for less than the player's own news; a name
+# dropped only in a general article's body for half.
+TEAMMATE_MULT = 0.75
+MENTION_MULT = 0.5
+_ABSENCE_PHRASE = {"ruled_out": "ruled out", "unlikely_to_play": "unlikely to play",
+                   "multi_week_absence": "out for multiple weeks",
+                   "week_to_week": "week-to-week"}
+# A teammate at a related spot inherits the work: the same position, or the
+# other pass-catcher (WR / TE share targets).
+_RELATED = {"WR": {"WR", "TE"}, "TE": {"TE", "WR"}}
+
+
+def news_subject(article: dict) -> tuple[str | None, str | None, str | None]:
+    """``(name, team, position)`` of the player an item is about, as far as
+    the item says: the feed's own player field (CBS), else a "<Team>'
+    <Player>:" or "<Player>:" title. ``(None, ...)`` for a general article."""
+    headline = (article.get("headline") or "").strip()
+    team = normalize_team(article.get("team"))
+    position = (article.get("position") or "").upper() or None
+    if article.get("player"):
+        return str(article["player"]).strip(), team, position
+    m = _TEAM_TITLE_RE.match(headline)
+    if m and normalize_team(m.group("team")):
+        return m.group("name"), team or normalize_team(m.group("team")), position
+    m = _NAME_TITLE_RE.match(headline)
+    if m:
+        return m.group("name"), team, position
+    return None, team, position
+
+
+def news_signal(text: str) -> tuple[str, list[str]]:
+    """``(signal, flags)``: what kind of fantasy content a note carries --
+    ``absence`` / ``role`` / ``availability`` / ``transaction`` /
+    ``performance`` / ``none`` -- from the news_signals classifier's flags
+    (every hit taken as the note's subject's) plus a few absence, injury,
+    transaction and stat-line cues."""
+    from .news_signals import classify
+    flags = sorted({h["flag"] for h in classify(text, "subject") if not h.get("conditional")})
+    if _ABSENCE_FLAGS & set(flags) or _ABSENCE_RE.search(text):
+        return "absence", flags
+    if _ROLE_FLAGS & set(flags):
+        return "role", flags
+    if flags or _INJURY_RE.search(text):
+        return "availability", flags
+    if _TRANSACTION_RE.search(text):
+        return "transaction", flags
+    if _PERFORMANCE_RE.search(text):
+        return "performance", flags
+    return "none", flags
+
+
+def _absence_phrase(flags: list[str], text: str) -> str:
+    """"ruled out", "not practicing", ...: the absence a note reports."""
+    for flag, phrase in _ABSENCE_PHRASE.items():
+        if flag in flags:
+            return phrase
+    m = _ABSENCE_RE.search(text)
+    cue = m.group(0).lower() if m else ""
+    if "suspen" in cue:
+        return "suspended"
+    if "doubtful" in cue:
+        return "doubtful"
+    if cue == "ir" or "injured reserve" in cue:
+        return "on injured reserve"
+    if any(w in cue for w in ("practic", "particip", "present", "seen", "spotted", "dnp")):
+        return "not practicing"
+    if "sidelined" in cue:
+        return "sidelined"
+    return "out"
+
+
+def _related(pos: str | None, subject_pos: str | None) -> bool:
+    if not pos or not subject_pos:
+        return False  # an unknown spot: not enough to say he inherits the work
+    return subject_pos in _RELATED.get(pos, {pos})
+
+
+def _lookup_position(db, name: str, team: str | None) -> str | None:
+    """The position of the one athlete with this name on this team, if the
+    item did not say (a general article's "<Team>' <Player>:" title)."""
+    if db is None or not team:
+        return None
+    from .opportunity_tools import norm_name
+    try:
+        rows = db.search_athletes_by_name(name, limit=10)
+    except Exception as e:
+        logger.debug(f"athlete lookup for {name!r} failed: {e}")
+        return None
+    positions = {(r.get("position") or "").upper() for r in rows
+                 if norm_name(r.get("full_name")) == norm_name(name)
+                 and normalize_team(r.get("team_id")) == team}
+    return positions.pop() if len(positions) == 1 else None
+
+
 async def news_items(since_dt: datetime, roles: dict[str, str], athletes: dict,
-                     errors: dict) -> list[dict]:
-    """ESPN and CBS items published since ``since_dt`` that name a player."""
+                     errors: dict, db=None) -> list[dict]:
+    """ESPN and CBS items published since ``since_dt``, attributed to the
+    player they are about.
+
+    An item whose subject is another player (CBS "Ravens' Rashod Bateman:
+    ..." names Zay Flowers in its body) is not that player's news -- unless
+    the subject is a same-team teammate at a related position who will miss
+    time: that is ``teammate_news`` for the player who inherits the work. A
+    roundup (preview, picks, pickups, rankings) is about nobody in particular
+    and is left out. Importance follows what the item says (:func:`news_signal`).
+    """
     from . import cbs_fantasy_tools, nfl_tools
+    from .opportunity_tools import norm_name
     patterns = _name_patterns(roles, athletes)
     if not patterns:
         return []
@@ -169,19 +319,52 @@ async def news_items(since_dt: datetime, roles: dict[str, str], athletes: dict,
         if published is None or published < since_dt:
             continue
         headline = (article.get("headline") or "").strip()
-        text = " ".join(filter(None, [article.get("player"), headline,
-                                      article.get("description")]))
+        description = article.get("description") or ""
+        text = " ".join(filter(None, [article.get("player"), headline, description]))
+        subject, subject_team, subject_pos = news_subject(article)
+        if subject is None and _ROUNDUP_RE.search(headline):
+            continue  # a preview / pickups list names players; it is not about them
+        signal_text = " ".join(filter(None, [headline, description]))
+        signal: tuple[str, list[str]] | None = None
         for pid, pattern in patterns:
             key = (pid, headline.lower())
             if key in seen or not pattern.search(text):
                 continue
-            seen.add(key)
+            row = athletes.get(pid) or {}
+            label = _label(pid, athletes)
             role = roles[pid]
+            base = _ROLE_WEIGHT[role] - 20
+            signal = signal or news_signal(signal_text)
+            if subject is not None and norm_name(subject) != norm_name(row.get("full_name")):
+                # About someone else: only a same-team teammate's absence at a
+                # related spot is kept (the work it frees up).
+                team = normalize_team(row.get("team_id") or row.get("team"))
+                pos = (row.get("position") or "").upper() or None
+                if subject_pos is None and team and subject_team == team:
+                    subject_pos = _lookup_position(db, subject, subject_team) or ""
+                if (not team or subject_team != team or not _related(pos, subject_pos)
+                        or signal[0] != "absence"):
+                    continue
+                seen.add(key)
+                items.append(_item(
+                    "teammate_news", base * TEAMMATE_MULT,
+                    f"{label}: teammate {subject} {_absence_phrase(signal[1], signal_text)}"
+                    f" ({headline or description[:120]})",
+                    player=label, role=role, source=source, relation="teammate",
+                    subject_player=subject, signal=signal[0], flags=signal[1] or None,
+                    headline=headline or None, at=published.isoformat(),
+                ))
+                continue
+            seen.add(key)
+            # A general article that names the player only in its body: a mention.
+            mention = subject is None and not pattern.search(headline)
+            importance = base * SIGNAL_MULT[signal[0]] * (MENTION_MULT if mention else 1.0)
             items.append(_item(
-                "news", _ROLE_WEIGHT[role] - 20,
-                f"{_label(pid, athletes)}: {headline or (article.get('description') or '')[:120]}",
-                player=_label(pid, athletes), role=role, source=source,
-                at=published.isoformat(),
+                "news", max(1.0, importance),
+                f"{label}: {headline or description[:120]}",
+                player=label, role=role, source=source,
+                relation="mention" if mention else "self", signal=signal[0],
+                flags=signal[1] or None, at=published.isoformat(),
             ))
     return items
 
@@ -447,7 +630,7 @@ async def get_league_changes(
     # The four sources are independent network reads; fetched together and
     # appended in the same order as before.
     groups = await asyncio.gather(
-        news_items(since_dt, roles, athletes, errors),
+        news_items(since_dt, roles, athletes, errors, db),
         transaction_items(league_id, weeks, since_dt, roster_id, opp_rid,
                           owners, db, errors),
         trending_backup_items(db, since_dt, starters, athletes, rostered,
