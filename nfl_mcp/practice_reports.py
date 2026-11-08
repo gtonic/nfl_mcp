@@ -471,6 +471,10 @@ def summarize(rows: list[dict] | None) -> dict | None:
             for d in days
         ],
         "game_status": next((d.get("game_status") for d in reversed(days) if d.get("game_status")), None),
+        # The injury the report names (latest day that names one); None when
+        # no day does -- a DNP week with nothing listed reads as rest/personal.
+        "injury": next(((d.get("injury") or "").strip() for d in reversed(days)
+                        if (d.get("injury") or "").strip()), None),
         "source": sources[0] if len(sources) == 1 else "+".join(sources) if sources else None,
         "updated_at": max((d.get("updated_at") or "") for d in days) or None,
     }
@@ -525,7 +529,67 @@ def lookup_practice(db, player_name: str | None, team: str | None,
     except Exception as e:
         logger.debug(f"practice lookup failed for {player_name}: {e}")
         return None
-    return summarize(rows if isinstance(rows, list) else None)
+    summary = summarize(rows if isinstance(rows, list) else None)
+    if summary:
+        final = final_designation(db, player_name, team, season=season, week=week)
+        if final:
+            summary["final_report"] = final
+        note = practice_note(summary)
+        if note:
+            summary["note"] = note
+    return summary
+
+
+def final_designation(db, player_name: str | None, team: str | None,
+                      season: int | None = None, week: int | None = None) -> dict | None:
+    """His line on the team's final report of the week, once it is out:
+    ``{date, listed, game_status, injury}``; None before it is published.
+
+    The final report carries every game designation, so a player it lists
+    without one -- or does not list at all -- has none for the game: a
+    Sleeper "Questionable" left over from earlier in the week is stale
+    (Michael Wilson, week 9 2026: Q on Sleeper since Monday, not on the
+    Cardinals' final report, played). ``game_status`` None means exactly that.
+    """
+    from .opportunity_tools import norm_name
+    if db is None or not player_name or not hasattr(db, "get_team_final_report"):
+        return None
+    try:
+        report = db.get_team_final_report(team, season=season, week=week)
+    except Exception as e:
+        logger.debug(f"final report lookup failed for {player_name}: {e}")
+        return None
+    if not isinstance(report, dict) or not report.get("date"):
+        return None
+    line = (report.get("players") or {}).get(norm_name(player_name))
+    return {
+        "date": report["date"],
+        "listed": line is not None,
+        "game_status": (line or {}).get("game_status"),
+        "injury": (line or {}).get("injury"),
+    }
+
+
+def no_designation_on_final(summary: dict | None) -> bool:
+    """Whether the team's final report is out and gives him no game designation."""
+    final = (summary or {}).get("final_report") or {}
+    return bool(final.get("date")) and not final.get("game_status")
+
+
+def practice_note(summary: dict | None) -> str | None:
+    """A one-line reading of a practice week that the pattern alone misreads:
+    a DNP week with no injury listed (rest, personal) and no designation on
+    the final report -- Stefon Diggs, week 9 2026: DNP-DNP-DNP, nothing
+    listed, active and started. None when there is nothing to add.
+
+    Only once the final report is out: NFL.com names the injury on that day
+    alone, so earlier in the week every DNP reads "no injury listed"."""
+    if not summary or summary.get("latest") != "DNP" or summary.get("injury"):
+        return None
+    if not no_designation_on_final(summary) or (summary.get("final_report") or {}).get("injury"):
+        return None
+    return ("DNP with no injury listed and no game designation on the final report "
+            "(rest/personal): expected to play")
 
 
 def lookup_practice_with_note(db, player_name: str | None, team: str | None,
@@ -570,6 +634,7 @@ def practice_fields(summary: dict | None) -> dict:
         "practice_pattern": summary["pattern"],
         "practice_trend": summary["trend"],
         "practice_source": summary["source"],
+        **({"practice_note": summary["note"]} if summary.get("note") else {}),
     }
 
 
