@@ -37,7 +37,7 @@ from .database import get_shared_db
 from .errors import create_success_response
 from .game_clock import progress_of, week_games
 from .handcuff_tools import trending_backups
-from .injury_match import build_injury_index, find_report, misses_this_week
+from .injury_match import build_injury_index, find_report, misses_this_week, sleeper_injury_status
 from .injury_service import status_severity
 from .projection_store import log_projections, scoring_key
 from .scoring import league_scoring
@@ -291,7 +291,7 @@ def unavailable_players(db, roles: dict[str, str], athletes: dict) -> set[str]:
         if not row:
             continue
         report = find_report(row, injury_index, row.get("team_id")) if injury_index else None
-        statuses = ((report or {}).get("injury_status"), _raw(row).get("injury_status"))
+        statuses = ((report or {}).get("injury_status"), sleeper_injury_status(row))
         if any(misses_this_week(s) for s in statuses):
             out.add(pid)
     return out
