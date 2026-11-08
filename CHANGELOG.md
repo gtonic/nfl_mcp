@@ -163,6 +163,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `practice_reports` / analyses, is no late-game risk, and plays with
     P 0.97 (heuristic) instead of 0.9.
 
+- `get_league_changes` news is attributed to the player it is about, not to
+  every roster player its text names. The subject comes from the feed's player
+  field (CBS) or a "<Team>' <Player>:" / "<Player>:" title: "Ravens' Rashod
+  Bateman: Another one-catch game in loss" is no longer Zay Flowers' news. A
+  same-team teammate at a related spot (same position, WR/TE together) who
+  will miss time (news_signals `ruled_out` / `unlikely_to_play` /
+  `multi_week_absence` / `week_to_week`, or "listed as out", "not practicing",
+  "doubtful", "suspended", IR, "sidelined") is kept as the new kind
+  `teammate_news` at 0.75 of the news weight ("Tyler Allgeier: teammate Bam
+  Knight ruled out (...)", `subject_player`) -- not for a player who misses
+  the week himself (Out / IR / PUP / suspended / Doubtful by the injury report
+  or Sleeper status, `misses_this_week`). General roundups (previews,
+  picks, pickups, rankings, start/sit) are left out. A news item's importance
+  follows its `signal` (absence 1.25x, role / availability / transaction 1x,
+  stat line 0.6x, none 0.15x; a name only in a general article's body half):
+  "Joe Burrow makes time for art in Madrid" drops from 40 to 6. New fields on
+  news items: `relation` (self / mention / teammate), `signal`, `flags`.
 - News classifier: a reporter's impression ("said he got the sense that
   DeVonta Smith (hamstring) will not play", "doesn't sound like he'll play",
   "I'd be surprised if he plays", "believes he won't play") is

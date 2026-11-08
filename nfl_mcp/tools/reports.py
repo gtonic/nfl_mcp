@@ -289,8 +289,10 @@ async def get_league_changes(
 
     Remembers when this roster was last checked and returns only what is new
     since then, most important first: injury status moves on your roster and
-    your current opponent's starters, ESPN/CBS news naming those players,
-    league adds/drops/trades, trending pickups who back up one of your
+    your current opponent's starters, ESPN/CBS news about those players
+    (a same-team teammate's absence at a related spot as teammate_news;
+    roundups and previews left out; low importance without an injury, role,
+    transaction or stat cue), league adds/drops/trades, trending pickups who back up one of your
     starters (same team and position), and your starters' projection moves
     larger than `projection_threshold`. Use get_injury_trends for a
     league-agnostic injury feed, get_weekly_briefing to set the lineup.
@@ -307,8 +309,11 @@ async def get_league_changes(
         limit: Max changes returned (default 25; `omitted` says how many more)
 
     Returns: {
-        changes [{kind: injury|news|transaction|trending_backup|projection,
-                  importance, summary, ...}] sorted by importance,
+        changes [{kind: injury|news|teammate_news|transaction|trending_backup|
+                  projection, importance, summary, ...}] sorted by importance
+                  (news / teammate_news also: relation self|mention|teammate,
+                  signal absence|role|availability|transaction|performance|none,
+                  flags, subject_player),
         counts {kind: n}, omitted, since, since_source, checked_at,
         marked_seen, week, opponent_roster_id, errors {source: message},
         success
