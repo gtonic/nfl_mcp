@@ -276,8 +276,29 @@ def _lookup_position(db, name: str, team: str | None) -> str | None:
     return positions.pop() if len(positions) == 1 else None
 
 
+def unavailable_players(db, roles: dict[str, str], athletes: dict) -> set[str]:
+    """The players among ``roles`` who will not play this week (Out / IR / PUP
+    / suspended / Doubtful: `misses_this_week`), by the injury report or
+    Sleeper's own status."""
+    try:
+        injury_index = build_injury_index(db.get_all_current_injuries())
+    except Exception as e:
+        logger.debug(f"injury index unavailable: {e}")
+        injury_index = {}
+    out = set()
+    for pid in roles:
+        row = athletes.get(pid)
+        if not row:
+            continue
+        report = find_report(row, injury_index, row.get("team_id")) if injury_index else None
+        statuses = ((report or {}).get("injury_status"), _raw(row).get("injury_status"))
+        if any(misses_this_week(s) for s in statuses):
+            out.add(pid)
+    return out
+
+
 async def news_items(since_dt: datetime, roles: dict[str, str], athletes: dict,
-                     errors: dict, db=None) -> list[dict]:
+                     errors: dict, db=None, unavailable: set[str] | None = None) -> list[dict]:
     """ESPN and CBS items published since ``since_dt``, attributed to the
     player they are about.
 
@@ -337,7 +358,10 @@ async def news_items(since_dt: datetime, roles: dict[str, str], athletes: dict,
             signal = signal or news_signal(signal_text)
             if subject is not None and norm_name(subject) != norm_name(row.get("full_name")):
                 # About someone else: only a same-team teammate's absence at a
-                # related spot is kept (the work it frees up).
+                # related spot is kept (the work it frees up) -- and only for a
+                # player who plays this week himself.
+                if pid in (unavailable or ()):
+                    continue
                 team = normalize_team(row.get("team_id") or row.get("team"))
                 pos = (row.get("position") or "").upper() or None
                 if subject_pos is None and team and subject_team == team:
@@ -630,7 +654,8 @@ async def get_league_changes(
     # The four sources are independent network reads; fetched together and
     # appended in the same order as before.
     groups = await asyncio.gather(
-        news_items(since_dt, roles, athletes, errors, db),
+        news_items(since_dt, roles, athletes, errors, db,
+                   unavailable_players(db, roles, athletes)),
         transaction_items(league_id, weeks, since_dt, roster_id, opp_rid,
                           owners, db, errors),
         trending_backup_items(db, since_dt, starters, athletes, rostered,

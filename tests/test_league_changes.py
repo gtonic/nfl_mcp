@@ -299,6 +299,28 @@ class TestNewsAttribution:
             ("DeVonta Smith", "self", "absence")]
 
     @pytest.mark.asyncio
+    async def test_no_teammate_news_for_a_player_who_is_out(self, feeds, db):
+        # DeVonta Smith is Out himself: Wicks being sidelined frees nothing up
+        # for him. Makai Lemon is healthy and still gets it.
+        db.upsert_injuries([{"player_id": "e-ds", "player_name": "DeVonta Smith",
+                             "team_id": "PHI", "position": "WR", "injury_status": "Out"}])
+        athletes = _athletes()
+        unavailable = league_changes_tools.unavailable_players(db, _ROLES, athletes)
+        assert unavailable == {"ds"}
+        feeds(_CBS[2:3], [])
+        items = await league_changes_tools.news_items(
+            NOW - timedelta(hours=24), _ROLES, athletes, {}, db, unavailable)
+        assert [(i["kind"], i["player"], i["subject_player"]) for i in items] == [
+            ("teammate_news", "Makai Lemon", "Dontayvion Wicks")]
+        assert not any("teammate Dontayvion Wicks sidelined" in i["summary"]
+                       and i["player"] == "DeVonta Smith" for i in items)
+
+    def test_sleeper_status_counts_as_unavailable(self, db):
+        athletes = _athletes()
+        athletes["ta"]["raw"] = {"injury_status": "IR"}
+        assert league_changes_tools.unavailable_players(db, _ROLES, athletes) == {"ta"}
+
+    @pytest.mark.asyncio
     async def test_subject_parsed_from_title_without_player_field(self, feeds, db):
         db.upsert_athletes({"bk": {"full_name": "Bam Knight", "position": "RB", "team": "ARI"}})
         bare = {k: v for k, v in _CBS[3].items() if k not in ("player", "team", "position")}

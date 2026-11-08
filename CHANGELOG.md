@@ -172,7 +172,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `multi_week_absence` / `week_to_week`, or "listed as out", "not practicing",
   "doubtful", "suspended", IR, "sidelined") is kept as the new kind
   `teammate_news` at 0.75 of the news weight ("Tyler Allgeier: teammate Bam
-  Knight ruled out (...)", `subject_player`). General roundups (previews,
+  Knight ruled out (...)", `subject_player`) -- not for a player who misses
+  the week himself (Out / IR / PUP / suspended / Doubtful by the injury report
+  or Sleeper status, `misses_this_week`). General roundups (previews,
   picks, pickups, rankings, start/sit) are left out. A news item's importance
   follows its `signal` (absence 1.25x, role / availability / transaction 1x,
   stat line 0.6x, none 0.15x; a name only in a general article's body half):
