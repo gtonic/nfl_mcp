@@ -41,6 +41,7 @@ from .roster_needs import (
     starting_lineup,
     starting_lineup_total,
 )
+from .teamless import REASON, as_drop, teamless_rostered
 from .teams import normalize_team
 from .trade_analyzer_tools import league_format_from_settings
 from .waiver_rules import (
@@ -233,14 +234,20 @@ def _worth_text(p: dict, points: bool = False) -> str:
 
 def _pair_drop(target: dict, players: list[dict], slots: dict[str, int],
                set_starters: set[str], open_spots: int,
-               locked_ids: set[str] | None = None) -> tuple[dict | None, str]:
+               locked_ids: set[str] | None = None,
+               teamless: list[dict] | None = None) -> tuple[dict | None, str]:
     """The player to drop for `target`, or None and why not.
 
     ``locked_ids`` are players whose game has started: Sleeper does not let
-    them be dropped, so they are never offered.
+    them be dropped, so they are never offered. ``teamless`` are rostered
+    players with no NFL team (`teamless.teamless_rostered`): worth nothing
+    and never locked, so they go first.
     """
     if open_spots > 0:
         return None, "Open roster spot — no drop needed."
+    free = [t for t in teamless or [] if not t.get("in_reserve")]
+    if free:
+        return as_drop(free[0]), (f"Drop {free[0]['name']} — {REASON}.")
     # Judged on the roster *after* the add: a starter he displaces at his own
     # position (the kicker a streamer replaces) becomes droppable; a set
     # starter elsewhere does not.
@@ -524,6 +531,9 @@ async def get_waiver_targets(
         p for row in my_rows.values()
         if (p := _to_projection_input(row, opponents, injury_index))
     ]
+    # Released players have no game, so no projection input: named here and
+    # put first on the drop list instead of vanishing from it.
+    teamless = teamless_rostered(list(my_rows), my_rows)
 
     my_proj = await project_players(
         my_inputs, scoring=scoring_exact, num_teams=num_teams, season=season, week=week
@@ -756,7 +766,7 @@ async def get_waiver_targets(
     injured_held = [p for p in mine_scored if misses_this_week(p.get("injury_status"))]
     set_starters = {str(p) for p in (mine.get("starters") or []) if p}
     # A player whose game has started cannot be dropped until it ends.
-    drops = _droppable(
+    drops = [{**as_drop(t), "reason": t["reason"]} for t in teamless] + _droppable(
         mine_scored, whole_slots, set_starters | locked_mine)[:_MAX_DROP_CANDIDATES]
     roster_size = sum(
         1 for slot in league.get("roster_positions") or [] if slot not in _NON_ROSTER_SLOTS
@@ -765,7 +775,7 @@ async def get_waiver_targets(
     open_spots = max(0, roster_size - active_count) if roster_size else 0
     for target in top:
         drop, note = _pair_drop(target, mine_scored, whole_slots, set_starters, open_spots,
-                                locked_mine)
+                                locked_mine, teamless)
         target["drop"] = drop
         target["drop_note"] = note
 
@@ -856,6 +866,8 @@ async def get_waiver_targets(
         # projection. Each target carries its own `drop`, paired only when he
         # is worth more than the player he costs.
         "drop_candidates": drops,
+        # Rostered players with no NFL team (released / unsigned): drop now.
+        "teamless_on_roster": teamless,
         "open_roster_spots": open_spots,
         # Out/doubtful players on your active roster, kept off the drop list.
         # Whether to hold, move to IR or cut them is not a one-week call.

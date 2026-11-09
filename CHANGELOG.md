@@ -139,6 +139,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Released players on your roster are flagged.** A player his NFL team cuts
+  has no game, so the projection tools skipped him and he vanished from every
+  list but `not_projected` (Kendre Miller, released by the Saints on
+  2026-11-07, sat on a VLBG bench unflagged through Monday). New
+  `nfl_mcp/teamless.py`: the briefing and `get_waiver_targets` list
+  `teamless_on_roster` (drop now: never locked); he leads
+  `drop_candidates` and is the drop a claim pairs first (so `add_now` uses
+  him too); `get_league_changes` reports `kind: "teamless"` (90 starter / 75
+  bench) on every check until he is dropped.
+
 - **Game-day availability (week 9 2026 findings).**
   - The briefing's `late_game_risk` saw no practice week for a starter
     without a designation (the report sat on the input, not on its injury),

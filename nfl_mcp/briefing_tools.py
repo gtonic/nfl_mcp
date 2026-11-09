@@ -38,6 +38,7 @@ from .practice_reports import lookup_practice, practice_fields
 from .projection_store import log_projections, signals_of
 from .scoring import league_scoring
 from .sleeper_tools import find_roster  # also re-exported for older importers
+from .teamless import teamless_rostered
 from .teams import normalize_team
 from .week_context import (
     BYE,
@@ -782,6 +783,10 @@ async def get_weekly_briefing(
         # Anything else the projection layer could not price (no team, no
         # position, or a schedule too incomplete to tell a bye from a gap).
         "not_projected": unprojectable,
+        # Rostered players with no NFL team (released / unsigned): no game to
+        # score in, never locked -- drop them now (`teamless`).
+        "teamless_on_roster": teamless_rostered(mine.get("players") or [], athletes,
+                                                mine.get("reserve")),
         "unavailable": unavailable_now,
         # practice_source None = no report published for him (never inferred).
         "practice_reports": practice_watch,

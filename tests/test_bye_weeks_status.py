@@ -534,3 +534,47 @@ async def test_briefing_bench_lists_every_non_starter(monkeypatch, db, points, b
     out = await briefing_tools.get_weekly_briefing("L", roster_id=1, week=5, season=2026)
     assert out["bench"] == bench
     assert out["move_to_bench"] == move
+
+
+@pytest.mark.asyncio
+async def test_briefing_names_a_released_player(monkeypatch, db):
+    """Kendre Miller, released by the Saints: no team, so no projection --
+    named as teamless (drop now), not only buried in `not_projected`."""
+    from nfl_mcp import briefing_tools, projections, sleeper_tools, weather_tools
+
+    db.upsert_athletes({
+        "on": {"full_name": "Playing WR", "position": "WR", "team": "BUF"},
+        "cut": {"full_name": "Kendre Miller", "position": "RB", "team": None},
+    })
+    monkeypatch.setattr(briefing_tools, "get_shared_db", lambda *a, **k: db)
+
+    async def _league(_):
+        return {"league": {"total_rosters": 10, "scoring_settings": {"rec": 1},
+                           "roster_positions": ["WR", "BN"], "settings": {}}}
+
+    async def _rosters(_):
+        return {"rosters": [{"roster_id": 1, "players": ["on", "cut"], "starters": ["on"]}]}
+
+    async def _matchups(_, week):
+        return {"matchups": [{"roster_id": 1, "matchup_id": 1, "starters": ["on"],
+                              "players_points": {}}]}
+
+    async def _weather(**_):
+        return {"games": []}
+
+    async def _project(players, **_):
+        return {"projections": [
+            {"player": p["name"], "position": p["position"], "team": p["team"],
+             "opponent": p["opponent"], "projected_points": 10.0, "floor": 5.0,
+             "ceiling": 15.0} for p in players
+        ]}
+
+    monkeypatch.setattr(sleeper_tools, "get_league", _league)
+    monkeypatch.setattr(sleeper_tools, "get_rosters", _rosters)
+    monkeypatch.setattr(sleeper_tools, "get_matchups", _matchups)
+    monkeypatch.setattr(weather_tools, "get_weather_forecast", _weather)
+    monkeypatch.setattr(projections, "project_players", _project)
+
+    out = await briefing_tools.get_weekly_briefing("L", roster_id=1, week=5, season=2026)
+    assert [t["name"] for t in out["teamless_on_roster"]] == ["Kendre Miller"]
+    assert "drop him now" in out["teamless_on_roster"][0]["action"]
