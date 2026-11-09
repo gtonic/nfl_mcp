@@ -41,6 +41,7 @@ from .injury_match import build_injury_index, find_report, misses_this_week, sle
 from .injury_service import status_severity
 from .projection_store import log_projections, scoring_key
 from .scoring import league_scoring
+from .teamless import teamless_rostered
 from .teams import normalize_team
 from .week_context import current_season_week, week_opponents
 
@@ -294,6 +295,32 @@ def unavailable_players(db, roles: dict[str, str], athletes: dict) -> set[str]:
         statuses = ((report or {}).get("injury_status"), sleeper_injury_status(row))
         if any(misses_this_week(s) for s in statuses):
             out.add(pid)
+    return out
+
+
+# A rostered player with no NFL team is not a delta but a standing problem:
+# reported on every check until he is dropped.
+TEAMLESS_IMPORTANCE = {"my_starter": 90, "my_bench": 75}
+
+
+def teamless_items(roles: dict[str, str], athletes: dict, reserve=None) -> list[dict]:
+    """``kind: "teamless"`` for each of my players with no NFL team (released
+    or unsigned, `teamless.teamless_rostered`): he cannot score and is never
+    locked, so he can be dropped at once. Kendre Miller was cut by the Saints
+    on a Saturday and stayed on the bench, unflagged, through Monday."""
+    mine = [pid for pid, role in roles.items() if role in TEAMLESS_IMPORTANCE]
+    out = []
+    for t in teamless_rostered(mine, athletes, reserve):
+        role = roles[t["player_id"]]
+        out.append({
+            "kind": "teamless",
+            "importance": TEAMLESS_IMPORTANCE[role],
+            "summary": f"{t['name']} ({t['position']}) has no NFL team — released or unsigned; "
+                       f"{'your starter, ' if role == 'my_starter' else ''}drop him now (never locked)",
+            "player": t["name"],
+            "role": role,
+            "in_reserve": t["in_reserve"],
+        })
     return out
 
 
@@ -641,6 +668,7 @@ async def get_league_changes(
         items += injury_items(db, since_iso, roles, athletes)
     except Exception as e:
         errors["injuries"] = str(e)
+    items += teamless_items(roles, athletes, mine.get("reserve"))
     weeks = sorted({w for w in (week - 1, week) if 1 <= w <= 18})
 
     async def _projections() -> list[dict]:

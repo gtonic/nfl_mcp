@@ -425,7 +425,10 @@ async def get_waiver_targets(
                   apart, not ranked into targets,
         waiver_priority, locked_players, too_late_for_this_week,
         drop_candidates (with keep_score and role_security: a shrinking role
-        ranks first), replacement_levels, thin_positions, waiver_type,
+        ranks first; rostered players with no NFL team come first, teamless:
+        true), teamless_on_roster [{player_id, name, position, in_reserve,
+        reason, action}]: released / unsigned players to drop now (never
+        locked; a claim pairs them as its drop), replacement_levels, thin_positions, waiver_type,
         pool_size, league, week, season, success
     }
 

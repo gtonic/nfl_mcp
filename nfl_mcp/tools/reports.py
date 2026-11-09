@@ -82,6 +82,9 @@ async def get_weekly_briefing(
                players projected at or near zero for injury this week,
         ir_moves [{action, player, reason}]: activate / move_to_ir / ir_full,
                see audit_ir_slots,
+        teamless_on_roster [{player_id, name, position, in_reserve, reason,
+               action}]: rostered players with no NFL team (released /
+               unsigned) -- drop now, never locked,
         not_projected, reserve, success
     }
 
@@ -288,7 +291,8 @@ async def get_league_changes(
     looked" - one ranked delta for YOUR roster, not full reports.
 
     Remembers when this roster was last checked and returns only what is new
-    since then, most important first: injury status moves on your roster and
+    since then, most important first (plus, on every check until fixed, any
+    player of yours with no NFL team as kind teamless): injury status moves on your roster and
     your current opponent's starters, ESPN/CBS news about those players
     (a same-team teammate's absence at a related spot as teammate_news;
     roundups and previews left out; low importance without an injury, role,
@@ -309,7 +313,7 @@ async def get_league_changes(
         limit: Max changes returned (default 25; `omitted` says how many more)
 
     Returns: {
-        changes [{kind: injury|news|teammate_news|transaction|trending_backup|
+        changes [{kind: injury|news|teammate_news|teamless|transaction|trending_backup|
                   projection, importance, summary, ...}] sorted by importance
                   (news / teammate_news also: relation self|mention|teammate,
                   signal absence|role|availability|transaction|performance|none,
