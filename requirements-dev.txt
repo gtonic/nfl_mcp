@@ -1,6 +1,6 @@
-pytest>=9.1.1
-pytest-asyncio>=1.4.0
+pytest>=9.2.0
+pytest-asyncio>=1.4.1.post1
 httpx>=0.28.1
 pytest-cov>=7.1.0
-ruff>=0.16.10
-mypy>=2.4.0
+ruff>=0.17.4
+mypy>=2.4.1
