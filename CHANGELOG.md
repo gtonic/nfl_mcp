@@ -139,6 +139,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Briefing `add_now` timed out under load.** The waiver read ran under a
+  fixed 20 s from the start of the briefing; on 2026-11-09, with two
+  briefings in flight, it returned "waiver targets not read within 20s"
+  (the read alone takes ~12 s on an idle server). The briefing now starts
+  the read first and collects it last (`add_now.start` / `collect`): the
+  read gets the briefing's own duration for free, then a 15 s grace; an
+  uncollected read stops after 90 s. `build_block` (start + collect within
+  one budget) remains for callers with nothing of their own to overlap.
+- `get_waiver_targets` → `teamless_on_roster` marked no player as
+  `in_reserve` (the roster's reserve list was not passed), so a released
+  player parked in an IR slot was offered as the drop for a claim.
 - **A final practice report that repeats the day before's statuses was never
   stored.** The NFL.com page carries no date, so a snapshot identical to the
   latest stored day is taken for that day's report still up and skipped —

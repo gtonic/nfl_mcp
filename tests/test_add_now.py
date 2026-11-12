@@ -125,6 +125,43 @@ class TestBuildBlock:
         assert block["moves"] == [] and "not read within" in block["error"]
 
 
+class TestStartAndCollect:
+    """The briefing starts the read first and collects it last: the read gets
+    the briefing's own duration for free, then a grace period."""
+
+    @pytest.mark.asyncio
+    async def test_a_read_slower_than_the_grace_but_not_the_briefing_lands(self, monkeypatch):
+        async def _read(*_a, **_k):
+            await asyncio.sleep(0.2)  # longer than the grace alone
+            return _resp(_target())
+        monkeypatch.setattr(add_now, "read_targets", _read)
+        task = add_now.start("L", 1, 2026, 9)
+        await asyncio.sleep(0.3)  # the briefing's own work
+        block = await add_now.collect(task, now=NOW, grace=0.05)
+        assert [m["player"] for m in block["moves"]] == ["KC"] and "error" not in block
+
+    @pytest.mark.asyncio
+    async def test_past_the_grace_the_read_is_cancelled(self, monkeypatch):
+        async def _slow(*_a, **_k):
+            await asyncio.sleep(5)
+        monkeypatch.setattr(add_now, "read_targets", _slow)
+        task = add_now.start("L", 1, 2026, 9)
+        block = await add_now.collect(task, grace=0.05)
+        assert block["moves"] == [] and "not read within" in block["error"]
+        await asyncio.wait([task])  # 3.11's wait_for needs a few turns to settle
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_an_uncollected_read_stops_at_the_cap(self, monkeypatch):
+        async def _slow(*_a, **_k):
+            await asyncio.sleep(5)
+        monkeypatch.setattr(add_now, "read_targets", _slow)
+        task = add_now.start("L", 1, 2026, 9, cap=0.05)
+        with pytest.raises(TimeoutError):
+            await task
+        assert (await add_now.collect(task))["moves"] == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("offline_sources")
 async def test_the_briefing_carries_the_block(monkeypatch):

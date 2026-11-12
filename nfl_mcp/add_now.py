@@ -32,8 +32,16 @@ from .game_clock import LOCAL_TZ, local_time, parse_kickoff
 
 logger = logging.getLogger(__name__)
 
-# The briefing waits this long for the waiver read (it runs alongside the
-# briefing's own projections), as `late_risk` does for its free agents.
+# The briefing `start`s the read first thing and `collect`s it last, so the
+# read gets the briefing's own duration for free; past that the briefing
+# waits this much longer. A fixed 20 s from the start timed out under
+# game-day load (2026-11-09: two briefings in parallel, each with a waiver
+# read that takes ~12 s on an idle server).
+ADD_NOW_GRACE_SECONDS = 15.0
+# A read nobody collects (the briefing failed first) stops by then.
+ADD_NOW_CAP_SECONDS = 90.0
+# For a caller with no work of its own to overlap (`build_block`), as
+# `late_risk` does for its free agents.
 ADD_NOW_BUDGET_SECONDS = 20.0
 
 
@@ -126,14 +134,25 @@ def from_targets(resp: dict, now: datetime | None = None) -> list[dict]:
     return moves
 
 
-async def build_block(league_id: str, roster_id: int, season: int, week: int, *,
-                      now: datetime | None = None,
-                      budget: float = ADD_NOW_BUDGET_SECONDS) -> dict:
-    """``{moves, free_agents_checked[, error]}``. Never raises."""
+def start(league_id: str, roster_id: int, season: int, week: int, *,
+          cap: float = ADD_NOW_CAP_SECONDS) -> asyncio.Task:
+    """Begin the waiver read alongside the caller's own work; `collect` turns
+    it into the block. Stops after ``cap`` seconds whether or not it is
+    collected."""
+    return asyncio.create_task(
+        asyncio.wait_for(read_targets(league_id, roster_id, season, week), cap))
+
+
+async def collect(task: asyncio.Task, *, now: datetime | None = None,
+                  grace: float = ADD_NOW_GRACE_SECONDS) -> dict:
+    """``{moves, free_agents_checked[, error]}`` from a `start`ed read,
+    waiting at most ``grace`` seconds more for it. Never raises."""
     try:
-        resp = await asyncio.wait_for(read_targets(league_id, roster_id, season, week), budget)
+        resp = await asyncio.wait_for(asyncio.shield(task), grace)
     except TimeoutError:
-        return {"moves": [], "error": f"waiver targets not read within {budget:.0f}s"}
+        if not task.done():
+            task.cancel()
+        return {"moves": [], "error": f"waiver targets not read within {grace:.0f}s of the briefing"}
     except Exception as e:  # additive: never sink the briefing
         logger.warning(f"[add_now] waiver targets unavailable: {e}")
         return {"moves": [], "error": str(e) or type(e).__name__}
@@ -145,3 +164,11 @@ async def build_block(league_id: str, roster_id: int, season: int, week: int, *,
     except Exception as e:
         logger.warning(f"[add_now] could not read the waiver targets: {e}")
         return {"moves": [], "error": str(e) or type(e).__name__}
+
+
+async def build_block(league_id: str, roster_id: int, season: int, week: int, *,
+                      now: datetime | None = None,
+                      budget: float = ADD_NOW_BUDGET_SECONDS) -> dict:
+    """`start` and `collect` in one, within ``budget`` seconds. Never raises."""
+    return await collect(start(league_id, roster_id, season, week, cap=budget), now=now,
+                         grace=budget)

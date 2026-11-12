@@ -533,7 +533,7 @@ async def get_waiver_targets(
     ]
     # Released players have no game, so no projection input: named here and
     # put first on the drop list instead of vanishing from it.
-    teamless = teamless_rostered(list(my_rows), my_rows)
+    teamless = teamless_rostered(list(my_rows), my_rows, mine.get("reserve"))
 
     my_proj = await project_players(
         my_inputs, scoring=scoring_exact, num_teams=num_teams, season=season, week=week
