@@ -132,11 +132,11 @@ class TestStartAndCollect:
     @pytest.mark.asyncio
     async def test_a_read_slower_than_the_grace_but_not_the_briefing_lands(self, monkeypatch):
         async def _read(*_a, **_k):
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.2)  # longer than the grace alone
             return _resp(_target())
         monkeypatch.setattr(add_now, "read_targets", _read)
         task = add_now.start("L", 1, 2026, 9)
-        await asyncio.sleep(0.12)  # the briefing's own work
+        await asyncio.sleep(0.3)  # the briefing's own work
         block = await add_now.collect(task, now=NOW, grace=0.05)
         assert [m["player"] for m in block["moves"]] == ["KC"] and "error" not in block
 
@@ -148,7 +148,7 @@ class TestStartAndCollect:
         task = add_now.start("L", 1, 2026, 9)
         block = await add_now.collect(task, grace=0.05)
         assert block["moves"] == [] and "not read within" in block["error"]
-        await asyncio.sleep(0)
+        await asyncio.wait([task])  # 3.11's wait_for needs a few turns to settle
         assert task.cancelled()
 
     @pytest.mark.asyncio
