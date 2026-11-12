@@ -5,7 +5,7 @@ Mixed into ``nfl_mcp.database.NFLDatabase``.
 import hashlib
 import json
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from ..teams import normalize_team
@@ -166,14 +166,23 @@ class InjuriesMixin(_DBMixinBase):
         """The team's final practice report of the week, once it is out:
         ``{date, players: {name_key: {status, injury, game_status}}}``.
 
-        Only the final report carries game designations (NFL.com fills
-        ``game_status`` on that day alone), so the latest day of the team's
-        practice week on which any player has one *is* the final report.
-        None before it is published. With ``season``/``week`` that week (and
-        ``week + 1`` for the current one, as `get_practice_reports`), else the
-        current practice week.
+        The final report is the one of the week's last report day -- Friday
+        for a Sunday game, Saturday for Monday, Wednesday for Thursday
+        (`practice_reports.last_report_day`, from the rows' own game date,
+        else the cached schedule): the NFL.com rows stored under that date.
+        A game designation on an earlier day is an early ruling, not the
+        report -- the Patriots ruled three players out on Wednesday of week
+        10 2026, and read as the final report that cleared every Sleeper
+        "Questionable" on the team by Thursday. None before it is published.
+        With neither a game date nor a schedule, the latest Friday or
+        Saturday on which any player has a designation (NFL.com fills
+        ``game_status`` on the final report alone). With ``season``/``week``
+        that week (and ``week + 1`` for the current one, as
+        `get_practice_reports`), else the current practice week.
         """
         from ..practice_reports import (
+            SOURCE_NFL_COM,
+            last_report_day,
             latest_practice_week,
             practice_week_start,
             reads_next_week,
@@ -183,11 +192,12 @@ class InjuriesMixin(_DBMixinBase):
         team = normalize_team(team)
         if not team:
             return None
+        cols = "name_key, date, status, injury, game_status, game_date, source, season, week"
         try:
             with self._pool.get_connection() as conn:
                 if season and week:
                     cur = conn.execute(
-                        "SELECT name_key, date, status, injury, game_status FROM player_practice_status"
+                        f"SELECT {cols} FROM player_practice_status"
                         " WHERE team=? AND season=? AND week IN (?, ?)",
                         (team, int(season), int(week),
                          int(week) + 1 if reads_next_week(self, season, week) else int(week)),
@@ -197,26 +207,60 @@ class InjuriesMixin(_DBMixinBase):
                     cutoff = min(practice_week_start(today),
                                  practice_week_start(today, include_monday=True)).isoformat()
                     cur = conn.execute(
-                        "SELECT name_key, date, status, injury, game_status FROM player_practice_status"
-                        " WHERE team=? AND date >= ?",
+                        f"SELECT {cols} FROM player_practice_status WHERE team=? AND date >= ?",
                         (team, cutoff),
                     )
                 rows = latest_practice_week([dict(r) for r in cur.fetchall()])
         except Exception as e:
             logger.debug(f"get_team_final_report failed: {e}")
             return None
-        dates = [r["date"] for r in rows if (r.get("game_status") or "").strip()]
-        if not dates:
+        # Only the official report carries designations; a news note dated
+        # the same day is not the report being out.
+        official = [r for r in rows if r.get("source") == SOURCE_NFL_COM]
+        if not official:
             return None
-        final = max(dates)
+        game_date = self._practice_game_date(official, team)
+        if game_date is not None:
+            final = last_report_day(game_date).isoformat()
+            if not any(r["date"] == final for r in official):
+                return None
+        else:
+            designated = sorted({r["date"] for r in official if (r.get("game_status") or "").strip()})
+            fridays = [d for d in designated if date.fromisoformat(d).weekday() in (4, 5)]
+            if not fridays:
+                return None
+            final = fridays[-1]
         return {
             "date": final,
             "players": {
                 r["name_key"]: {"status": r.get("status"), "injury": (r.get("injury") or "").strip() or None,
                                 "game_status": (r.get("game_status") or "").strip() or None}
-                for r in rows if r["date"] == final and r.get("name_key")
+                for r in official if r["date"] == final and r.get("name_key")
             },
         }
+
+    def _practice_game_date(self, rows: list[dict], team: str) -> date | None:
+        """The game the stored report rows are for: the rows' own ``game_date``
+        (the NFL.com page names it), else the cached schedule's kickoff for
+        the rows' week, in US Eastern; None when neither is known."""
+        from ..practice_reports import to_eastern
+
+        dated = {r["game_date"] for r in rows if r.get("game_date")}
+        if dated:
+            try:
+                return date.fromisoformat(max(dated))
+            except ValueError:
+                pass
+        latest = rows[-1]
+        season, week = latest.get("season"), latest.get("week")
+        if not season or not week or not hasattr(self, "get_week_kickoffs"):
+            return None
+        from ..game_clock import parse_kickoff
+        for code, kickoff in (self.get_week_kickoffs(int(season), int(week)) or {}).items():
+            ko = parse_kickoff(kickoff)
+            if ko and normalize_team(code) == team:
+                return to_eastern(ko).date()
+        return None
 
     def get_team_practice_days(
         self, season: int, week: int, before: Any = None, source: str | None = None
@@ -251,13 +295,16 @@ class InjuriesMixin(_DBMixinBase):
     def get_team_practice_snapshots(
         self, season: int, week: int, source: str | None = None
     ) -> dict[str, dict[str, dict[str, str]]]:
-        """``team -> {date: {name_key: status}}`` for every stored day of one
-        week -- what the snapshot dating in ``practice_reports`` compares a
-        fresh page against."""
+        """``team -> {date: {name_key: report_key}}`` for every stored day of
+        one week -- what the snapshot dating in ``practice_reports`` compares
+        a fresh page against: the status, with the game designation once
+        there is one (`practice_reports.report_key`)."""
+        from ..practice_reports import report_key
+
         try:
             with self._pool.get_connection() as conn:
                 params: list = [int(season), int(week)]
-                sql = ("SELECT team, name_key, date, status FROM player_practice_status"
+                sql = ("SELECT team, name_key, date, status, game_status FROM player_practice_status"
                        " WHERE season=? AND week=?")
                 if source:
                     sql += " AND source=?"
@@ -268,7 +315,8 @@ class InjuriesMixin(_DBMixinBase):
             return {}
         out: dict[str, dict[str, dict[str, str]]] = {}
         for r in rows:
-            out.setdefault(r["team"], {}).setdefault(r["date"], {})[r["name_key"]] = r["status"]
+            out.setdefault(r["team"], {}).setdefault(r["date"], {})[r["name_key"]] = report_key(
+                r["status"], r["game_status"])
         return out
 
     def get_latest_practice_status(self, player_id: str, max_age_hours: int = 72) -> dict | None:

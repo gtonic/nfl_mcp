@@ -307,6 +307,35 @@ class TestPracticeSnapshotDating:
                                  game_dates=self.GAME_DATES)
         assert [r["date"] for r in out] == ["2026-09-25"]
 
+    def test_final_report_repeating_the_statuses_with_new_designations_is_stored(self, db):
+        """Cardinals, Texans, Chiefs, week 9 2026: Friday's practice statuses
+        matched Thursday's; only the game designations were new. Compared on
+        the statuses, the page read as Thursday's report still up, and the
+        Friday report (David Montgomery: Out) was never stored."""
+        db.upsert_practice_status(pr.nfl_com_reports(
+            _page("LV", self.GAME, {"Brock Bowers": "LP"}), 2026, 3,
+            now=_et(2026, 9, 24, 17), game_dates=self.GAME_DATES))
+        friday = [{**r, "game_status": "Questionable"}
+                  for r in _page("LV", self.GAME, {"Brock Bowers": "LP"})]
+        for hour in (15, 17):  # before and after the publication cutoff
+            out = pr.nfl_com_reports(friday, 2026, 3, now=_et(2026, 9, 25, hour),
+                                     stored=db.get_team_practice_snapshots(2026, 3, "nfl.com"),
+                                     game_dates=self.GAME_DATES)
+            assert [(r["date"], r["status"], r["game_status"]) for r in out] == [
+                ("2026-09-25", "LP", "Questionable")], hour
+        db.upsert_practice_status(out)
+        # ... and the same page on Saturday still lands on Friday.
+        out = pr.nfl_com_reports(friday, 2026, 3, now=_et(2026, 9, 26, 10),
+                                 stored=db.get_team_practice_snapshots(2026, 3, "nfl.com"),
+                                 game_dates=self.GAME_DATES)
+        assert [r["date"] for r in out] == ["2026-09-25"]
+        assert db.get_team_final_report("LV", 2026, 3)["date"] == "2026-09-25"
+
+    def test_report_key_carries_the_designation(self):
+        assert pr.report_key("LP") == "LP" and pr.report_key("LP", None) == "LP"
+        assert pr.report_key("LP", "Questionable") == "LP/Questionable"
+        assert pr.report_key("DNP", " ") == "DNP"
+
     def test_next_weeks_page_showing_last_weeks_game_is_skipped(self):
         """Tuesday 09-29: the week-4 page still shows week 3's final report."""
         page = _page("LV", self.GAME, {"Brock Bowers": "DNP"})
