@@ -139,6 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+<<<<<<< HEAD
 - **Briefing `add_now` timed out under load.** The waiver read ran under a
   fixed 20 s from the start of the briefing; on 2026-11-09, with two
   briefings in flight, it returned "waiver targets not read within 20s"
@@ -150,6 +151,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `get_waiver_targets` → `teamless_on_roster` marked no player as
   `in_reserve` (the roster's reserve list was not passed), so a released
   player parked in an IR slot was offered as the drop for a claim.
+=======
+- **A final practice report that repeats the day before's statuses was never
+  stored.** The NFL.com page carries no date, so a snapshot identical to the
+  latest stored day is taken for that day's report still up and skipped —
+  compared on the practice statuses alone. The Cardinals', Texans' and
+  Chiefs' Friday reports of week 9 repeated Thursday's statuses and added
+  six, two and four game designations (David Montgomery: Out); none was
+  recorded, and the three teams had no final report all weekend. The
+  comparison now includes the designation (`practice_reports.report_key`,
+  `get_team_practice_snapshots`).
+- **An early ruling read as the final report.** `get_team_final_report`
+  took the latest day with any game designation for the final report; the
+  Patriots ruled three players out on Wednesday of week 10, and from
+  Thursday every Sleeper "Questionable" on the team was `designation_cleared`
+  (priced healthy) — the briefing, `get_lineup_contingencies` and the
+  projections all read it. The final report is now the week's last report
+  day — Friday for a Sunday game, Saturday for Monday, Wednesday for
+  Thursday — from the rows' own game date (else the cached schedule), and a
+  news note dated that day is not the report; with neither a game date nor a
+  schedule, only a Friday or Saturday carrying a designation counts.
+- `test_news_saying_no_designation` read the clock and failed from
+  2026-11-11 (a fixed note date aged past the four-day window).
+>>>>>>> main
 
 - **Released players on your roster are flagged.** A player his NFL team cuts
   has no game, so the projection tools skipped him and he vanished from every
