@@ -12,7 +12,7 @@
 """
 import json
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,6 +87,81 @@ class TestFinalReport:
         assert mclaurin["injury"] == "Knee" and "note" not in mclaurin
         assert not pr.no_designation_on_final(mclaurin)
 
+    def test_an_early_ruling_is_not_the_final_report(self, db):
+        """Patriots, week 10 2026 (Sunday 11-15): three players ruled out on
+        Wednesday. Read as the final report, that cleared every Sleeper
+        "Questionable" on the team by Thursday."""
+        ne = {"season": 2026, "week": 10, "source": "nfl.com", "game_date": "2026-11-15"}
+        db.upsert_practice_status([
+            {**ne, "player_name": "Ben Brown", "team": "NE", "date": "2026-11-11",
+             "status": "DNP", "injury": "Knee", "game_status": "Out"},
+            {**ne, "player_name": "AJ Brown", "team": "NE", "date": "2026-11-11", "status": "LP"},
+            {**ne, "player_name": "AJ Brown", "team": "NE", "date": "2026-11-12", "status": "LP"},
+        ])
+        with _no_next_week():
+            assert db.get_team_final_report("NE", 2026, 10) is None
+            assert pr.final_designation(db, "AJ Brown", "NE", season=2026, week=10) is None
+            got = pr.lookup_practice(db, "AJ Brown", "NE", season=2026, week=10)
+        assert "final_report" not in got and not pr.no_designation_on_final(got)
+        # Friday's report: now it is out, and AJ Brown is on it without a designation.
+        db.upsert_practice_status([
+            {**ne, "player_name": "Ben Brown", "team": "NE", "date": "2026-11-13",
+             "status": "DNP", "injury": "Knee", "game_status": "Out"},
+            {**ne, "player_name": "AJ Brown", "team": "NE", "date": "2026-11-13", "status": "FP"},
+        ])
+        with _no_next_week():
+            report = db.get_team_final_report("NE", 2026, 10)
+        assert report["date"] == "2026-11-13"
+        assert report["players"]["aj brown"]["game_status"] is None
+        assert report["players"]["ben brown"]["game_status"] == "Out"
+
+    def test_a_thursday_teams_final_report_is_wednesdays(self, db):
+        wsh = {"season": 2026, "week": 10, "source": "nfl.com", "game_date": "2026-11-12"}
+        db.upsert_practice_status([
+            {**wsh, "player_name": "Lucas Patrick", "team": "WSH", "date": "2026-11-10", "status": "DNP"},
+            {**wsh, "player_name": "Lucas Patrick", "team": "WSH", "date": "2026-11-11",
+             "status": "DNP", "injury": "Concussion", "game_status": "Out"},
+        ])
+        with _no_next_week():
+            report = db.get_team_final_report("WSH", 2026, 10)
+        assert report["date"] == "2026-11-11"
+
+    def test_game_date_from_the_schedule_when_the_rows_have_none(self, db):
+        db.upsert_schedule_games([{"season": 2026, "week": 10, "team": "NE", "opponent": "DET",
+                                   "is_home": 1, "kickoff": "2026-11-15T14:30Z"}])
+        ne = {"season": 2026, "week": 10, "source": "nfl.com"}
+        db.upsert_practice_status([
+            {**ne, "player_name": "Ben Brown", "team": "NE", "date": "2026-11-11",
+             "status": "DNP", "injury": "Knee", "game_status": "Out"},
+        ])
+        with _no_next_week():
+            assert db.get_team_final_report("NE", 2026, 10) is None
+        db.upsert_practice_status([
+            {**ne, "player_name": "Ben Brown", "team": "NE", "date": "2026-11-13",
+             "status": "DNP", "injury": "Knee", "game_status": "Out"},
+        ])
+        with _no_next_week():
+            assert db.get_team_final_report("NE", 2026, 10)["date"] == "2026-11-13"
+
+    def test_without_a_game_date_only_a_friday_or_saturday_counts(self, db):
+        rows = [{"season": 2026, "week": 10, "source": "nfl.com", "player_name": "Ben Brown",
+                 "team": "NE", "date": "2026-11-11", "status": "DNP", "injury": "Knee",
+                 "game_status": "Out"}]
+        db.upsert_practice_status(rows)
+        with _no_next_week():
+            assert db.get_team_final_report("NE", 2026, 10) is None
+        db.upsert_practice_status([{**rows[0], "date": "2026-11-13"}])
+        with _no_next_week():
+            assert db.get_team_final_report("NE", 2026, 10)["date"] == "2026-11-13"
+
+    def test_a_news_note_on_the_final_day_is_not_the_report(self, db):
+        db.upsert_practice_status([
+            _row("Michael Wilson", "ARI", "2026-11-05", "LP"),
+            {**_row("Michael Wilson", "ARI", "2026-11-06", "LP"), "source": "espn_news"},
+        ])
+        with _no_next_week():
+            assert db.get_team_final_report("ARI", 2026, 9) is None
+
     def test_left_off_the_final_report(self, db):
         db.upsert_practice_status([
             _row("Michael Wilson", "ARI", "2026-11-04", "LP"),
@@ -136,7 +211,10 @@ class TestStaleDesignation:
                  for h in news_signals.classify(text, "michael wilson", None, "wilson")
                  or news_signals.classify(text, "alvin kamara", None, "kamara")]
         assert news_signals.designation_cleared(flags, NOW)
-        assert designation_cleared_by("Questionable", None, None, flags) == "news"
+        # `designation_cleared_by` reads the clock: the note must be fresh.
+        fresh = [{**f, "date_reported": (datetime.now(UTC) - timedelta(hours=2)).isoformat()}
+                 for f in flags]
+        assert designation_cleared_by("Questionable", None, None, fresh) == "news"
 
     def test_news_expected_to_play_despite_tag_does_not_clear(self):
         text = "Wilson is expected to play despite his questionable tag."

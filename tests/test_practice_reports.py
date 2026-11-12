@@ -126,7 +126,8 @@ class TestReportDay:
     def test_unchanged_team_report_is_not_stored_as_a_new_day(self):
         rows = pr.parse_nfl_com_report(NFL_COM_HTML, 2026)
         now = _et(2026, 9, 23, 17)
-        previous = {"ATL": {"tua tagovailoa": "FP", "michael penix": "LP"}}
+        # The stored day's lines carry the designation (`report_key`).
+        previous = {"ATL": {"tua tagovailoa": "FP", "michael penix": "LP/Questionable"}}
         out = pr.nfl_com_reports(rows, 2026, 3, now=now, previous=previous)
         teams = {r["team"] for r in out}
         assert "ATL" not in teams

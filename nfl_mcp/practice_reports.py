@@ -208,6 +208,20 @@ def parse_nfl_com_report(html: str, season: int) -> list[dict]:
     return rows
 
 
+def report_key(status: str | None, game_status: str | None = None) -> str:
+    """A player's line for the unchanged-report check: the practice status
+    and, on the final report, his game designation (``"DNP/Out"``).
+
+    Compared on the practice status alone, a final report whose statuses
+    repeat the day before's reads as that day's report still on the page and
+    is never stored: the Cardinals', Texans' and Chiefs' Friday reports of
+    week 9 2026 repeated Thursday's statuses and added six, two and four
+    designations (David Montgomery: Out) -- none was recorded.
+    """
+    designation = (game_status or "").strip()
+    return f"{status or ''}/{designation}" if designation else str(status or "")
+
+
 def nfl_com_reports(rows: list[dict], season: int, week: int,
                     now: datetime | None = None,
                     previous: dict[str, dict[str, str]] | None = None,
@@ -218,8 +232,9 @@ def nfl_com_reports(rows: list[dict], season: int, week: int,
     The page carries no report date, so a team's snapshot is dated by the
     clock (``report_day``), corrected with what is already stored:
 
-    ``stored`` maps team -> {date: {name_key: status}} for the week's stored
-    NFL.com days. Before the publication cutoff the clock says "yesterday",
+    ``stored`` maps team -> {date: {name_key: `report_key`}} for the week's
+    stored NFL.com days (a status, with the game designation once there is
+    one). Before the publication cutoff the clock says "yesterday",
     but a team that posts early already shows *today's* report: a snapshot
     that differs from yesterday's stored report is today's and is dated today
     -- it used to overwrite yesterday's row (Brock Bowers' Thursday LP became
@@ -250,7 +265,8 @@ def nfl_com_reports(rows: list[dict], season: int, week: int,
         expected = (game_dates or {}).get(team)
         if game_date and (game_date != expected if expected else game_date < et.date()):
             continue
-        snapshot = {norm_name(r["player_name"]): r["practice_status"] for r in team_rows}
+        snapshot = {norm_name(r["player_name"]): report_key(r["practice_status"], r.get("game_status"))
+                    for r in team_rows}
         days = (stored or {}).get(team) or {}
         day = report_day(now, game_date)
         if before_cutoff and _published_early(snapshot, day, days, et.date(), game_date):
@@ -715,7 +731,7 @@ def _after_previous_game(db, season: int, week: int) -> dict[str, date]:
 
 
 def _stored_days(db, season: int, week: int) -> dict[str, dict[str, dict[str, str]]]:
-    """team -> {date: {name_key: status}} for the week's stored NFL.com days."""
+    """team -> {date: {name_key: `report_key`}} for the week's stored NFL.com days."""
     if db is None or not hasattr(db, "get_team_practice_snapshots"):
         return {}
     try:
