@@ -342,8 +342,9 @@ async def get_weekly_briefing(
     assert mine is not None  # find_roster returns a roster whenever error is None
     roster_id = mine["roster_id"]
     # Free-agent upgrades to make now (`add_now`): the waiver read runs
-    # alongside the rest of the briefing, under its own time budget.
-    add_now_task = asyncio.create_task(add_now.build_block(league_id, roster_id, season, week))
+    # alongside the rest of the briefing and is collected last, with a short
+    # grace period past it (a fixed budget from here timed out under load).
+    add_now_task = add_now.start(league_id, roster_id, season, week)
 
     matchups = (matchups_resp or {}).get("matchups") or []
     my_matchup = next((m for m in matchups if m.get("roster_id") == roster_id), None)
@@ -679,7 +680,7 @@ async def get_weekly_briefing(
     # Points already on the board, reported alongside the probability that now
     # accounts for them.
     points_so_far = (my_matchup or {}).get("points")
-    add_now_block = await add_now_task
+    add_now_block = await add_now.collect(add_now_task)
     opponent_points_so_far = (opponent_matchup or {}).get("points")
 
     return create_success_response({
