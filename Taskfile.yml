@@ -18,6 +18,11 @@ tasks:
     cmds:
       - pytest tests/ -v --cov=nfl_mcp --cov-report=term-missing
 
+  calibrate:
+    desc: Refit the weekly projection calibration on every completed week (rewrites nfl_mcp/calibration.py; restart the server afterwards)
+    cmds:
+      - python -m evals.backtest.weekly_calibration --db nfl_data.db --season {{.SEASON | default "2026"}} --write
+
   test-quick:
     desc: Run tests without coverage
     cmds:

@@ -47,7 +47,7 @@ import os
 import re
 import sqlite3
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -92,9 +92,34 @@ def league_models(db: sqlite3.Connection, season: int,
     return out
 
 
-def graded_weeks(db: sqlite3.Connection, season: int) -> list[int]:
-    return [int(r[0]) for r in db.execute(
+# A week counts once its last kickoff is this far behind: a week still being
+# played has stat lines for some teams only, and every projected player of a
+# team yet to play would be graded as a 0.
+WEEK_SETTLED_AFTER = timedelta(hours=6)
+
+
+def graded_weeks(db: sqlite3.Connection, season: int, now: datetime | None = None) -> list[int]:
+    """Weeks with stat lines whose games are all over (by the cached schedule;
+    a week with no cached kickoffs is taken as played)."""
+    weeks = [int(r[0]) for r in db.execute(
         "SELECT DISTINCT week FROM player_week_stats WHERE season = ? ORDER BY week", (season,))]
+    now = now or datetime.now(UTC)
+    try:
+        last = {int(w): k for w, k in db.execute(
+            "SELECT week, MAX(kickoff) FROM schedule_games WHERE season = ? GROUP BY week", (season,))}
+    except sqlite3.Error:
+        return weeks
+    out = []
+    for week in weeks:
+        kickoff = last.get(week)
+        try:
+            done = (kickoff is None or datetime.fromisoformat(str(kickoff).replace("Z", "+00:00"))
+                    .astimezone(UTC) + WEEK_SETTLED_AFTER <= now)
+        except ValueError:
+            done = True
+        if done:
+            out.append(week)
+    return out
 
 
 def _actuals(db: sqlite3.Connection, season: int, week: int) -> dict[str, dict]:

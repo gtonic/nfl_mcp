@@ -1056,13 +1056,13 @@ async def ros_for_ids(
     include_weekly: bool = False,
 ) -> tuple[dict[str, dict], dict]:
     """``({player_id: ros entry}, meta)`` for Sleeper ids in `league`'s scoring."""
-    from .injury_match import build_injury_index
+    from . import status_carryover
     from .scoring import league_scoring
     from .trade_analyzer_tools import league_format_from_settings
 
     rows = db.get_athletes_by_ids([str(i) for i in ids]) if db is not None else {}
     try:
-        injury_index = build_injury_index(db.get_all_current_injuries()) if db else {}
+        injury_index = status_carryover.injury_index(db) if db else {}
     except Exception:
         injury_index = {}
     inputs = [x for pid in ids

@@ -77,6 +77,17 @@ async def get_weekly_briefing(
         move_to_bench: the CURRENT starters among them (the recommendation
                sits them),
         injury_changes: real status moves on your roster in the last 7 days,
+        statuses_carried_over [{player, status, from, injury_type, note}]:
+               an Out / Doubtful the feeds still carry from a game ALREADY
+               PLAYED (Monday-Wednesday, before the next practice report) --
+               priced as `status` (the ESPN forward read, else Questionable),
+               not as zero; check the news before benching or dropping him,
+        week_status {decided, final, points, opponent_points, outcome,
+               summary} | null: set once none of your players is still to
+               kick off this week -- the lineup shown is the one that played,
+        previous_week {…week_status, note}: present when `week` was not passed
+               and the current week was already decided for you: this IS the
+               NEXT week's briefing (week_source "rolled_over"),
         unavailable [{player, position, status, source, sleeper_status,
                       report_status, injury_type, in_recommended_lineup}]:
                players projected at or near zero for injury this week,

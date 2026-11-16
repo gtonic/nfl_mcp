@@ -233,12 +233,21 @@ def _catalogue(rows: list[dict]) -> list[dict]:
             "pred": (lambda b: lambda r: _sig(r).get("qb_sit_basis") == b
                      and r.get("qb_mult") is not None and float(r["qb_mult"]) < 1.0)(basis),
             "baseline": "rest", "current": _mean_logged("qb_mult")})
+    from .news_signals import EFFECTS
     for flag in sorted({f for r in rows for f in _flags(r)}):
+        # The flag's OWN weight, and only where it has one. The mean logged
+        # news multiplier of its rows is the other flags they also carry
+        # (committee 0.93, limited_snaps 0.90): expected_to_play, weight 1.0,
+        # read "multiplier 0.934 looks too low" in week 9 2026 with nothing
+        # there to raise -- 37 of its 50 rows had no designation at all.
+        own = float((EFFECTS.get(flag) or {}).get("model_mult", 1.0))
         cat.append({
             "name": f"news:{flag}", "group": "news", "label": f"News flag {flag}",
-            "param": "news_signals adjustment",
+            "param": (f"news_signals.EFFECTS[{flag!r}].model_mult" if own != 1.0
+                      else f"news_signals.EFFECTS[{flag!r}] (carries no multiplier)"),
             "pred": (lambda fl: lambda r: fl in _flags(r))(flag),
-            "baseline": "rest", "current": _mean_logged("news_model_mult")})
+            "baseline": "rest",
+            "current": (lambda m: lambda hit: m)(own) if own != 1.0 else None})
     for src in sorted({r["projection_source"] for r in rows if r.get("projection_source")}):
         cat.append({
             "name": f"source:{src}", "group": "projection_source",

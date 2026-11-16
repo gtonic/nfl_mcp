@@ -522,7 +522,10 @@ async def get_win_probability_lineup(
         risk_mode = rm.normalize_risk_mode(risk_mode)
     except ValueError as e:
         return handle_validation_error(str(e), default_data)
-    if not your_players:
+    # Every starter locked and nobody left to choose from is a finished (or
+    # all-kicked-off) week, not a caller error: the locked lineup is the
+    # lineup and P(win) is what the remaining opponent variance leaves.
+    if not your_players and not locked_players:
         return handle_validation_error("your_players is required", default_data)
     # None (internal callers only): no opponent this week — the lineup is
     # chosen on the risk mode alone. An empty list is a caller error.

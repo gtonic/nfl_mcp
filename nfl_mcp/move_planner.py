@@ -531,6 +531,9 @@ def simulate(ctx: PlanContext, moves: list[dict], db=None) -> dict:
     lost = _lost_backups(ctx, base, state, plan_week, state_at)
     for entry in lost:
         warnings.append(entry["message"])
+    costly = _costly_drops(ctx, base, resolved, plan_week)
+    for entry in costly:
+        warnings.append(entry["message"])
     blocking = _blocking_ir(ctx, state)
     if blocking:
         warnings.append("Still in IR but no longer eligible: " + ", ".join(ctx.name(p) for p in blocking)
@@ -554,6 +557,7 @@ def simulate(ctx: PlanContext, moves: list[dict], db=None) -> dict:
         "weeks": week_rows,
         "warnings": warnings,
         "lost_backups": lost,
+        "costly_drops": costly,
         "checklist": checklist,
         "verify_after": list(dict.fromkeys(verify)),
     }
@@ -915,6 +919,87 @@ def _lost_backups(ctx: PlanContext, base: _State, final: _State, plan_week: int,
 # ---------------------------------------------------------------------------
 # Failed claims and planned-vs-happened
 # ---------------------------------------------------------------------------
+
+# A drop whose lineup cost over the rest of the season exceeds what the add
+# brings back by this many points is called out. A lineup-points figure, so a
+# kicker's raw total never "beats" a running back's: it is what the best
+# legal lineup loses, week by week.
+DROP_GUARD_POINTS = 10.0
+
+
+def _costly_drops(ctx: PlanContext, base: _State, resolved: list[dict], plan_week: int) -> list[dict]:
+    """Drops that cost the lineup more than their add brings back.
+
+    For every step that drops a player: the best legal lineup of the roster
+    as it stands, summed from the step's week to the last fantasy week, with
+    him, without him, and without him but with the add. A step that loses
+    `DROP_GUARD_POINTS` or more on balance gets ``step["drop_cost"]`` and a
+    warning naming the cheapest drop instead. Whether the step is valid does
+    not matter -- a timing fix would make the same mistake enterable.
+
+    D'Andre Swift, week 10 2026: dropped on his bye for a kicker, with
+    nothing in the plan check saying that a lead back was leaving.
+    """
+    if not ctx.ros:
+        return []
+    totals: dict[tuple[frozenset, int], float] = {}
+
+    def total(active: list[str], week: int) -> float:
+        key = (frozenset(active), week)
+        if key not in totals:
+            totals[key] = float(_lineup(ctx, active, week, {}, set())["total"] or 0.0)
+        return totals[key]
+
+    def lineup_points(active: list[str], weeks: range) -> float:
+        return sum(total(active, w) for w in weeks)
+
+    out: list[dict] = []
+    for r in resolved:
+        step, move = r["step"], r["move"]
+        dropped = r["pid"] if move["action"] == "drop" else r.get("drop_pid")
+        added = r["pid"] if move["action"] in ("add", "claim") else None
+        if not dropped or dropped not in base.active:
+            continue
+        first = max(int(step.get("week") or plan_week), plan_week)
+        weeks = range(first, ctx.last_week + 1)
+        if not weeks:
+            continue
+        without = [p for p in base.active if p != dropped]
+        floor = lineup_points(without, weeks)
+        loss = lineup_points(base.active, weeks) - floor
+        gain = None
+        if added and added in ctx.ros and added not in base.active:
+            gain = lineup_points([*without, added], weeks) - floor
+        net = (gain or 0.0) - loss
+        cost: dict[str, Any] = {"lineup_points_lost": round(loss, 1),
+                "add_gain": round(gain, 1) if gain is not None else None,
+                "net": round(net, 1), "weeks": [first, ctx.last_week]}
+        step["drop_cost"] = cost
+        if net > -DROP_GUARD_POINTS:
+            continue
+        # The cheapest body to let go instead (locks and backups apart: the
+        # step checks those; this only says a cheaper one exists).
+        cheaper = min(
+            ((lineup_points(base.active, weeks) - lineup_points([x for x in base.active if x != p], weeks), p)
+             for p in base.active if p not in (dropped, added)),
+            default=None)
+        info = ctx.info.get(dropped) or {}
+        on_bye = bool(ctx.games.get(plan_week)) and ctx.kickoff(info.get("team"), plan_week) is None
+        message = (
+            f"Step {step['step']}: dropping {ctx.name(dropped)} costs {loss:.1f} lineup points over weeks "
+            f"{first}-{ctx.last_week}"
+            + (f"; adding {ctx.name(added)} brings back {gain:.1f}" if gain is not None
+               else (f"; {ctx.name(added)} has no projection to set against it" if added else ""))
+            + f" — net {net:+.1f}."
+            + (f" {ctx.name(dropped)} is only on bye in week {plan_week}; that is not a reason to drop him."
+               if on_bye else "")
+            + (f" Cheapest drop instead: {ctx.name(cheaper[1])} ({cheaper[0]:.1f} lineup points)."
+               if cheaper and cheaper[0] < loss else ""))
+        if cheaper and cheaper[0] < loss:
+            cost["cheaper_drop"] = {**_who(ctx, cheaper[1]), "lineup_points_lost": round(cheaper[0], 1)}
+        out.append({"step": step["step"], "player": ctx.name(dropped), **cost, "message": message})
+    return out
+
 
 def failure_code(note: str | None) -> str:
     text = (note or "").lower()

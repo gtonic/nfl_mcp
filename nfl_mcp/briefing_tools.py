@@ -16,12 +16,12 @@ import asyncio
 import logging
 from typing import Any
 
-from . import add_now
+from . import add_now, status_carryover
 from .database import get_shared_db
 from .errors import create_success_response
 from .game_clock import progress_of, settle, week_games
 from .injury_match import (
-    build_injury_index,
+    build_injury_index,  # noqa: F401  (re-exported: tests and callers import it from here)
     designation_cleared_by,
     final_report_for,
     find_report,
@@ -201,6 +201,48 @@ def _build_player(
 
 
 
+# Sleeper's regular season: the briefing does not roll past it.
+LAST_REGULAR_WEEK = 18
+
+
+def week_decided(mine: dict, athletes: dict, games: dict, my_matchup: dict | None,
+                 opponent_matchup: dict | None) -> dict | None:
+    """``{decided, final, points, opponent_points, outcome, summary}`` once
+    this roster has no lineup decision left in the week, else None.
+
+    Decided: at least one starter has kicked off and no active-roster player
+    with a game this week is still to kick off (a player on bye has no game
+    and decides nothing). ``final``: every starter of both lineups is done;
+    ``outcome`` is then won / lost / tied, before that leading / trailing.
+    """
+    def progress(pid) -> float | None:
+        team = normalize_team((athletes.get(str(pid)) or {}).get("team_id")) or ""
+        game = games.get(team)
+        return progress_of(game) if game else None
+
+    reserve = {str(p) for p in (mine.get("reserve") or [])} | {str(p) for p in (mine.get("taxi") or [])}
+    active = [progress(p) for p in (mine.get("players") or []) if str(p) not in reserve]
+    playing = [p for p in active if p is not None]
+    my_starters = [progress(p) for p in ((my_matchup or {}).get("starters") or []) if p and p != "0"]
+    if not playing or any(p <= 0.0 for p in playing) or not any((p or 0.0) > 0.0 for p in my_starters):
+        return None
+    opp_starters = [progress(p) for p in ((opponent_matchup or {}).get("starters") or [])
+                    if p and p != "0"]
+    final = all(p is None or p >= 1.0 for p in my_starters + opp_starters)
+    points = (my_matchup or {}).get("points")
+    opp_points = (opponent_matchup or {}).get("points") if opponent_matchup else None
+    outcome = None
+    if points is not None and opp_points is not None:
+        ahead = (points > opp_points) - (points < opp_points)
+        outcome = (("won", "tied", "lost") if final else ("leading", "level", "trailing"))[1 - ahead]
+    score = (f"{points} : {opp_points}" if outcome else "no opponent score") if points is not None else "no score yet"
+    return {
+        "decided": True, "final": final, "points": points, "opponent_points": opp_points,
+        "outcome": outcome,
+        "summary": f"{outcome or 'played'}, {score}" + ("" if final else ", games still running"),
+    }
+
+
 async def weather_by_team(season: int, week: int) -> dict[str, dict]:
     """``{team: weather}`` for the week's games; empty when unavailable."""
     from . import weather_tools
@@ -263,6 +305,7 @@ async def get_weekly_briefing(
     week: int | None = None,
     season: int | None = None,
     risk_mode: str | None = "auto",
+    roll_over: bool = True,
 ) -> dict:
     """Everything needed to set a lineup for one week, in a single call.
 
@@ -294,6 +337,8 @@ async def get_weekly_briefing(
     #    falls back to the last good state, then the cached schedule, then the
     #    calendar, and says which one it used.
     week_source = "caller"
+    # Only a week the caller did not name may roll over to the next one.
+    week_defaulted = week is None
     if week is None or season is None:
         current = await current_season_week(db)
         week = week or current["week"]
@@ -408,9 +453,33 @@ async def get_weekly_briefing(
     opp_set_starters = [p for p in opp_starters_raw if p and p != "0"]
     if opp_bench_ids is not None:
         opp_bench_ids = [p for p in opp_pool_ids if p not in set(opp_set_starters)]
+    # Nothing left to decide this week (every player of mine with a game has
+    # kicked off): the week the question is about is the next one. Sleeper's
+    # state stays on the old week until its Tuesday/Wednesday rollover, and
+    # this used to answer Monday night with an empty lineup and every starter
+    # under move_to_bench.
+    decided = week_decided(mine, athletes, games, my_matchup, opponent_matchup)
+    if decided and week_defaulted and roll_over and week < LAST_REGULAR_WEEK:
+        for task in (odds_task, add_now_task):
+            if task is not None and not task.done():
+                task.cancel()
+        nxt = await get_weekly_briefing(league_id, roster_id=roster_id, week=week + 1,
+                                        season=season, risk_mode=risk_mode, roll_over=False)
+        if isinstance(nxt, dict) and nxt.get("success"):
+            nxt["week_source"] = "rolled_over"
+            nxt["previous_week"] = {
+                **decided,
+                "note": (f"Week {week} has no lineup decision left for you ({decided['summary']}); "
+                         f"this is the week {week + 1} briefing. Pass week={week} for that week's view."),
+            }
+            return nxt
+        # The next week could not be built: fall through to this week's view.
+        odds_task = (asyncio.create_task(rm.season_odds(league_id, db=db))
+                     if risk_mode == "auto" else None)
+        add_now_task = add_now.start(league_id, roster_id, season, week)
     # Sleeper's player list is not the only injury source, and around kickoff it
     # is routinely the slower one. `player_injuries` holds the ESPN reports.
-    injury_index = build_injury_index(db.get_all_current_injuries())
+    injury_index = status_carryover.injury_index(db)
     freshness = db.get_data_freshness()
 
     # 5) Project mine and the opponent's projected starters.
@@ -695,6 +764,10 @@ async def get_weekly_briefing(
         "rosters_snapshot_age_seconds": roster_state["snapshot_age_seconds"],
         "points_so_far": points_so_far,
         "opponent_points_so_far": opponent_points_so_far,
+        # Set once no player of yours with a game is still to kick off:
+        # {decided, final, points, opponent_points, outcome, summary}. The
+        # lineup below is then the one that played; nothing can be changed.
+        "week_status": decided,
         "win_probability_basis": (
             "live: actual points for players whose game has kicked off "
             "(no remaining variance), projections for the rest"
@@ -772,6 +845,19 @@ async def get_weekly_briefing(
             for p in my_inputs
             if p.get("injury_detail")
             and p["injury_detail"]["sleeper_status"] != p["injury_detail"]["report_status"]
+            and not p["injury_detail"].get("carried_over")
+        ],
+        # Statuses the feeds still carry from a game already played, read for
+        # the next one instead (`status_carryover`): an Out / Doubtful from
+        # last game is an open question until the next practice report, not
+        # a zero. `from` is what the feeds say, `status` what was priced.
+        "statuses_carried_over": [
+            {"player": p["name"], "status": p["injury_detail"]["status"],
+             "from": p["injury_detail"]["carried_over"].get("from"),
+             "injury_type": p["injury_detail"].get("injury_type"),
+             "note": p["injury_detail"]["carried_over"].get("note")}
+            for p in my_inputs
+            if (p.get("injury_detail") or {}).get("carried_over")
         ],
         # Sleeper designations the team has since dropped (off the final
         # practice report, or news saying so): priced as healthy.

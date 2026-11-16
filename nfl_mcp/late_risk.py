@@ -621,8 +621,7 @@ async def free_agent_options(league: dict, rosters: list[dict], db, season: int,
     """The best instant-add free agents at ``positions`` this week, in the
     planner's shape (projected in the league's scoring; `waiver_rules`
     decides whether an add is instant)."""
-    from . import sleeper_tools
-    from .injury_match import build_injury_index
+    from . import sleeper_tools, status_carryover
     from .player_pool import playing_options
     from .projections import project_players
     from .scoring import league_scoring
@@ -645,7 +644,7 @@ async def free_agent_options(league: dict, rosters: list[dict], db, season: int,
     rows = db.get_athletes_by_positions(wanted)
     pool_rows = playing_options([r for r in rows if r["id"] not in taken and _is_claimable(r)],
                                 reference=rows)
-    injury_index = build_injury_index(db.get_all_current_injuries())
+    injury_index = status_carryover.injury_index(db)
     inputs = [p for r in pool_rows if (p := _to_projection_input(r, opponents, injury_index))]
     if not inputs:
         return []

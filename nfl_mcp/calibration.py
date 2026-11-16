@@ -59,43 +59,37 @@ DEF_EVENTS = ("sack", "int", "fum_rec", "ff", "def_td", "safe", "blk_kick",
 DEF_CAP_LOW, DEF_CAP_HIGH = 0.5, 1.5
 
 # --- fitted table (rewritten by evals/backtest/weekly_calibration.py --write) ---
-# Fitted 2026-10-29 on 2026 weeks 1-7: 4107 Sleeper-projected player-weeks in the graded leagues' scoring;
+# Fitted 2026-11-16 on 2026 weeks 1-9: 5193 Sleeper-projected player-weeks in the graded leagues' scoring;
 # held-out MAE gate on the last weeks; K=200, cap [0.85, 1.1], min n 60. raw = unshrunk ratio;
 # def_components n = team-weeks.
 CALIBRATION: dict[str, Any] = {
-    "fitted": "2026-10-29",
+    "fitted": "2026-11-16",
     "season": 2026,
-    "weeks": [1, 2, 3, 4, 5, 6, 7],
+    "weeks": [1, 2, 3, 4, 5, 6, 7, 8, 9],
     "cells": {
         "QB": {
-            "T2": {"mult": 0.997, "raw": 0.992, "n": 168},
+            "T2": {"mult": 0.99, "raw": 0.98, "n": 216},
         },
         "RB": {
-            "T2": {"mult": 0.94, "raw": 0.904, "n": 336},
-            "T3": {"mult": 0.975, "raw": 0.956, "n": 264},
+            "T1": {"mult": 0.976, "raw": 0.964, "n": 432},
+            "T2": {"mult": 0.943, "raw": 0.916, "n": 432},
+            "T3": {"mult": 1.003, "raw": 1.004, "n": 314},
         },
         "WR": {
-            "T2": {"mult": 0.958, "raw": 0.933, "n": 336},
+            "T2": {"mult": 0.949, "raw": 0.925, "n": 432},
         },
         "TE": {
-            "T2": {"mult": 0.972, "raw": 0.938, "n": 168},
+            "T1": {"mult": 0.998, "raw": 0.995, "n": 216},
+            "T2": {"mult": 0.942, "raw": 0.888, "n": 216},
         },
         "K": {
-            "T1": {"mult": 1.027, "raw": 1.091, "n": 84},
+            "T2": {"mult": 1.046, "raw": 1.131, "n": 108},
         },
         "DEF": {
-            "T1": {"mult": 0.956, "raw": 0.903, "n": 168},
-            "T2": {"mult": 0.993, "raw": 0.985, "n": 168},
+            "T2": {"mult": 0.979, "raw": 0.959, "n": 216},
         },
     },
     "def_components": {
-        "sack": {"mult": 0.957, "raw": 0.918, "n": 214},
-        "int": {"mult": 0.993, "raw": 0.986, "n": 214},
-        "fum_rec": {"mult": 0.934, "raw": 0.872, "n": 214},
-        "ff": {"mult": 1.075, "raw": 1.144, "n": 214},
-        "def_td": {"mult": 0.724, "raw": 0.467, "n": 214},
-        "safe": {"mult": 0.86, "raw": 0.73, "n": 214},
-        "blk_kick": {"mult": 1.088, "raw": 1.17, "n": 214},
     },
 }
 # --- end fitted table ---
@@ -225,8 +219,33 @@ def defense_line(stats: dict, table: dict | None = None) -> dict:
     return out
 
 
-def summary() -> dict:
-    """What the active table is, for a tool's notes."""
+# Completed weeks the table has not seen before it is called out as due.
+REFIT_DUE_AFTER_WEEKS = 2
+
+
+def summary(last_completed_week: int | None = None, season: int | None = None) -> dict:
+    """What the active table is, for a tool's notes.
+
+    With the season's last completed week it also says how far behind the fit
+    is (``weeks_behind``) and, from `REFIT_DUE_AFTER_WEEKS` on, how to refit
+    (``refit_due``): the table went three weeks without one in November 2026
+    and nothing said so.
+    """
+    out = _summary()
+    fitted = [int(w) for w in (CALIBRATION.get("weeks") or [])]
+    if (last_completed_week and fitted
+            and (season is None or season == CALIBRATION.get("season"))):
+        behind = max(0, int(last_completed_week) - max(fitted))
+        out["weeks_behind"] = behind
+        if behind >= REFIT_DUE_AFTER_WEEKS:
+            out["refit_due"] = (
+                f"Fitted through week {max(fitted)}; {behind} completed week(s) since. Refit: "
+                f"`task calibrate` (python -m evals.backtest.weekly_calibration --db nfl_data.db "
+                f"--season {CALIBRATION.get('season')} --write), then restart the server.")
+    return out
+
+
+def _summary() -> dict:
     cells = {pos: {t: c.get("mult") for t, c in tiers.items()}
              for pos, tiers in (CALIBRATION.get("cells") or {}).items()}
     events = {e: c.get("mult") for e, c in (CALIBRATION.get("def_components") or {}).items()}
