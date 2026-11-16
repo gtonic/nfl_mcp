@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Statuses carried over from a game already played** (`status_carryover`):
+  Sleeper's `injury_status` and the ESPN report's status are set for one game
+  and are not cleared when it ends. From a team's kickoff until its next
+  practice report is stored (at the latest 72 h before the next kickoff) an
+  Out / Doubtful is now read for the NEXT game: the report's own forward read
+  (`game_status`, ESPN's `fantasyStatus`) where it is milder and the return
+  date does not rule the game out, else Questionable; Sleeper's Out / Doubtful
+  defers to the report. Reserve lists and a report that says Out on both
+  fields are untouched. Used by the briefing, waiver targets, ROS, the trade
+  finder, usage trends, late risk and the teammate-absence pricing of the
+  projections. Monday of week 10: Kenneth Walker ("expected to go next
+  Sunday") and Brock Bowers ("day-to-day") were Out and 0.0 for week 11, and
+  Emmett Johnson was priced as Walker's replacement. `resolve_injury` returns
+  `carried_over {from, last_kickoff, note}`; the briefing lists them under
+  `statuses_carried_over`.
+- **`plan_roster_moves` → `costly_drops`** and `steps[].drop_cost`: for every
+  step that drops a player, the best legal lineup from that week to the last
+  fantasy week with him, without him, and without him but with the add —
+  `{lineup_points_lost, add_gain, net, weeks, cheaper_drop}`. A net loss of
+  10 lineup points or more is a warning that names the cheapest drop instead
+  and says when the player is merely on bye. Lineup points, not raw totals: a
+  second QB's 140 "ROS points" cost one bye week. D'Andre Swift was dropped on
+  his bye for a kicker in week 10 and no check said a lead back was leaving.
+- **`get_weekly_briefing` → `week_status` / `previous_week`**: once none of
+  your players is still to kick off, the week is `decided` (`final`,
+  `points`, `opponent_points`, `outcome`). Called without `week`, the
+  briefing then answers for the NEXT week (`week_source: "rolled_over"`,
+  the finished week under `previous_week`); with `week` it shows the lineup
+  that played.
+- **Calibration refit notice**: `get_projection_accuracy` → `calibration`
+  carries `weeks_behind` and, from two completed weeks on, `refit_due` (also
+  in `interpretation`). `task calibrate` runs the fit.
+
 - **`get_weekly_briefing` → `add_now`**: free agents worth adding right now —
   `{moves: [{player, position, team, projected_points, gain, replaces, drop,
   deadline, deadline_local, deadline_reason, summary}], error?}`. Read from
@@ -139,6 +172,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Briefing of a finished week**: with every starter locked and nobody left
+  to choose from, `get_win_probability_lineup` refused the call ("your_players
+  is required") and the briefing came back with no lineup, no win probability
+  and all ten starters under `move_to_bench` (Ropeway, Monday of week 10,
+  152.06 : 99.96). A fully locked roster is now a lineup.
+- **Weekly calibration fit counted the week still being played**
+  (`evals/backtest/weekly_calibration.py`): every projected player of a team
+  yet to play was graded as a 0. Weeks count once their last kickoff is six
+  hours behind. Table refit on weeks 1-9 (was 1-7); no QB top-12 cell — the
+  under-projection on the leagues' own QB rows (−2.2, n=74) is not there on
+  the league-wide population (+2.2 on the held-out weeks).
+- **Signal review, news flags**: `current` was the mean logged news multiplier
+  of a flag's rows, i.e. the other flags they also carry, so
+  `expected_to_play` (weight 1.0) read "multiplier 0.934 looks too low". A
+  flag now reports its own `EFFECTS` weight, and none when it has no
+  multiplier (37 of its 50 rows had no designation at all; the 11
+  Questionable ones were on target, 97.6 projected vs 96.4).
 - **Briefing `add_now` timed out under load.** The waiver read ran under a
   fixed 20 s from the start of the briefing; on 2026-11-09, with two
   briefings in flight, it returned "waiver targets not read within 20s"

@@ -266,11 +266,22 @@ def resolve_injury(
     from Sleeper that the team's final report (``final_report``) or fresh
     news no longer carries (`designation_cleared_by`): he is healthy, and
     the result is None.
+
+    An index from `status_carryover.injury_index` also says which teams'
+    statuses still describe a game already played; for those an Out /
+    Doubtful is read for the next game (``carried_over`` in the result,
+    ``sleeper_status`` stays what Sleeper sends).
     """
     from .ros import is_reserve  # deferred: ros is heavy
-    sleeper_status = sleeper_injury_status(athlete_row)
+    raw_sleeper_status = sleeper_status = sleeper_injury_status(athlete_row)
     report = find_report(athlete_row, injury_index, team)
     report_status = (report or {}).get("injury_status")
+    # A designation for a game already played is not a verdict on the next
+    # one (`status_carryover`); the index built there carries the window.
+    window = (getattr(injury_index, "carried", None) or {}).get(normalize_team(team) or team)
+    if window:
+        from .status_carryover import sleeper_forward
+        sleeper_status = sleeper_forward(sleeper_status, report is not None, window)
     # "Active" is the report's way of saying "no injury", so it must not beat a
     # real designation from the other source.
     if report_status == "Active":
@@ -285,15 +296,26 @@ def resolve_injury(
         status = worst_status(sleeper_status, report_status)
     if not status:
         return None
+    # Carried over: the feeds, read as before, would have said something worse.
+    as_sent = worst_status(raw_sleeper_status,
+                           (report or {}).get("carried_from") or report_status)
+    carried = bool(window) and not lifted and status != as_sent
     return {
         "status": status,
         "source": ("report" if lifted
                    else "both" if sleeper_status and report_status
                    else "report" if report_status else "sleeper"),
-        "sleeper_status": sleeper_status,
+        "sleeper_status": raw_sleeper_status,
         "report_status": report_status,
         "injury_type": (report or {}).get("injury_type"),
         **({"reserve_lifted": True} if lifted else {}),
+        # Read for the next game: the feeds still carry last game's status.
+        **({"carried_over": {
+            "from": as_sent,
+            "last_kickoff": (window or {}).get("last_kickoff"),
+            "note": "status was set for a game already played; priced as an open "
+                    "question until the next practice report",
+        }} if carried else {}),
     }
 
 

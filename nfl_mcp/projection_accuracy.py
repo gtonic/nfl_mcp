@@ -468,6 +468,7 @@ async def get_projection_accuracy(
     pos = normalize_position(position) if position else None
     rows = db.get_projection_accuracy(season, weeks=wanted, position=pos, league_id=league_id)
     report = accuracy_report(rows, by_signal=bool(by_signal))
+    calibration = calibration_summary(done["week"] if season == done["season"] else None, season)
     return create_success_response({
         "season": season,
         "weeks": sorted({int(r["week"]) for r in rows}),
@@ -475,10 +476,13 @@ async def get_projection_accuracy(
         "position": pos,
         "league_id": league_id,
         "graded_now": graded_now,
-        **report,
+        **report, "interpretation": [
+            *(report.get("interpretation") or []),
+            *([calibration["refit_due"]] if calibration.get("refit_due") else [])],
         # The position x tier / DEF-event correction now on the blend
-        # (`calibration`), refit weekly from these grades' season.
-        "calibration": calibration_summary(),
+        # (`calibration`), refit from these grades' season; `refit_due` once
+        # it is two completed weeks behind.
+        "calibration": calibration,
         "definitions": {
             "projection": "the last pre-kickoff projection logged for the player that week",
             "actual": "points in the scoring the projection was made in (Sleeper's "

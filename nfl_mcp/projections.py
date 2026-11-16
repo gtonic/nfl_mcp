@@ -1300,8 +1300,9 @@ class ProjectionEngine:
         db = getattr(self, "db", None)
         if db is not None:
             try:
+                from . import status_carryover
                 from .opportunity_tools import norm_name
-                rows = list(db.get_all_current_injuries() or [])
+                rows = status_carryover.current_reports(db)
                 for row in rows:
                     name = norm_name(row.get("player_name"))
                     team = normalize_team(row.get("team_id")) or ""

@@ -309,8 +309,8 @@ def _injury_index(db) -> dict:
     if db is None or not hasattr(db, "get_all_current_injuries"):
         return {}
     try:
-        from .injury_match import build_injury_index
-        return build_injury_index(db.get_all_current_injuries())
+        from . import status_carryover
+        return status_carryover.injury_index(db)
     except Exception as e:
         logger.debug(f"injury reports unavailable for usage trends: {e}")
         return {}

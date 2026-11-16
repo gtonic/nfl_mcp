@@ -35,10 +35,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from . import status_carryover
 from .briefing_tools import _staleness_warnings
 from .database import get_shared_db
 from .errors import create_success_response
-from .injury_match import build_injury_index, injury_for_row, misses_this_week
+from .injury_match import injury_for_row, misses_this_week
 from .roster_needs import lineup_slots, replacement_levels, slot_counts, starting_lineup_total
 from .teams import normalize_team
 
@@ -229,7 +230,7 @@ async def find_trade_targets(
 
     all_ids = [pid for ids in ids_by_roster.values() for pid in ids]
     athlete_rows = db.get_athletes_by_ids(all_ids)
-    injury_index = build_injury_index(db.get_all_current_injuries())
+    injury_index = status_carryover.injury_index(db)
 
     inputs_by_roster: dict[int, list[dict]] = {}
     flat_inputs: list[dict] = []

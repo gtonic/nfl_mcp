@@ -24,12 +24,12 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from . import news_signals, ros
+from . import news_signals, ros, status_carryover
 from .briefing_tools import _staleness_warnings
 from .database import get_shared_db
 from .errors import create_success_response
 from .game_clock import game_lock, parse_kickoff, week_games
-from .injury_match import build_injury_index, injury_for_row, misses_this_week
+from .injury_match import injury_for_row, misses_this_week
 from .lineup_slots import starting_slot_list
 from .player_pool import playing_options, unsigned_free_agents
 from .player_values import get_values_service
@@ -515,7 +515,7 @@ async def get_waiver_targets(
     # not ranked -- by design -- but the fantasy-relevant ones are named, so
     # their absence is not read as "nobody worth adding" (or as "rostered").
     unsigned = unsigned_free_agents(position_rows, taken, wanted)
-    injury_index = build_injury_index(db.get_all_current_injuries())
+    injury_index = status_carryover.injury_index(db)
     pool_inputs = [
         p for row in pool_rows if (p := _to_projection_input(row, opponents, injury_index))
     ]
