@@ -24,7 +24,7 @@ from . import matchup_tools
 from .errors import create_success_response, handle_http_errors, handle_validation_error
 from .player_pool import playing_options
 from .sos_tools import _ease_score, _gather_opponents, _resolve_rankings
-from .teams import normalize_team
+from .teams import normalize_team, sleeper_defense_id
 
 logger = logging.getLogger(__name__)
 
@@ -309,14 +309,18 @@ async def _rostered_ids(league_id: str) -> tuple[set, bool, str | None]:
 def _unit_availability(position: str, team: str, rostered: set, db) -> dict:
     """Availability of a team's streamable unit at ``position`` in the league.
 
-    DST maps 1:1 (Sleeper DST id = team abbreviation). K/QB/TE/RB/WR enumerate the
-    team's players at that position from the athletes cache, each flagged
-    free_agent/rostered (a specific starter isn't singled out — a design note).
+    DST maps 1:1 onto Sleeper's defense id -- the team code, except Washington,
+    which Sleeper keys ``WAS`` while every row here carries ``WSH``
+    (`teams.sleeper_defense_id`). K/QB/TE/RB/WR enumerate the team's players at
+    that position from the athletes cache, each flagged free_agent/rostered (a
+    specific starter isn't singled out — a design note).
     """
     pos, team = position.upper(), (team or "").upper()
     if pos in DEFENSE_UNIT_POSITIONS:
-        status = "rostered" if team in rostered else "free_agent"
-        return {"unit_player_id": team, "status": status, "has_free_agent": status == "free_agent"}
+        unit_id = sleeper_defense_id(team) or team
+        status = "rostered" if unit_id in rostered or team in rostered else "free_agent"
+        return {"unit_player_id": unit_id, "status": status,
+                "has_free_agent": status == "free_agent"}
     players = []
     # The team's playing options only: a free practice-squad kicker behind a
     # rostered starter is not a streamer (see player_pool).

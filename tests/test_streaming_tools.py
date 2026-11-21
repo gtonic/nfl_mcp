@@ -223,6 +223,15 @@ class TestStreamingAvailability:
         taken = _unit_availability("DST", "SF", rostered={"SF"}, db=None)
         assert taken["status"] == "rostered" and taken["has_free_agent"] is False
 
+    def test_unit_availability_dst_uses_sleepers_defense_id(self):
+        # Sleeper keys Washington's defense "WAS"; the streaming rows say "WSH".
+        taken = _unit_availability("DST", "WSH", rostered={"WAS"}, db=None)
+        assert taken["status"] == "rostered" and taken["has_free_agent"] is False
+        assert taken["unit_player_id"] == "WAS"
+        assert _unit_availability("DEF", "WAS", rostered={"WAS"}, db=None)["status"] == "rostered"
+        free = _unit_availability("DST", "WSH", rostered={"KC"}, db=None)
+        assert free["status"] == "free_agent" and free["unit_player_id"] == "WAS"
+
     def test_unit_availability_kicker_from_athletes(self):
         db = _StubDB({}, athletes_by_team={"SF": [
             {"id": "k1", "full_name": "The Kicker", "position": "K"},
@@ -264,3 +273,35 @@ class TestStreamingAvailability:
 
         teams = {r["team"] for r in filtered["streaming_options"]["DST"]}
         assert "MIA" in teams and "BUF" not in teams   # only_available dropped the rostered DST
+
+    @pytest.mark.asyncio
+    async def test_only_available_drops_a_rostered_washington_defense(self):
+        """Week 11 2026: thehawks95 rostered "WAS" and the tool listed WSH as a
+        free streamer -- the row's code was tested against Sleeper's ids."""
+        def_by_season = {2026: _def_rankings({"QB": [("KC", 32, False), ("SF", 1, False)]})}
+        schedule = {(2026, 12, "WSH"): "ARI", (2026, 12, "MIN"): "ATL"}
+        analyzer = _StubAnalyzer(def_by_season, db=_StubDB(schedule))
+        offense = _offense({"ARI": 22, "ATL": 24, "WSH": 18, "MIN": 28})
+
+        async def fake_offense(season):
+            return offense if season == 2026 else {}
+
+        rosters = {"rosters": [{"roster_id": 6, "players": ["HOU", "WAS"]}]}
+        with patch("nfl_mcp.matchup_tools.get_defense_analyzer", return_value=analyzer), \
+                patch("nfl_mcp.matchup_tools.fetch_offense_rankings", side_effect=fake_offense), \
+                patch("nfl_mcp.sleeper_tools.get_rosters", new=AsyncMock(return_value=rosters)), \
+                patch("nfl_mcp.sleeper_tools.get_league",
+                      new=AsyncMock(return_value={"success": False, "league": None})):
+            annotated = await get_streaming_options(
+                season=2026, start_week=12, weeks_ahead=1, positions=["DST"], league_id="123"
+            )
+            filtered = await get_streaming_options(
+                season=2026, start_week=12, weeks_ahead=1, positions=["DST"],
+                league_id="123", only_available=True,
+            )
+
+        by_team = {r["team"]: r for r in annotated["streaming_options"]["DST"]}
+        assert by_team["WSH"]["availability"] == {
+            "unit_player_id": "WAS", "status": "rostered", "has_free_agent": False}
+        assert by_team["MIN"]["availability"]["status"] == "free_agent"
+        assert [r["team"] for r in filtered["streaming_options"]["DST"]] == ["MIN"]
