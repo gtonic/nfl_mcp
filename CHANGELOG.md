@@ -172,6 +172,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`get_streaming_options` listed a rostered Washington defense as a free
+  agent**: availability tested the row's canonical team code (`WSH`) against
+  the league's rostered Sleeper ids, and Sleeper keys that one defense `WAS`.
+  `only_available=True` (also used by `plan_roster_moves`' streamer
+  suggestions) therefore kept it. The unit is now looked up by
+  `teams.sleeper_defense_id`, and `availability.unit_player_id` is that id.
+  Week 11 2026: WSH was offered as the week-12 streamer in a league where
+  another team held it.
 - **Briefing of a finished week**: with every starter locked and nobody left
   to choose from, `get_win_probability_lineup` refused the call ("your_players
   is required") and the briefing came back with no lineup, no win probability
